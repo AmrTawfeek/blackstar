@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Black Stars CRM — User Guide</title>
+<style>
+  :root {
+    --bg: #0f1218;
+    --surface: #1a1f2a;
+    --surface-2: #232936;
+    --border: #2a3142;
+    --text: #e8ecf3;
+    --text-dim: #9ba6b6;
+    --text-mute: #6a7282;
+    --accent: #f26060;
+    --accent-2: #f2a33c;
+    --blue: #5b8def;
+    --green: #10b981;
+    --orange: #f97316;
+    --purple: #8b5cf6;
+    --cyan: #06b6d4;
+    --red: #ef4444;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.6 -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 0;
+  }
+  .layout { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+  .toc {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 24px 16px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+  .toc-brand {
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 8px 16px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+  .toc-logo {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    border-radius: 8px;
+    display: grid; place-items: center;
+    font-size: 18px;
+  }
+  .toc-brand-title { font-weight: 700; font-size: 14px; }
+  .toc-brand-sub { font-size: 11px; color: var(--text-mute); }
+  .toc-section {
+    font-size: 10px; font-weight: 600;
+    color: var(--text-mute); text-transform: uppercase;
+    letter-spacing: .8px;
+    padding: 14px 8px 6px;
+  }
+  .toc a {
+    display: block;
+    padding: 7px 10px;
+    color: var(--text-dim);
+    text-decoration: none;
+    border-radius: 6px;
+    font-size: 13px;
+    transition: background .12s;
+  }
+  .toc a:hover { background: var(--surface-2); color: var(--text); }
+  .content {
+    padding: 40px 56px 80px;
+    max-width: 920px;
+  }
+  .hero {
+    background: linear-gradient(135deg, rgba(242,96,96,.08), rgba(91,141,239,.08));
+    border: 1px solid rgba(242,96,96,.2);
+    border-radius: 12px;
+    padding: 24px 28px;
+    margin-bottom: 36px;
+  }
+  .hero h1 {
+    font-size: 26px;
+    margin-bottom: 6px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .hero p { color: var(--text-dim); font-size: 14px; }
+  h2 {
+    font-size: 20px;
+    margin: 36px 0 14px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--accent);
+    display: inline-block;
+  }
+  h3 {
+    font-size: 16px;
+    margin: 22px 0 10px;
+    color: var(--accent-2);
+  }
+  p, ul, ol { margin-bottom: 12px; color: var(--text-dim); }
+  ul, ol { padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  strong { color: var(--text); font-weight: 600; }
+  code {
+    background: var(--surface-2);
+    color: var(--accent);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: "SF Mono", Consolas, monospace;
+  }
+  .step-list {
+    counter-reset: step;
+    list-style: none;
+    padding: 0;
+  }
+  .step-list > li {
+    counter-increment: step;
+    padding: 10px 16px 10px 44px;
+    position: relative;
+    background: var(--surface);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    border-left: 3px solid var(--accent);
+    color: var(--text);
+  }
+  .step-list > li::before {
+    content: counter(step);
+    position: absolute;
+    left: 12px;
+    top: 10px;
+    width: 22px;
+    height: 22px;
+    background: var(--accent);
+    color: white;
+    border-radius: 50%;
+    display: grid; place-items: center;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .tip {
+    background: rgba(16,185,129,.08);
+    border-left: 3px solid var(--green);
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .tip strong { color: var(--green); }
+  .warn {
+    background: rgba(239,68,68,.08);
+    border-left: 3px solid var(--red);
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .warn strong { color: var(--red); }
+  .info {
+    background: rgba(91,141,239,.08);
+    border-left: 3px solid var(--blue);
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .info strong { color: var(--blue); }
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+    margin: 16px 0;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .card-icon { font-size: 22px; margin-bottom: 6px; }
+  .card-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; color: var(--text); }
+  .card-body { font-size: 12px; color: var(--text-mute); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0;
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    color: var(--text-mute);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    background: var(--surface-2);
+  }
+  td { color: var(--text-dim); }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-weight: 500;
+  }
+  .badge.green { background: rgba(16,185,129,.18); color: var(--green); }
+  .badge.red { background: rgba(239,68,68,.18); color: var(--red); }
+  .badge.blue { background: rgba(91,141,239,.18); color: var(--blue); }
+  .badge.orange { background: rgba(242,163,60,.18); color: var(--accent-2); }
+  .back-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--blue);
+    text-decoration: none;
+    margin-bottom: 20px;
+    font-size: 13px;
+  }
+  .back-link:hover { text-decoration: underline; }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    .toc { position: relative; height: auto; }
+    .content { padding: 24px 16px 60px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<!-- ───── Sidebar TOC ───── -->
+<aside class="toc">
+  <div class="toc-brand">
+    <div class="toc-logo">★</div>
+    <div>
+      <div class="toc-brand-title">Black Stars CRM</div>
+      <div class="toc-brand-sub">User Guide</div>
+    </div>
+  </div>
+
+  <a href="index.html" class="back-link">← Back to CRM</a>
+
+  <div class="toc-section">Getting Started</div>
+  <a href="#intro">Welcome</a>
+  <a href="#login">Logging in</a>
+  <a href="#sidebar">Sidebar overview</a>
+
+  <div class="toc-section">Daily Use</div>
+  <a href="#new-member">Register a new member</a>
+  <a href="#renew">Renew a subscription</a>
+  <a href="#add-sport">Add a sport to existing member</a>
+  <a href="#attendance">Mark attendance</a>
+  <a href="#schedule">Class schedule</a>
+  <a href="#freeze">Freeze a membership</a>
+  <a href="#trials">Track trials</a>
+
+  <div class="toc-section">Money</div>
+  <a href="#invoices">Invoices</a>
+  <a href="#sales">Product sales (POS)</a>
+  <a href="#rentals">Rental bookings</a>
+  <a href="#expenses">Log expenses</a>
+  <a href="#salaries">Coach salaries</a>
+
+  <div class="toc-section">Insights</div>
+  <a href="#dashboard">Dashboard</a>
+  <a href="#reports">Reports</a>
+  <a href="#coach-perf">Coach Performance</a>
+
+  <div class="toc-section">System</div>
+  <a href="#backup">Backup & Restore</a>
+  <a href="#themes">Themes</a>
+  <a href="#tips">Tips & Tricks</a>
+  <a href="#troubleshoot">Troubleshooting</a>
+</aside>
+
+<!-- ───── Content ───── -->
+<main class="content">
+
+<div class="hero">
+  <h1>Welcome to Black Stars CRM</h1>
+  <p>Everything you need to run the club: members, attendance, invoices, rentals, sales, coach commissions — all in one place, all offline. This guide walks through every daily task in order.</p>
+</div>
+
+<!-- ===== INTRO ===== -->
+<h2 id="intro">What this app does</h2>
+<p>Black Stars CRM is a complete management system for the sports club. It runs entirely in your browser — no internet needed once it's loaded. Your data stays on this computer.</p>
+<div class="card-grid">
+  <div class="card">
+    <div class="card-icon">👥</div>
+    <div class="card-title">Members & Coaches</div>
+    <div class="card-body">Register, renew, freeze, edit. Multi-sport support per member.</div>
+  </div>
+  <div class="card">
+    <div class="card-icon">📄</div>
+    <div class="card-title">Auto Invoices</div>
+    <div class="card-body">Every member, renewal, sale, and rental gets an invoice automatically.</div>
+  </div>
+  <div class="card">
+    <div class="card-icon">✓</div>
+    <div class="card-title">Daily Attendance</div>
+    <div class="card-body">Mark Y/N per student per day per sport. Filter, export, and report.</div>
+  </div>
+  <div class="card">
+    <div class="card-icon">🛒</div>
+    <div class="card-title">POS & Stock</div>
+    <div class="card-body">Sell uniforms, gloves, drinks. Stock auto-decreases on sale.</div>
+  </div>
+  <div class="card">
+    <div class="card-icon">🏟</div>
+    <div class="card-title">Court Rentals</div>
+    <div class="card-body">Football court, boxing room, swimming pool — book and invoice.</div>
+  </div>
+  <div class="card">
+    <div class="card-icon">💰</div>
+    <div class="card-title">Coach Commission</div>
+    <div class="card-body">Per-coach % calculated automatically from active-member revenue.</div>
+  </div>
+</div>
+
+<!-- ===== LOGIN ===== -->
+<h2 id="login">Logging in</h2>
+<p>Open the app — you'll see a login screen.</p>
+<ol class="step-list">
+  <li>Username: <code>admin</code></li>
+  <li>Password: <code>admin123</code></li>
+  <li>Click <strong>Sign In</strong>.</li>
+</ol>
+<div class="info"><strong>💡 Tip:</strong> You stay logged in across sessions. To log out, click your name in the bottom-left of the sidebar.</div>
+
+<!-- ===== SIDEBAR ===== -->
+<h2 id="sidebar">The sidebar — what each section does</h2>
+<table>
+  <thead><tr><th>Section</th><th>Page</th><th>Use for…</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="9"><strong>Main</strong></td><td>📊 Dashboard</td><td>At-a-glance: revenue, expenses, profit, active members, top coaches</td></tr>
+    <tr><td>👥 Members</td><td>Full list. Search, filter, add, edit, delete</td></tr>
+    <tr><td>📜 History</td><td>Per-member deep view: subscriptions, renewals, attendance, freezes, sales</td></tr>
+    <tr><td>🗓 Schedule</td><td>Weekly class grid with drag-and-drop editing + PNG export</td></tr>
+    <tr><td>⏰ Expiring</td><td>Members whose subscription expires soon — for follow-up</td></tr>
+    <tr><td>🎁 Trials</td><td>Track free-trial members (not paying yet)</td></tr>
+    <tr><td>🏟 Rentals</td><td>Court / room / pool bookings with customer history</td></tr>
+    <tr><td>🥋 Coaches</td><td>Coach list, rates, active/inactive status</td></tr>
+    <tr><td>✓ Attendance</td><td>The daily Y/N grid</td></tr>
+    <tr><td rowspan="5"><strong>Finance</strong></td><td>📄 Invoices</td><td>All invoices. Filter, print PDFs, see who paid</td></tr>
+    <tr><td>💸 Expenses</td><td>Monthly bills, equipment purchases</td></tr>
+    <tr><td>💰 Salaries</td><td>Coach base salaries + commission, paid status</td></tr>
+    <tr><td>🛒 Sales</td><td>POS for selling uniforms, gloves, drinks. Cart + receipt</td></tr>
+    <tr><td>📦 Products</td><td>Product catalog and stock levels</td></tr>
+    <tr><td rowspan="4"><strong>Insights</strong></td><td>📈 Reports</td><td>Revenue by month, by sport, top expenses</td></tr>
+    <tr><td>📊 Coach Performance</td><td>Visual: revenue per coach, attendance rate</td></tr>
+    <tr><td>🔄 Renewals</td><td>Who renewed, in which sport</td></tr>
+    <tr><td>📋 Attendance Report</td><td>Per-coach attendance statistics</td></tr>
+    <tr><td rowspan="3"><strong>System</strong></td><td>📥 Data Import</td><td>Bulk-load Excel sheets (Members, Attendance, Expenses, Sales)</td></tr>
+    <tr><td>📤 Data Export</td><td>Download data as Excel + full backup</td></tr>
+    <tr><td>⚙️ Settings</td><td>Theme, facility rates, app preferences</td></tr>
+  </tbody>
+</table>
+
+<!-- ===== NEW MEMBER ===== -->
+<h2 id="new-member">Register a new member</h2>
+<ol class="step-list">
+  <li>Go to <strong>Members</strong> in the sidebar.</li>
+  <li>Click the red <strong>+ Add Member</strong> button (top right).</li>
+  <li>Fill in the form:
+    <ul style="margin-top:6px">
+      <li><strong>Name</strong> — required. Arabic name is optional.</li>
+      <li><strong>Phone / Email / QID / Birthdate</strong> — optional but useful.</li>
+      <li><strong>Nationality</strong> — start typing, the list filters.</li>
+      <li><strong>Level</strong> — Beginner / Intermediate / Advanced (optional).</li>
+      <li><strong>First registration</strong> — leave today's date, or backdate if needed.</li>
+      <li><strong>Start date / Validity</strong> — defaults to today + 30 days. Pick 45/60/90/180 if it's a longer package.</li>
+      <li><strong>Expiry</strong> — auto-calculated. You can override.</li>
+    </ul>
+  </li>
+  <li><strong>Sport enrollments</strong> — pick the sport, coach, number of classes, and price. Click <strong>+ Add sport</strong> for additional sports if the member enrolls in more than one.</li>
+  <li><strong>Payment method</strong>: cash or card.</li>
+  <li>Click <strong>Save</strong>.</li>
+</ol>
+<div class="tip"><strong>✓ What happens automatically:</strong>
+  <ul style="margin:6px 0 0 18px">
+    <li>An invoice is created (e.g. <code>INV0001</code>) summing all sports.</li>
+    <li>A subscription record is created for each sport.</li>
+    <li>The receipt opens in a new tab — you can print or save as PDF.</li>
+  </ul>
+</div>
+
+<!-- ===== RENEW ===== -->
+<h2 id="renew">Renew a subscription</h2>
+<p>When a member's subscription is about to expire and they pay for another month:</p>
+<ol class="step-list">
+  <li>Find the member: <strong>Members</strong> → click on the row, OR <strong>History</strong> → click their name.</li>
+  <li>Click the red <strong>+ Add Renewal</strong> button.</li>
+  <li>If the member has multiple sports, pick which one to renew (the form pre-fills with that sport's details).</li>
+  <li>Adjust:
+    <ul style="margin-top:6px">
+      <li><strong>Classes</strong> — usually 8</li>
+      <li><strong>Validity</strong> — 30/45/60/90/180 days</li>
+      <li><strong>Amount paid</strong> — defaults to the previous price, override if needed</li>
+      <li><strong>Start date</strong> — today by default</li>
+      <li><strong>Expiry</strong> — auto-calculated</li>
+    </ul>
+  </li>
+  <li>Click <strong>Save Renewal</strong>.</li>
+</ol>
+<div class="tip"><strong>✓ Result:</strong> A new subscription row appears in their history, a new invoice is created (e.g. <code>INV0042</code>), and the renewal counter for that sport bumps up by 1.</div>
+
+<!-- ===== ADD SPORT ===== -->
+<h2 id="add-sport">Add a sport to an existing member</h2>
+<p>If a member currently does MMA and wants to also start Kick Boxing:</p>
+<ol class="step-list">
+  <li>Open the member profile and click <strong>Edit</strong>.</li>
+  <li>Scroll to <strong>Sport enrollments</strong>.</li>
+  <li>Click <strong>+ Add sport</strong>.</li>
+  <li>Pick the new sport (Kick Boxing), coach, classes, and price.</li>
+  <li>Click <strong>Save</strong>.</li>
+</ol>
+<div class="tip"><strong>✓ Result:</strong> A new subscription row is created for the added sport AND a new invoice is generated for the amount.</div>
+
+<!-- ===== ATTENDANCE ===== -->
+<h2 id="attendance">Mark attendance (daily)</h2>
+<ol class="step-list">
+  <li>Go to <strong>Attendance</strong>.</li>
+  <li>Pick the month at the top, and which day(s) you want to see (or leave on "All").</li>
+  <li>Each row is one (member × sport × coach). Click a cell under a day number:
+    <ul style="margin-top:6px">
+      <li>First click → <strong>Y</strong> (green, present)</li>
+      <li>Second click → <strong>N</strong> (red, absent)</li>
+      <li>Third click → empty (not marked)</li>
+    </ul>
+  </li>
+  <li>Use the <strong>↑ Today</strong> button (top right) to jump to today's column.</li>
+  <li>Click <strong>✓ Mark all present (today)</strong> to fast-mark everyone Y for today, then change a few to N for absentees.</li>
+</ol>
+<div class="info"><strong>💡 Filters:</strong> Use Coach / Sport / Student search to narrow the grid before marking — much faster than scrolling.</div>
+<h3>Per-student attendance PDF</h3>
+<p>The <strong>⬇ PDF</strong> button on the right of each row prints that student's attendance card for the selected month — great for showing parents during pickup.</p>
+
+<!-- ===== SCHEDULE ===== -->
+<h2 id="schedule">Class schedule</h2>
+<p>The <strong>🗓 Schedule</strong> page (under Main in the sidebar) shows the full week of classes — what's running, when, with which coach. Perfect for answering customer questions like "When is the Kick Boxing class?" or "Who teaches Karate on Sunday?".</p>
+<h3>How the grid works</h3>
+<ul>
+  <li><strong>Rows</strong> = time slots from 3PM to 9PM (1-hour blocks)</li>
+  <li><strong>Columns</strong> = days of the week — Saturday through Thursday (Friday is the off day)</li>
+  <li><strong>Cells</strong> show one or more classes happening at that time. Each class shows the sport (with color + emoji) and the coach's name.</li>
+</ul>
+<h3>Editing the schedule (drag-and-drop)</h3>
+<ol class="step-list">
+  <li>At the top of the page, you'll see colored sport tiles (Gymnastic, Boxing, MMA, etc.).</li>
+  <li><strong>Add a class:</strong> Drag a sport tile and drop it onto a cell → a pop-up asks which coach teaches it.</li>
+  <li><strong>Change the coach:</strong> Click any existing class block → the pop-up reopens.</li>
+  <li><strong>Move a class:</strong> Drag an existing class block from one cell to another.</li>
+  <li><strong>Remove a class:</strong> Click the × on the class block, or use "Remove class" in the edit pop-up.</li>
+</ol>
+<h3>Filters</h3>
+<p>Use the <strong>All coaches</strong> and <strong>All sports</strong> dropdowns to focus on one coach's classes or one sport's schedule. Non-matching classes dim out (still visible for context). The PNG export honors the active filter.</p>
+<h3>Export PNG (share on WhatsApp)</h3>
+<p>Click <strong>📸 Export PNG</strong> to download a high-quality image of the schedule with the club branding. Perfect for sending to customers on WhatsApp or posting at the door.</p>
+<div class="tip"><strong>✓ Tip:</strong> When the schedule changes (a coach swaps days, a new class is added), update it here once → the new PNG goes to customers. No need to redesign the printed poster.</div>
+
+<!-- ===== FREEZE ===== -->
+<h2 id="freeze">Freeze a membership</h2>
+<p>If a member is traveling or injured and won't attend, freeze their subscription so days don't get wasted.</p>
+<ol class="step-list">
+  <li>Open the member's profile in <strong>History</strong>.</li>
+  <li>Click <strong>❄️ Freeze</strong>.</li>
+  <li>Pick a duration: 1, 3, 7, 14, 30, 60, or 90 days — or type a custom number.</li>
+  <li>Optionally write a reason (travel, injury, vacation).</li>
+  <li>Click <strong>❄️ Apply Freeze</strong>.</li>
+</ol>
+<div class="tip"><strong>✓ Result:</strong> Their expiry date shifts forward by the same number of days. They're marked <span class="badge blue">❄️ Frozen</span> on the dashboard and members list until the freeze ends.</div>
+<p>To end a freeze early, use the <strong>⏯ Unfreeze</strong> button on the profile.</p>
+
+<!-- ===== TRIALS ===== -->
+<h2 id="trials">Track trial members</h2>
+<p>The <strong>Trials</strong> page shows everyone who joined on a free trial. Use it to follow up before the trial ends so they convert to paying members.</p>
+
+<!-- ===== INVOICES ===== -->
+<h2 id="invoices">Invoices</h2>
+<p>The <strong>Invoices</strong> page lists every invoice generated by the system.</p>
+<h3>Invoices are created automatically when you:</h3>
+<ul>
+  <li>Register a new member with paid enrollment</li>
+  <li>Add a renewal via <strong>+ Add Renewal</strong></li>
+  <li>Edit a member and add a new sport</li>
+  <li>Complete a POS sale</li>
+  <li>Save a rental booking</li>
+</ul>
+<h3>Manual invoice</h3>
+<p>You can also create a one-off invoice via <strong>+ New Invoice</strong> — useful for refunds or corrections.</p>
+<h3>Filters</h3>
+<p>Filter by month, category, activity, or search by customer name / invoice ref / description. Click any row to view details. Click <strong>📄 PDF</strong> to print the receipt.</p>
+<div class="info"><strong>💡 Invoice references</strong> start at <code>INV0001</code> and increment for each new invoice. The number never reuses or skips.</div>
+
+<!-- ===== SALES ===== -->
+<h2 id="sales">Product sales (POS)</h2>
+<p>For selling uniforms, gloves, drinks, etc.</p>
+<h3>Step 1 — Set up your products (one-time)</h3>
+<ol class="step-list">
+  <li>Go to <strong>Products</strong>.</li>
+  <li>Click <strong>+ Add Product</strong>.</li>
+  <li>Enter name, category, price, stock quantity, and low-stock threshold (e.g. alert at 5).</li>
+  <li>Save.</li>
+</ol>
+<h3>Step 2 — Make a sale</h3>
+<ol class="step-list">
+  <li>Go to <strong>Sales</strong> → click <strong>+ New Sale</strong>.</li>
+  <li>Pick a customer (existing member, walk-in by name, or anonymous).</li>
+  <li>Add items: pick the product, set quantity. Cart updates totals.</li>
+  <li>Apply discount if needed.</li>
+  <li>Set payment method, amount paid (full or partial).</li>
+  <li>Click <strong>Complete Sale</strong>.</li>
+</ol>
+<div class="tip"><strong>✓ Automatic:</strong> Stock decreases, an invoice is created (category = Product), and a receipt opens for printing.</div>
+<div class="warn"><strong>⚠️ Low stock alert:</strong> Products that drop below their threshold show a red badge on the <strong>Products</strong> page so you know to reorder.</div>
+
+<!-- ===== RENTALS ===== -->
+<h2 id="rentals">Rental bookings</h2>
+<p>For renting the football court, boxing room, or swimming pool to outside customers.</p>
+<h3>New booking</h3>
+<ol class="step-list">
+  <li>Go to <strong>Rentals</strong> → <strong>+ New Booking</strong>.</li>
+  <li>Pick the facility (rate auto-fills).</li>
+  <li>Date, start time (optional), hours — total amount calculates automatically.</li>
+  <li><strong>Customer:</strong> Type the customer's name OR mobile number in the search box at the top. If they've booked before, click their name in the dropdown — name, mobile, and QID autofill. If they're new, just type the details in the fields below.</li>
+  <li>Pick payment method, add notes (e.g. "Birthday party").</li>
+  <li>Click <strong>💾 Save & Create Invoice</strong>.</li>
+</ol>
+<div class="tip"><strong>✓ Automatic:</strong> An invoice is created (category = Court Rental / Boxing Room) and the customer is saved for next time — search them by phone or name.</div>
+<h3>Customer history</h3>
+<p>Click <strong>👥 Customers</strong> at the top of the Rentals page to see every rental customer, sorted by total revenue. Click 📜 next to any customer to see their full booking history.</p>
+<h3>Default hourly rates</h3>
+<p>Click <strong>⚙ Rates</strong> on the Rentals page to set/change the default hourly rates per facility.</p>
+
+<!-- ===== EXPENSES ===== -->
+<h2 id="expenses">Log expenses</h2>
+<ol class="step-list">
+  <li>Go to <strong>Expenses</strong>.</li>
+  <li>Click <strong>+ New Expense</strong>.</li>
+  <li>Enter description (e.g. "May electricity bill"), amount, category, date, payment method (cash/card), and whether it's <strong>Monthly</strong> (recurring like rent) or <strong>Equipment</strong> (one-off purchase).</li>
+  <li>Save.</li>
+</ol>
+<div class="info"><strong>💡 Categories:</strong> Equipment, Cleaning, Utilities, Marketing, Subscriptions, Transport, Operations, Rent, Coach Pool, Coach Commission, Salary. Pick whichever fits — used in Reports for breakdown.</div>
+
+<!-- ===== SALARIES ===== -->
+<h2 id="salaries">Coach salaries & commission</h2>
+<p>The <strong>Salaries</strong> page shows each coach's monthly compensation.</p>
+<ul>
+  <li><strong>Base salary</strong> — fixed monthly amount.</li>
+  <li><strong>Commission</strong> — calculated as <code>(coach's active-member revenue) × (coach's %)</code>. Editable per coach on the <strong>Coaches</strong> page.</li>
+  <li><strong>Status</strong> — Paid / Pending. Click to toggle.</li>
+</ul>
+<div class="info"><strong>💡 Only active-member revenue counts toward commission.</strong> If a member expires or freezes, their past payment still appears in revenue but doesn't pay commission again.</div>
+
+<!-- ===== DASHBOARD ===== -->
+<h2 id="dashboard">Dashboard — what to look at first thing in the morning</h2>
+<ul>
+  <li><strong>Total Revenue</strong> card — combined for the last two months with the % trend arrow.</li>
+  <li><strong>Active Members</strong> — includes a breakdown of frozen / completed / expired below.</li>
+  <li><strong>Expiring this week</strong> — list of members whose subscription ends in the next 7 days. Tap to renew.</li>
+  <li><strong>Revenue chart</strong> — current month vs previous month, revenue vs expenses vs profit.</li>
+  <li><strong>Top coaches</strong> — quick ranking by students.</li>
+</ul>
+
+<!-- ===== REPORTS ===== -->
+<h2 id="reports">Reports</h2>
+<p>The <strong>Reports</strong> page is for deeper analysis. Pick a period (any month, year, or all-time) and you get:</p>
+<ul>
+  <li>Total revenue / expenses / profit for the period</li>
+  <li>Revenue split by category (Membership, Court Rental, Boxing Room, Product, Other)</li>
+  <li>Revenue split by sport</li>
+  <li>Top expenses for the period</li>
+  <li>Exportable summary</li>
+</ul>
+
+<!-- ===== COACH PERF ===== -->
+<h2 id="coach-perf">Coach Performance</h2>
+<p>Visual dashboard ranking your coaches by:</p>
+<ul>
+  <li><strong>Commission earned</strong> (sorted bars)</li>
+  <li><strong>Total revenue brought in</strong></li>
+  <li><strong>Number of students</strong> (column chart)</li>
+  <li><strong>Attendance rate</strong> (% colored: green ≥75%, orange ≥40%, red below)</li>
+</ul>
+<p>Use the month selector to compare different months. The metrics auto-update as members and invoices change.</p>
+
+<!-- ===== BACKUP ===== -->
+<h2 id="backup">Backup &amp; Restore</h2>
+<div class="warn"><strong>⚠️ MOST IMPORTANT:</strong> All your data is stored in this browser only. If you receive a new version of the app, <strong>YOU MUST BACKUP FIRST</strong>, then restore after replacing files. Otherwise data could be lost.</div>
+
+<h3>📌 The right way to update the app to a new version</h3>
+<div class="tip"><strong>✓ Good news:</strong> Starting from v85, replacing the app folder with a newer version <strong>does NOT touch your data</strong>. Your members, invoices, attendance, schedule — everything stays. You only need to manually re-import data if you choose to (e.g. to load corrected Excel sheets).</div>
+<ol class="step-list">
+  <li>Save a backup as insurance — Dashboard → <strong>💾 Backup now</strong>, OR sidebar → <strong>💾 Quick backup</strong>.</li>
+  <li>Close the browser tab.</li>
+  <li>Replace the old app folder with the new version's folder on your computer.</li>
+  <li>Open <code>index.html</code> from the new folder. Log in.</li>
+  <li>Your data is automatically loaded. Continue working with the new features.</li>
+  <li>If something looks wrong and you want to revert, go to <strong>Settings → 📂 Restore from backup</strong> → pick the JSON from step 1.</li>
+</ol>
+
+<h3>📥 The ONLY way data ever changes</h3>
+<p>Once you've started using the app:</p>
+<ul>
+  <li><strong>You add/edit data manually</strong> (Add Member, Add Renewal, ring up a sale, log an expense, etc.)</li>
+  <li><strong>You import Excel sheets</strong> via the Data Import page (replaces only the data type you import — e.g. importing Members.xlsx replaces members but not invoices)</li>
+  <li><strong>You restore a JSON backup</strong> via Settings (replaces everything with the backup's contents)</li>
+</ul>
+<p>App updates (replacing the folder) never touch your data. The bundled demo data (207 sample members) is ignored unless you explicitly click "🧪 Load demo data" in Settings.</p>
+
+<h3>🆕 First launch on a new computer</h3>
+<p>When you open the app for the very first time (or after a Hard Reset), you'll see a Welcome panel on the Dashboard with four options:</p>
+<ul>
+  <li><strong>📥 Import my Excel sheets</strong> — go to Data Import to load Members.xlsx, Attendance.xlsx, etc.</li>
+  <li><strong>📂 Restore from backup</strong> — load a previous JSON backup</li>
+  <li><strong>➕ Add members manually</strong> — start from zero, add one at a time</li>
+  <li><strong>🧪 Just load demo data to try it out</strong> — fills the app with 207 sample members so you can explore. Clear later when you're ready for real data.</li>
+</ul>
+
+<h3>Make a manual backup anytime</h3>
+<ol class="step-list">
+  <li>Go to <strong>Settings</strong> → <strong>Data Management</strong>.</li>
+  <li>Click <strong>💾 Backup all data</strong>. A JSON file downloads — save it somewhere safe (Google Drive, external drive, email to yourself).</li>
+</ol>
+
+<h3>Restore from backup</h3>
+<ol class="step-list">
+  <li>Go to <strong>Settings</strong> → <strong>Data Management</strong> → <strong>📥 Restore from backup</strong>.</li>
+  <li>Pick your backup file. The app replaces all current data with the backup.</li>
+</ol>
+
+<h3>Why JSON instead of Excel?</h3>
+<p>The Excel export (Members.xlsx, Attendance.xlsx, etc.) only covers what those four sheets contain. The JSON backup includes <strong>EVERYTHING</strong> — invoices, rentals, rental customers, products, sales line items, schedule, freezes, renewal counters per sport, settings, theme preference. Use Excel for sharing reports with non-technical people; use JSON for app-to-app data transfer.</p>
+
+<h3>Export to Excel</h3>
+<p>Go to <strong>Data Export</strong> — download Members, Attendance, Expenses, or Sales as Excel files individually, or all four as a single zip.</p>
+
+<div class="tip"><strong>✓ Habit:</strong> Backup once a week minimum. Once a day during busy months. ALWAYS before installing a new version.</div>
+
+<!-- ===== THEMES ===== -->
+<h2 id="themes">Themes</h2>
+<p>Click the theme icon in the top-right of the sidebar (🌙 / ☀️ / 📜 / 🎨) to cycle, or pick directly from <strong>Settings</strong> → <strong>Appearance</strong>:</p>
+<ul>
+  <li><strong>🌙 Dark</strong> — default, easy on the eyes for evening shifts</li>
+  <li><strong>☀️ Light</strong> — bright clean white, for daytime use</li>
+  <li><strong>📜 Soft Cream</strong> — warm paper-like off-white with forest-green accents. Best for long reading sessions and full-day work without eye strain.</li>
+  <li><strong>🎨 Colorful</strong> — purple gradient, fun and energetic</li>
+</ul>
+
+<!-- ===== TIPS ===== -->
+<h2 id="tips">Tips &amp; Tricks</h2>
+<ul>
+  <li><strong>Keyboard search:</strong> On most pages, the search box accepts partial matches across name, phone, sport, and coach.</li>
+  <li><strong>Multi-sport members:</strong> One physical person can be enrolled in unlimited sports. Each gets its own subscription and counts separately in attendance.</li>
+  <li><strong>Same family, same phone:</strong> Use the same phone number for siblings — search by phone shows them all together.</li>
+  <li><strong>Expiring follow-up:</strong> Check the <strong>Expiring</strong> page every Monday — call/WhatsApp members expiring in the next 7 days.</li>
+  <li><strong>Bulk attendance:</strong> Click <strong>✓ Mark all present (today)</strong> first, then change just the absentees to N. Way faster than clicking each Y.</li>
+  <li><strong>Customer history on rentals:</strong> Type a phone number in the rental form's search box and any past customers with that phone show up instantly.</li>
+  <li><strong>Print receipts:</strong> Every invoice can be printed as a PDF (📄 button on its row). Use the browser's print dialog → Save as PDF, or send to printer.</li>
+  <li><strong>Locking down:</strong> Always log out when leaving the computer (click your name at the bottom of the sidebar).</li>
+</ul>
+
+<!-- ===== TROUBLESHOOTING ===== -->
+<h2 id="troubleshoot">Troubleshooting</h2>
+
+<h3>"My data disappeared!"</h3>
+<p>Check that you're on the same browser and computer where you logged the data. The CRM stores data locally per-browser. If you accidentally clicked "Clear browsing data" in Chrome settings, the data may be gone. <strong>This is why backups matter.</strong></p>
+
+<h3>"The app shows old data after I updated"</h3>
+<p>Go to <strong>Settings</strong> → <strong>Hard reset</strong> → <strong>Reload latest seed data</strong>. This forces the app to load the fresh version. Backup first if you have custom data.</p>
+
+<h3>"Numbers on Dashboard look wrong"</h3>
+<p>Dashboard numbers include only invoices created in the system. If you imported old data without invoices, the dashboard won't reflect that. Use the <strong>Generate latest invoice</strong> button on the Invoices page to backfill missing invoices for members.</p>
+
+<h3>"Mobile-friendly?"</h3>
+<p>The app works on phones and tablets — the sidebar collapses to a hamburger menu. Best experience is on a laptop/desktop though, especially for the attendance grid.</p>
+
+<h3>"How do I export everything?"</h3>
+<p>Go to <strong>Data Export</strong> and click <strong>📦 Download All</strong>. You get a zip with Members.xlsx, Attendance.xlsx, Expenses.xlsx, and Sales.xlsx — all in the original format the club used in Excel.</p>
+
+<h3>"Coach commission seems off"</h3>
+<p>Commission is calculated only on revenue from members who are <strong>currently Active</strong>. If a member expired and didn't renew, their past payment counts in total revenue but not in commission base. This protects against paying commission on churned customers.</p>
+
+<h3>"Anything else?"</h3>
+<p>Reach out to the developer who set this up. The app version is shown in the bottom-left of the sidebar (e.g. <code>v4.39.0</code>) — share that when reporting an issue.</p>
+
+<div style="text-align:center;margin-top:60px;padding:20px;color:var(--text-mute);font-size:12px;border-top:1px solid var(--border)">
+  Black Stars Sports Club · Waab, Village Resort, Doha, Qatar<br>
+  Built for offline use · Your data stays on this computer.
+</div>
+
+</main>
+</div>
+
+</body>
+</html>
