@@ -32,16 +32,30 @@ function computeStats() {
   const currExpenses = state.expenses.filter(e => e.month === curr).reduce((s,e) => s+e.amount, 0);
   const prevExpenses = state.expenses.filter(e => e.month === prev).reduce((s,e) => s+e.amount, 0);
 
-  const currSalaries = state.salaries.filter(s => s.month === curr && !s.inExpenses).reduce((s,x) => s+x.salary, 0);
-  const prevSalaries = state.salaries.filter(s => s.month === prev && !s.inExpenses).reduce((s,x) => s+x.salary, 0);
+  // Total payroll cost = sum of gross pay for every active coach/staff this month.
+  // Previously this read `state.salaries[].salary` which doesn't exist in the
+  // current lightweight schema (salaries[] now stores advances + paid records),
+  // so the KPI showed 0 always. Use the canonical computeMonthlyPay() instead.
+  const currSalaries = (state.coaches || [])
+    .filter(c => isCoachActive(c))
+    .map(c => computeMonthlyPay(c.id, curr))
+    .filter(p => p)
+    .reduce((sum, p) => sum + (p.gross || 0), 0);
+  const prevSalaries = (state.coaches || [])
+    .filter(c => isCoachActive(c))
+    .map(c => computeMonthlyPay(c.id, prev))
+    .filter(p => p)
+    .reduce((sum, p) => sum + (p.gross || 0), 0);
 
   const currSales = state.sales.filter(s => s.month === curr).reduce((s,x) => s+(x.paid||0), 0);
   const prevSales = state.sales.filter(s => s.month === prev).reduce((s,x) => s+(x.paid||0), 0);
 
-  const activeMembers = state.members.filter(m => isActiveStatus(m)).length;
-  const expiredMembers = state.members.filter(m => memberStatus(m) === 'Expired').length;
-  const completedMembers = state.members.filter(m => memberStatus(m) === 'Completed').length;
-  const frozenMembers = state.members.filter(m => memberStatus(m) === 'Frozen').length;
+  // Member counts exclude archived (soft-deleted) members
+  const activeMembersList = activeMembers();
+  const activeMembers_ = activeMembersList.filter(m => isActiveStatus(m)).length;
+  const expiredMembers = activeMembersList.filter(m => memberStatus(m) === 'Expired').length;
+  const completedMembers = activeMembersList.filter(m => memberStatus(m) === 'Completed').length;
+  const frozenMembers = activeMembersList.filter(m => memberStatus(m) === 'Frozen').length;
 
   const currProfit = currRevenue - currExpenses - currSalaries;
   const prevProfit = prevRevenue - prevExpenses - prevSalaries;
@@ -57,8 +71,9 @@ function computeStats() {
     currSalaries, prevSalaries,
     currSales, prevSales,
     currProfit, prevProfit,
-    activeMembers, expiredMembers, completedMembers, frozenMembers,
-    totalMembers: state.members.length,
+    activeMembers: activeMembers_, expiredMembers, completedMembers, frozenMembers,
+    totalMembers: activeMembersList.length,
+    archivedMembers: state.members.length - activeMembersList.length,
     deltaRevenue: currRevenue - prevRevenue,
     deltaExpenses: currExpenses - prevExpenses,
     // Legacy aliases — to be removed once all references are updated.
@@ -80,6 +95,16 @@ function kpiDelta(curr, prev) {
   const cls = d > 0 ? 'up' : d < 0 ? 'down' : 'flat';
   const arrow = d > 0 ? '▲' : d < 0 ? '▼' : '−';
   return `<div class="kpi-delta ${cls}">${arrow} ${Math.abs(pct)}%</div>`;
+}
+
+// Percent change for the month-over-month comparison tables. Guards the
+// zero-denominator case so cells never render "Infinity%" or "NaN%":
+//   prev 0, curr 0  → "—"   (no change to report)
+//   prev 0, curr >0 → "∞"   (grew from nothing)
+//   otherwise       → signed value to 1 decimal, e.g. "12.3" or "-4.0"
+function pctChangeStr(prev, curr) {
+  if (!prev) return curr ? '∞' : '—';
+  return ((curr - prev) / prev * 100).toFixed(1);
 }
 
 // Tiny inline sparkline from an array of values
@@ -110,6 +135,7 @@ PAGES.dashboard = (main) => {
   const lowStockThreshold = state.settings?.lowStockThreshold || 3;
   const expiredList = [], expiringList = [], finishedList = [], lowStockList = [];
   for (const m of state.members) {
+    if (m.deleted) continue;  // archived members don't trigger alerts
     // expiry-based
     if (m.expiryDate) {
       const d = daysUntil(m.expiryDate);
@@ -141,6 +167,35 @@ PAGES.dashboard = (main) => {
   expiringList.sort((a, b) => a.days - b.days);
   const expiringSoon = expiringList.length, alreadyExpired = expiredList.length;
   const totalActions = alreadyExpired + expiringSoon + finishedList.length + lowStockList.length;
+
+  // ─── Birthdays this month ───────────────────────────────────────
+  // Active members whose birthday falls in the current calendar month,
+  // sorted by upcoming-soonest (or already-passed-this-month last).
+  const birthdayList = state.members
+    .filter(m => !m.deleted && m.birthdate && isBirthdayInMonth(m.birthdate) && isActiveStatus(m))
+    .map(m => ({ m, days: daysUntilBirthday(m.birthdate) }))
+    .sort((a, b) => a.days - b.days);
+
+  // ─── Renewing this week (next 7 days) ───────────────────────────
+  const renewingThisWeek = state.members
+    .filter(m => !m.deleted && m.expiryDate && memberStatus(m) !== 'Frozen')
+    .map(m => ({ m, days: daysUntil(m.expiryDate) }))
+    .filter(x => x.days != null && x.days >= 0 && x.days <= 7);
+
+  // ─── Top performing sport this month ────────────────────────────
+  // Count how many DISTINCT members are enrolled per sport with an active sub
+  const sportCounts = {};
+  for (const m of state.members) {
+    if (m.deleted) continue;
+    if (!isActiveStatus(m)) continue;
+    const sports = new Set();
+    if (m.sport) sports.add(m.sport);
+    (m.enrollments || []).forEach(e => { if (e.sport) sports.add(e.sport); });
+    for (const sp of sports) {
+      sportCounts[sp] = (sportCounts[sp] || 0) + 1;
+    }
+  }
+  const topSport = Object.entries(sportCounts).sort((a, b) => b[1] - a[1])[0];
 
   main.innerHTML = `
     <div class="topbar">
@@ -215,6 +270,46 @@ PAGES.dashboard = (main) => {
         <div class="text-mute" style="font-size:11px">No expired memberships, none expiring soon, stock levels healthy</div></div>
       </div>
     `}
+
+    <!-- Birthdays · Renewing soon · Top sport (small info row) -->
+    ${(birthdayList.length || renewingThisWeek.length || topSport) ? `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:16px">
+      ${birthdayList.length ? `
+        <div class="card" style="padding:12px 14px;border:1px solid rgba(245,158,11,.25);background:rgba(245,158,11,.05);cursor:pointer" onclick="navigate('members')" title="Open Members page">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="font-size:18px">🎂</span>
+            <div style="font-weight:600;font-size:13px">${birthdayList.length} birthday${birthdayList.length === 1 ? '' : 's'} this month</div>
+          </div>
+          <div class="text-mute" style="font-size:11px;line-height:1.5">
+            ${birthdayList.slice(0, 4).map(({m, days}) => {
+              const age = memberAge(m.birthdate);
+              const ageNext = age != null ? age + (days > 0 ? 1 : 0) : null;
+              return `${escapeHtml(m.name.split(' ')[0])}${ageNext != null ? ` (${ageNext})` : ''}${days === 0 ? ' 🎉' : days <= 7 ? ` · in ${days}d` : ''}`;
+            }).join(', ')}${birthdayList.length > 4 ? `… +${birthdayList.length - 4}` : ''}
+          </div>
+        </div>` : ''}
+      ${renewingThisWeek.length ? `
+        <div class="card" style="padding:12px 14px;border:1px solid rgba(242,163,60,.25);background:rgba(242,163,60,.05);cursor:pointer" onclick="navigate('expiring')" title="Open Expiring page">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="font-size:18px">⏰</span>
+            <div style="font-weight:600;font-size:13px">${renewingThisWeek.length} renewing this week</div>
+          </div>
+          <div class="text-mute" style="font-size:11px;line-height:1.5">
+            Members with expiry in the next 7 days — chase those renewals
+          </div>
+        </div>` : ''}
+      ${topSport ? `
+        <div class="card" style="padding:12px 14px;border:1px solid rgba(91,141,239,.25);background:rgba(91,141,239,.05)">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="font-size:18px">🏆</span>
+            <div style="font-weight:600;font-size:13px">Most popular: ${escapeHtml(topSport[0])}</div>
+          </div>
+          <div class="text-mute" style="font-size:11px;line-height:1.5">
+            ${topSport[1]} active member${topSport[1] === 1 ? '' : 's'} enrolled
+          </div>
+        </div>` : ''}
+    </div>
+    ` : ''}
 
     <!-- KPI cards -->
     <div class="kpi-grid">
@@ -339,10 +434,10 @@ PAGES.dashboard = (main) => {
             </tr>
           </thead>
           <tbody>
-            <tr><td>Revenue</td><td class="text-right num">${fmtMoney(s.aprRevenue)}</td><td class="text-right num">${fmtMoney(s.mayRevenue)}</td><td class="text-right num ${s.mayRevenue-s.aprRevenue>=0?'text-up':'text-down'}">${s.mayRevenue-s.aprRevenue>=0?'+':''}${fmt(s.mayRevenue-s.aprRevenue)}</td><td class="text-right num text-dim">${((s.mayRevenue-s.aprRevenue)/s.aprRevenue*100).toFixed(1)}%</td></tr>
-            <tr><td>Operating expenses</td><td class="text-right num">${fmtMoney(s.aprExpenses)}</td><td class="text-right num">${fmtMoney(s.mayExpenses)}</td><td class="text-right num ${s.mayExpenses-s.aprExpenses>=0?'text-down':'text-up'}">${s.mayExpenses-s.aprExpenses>=0?'+':''}${fmt(s.mayExpenses-s.aprExpenses)}</td><td class="text-right num text-dim">${((s.mayExpenses-s.aprExpenses)/s.aprExpenses*100).toFixed(1)}%</td></tr>
-            <tr><td>Salaries & commissions</td><td class="text-right num">${fmtMoney(s.aprSalaries)}</td><td class="text-right num">${fmtMoney(s.maySalaries)}</td><td class="text-right num ${s.maySalaries-s.aprSalaries>=0?'text-down':'text-up'}">${s.maySalaries-s.aprSalaries>=0?'+':''}${fmt(s.maySalaries-s.aprSalaries)}</td><td class="text-right num text-dim">${((s.maySalaries-s.aprSalaries)/s.aprSalaries*100).toFixed(1)}%</td></tr>
-            <tr><td>Sales (gear)</td><td class="text-right num">${fmtMoney(s.aprSales)}</td><td class="text-right num">${fmtMoney(s.maySales)}</td><td class="text-right num ${s.maySales-s.aprSales>=0?'text-up':'text-down'}">${s.maySales-s.aprSales>=0?'+':''}${fmt(s.maySales-s.aprSales)}</td><td class="text-right num text-dim">${s.aprSales?((s.maySales-s.aprSales)/s.aprSales*100).toFixed(1):'∞'}%</td></tr>
+            <tr><td>Revenue</td><td class="text-right num">${fmtMoney(s.aprRevenue)}</td><td class="text-right num">${fmtMoney(s.mayRevenue)}</td><td class="text-right num ${s.mayRevenue-s.aprRevenue>=0?'text-up':'text-down'}">${s.mayRevenue-s.aprRevenue>=0?'+':''}${fmt(s.mayRevenue-s.aprRevenue)}</td><td class="text-right num text-dim">${pctChangeStr(s.aprRevenue, s.mayRevenue)}%</td></tr>
+            <tr><td>Operating expenses</td><td class="text-right num">${fmtMoney(s.aprExpenses)}</td><td class="text-right num">${fmtMoney(s.mayExpenses)}</td><td class="text-right num ${s.mayExpenses-s.aprExpenses>=0?'text-down':'text-up'}">${s.mayExpenses-s.aprExpenses>=0?'+':''}${fmt(s.mayExpenses-s.aprExpenses)}</td><td class="text-right num text-dim">${pctChangeStr(s.aprExpenses, s.mayExpenses)}%</td></tr>
+            <tr><td>Salaries & commissions</td><td class="text-right num">${fmtMoney(s.aprSalaries)}</td><td class="text-right num">${fmtMoney(s.maySalaries)}</td><td class="text-right num ${s.maySalaries-s.aprSalaries>=0?'text-down':'text-up'}">${s.maySalaries-s.aprSalaries>=0?'+':''}${fmt(s.maySalaries-s.aprSalaries)}</td><td class="text-right num text-dim">${pctChangeStr(s.aprSalaries, s.maySalaries)}%</td></tr>
+            <tr><td>Sales (gear)</td><td class="text-right num">${fmtMoney(s.aprSales)}</td><td class="text-right num">${fmtMoney(s.maySales)}</td><td class="text-right num ${s.maySales-s.aprSales>=0?'text-up':'text-down'}">${s.maySales-s.aprSales>=0?'+':''}${fmt(s.maySales-s.aprSales)}</td><td class="text-right num text-dim">${pctChangeStr(s.aprSales, s.maySales)}%</td></tr>
             <tr style="font-weight:700;background:var(--surface-2)"><td>Net profit</td><td class="text-right num ${s.aprProfit>=0?'text-up':'text-down'}">${fmtMoney(s.aprProfit)}</td><td class="text-right num ${s.mayProfit>=0?'text-up':'text-down'}">${fmtMoney(s.mayProfit)}</td><td class="text-right num ${s.mayProfit-s.aprProfit>=0?'text-up':'text-down'}">${s.mayProfit-s.aprProfit>=0?'+':''}${fmt(s.mayProfit-s.aprProfit)}</td><td class="text-right num">—</td></tr>
           </tbody>
         </table>
@@ -379,7 +474,7 @@ PAGES.dashboard = (main) => {
 function drawRevenueChart() {
   const s = computeStats();
   const container = $('#rev-chart');
-  const maxVal = Math.max(s.aprRevenue, s.mayRevenue, s.aprExpenses + s.aprSalaries, s.mayExpenses + s.maySalaries);
+  const maxVal = Math.max(s.aprRevenue, s.mayRevenue, s.aprExpenses + s.aprSalaries, s.mayExpenses + s.maySalaries, 1);
 
   const months = [
     { label: fmtMonth(s.prevMonth), rev: s.prevRevenue, exp: s.prevExpenses + s.prevSalaries, profit: s.prevProfit },
@@ -553,44 +648,48 @@ function downloadFile(filename, content, mime = 'text/plain') {
 
 // ─── MEMBERS ──────────────────────────────────────────────────
 PAGES.members = (main) => {
-  let filter = { search: '', status: 'all', sport: 'all', coach: 'all', nationality: 'all', incomplete: 'all' };
+  let filter = loadFilter('members', { search: '', status: 'all', sport: 'all', coach: 'all', nationality: 'all', incomplete: 'all' });
   const pg = makePager(10);
 
-  function applyFilter() {
+  function applyFilter(f = filter) {
     return state.members.filter(m => {
-      if (filter.search) {
-        const q = filter.search.toLowerCase();
+      // Archived (soft-deleted) members are hidden unless explicitly requested
+      // via the status filter. Default "all" status still excludes them.
+      if (m.deleted && f.status !== 'Archived') return false;
+      if (!m.deleted && f.status === 'Archived') return false;
+      if (f.search) {
+        const q = f.search.toLowerCase();
         const hay = [m.name, m.nameArabic, m.phone, m.qid, m.email, m.nationality].filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(q)) return false;
       }
-      if (filter.status !== 'all' && memberStatus(m) !== filter.status) return false;
+      if (f.status !== 'all' && f.status !== 'Archived' && memberStatus(m) !== f.status) return false;
       // Sport filter: check the legacy primary sport AND every enrollment row
-      if (filter.sport !== 'all') {
+      if (f.sport !== 'all') {
         const sports = new Set([m.sport, ...((m.enrollments||[]).map(e=>e.sport))].filter(Boolean));
-        if (!sports.has(filter.sport)) return false;
+        if (!sports.has(f.sport)) return false;
       }
       // Coach filter: check the legacy primary coachId AND every enrollment row
-      if (filter.coach !== 'all') {
-        const cid = parseInt(filter.coach);
+      if (f.coach !== 'all') {
+        const cid = parseInt(f.coach);
         const coachIds = new Set([m.coachId, ...((m.enrollments||[]).map(e=>e.coachId))].filter(Boolean));
         if (!coachIds.has(cid)) return false;
       }
-      if (filter.nationality !== 'all' && (m.nationality || '') !== filter.nationality) return false;
+      if (f.nationality !== 'all' && (m.nationality || '') !== f.nationality) return false;
       // Data-quality filter: missing any of the key fields, OR a specific field
-      if (filter.incomplete !== 'all') {
+      if (f.incomplete !== 'all') {
         const hasPhone = !!(m.phone && m.phone.trim() && !m.phone.startsWith('+9747000'));
         const hasQid = !!(m.qid && m.qid.trim());
         const hasEmail = !!(m.email && m.email.trim());
         const hasBirthdate = !!(m.birthdate && m.birthdate.trim());
         const hasNationality = !!(m.nationality && m.nationality.trim());
-        if (filter.incomplete === 'any') {
+        if (f.incomplete === 'any') {
           // Show only members missing at least one field
           if (hasPhone && hasQid && hasEmail && hasBirthdate && hasNationality) return false;
-        } else if (filter.incomplete === 'phone' && hasPhone) return false;
-        else if (filter.incomplete === 'qid' && hasQid) return false;
-        else if (filter.incomplete === 'email' && hasEmail) return false;
-        else if (filter.incomplete === 'birthdate' && hasBirthdate) return false;
-        else if (filter.incomplete === 'nationality' && hasNationality) return false;
+        } else if (f.incomplete === 'phone' && hasPhone) return false;
+        else if (f.incomplete === 'qid' && hasQid) return false;
+        else if (f.incomplete === 'email' && hasEmail) return false;
+        else if (f.incomplete === 'birthdate' && hasBirthdate) return false;
+        else if (f.incomplete === 'nationality' && hasNationality) return false;
       }
       return true;
     });
@@ -599,6 +698,38 @@ PAGES.members = (main) => {
   function refresh() {
     const allRows = applyFilter();
     const rows = paginate(allRows, pg);
+
+    // "Filters hiding rows" banner — same helper as the Enrolled report. The
+    // baseline is the default (unfiltered) view; we clamp so the Archived view
+    // (a different set, not a subset) never shows a negative count.
+    const DEFAULT_F = { search: '', status: 'all', sport: 'all', coach: 'all', nationality: 'all', incomplete: 'all' };
+    const baseline = applyFilter(DEFAULT_F).length;
+    const anyFilterActive = filter.search || filter.status !== 'all' || filter.sport !== 'all' ||
+      filter.coach !== 'all' || filter.nationality !== 'all' || filter.incomplete !== 'all';
+    const hiddenByFilters = Math.max(0, baseline - allRows.length);
+    const banner = $('#members-filter-banner');
+    if (banner) {
+      if (anyFilterActive && hiddenByFilters > 0) {
+        banner.style.display = 'flex';
+        banner.innerHTML = `
+          <span style="font-size:16px">⚠️</span>
+          <div style="flex:1;font-size:12px">
+            Filters are hiding <b>${hiddenByFilters}</b> member${hiddenByFilters === 1 ? '' : 's'}. If you don't see someone, clear filters.
+          </div>
+          <button class="btn ghost sm" id="members-clear-filters" style="white-space:nowrap">↻ Clear filters</button>`;
+        $('#members-clear-filters')?.addEventListener('click', () => {
+          filter = { ...DEFAULT_F };
+          saveFilter('members', filter);
+          pg.page = 1;
+          const reset = { 'search-input': '', 'filter-status': 'all', 'filter-sport': 'all', 'filter-coach': 'all', 'filter-nationality': 'all', 'filter-incomplete': 'all' };
+          Object.entries(reset).forEach(([id, v]) => { const el = $('#' + id); if (el) el.value = v; });
+          refresh();
+        });
+      } else {
+        banner.style.display = 'none';
+        banner.innerHTML = '';
+      }
+    }
     $('#members-tbody').innerHTML = rows.length ? rows.map(m => {
       // Latest attendance — prefer live grid count over static field
       const mostRecent = (m.subscriptions || []).filter(s => s.totalClasses).slice(-1)[0];
@@ -634,23 +765,27 @@ PAGES.members = (main) => {
             <div class="avatar" style="width:32px;height:32px;font-size:11px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(m.name)}</div>
             <div>
               <div style="font-weight:600">${escapeHtml(m.name)}${m.nameArabic ? ` · <span style="color:var(--text-dim);font-weight:normal" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}</div>
-              <div class="text-mute" style="font-size:11px">${escapeHtml(m.phone && !m.phone.startsWith('+9747000') ? m.phone : m.email || '')}</div>
+              <div class="text-mute" style="font-size:11px">${isRealPhone(m.phone) ? phoneCell(m.phone) : (m.email ? escapeHtml(m.email) : '')}</div>
             </div>
           </div>
         </td>
         <td>${escapeHtml(m.sport)}${(m.enrollments && m.enrollments.length > 1) ? ` <span class="badge blue" style="font-size:9px;padding:1px 5px" title="${m.enrollments.map(e => escapeHtml(e.sport)).join(', ')}">+${m.enrollments.length - 1}</span>` : ''}</td>
-        <td>${escapeHtml(coachName(m.coachId))}</td>
+        <td>${m.sport === SUMMER_CAMP && (!m.enrollments || m.enrollments.every(e => e.sport === SUMMER_CAMP)) ? '<span class="text-mute" style="font-style:italic">—</span>' : escapeHtml(coachName(m.coachId))}</td>
         <td>${attCell}</td>
         <td>${lastRenewal ? fmtDate(lastRenewal) : '<span class="text-mute">—</span>'}</td>
         <td>${expiryCell}</td>
-        <td><span class="badge ${memberStatus(m).toLowerCase()}">${memberStatus(m)}</span></td>
+        <td><span class="badge ${m.deleted ? 'pending' : memberStatus(m).toLowerCase()}">${m.deleted ? '📦 Archived' : memberStatus(m)}</span></td>
         <td class="text-right" style="white-space:nowrap">
-          <button class="btn ghost sm" onclick="event.stopPropagation();viewMember(${m.id})" title="View member details">👁</button>
-          <button class="btn ghost sm" onclick="event.stopPropagation();addRenewal(${m.id})" title="Record renewal">🔄</button>
-          <button class="btn ghost sm" onclick="event.stopPropagation();switchSport(${m.id})" title="Switch sport / change coach">🔀</button>
-          <button class="btn ghost sm" onclick="event.stopPropagation();openMemberHistory(${m.id})" title="View full history">📜</button>
-          <button class="btn ghost sm" onclick="event.stopPropagation();editMember(${m.id})">✏️</button>
-          <button class="btn ghost sm" onclick="event.stopPropagation();deleteMember(${m.id})">🗑</button>
+          ${m.deleted ? `
+            <button class="btn primary sm" onclick="event.stopPropagation();restoreMember(${m.id})" title="Restore this archived member">↩ Restore</button>
+          ` : `
+            <button class="btn ghost sm" onclick="event.stopPropagation();viewMember(${m.id})" title="View member details">👁</button>
+            <button class="btn ghost sm" onclick="event.stopPropagation();addRenewal(${m.id})" title="Record renewal">🔄</button>
+            <button class="btn ghost sm" onclick="event.stopPropagation();switchSport(${m.id})" title="Switch sport / change coach">🔀</button>
+            <button class="btn ghost sm" onclick="event.stopPropagation();openMemberHistory(${m.id})" title="View full history">📜</button>
+            <button class="btn ghost sm" onclick="event.stopPropagation();editMember(${m.id})">✏️</button>
+            <button class="btn ghost sm" onclick="event.stopPropagation();deleteMember(${m.id})" title="Archive (soft delete)">🗑</button>
+          `}
         </td>
       </tr>`;
     }).join('') : `<tr><td colspan="8" class="empty"><div class="empty-icon">👥</div>No members match your filters</td></tr>`;
@@ -685,6 +820,7 @@ PAGES.members = (main) => {
         })()}</div>
       </div>
       <div class="topbar-actions">
+        <button class="btn ghost" id="find-duplicates" title="Scan all members for duplicate phone numbers">🔍 Find Duplicates</button>
         <button class="btn ghost" id="export-members">📥 Export CSV</button>
         <button class="btn primary" id="add-member">+ Add Member</button>
       </div>
@@ -697,36 +833,49 @@ PAGES.members = (main) => {
       </div>
     </div>
 
+    ${(() => {
+      const recent = getRecentMembers();
+      if (!recent.length) return '';
+      return `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:11px;color:var(--text-mute);flex-wrap:wrap">
+          <span style="text-transform:uppercase;letter-spacing:.6px;font-weight:600">🕐 Recent</span>
+          ${recent.map(m => `<a href="#" onclick="event.preventDefault();viewMember(${m.id})" style="color:var(--blue);text-decoration:none;background:rgba(91,141,239,.08);padding:4px 10px;border-radius:999px;font-weight:500;font-size:11px" title="View ${escapeHtml(m.name)}">${escapeHtml(m.name)}</a>`).join('')}
+        </div>
+      `;
+    })()}
+
     <div class="card">
+      <div id="members-filter-banner" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:8px"></div>
       <div class="filter-bar">
-        <div class="search"><input id="search-input" type="text" placeholder="Search name, phone, QID, email..." /></div>
+        <div class="search"><input id="search-input" type="text" placeholder="Search name, phone, QID, email..." value="${escapeHtml(filter.search || '')}" /></div>
         <select id="filter-status" class="btn ghost">
-          <option value="all">All status</option>
-          <option value="Active">Active</option>
-          <option value="Completed">Completed</option>
-          <option value="Frozen">❄️ Frozen</option>
-          <option value="Expired">Expired</option>
+          <option value="all" ${filter.status === 'all' ? 'selected' : ''}>All status</option>
+          <option value="Active" ${filter.status === 'Active' ? 'selected' : ''}>Active</option>
+          <option value="Completed" ${filter.status === 'Completed' ? 'selected' : ''}>Completed</option>
+          <option value="Frozen" ${filter.status === 'Frozen' ? 'selected' : ''}>❄️ Frozen</option>
+          <option value="Expired" ${filter.status === 'Expired' ? 'selected' : ''}>Expired</option>
+          <option value="Archived" ${filter.status === 'Archived' ? 'selected' : ''}>📦 Archived</option>
         </select>
         <select id="filter-sport" class="btn ghost">
-          <option value="all">All sports</option>
-          ${SPORTS.map(s => `<option value="${s}">${s}</option>`).join('')}
+          <option value="all" ${filter.sport === 'all' ? 'selected' : ''}>All sports</option>
+          ${SPORTS.map(s => `<option value="${s}" ${filter.sport === s ? 'selected' : ''}>${s}</option>`).join('')}
         </select>
         <select id="filter-coach" class="btn ghost">
-          <option value="all">All coaches</option>
-          ${state.coaches.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
+          <option value="all" ${filter.coach === 'all' ? 'selected' : ''}>All coaches</option>
+          ${state.coaches.map(c => `<option value="${c.id}" ${String(filter.coach) === String(c.id) ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
         </select>
         <select id="filter-nationality" class="btn ghost">
-          <option value="all">🌍 All nationalities</option>
-          ${[...new Set(state.members.map(m => m.nationality).filter(Boolean))].sort().map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}
+          <option value="all" ${filter.nationality === 'all' ? 'selected' : ''}>🌍 All nationalities</option>
+          ${[...new Set(state.members.map(m => m.nationality).filter(Boolean))].sort().map(n => `<option value="${escapeHtml(n)}" ${filter.nationality === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
         </select>
         <select id="filter-incomplete" class="btn ghost" title="Find records missing key fields">
-          <option value="all">📋 All data</option>
-          <option value="any">⚠️ Missing any field</option>
-          <option value="phone">⚠️ No phone</option>
-          <option value="qid">⚠️ No QID</option>
-          <option value="email">⚠️ No email</option>
-          <option value="birthdate">⚠️ No birthdate</option>
-          <option value="nationality">⚠️ No nationality</option>
+          <option value="all" ${filter.incomplete === 'all' ? 'selected' : ''}>📋 All data</option>
+          <option value="any" ${filter.incomplete === 'any' ? 'selected' : ''}>⚠️ Missing any field</option>
+          <option value="phone" ${filter.incomplete === 'phone' ? 'selected' : ''}>⚠️ No phone</option>
+          <option value="qid" ${filter.incomplete === 'qid' ? 'selected' : ''}>⚠️ No QID</option>
+          <option value="email" ${filter.incomplete === 'email' ? 'selected' : ''}>⚠️ No email</option>
+          <option value="birthdate" ${filter.incomplete === 'birthdate' ? 'selected' : ''}>⚠️ No birthdate</option>
+          <option value="nationality" ${filter.incomplete === 'nationality' ? 'selected' : ''}>⚠️ No nationality</option>
         </select>
       </div>
 
@@ -751,21 +900,116 @@ PAGES.members = (main) => {
     </div>
   `;
 
-  $('#search-input').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
-  $('#filter-status').addEventListener('change', e => { filter.status = e.target.value; pg.page = 1; refresh(); });
-  $('#filter-sport').addEventListener('change', e => { filter.sport = e.target.value; pg.page = 1; refresh(); });
-  $('#filter-coach').addEventListener('change', e => { filter.coach = e.target.value; pg.page = 1; refresh(); });
-  $('#filter-nationality').addEventListener('change', e => { filter.nationality = e.target.value; pg.page = 1; refresh(); });
-  $('#filter-incomplete').addEventListener('change', e => { filter.incomplete = e.target.value; pg.page = 1; refresh(); });
+  // Wrap refresh to also persist filter for restoring on return
+  const refreshAndSave = () => { saveFilter('members', filter); refresh(); };
+
+  $('#search-input').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refreshAndSave(); });
+  $('#filter-status').addEventListener('change', e => { filter.status = e.target.value; pg.page = 1; refreshAndSave(); });
+  $('#filter-sport').addEventListener('change', e => { filter.sport = e.target.value; pg.page = 1; refreshAndSave(); });
+  $('#filter-coach').addEventListener('change', e => { filter.coach = e.target.value; pg.page = 1; refreshAndSave(); });
+  $('#filter-nationality').addEventListener('change', e => { filter.nationality = e.target.value; pg.page = 1; refreshAndSave(); });
+  $('#filter-incomplete').addEventListener('change', e => { filter.incomplete = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#add-member').addEventListener('click', () => addMember());
   $('#export-members').addEventListener('click', exportMembersCSV);
+  $('#find-duplicates').addEventListener('click', showDuplicatesModal);
 
   refresh();
 };
 
+// ─── DUPLICATES MODAL ────────────────────────────────────────────
+// Shows all clusters of members that share the same phone (normalized).
+// Each cluster row gives admin a one-click view of all suspects so they
+// can decide whether to archive duplicates or merge their history.
+function showDuplicatesModal() {
+  const clusters = findAllDuplicateMembers();
+  if (!clusters.length) {
+    showModal({
+      title: '🔍 Duplicate Scan',
+      body: `
+        <div style="text-align:center;padding:30px 20px">
+          <div style="font-size:48px;margin-bottom:14px">✅</div>
+          <div style="font-size:16px;font-weight:600;margin-bottom:6px">No duplicates found</div>
+          <div class="text-mute" style="font-size:13px">All ${activeMembers().length} active members have unique phone numbers.</div>
+        </div>
+      `,
+      actions: [{ label: 'Close', class: 'btn primary', onclick: closeModal }],
+    });
+    return;
+  }
+
+  // Sort clusters: largest first, then alphabetical
+  clusters.sort((a, b) => b.length - a.length || (a[0].name || '').localeCompare(b[0].name || ''));
+
+  const totalDupes = clusters.reduce((s, c) => s + c.length, 0);
+  const archivedCount = clusters.reduce((s, c) => s + c.filter(m => m.deleted).length, 0);
+
+  const clustersHtml = clusters.map((cluster, idx) => {
+    const phone = cluster[0].phone;  // representative
+    const rowsHtml = cluster.map(m => {
+      const archived = m.deleted ? ' <span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-2);font-size:9px;padding:1px 6px">📦 ARCHIVED</span>' : '';
+      const status = m.deleted ? '—' : memberStatus(m);
+      const stClass = m.deleted ? '' : status.toLowerCase();
+      // Show sport + coach + expiry to help admin decide which one is "real"
+      const sport = m.sport || (m.enrollments?.[0]?.sport) || '—';
+      const lastSeen = m.expiryDate ? fmtDate(m.expiryDate) : (m.joinDate ? fmtDate(m.joinDate) : '—');
+      return `
+        <tr>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">
+            <div style="font-weight:600">${escapeHtml(m.name)}${m.nameArabic ? ` · <span class="text-mute" style="font-weight:normal" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}${archived}</div>
+            <div class="text-mute" style="font-size:11px">${escapeHtml(sport)} · ${escapeHtml(coachName(m.coachId))}${m.qid ? ' · QID ' + escapeHtml(m.qid) : ''}</div>
+          </td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px" class="text-mute">${escapeHtml(m.phone || '')}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px">${m.deleted ? '<span class="text-mute">archived</span>' : `<span class="badge ${stClass}" style="font-size:10px">${status}</span>`}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px" class="text-mute">${lastSeen}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap">
+            <button class="btn ghost sm" onclick="closeModal();viewMember(${m.id})" title="Open profile">👁 View</button>
+            ${m.deleted
+              ? `<button class="btn ghost sm" onclick="closeModal();restoreMember(${m.id})" title="Restore archived" style="color:var(--green)">↩ Restore</button>`
+              : `<button class="btn ghost sm" onclick="closeModal();deleteMember(${m.id})" title="Archive (soft delete)" style="color:var(--red)">📦 Archive</button>`}
+          </td>
+        </tr>
+      `;
+    }).join('');
+    return `
+      <div style="border:1px solid var(--border);border-radius:10px;margin-bottom:14px;overflow:hidden">
+        <div style="padding:10px 14px;background:var(--surface-2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-weight:700;font-size:13px">Cluster ${idx + 1} · ${cluster.length} members share name + phone <code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:12px">${escapeHtml(phone || '—')}</code></div>
+            <div class="text-mute" style="font-size:11px;margin-top:2px">Review each one. Keep the legitimate record, archive the rest.</div>
+          </div>
+        </div>
+        <table style="width:100%;border-collapse:collapse">
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+  }).join('');
+
+  showModal({
+    title: `🔍 Duplicate Scan — ${clusters.length} cluster${clusters.length === 1 ? '' : 's'} found`,
+    wide: true,
+    body: `
+      <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:12px;display:flex;gap:10px;align-items:flex-start">
+        <span style="font-size:18px">⚠️</span>
+        <div style="flex:1;line-height:1.6">
+          <b>${totalDupes} members in ${clusters.length} cluster${clusters.length === 1 ? '' : 's'}</b> share both a phone number and a name${archivedCount ? ` (${archivedCount} already archived)` : ''} — these are very likely the same person entered more than once. (Members who share only a phone but have different names — e.g. a family — are not shown here.)<br>
+          For each cluster, decide which record is the real one. Archive the others — their invoices and attendance history stay intact.
+        </div>
+      </div>
+      ${clustersHtml}
+    `,
+    actions: [
+      { label: 'Close', class: 'btn primary', onclick: closeModal },
+    ],
+  });
+}
+window.showDuplicatesModal = showDuplicatesModal;
+
 function viewMember(id) {
   const m = state.members.find(x => x.id === id);
   if (!m) return;
+  // Track in recently-viewed list (top 5 in sessionStorage)
+  pushRecentMember(id);
   // Merge subscriptions + standalone renewals (older imports). New renewals
   // since v77 are pushed to subscriptions[] directly, so this guards against
   // legacy data where renewals[] entries lack a matching subscription row.
@@ -799,7 +1043,7 @@ function viewMember(id) {
       <tr>
         <td><span class="badge blue">${(s.month || '').toUpperCase()}</span></td>
         <td>${escapeHtml(s.activity || '—')}${s.activity === SUMMER_CAMP && s.durationLabel ? ` <span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-2);font-size:9px;padding:1px 6px">🌞 ${escapeHtml(s.durationLabel)}</span>` : ''}</td>
-        <td>${escapeHtml(s.coach || '—')}</td>
+        <td>${s.activity === SUMMER_CAMP ? '<span class="text-mute" style="font-size:11px;font-style:italic">no coach</span>' : escapeHtml(s.coach || '—')}</td>
         <td>${s.start ? fmtDate(s.start) : '—'}</td>
         <td>${s.end ? fmtDate(s.end) : '—'}</td>
         <td>${attCell}</td>
@@ -833,11 +1077,22 @@ function viewMember(id) {
         </div>
       </div>
       <div class="row row-2 mb-3">
-        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Mobile</div><div>${escapeHtml(m.phone || '—')}</div></div>
+        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Mobile</div><div>${phoneCell(m.phone, { stop: false })}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Email</div><div>${escapeHtml(m.email || '—')}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">QID</div><div class="font-mono">${escapeHtml(m.qid || '—')}</div></div>
-        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Birthdate</div><div>${m.birthdate ? fmtDate(m.birthdate) : '—'}</div></div>
-        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">First Registration</div><div>${m.firstRegistration ? fmtDate(m.firstRegistration) : (m.joinDate ? fmtDate(m.joinDate) : '—')}</div></div>
+        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Birthdate</div><div>${m.birthdate ? `${fmtDate(m.birthdate)}${(() => {
+          const age = memberAge(m.birthdate);
+          const isBd = isBirthdayInMonth(m.birthdate);
+          const dToB = daysUntilBirthday(m.birthdate);
+          let parts = [];
+          if (age != null) parts.push(`<span class="text-mute" style="font-size:11px">· ${age} yrs</span>`);
+          if (isBd) parts.push(`<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(245,158,11,.18);color:var(--accent-2);margin-left:4px" title="Birthday this month — say happy birthday!">🎂 ${dToB === 0 ? 'today!' : dToB <= 30 ? `in ${dToB}d` : 'this month'}</span>`);
+          return parts.join(' ');
+        })()}` : '—'}</div></div>
+        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">First Registration</div><div>${m.firstRegistration ? fmtDate(m.firstRegistration) : (m.joinDate ? fmtDate(m.joinDate) : '—')}${(() => {
+          const t = memberTenure(m.firstRegistration || m.joinDate);
+          return t ? ` <span class="text-mute" style="font-size:11px">· ${t}</span>` : '';
+        })()}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Start / Renewal</div><div>${m.startDate ? fmtDate(m.startDate) : '—'}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Expiry</div><div>${m.expiryDate ? fmtDate(m.expiryDate) : '—'}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Level</div><div>${escapeHtml(m.level || '—')}</div></div>
@@ -987,7 +1242,19 @@ window.unfreezeMember = function(id) {
 window.deleteMember = function(id) {
   const m = state.members.find(x => x.id === id);
   if (!m) return;
-  // Show what's linked so admin knows what they're losing/keeping
+  if (m.deleted) {
+    // Already archived — offer to restore instead
+    if (confirm(`${m.name} is already archived (since ${fmtDate((m.deletedAt || '').slice(0,10))}).\n\nRestore them?`)) {
+      delete m.deleted;
+      delete m.deletedAt;
+      delete m.deletedReason;
+      save();
+      render();
+      toast(`Restored ${m.name}`);
+    }
+    return;
+  }
+  // Show what's linked so admin knows what's being archived (not destroyed)
   const invoiceCount = (state.invoices || []).filter(i => i.customerId === id).length;
   const saleCount = (state.sales || []).filter(s => s.customerId === id).length;
   const rentalCount = (state.rentals || []).filter(r => r.memberId === id).length;
@@ -1000,13 +1267,34 @@ window.deleteMember = function(id) {
   if (switchCount) linked.push(`${switchCount} sport switch${switchCount === 1 ? '' : 'es'}`);
   if (attendanceMonths) linked.push(`${attendanceMonths} attendance month${attendanceMonths === 1 ? '' : 's'}`);
   const linkedMsg = linked.length
-    ? `\n\nLinked records (will be marked "(deleted member)" but kept for accounting):\n• ${linked.join('\n• ')}`
+    ? `\n\nPRESERVED (history stays intact):\n• ${linked.join('\n• ')}\n• Coach commission already earned\n• Member ID, name, all data`
     : '\n\nNo linked records.';
-  if (!confirm(`Delete ${m.name}?${linkedMsg}\n\nThis cannot be undone.`)) return;
-  state.members = state.members.filter(x => x.id !== id);
+  const reason = prompt(`Archive ${m.name}?\n\nThis is a SOFT delete — no data is destroyed:${linkedMsg}\n\n` +
+    `${m.name} will be hidden from active lists but can be restored anytime\n` +
+    `from the Members page → status filter "Archived".\n\nReason (optional):`, '');
+  if (reason === null) return;  // user pressed Cancel
+  // Soft-delete: mark with flag + timestamp instead of removing from array
+  m.deleted = true;
+  m.deletedAt = new Date().toISOString();
+  m.deletedReason = reason || null;
+  audit('member.archive', `member:${m.id}`,
+    `Archived ${m.name}${reason ? ' — ' + reason : ''}`,
+    { memberId: m.id, name: m.name, reason });
   save();
   render();
-  toast(`Deleted ${m.name}${linked.length ? ' · ' + linked.length + ' record types preserved' : ''}`);
+  toast(`📦 Archived ${m.name}${linked.length ? ' · ' + linked.length + ' record types preserved' : ''}`);
+};
+
+window.restoreMember = function(id) {
+  const m = state.members.find(x => x.id === id);
+  if (!m || !m.deleted) return;
+  delete m.deleted;
+  delete m.deletedAt;
+  delete m.deletedReason;
+  audit('member.restore', `member:${m.id}`, `Restored ${m.name}`, { memberId: m.id, name: m.name });
+  save();
+  render();
+  toast(`Restored ${m.name}`);
 };
 
 // ─── Multi-sport enrollment rows (used by member form) ──────────────
@@ -1018,12 +1306,21 @@ function enrollRowHtml(row, idx) {
   const sportOpts = SPORTS.map(s => `<option ${s === row.sport ? 'selected' : ''}>${s}</option>`).join('');
   // Registration dropdown: only active coaches selectable, but if this row
   // already points to an inactive coach (e.g. editing history), keep it shown.
+  // Build the coach options, matching the row's saved coach robustly:
+  //  • type-safe compare so a saved "1" (string) still matches coach id 1
+  //  • if the assigned coach is inactive/archived, still show it (selected)
+  //  • if no valid coach is assigned (unset or deleted), show a "— Select
+  //    coach —" placeholder so the mandatory field is explicit, never blank.
   const selList = activeCoaches();
-  if (row.coachId && !selList.some(c => c.id === row.coachId)) {
-    const cur = state.coaches.find(c => c.id === row.coachId);
-    if (cur) selList.push(cur);
+  const assignedCoach = (row.coachId != null && row.coachId !== '')
+    ? state.coaches.find(c => String(c.id) === String(row.coachId))
+    : null;
+  if (assignedCoach && !selList.some(c => c.id === assignedCoach.id)) {
+    selList.push(assignedCoach);
   }
-  const coachOpts = selList.map(c => `<option value="${c.id}" ${c.id === row.coachId ? 'selected' : ''}>${escapeHtml(c.name)}${isCoachActive(c) ? '' : ' (inactive)'}</option>`).join('');
+  const coachOpts =
+    `<option value="" ${assignedCoach ? '' : 'selected'}>— Select coach —</option>` +
+    selList.map(c => `<option value="${c.id}" ${assignedCoach && c.id === assignedCoach.id ? 'selected' : ''}>${escapeHtml(c.name)}${isCoachActive(c) ? '' : ' (inactive)'}</option>`).join('');
   // Visual warning: highlight Classes/Price fields if they're empty or zero
   const classesNum = parseInt(row.classes) || 0;
   const priceNum = parseFloat(row.price) || 0;
@@ -1060,12 +1357,15 @@ function enrollRowHtml(row, idx) {
 
   return `
     <div class="enroll-row" data-enroll-idx="${idx}" style="display:grid;grid-template-columns:1.3fr 1.3fr .8fr .9fr auto;gap:8px;align-items:end;margin-bottom:8px">
-      <div class="field" style="margin:0"><label style="font-size:10px">Sport <span style="color:var(--accent)">*</span></label><select data-en="sport" data-i="${idx}">${sportOpts}</select></div>
+      <div class="field" style="margin:0"><label style="font-size:10px">Sport <span style="color:var(--accent)">*</span></label><select data-en="sport" data-i="${idx}" ${row.paid ? 'disabled title="Already paid — use Switch Sport instead to change"' : ''}>${sportOpts}</select></div>
       ${coachField}
       ${classesField}
-      <div class="field" style="margin:0"><label style="font-size:10px">Price (QAR) <span style="color:var(--accent)">*</span></label><input data-en="price" data-i="${idx}" type="number" min="0" step="0.01" value="${row.price ?? ''}" placeholder="350" style="${priceStyle}" /></div>
-      <button type="button" class="btn ghost sm" data-en-remove="${idx}" style="padding:8px 10px;color:var(--red);margin-bottom:1px" ${window._enrollRows.length <= 1 ? 'tabindex="-1"' : ''} title="Remove sport">✕</button>
-    </div>${isCamp ? `<div style="font-size:10px;color:var(--blue);margin:-4px 0 8px;padding-left:4px">🌞 Summer Camp · expires ${classesNum > 0 ? classesNum + ' day' + (classesNum === 1 ? '' : 's') : '—'} from start date · revenue goes to club, no coach commission</div>` : ''}`;
+      <div class="field" style="margin:0"><label style="font-size:10px">Price (QAR) <span style="color:var(--accent)">*</span></label><input data-en="price" data-i="${idx}" type="number" min="0" step="0.01" value="${row.price ?? ''}" placeholder="350" style="${priceStyle}" ${row.paid ? 'readonly title="Already paid — cannot edit price directly"' : ''} /></div>
+      ${row.paid
+        ? `<button type="button" class="btn ghost sm" data-en-withdraw="${idx}" style="padding:8px 10px;color:var(--accent-2);margin-bottom:1px;border:1px solid var(--accent-2);background:rgba(245,158,11,.06)" title="Member already paid — process a withdrawal (refund based on attendance)">↩ Withdraw</button>`
+        : `<button type="button" class="btn ghost sm" data-en-remove="${idx}" style="padding:8px 10px;color:var(--red);margin-bottom:1px" ${window._enrollRows.length <= 1 ? 'tabindex="-1"' : ''} title="Remove sport">✕</button>`
+      }
+    </div>${isCamp ? `<div style="font-size:10px;color:var(--blue);margin:-4px 0 8px;padding-left:4px">🌞 Summer Camp · expires ${classesNum > 0 ? classesNum + ' day' + (classesNum === 1 ? '' : 's') : '—'} from start date · revenue goes to club, no coach commission</div>` : ''}${row.paid ? `<div style="font-size:10px;color:var(--text-mute);margin:-4px 0 8px;padding-left:4px">🔒 Paid — use <b style="color:var(--accent-2)">↩ Withdraw</b> for refund, or <b style="color:var(--blue)">Switch Sport</b> from member profile</div>` : ''}`;
 }
 
 function renderEnrollRows() {
@@ -1086,7 +1386,7 @@ function renderEnrollRows() {
       const row = window._enrollRows[i];
       const val = e.target.value;
       if (key === 'coachId') {
-        row.coachId = parseInt(val);
+        row.coachId = val ? parseInt(val) : null;
       } else if (key === 'sport') {
         const wasCamp = row.sport === SUMMER_CAMP;
         const isNowCamp = val === SUMMER_CAMP;
@@ -1144,6 +1444,18 @@ function renderEnrollRows() {
       renderEnrollRows();
     });
   });
+  // Withdraw button — opens the refund/withdrawal flow for paid enrollments
+  wrap.querySelectorAll('[data-en-withdraw]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const i = parseInt(e.currentTarget.dataset.enWithdraw);
+      const row = window._enrollRows[i];
+      const memberId = window._editingMemberId;
+      if (!memberId || !row) return;
+      // Close the edit modal first, then open the withdraw modal
+      closeModal();
+      withdrawSport(memberId, row.originalSport || row.sport);
+    });
+  });
 }
 
 function addEnrollRow() {
@@ -1154,15 +1466,34 @@ function addEnrollRow() {
 
 function showMemberForm(m) {
   const isNew = !state.members.find(x => x.id === m.id);
+  // Make memberId available to handlers (e.g. withdraw button) defined in
+  // enrollRowHtml — they need to know which member is being edited.
+  window._editingMemberId = isNew ? null : m.id;
   // Seed enrollment rows from the member's actual enrollments when editing.
   // If a member has no enrollments[] yet but does have subscriptions[], rebuild
   // one row per latest subscription. For brand-new members, start with one blank row.
+  // The `paid` flag tells the row whether the × delete should be disabled (and a
+  // "Withdraw" button shown instead). A row is "paid" if it has an existing
+  // invoice line item for this customer + this sport (price > 0).
+  function isEnrollmentPaid(memberId, sport) {
+    if (!memberId) return false;
+    return (state.invoices || []).some(inv =>
+      inv.customerId === memberId &&
+      (inv.category || 'Membership') === 'Membership' &&
+      (inv.lineItems || []).some(li => li.sport === sport && (parseFloat(li.price) || 0) > 0)
+    );
+  }
   if (isNew) {
-    window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '' }];
+    window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', paid: false }];
   } else if (m.enrollments && m.enrollments.length) {
     window._enrollRows = m.enrollments.map(e => ({
       sport: e.sport, coachId: e.coachId,
       classes: e.classes ?? '', price: e.price ?? '',
+      // Track if this enrollment has an associated paid invoice. If yes, the
+      // × delete button is replaced with a "Withdraw" action that creates a
+      // refund invoice + coach commission deduction (see withdrawSport()).
+      paid: isEnrollmentPaid(m.id, e.sport),
+      originalSport: e.sport,  // remember original sport for paid-row lookup if user edits
     }));
   } else if (m.subscriptions && m.subscriptions.length) {
     // Build from latest subscription per sport
@@ -1174,12 +1505,14 @@ function showMemberForm(m) {
     window._enrollRows = [...bySport.values()].map(s => ({
       sport: s.activity, coachId: s.coachId,
       classes: s.totalClasses ?? '', price: s.amountPaid ?? '',
+      paid: isEnrollmentPaid(m.id, s.activity),
+      originalSport: s.activity,
     }));
     if (!window._enrollRows.length) {
-      window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '' }];
+      window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', paid: false }];
     }
   } else {
-    window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '' }];
+    window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', paid: false }];
   }
   showModal({
     title: isNew ? 'Add Member' : 'Edit Member',
@@ -1189,7 +1522,7 @@ function showMemberForm(m) {
         <div class="field"><label>Name (Arabic) <span class="text-mute" style="font-size:10px">(or English required)</span></label><input id="f-name-ar" value="${escapeHtml(m.nameArabic || '')}" dir="rtl" /></div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Mobile number <span style="color:var(--accent)">*</span></label><input id="f-phone" value="${escapeHtml(m.phone || '')}" placeholder="+974… (8+ digits)" /></div>
+        ${phoneInputHtml('f-phone', m.phone, { label: 'Mobile number' })}
         <div class="field"><label>Email <span class="text-mute" style="font-size:10px">(optional)</span></label><input id="f-email" type="email" value="${escapeHtml(m.email || '')}" /></div>
       </div>
       <div class="form-row">
@@ -1244,7 +1577,8 @@ function showMemberForm(m) {
         // ─── Validation ────────────────────────────────────────────
         const nameEn = $('#f-name').value.trim();
         const nameAr = $('#f-name-ar').value.trim();
-        const phone = $('#f-phone').value.trim();
+        const phoneInput = readPhoneInput('f-phone');
+        const phone = phoneInput.phone;
         const email = $('#f-email').value.trim();
         const birthdate = $('#f-bdate').value;
 
@@ -1255,17 +1589,51 @@ function showMemberForm(m) {
           return;
         }
 
-        // 2. Mobile mandatory + at least 8 digits
-        if (!phone) {
-          toast('Mobile number is required', 'error');
-          $('#f-phone')?.focus();
+        // 2. Mobile mandatory + at least 8 digits (national portion)
+        if (!phoneInput.valid) {
+          toast(phoneInput.error || 'Mobile number is invalid', 'error');
+          document.getElementById('f-phone-digits')?.focus();
           return;
         }
-        const phoneDigits = phone.replace(/\D/g, '');
-        if (phoneDigits.length < 8) {
-          toast(`Mobile must have at least 8 digits (got ${phoneDigits.length})`, 'error');
-          $('#f-phone')?.focus();
+
+        // 2b. Composite-key uniqueness — a member is identified by
+        // Mobile + Name (English OR Arabic). We reject TRUE duplicates and
+        // send the admin straight to the existing record. Comparison is
+        // against ALL members (active + archived) so an archived member can't
+        // be silently re-created.
+        //   • Same phone + same name  → SAME person → block, open their edit
+        //   • Same phone + diff name  → distinct person (e.g. family) → allowed
+        //   • Same QID (any name)     → SAME person → block, open their edit
+        //     (a national ID can't legitimately belong to two members)
+        const qidVal = $('#f-qid').value.trim();
+        // (a) Composite key — same mobile + same name = the SAME person.
+        //     Always blocked; the admin is taken to the existing record.
+        const nameDup = findDuplicateMember(phone, nameEn, nameAr, m.id);
+        if (nameDup) {
+          const archivedNote = nameDup.deleted ? ' (currently archived)' : '';
+          toast(`"${nameDup.name || nameDup.nameArabic}" already exists with mobile ${nameDup.phone}${archivedNote}. Opening their profile to edit instead.`, 'error');
+          closeModal();
+          if (typeof editMember === 'function') editMember(nameDup.id);
+          else if (typeof viewMember === 'function') viewMember(nameDup.id);
           return;
+        }
+        // (b) QID match — a national ID can't belong to two people. Behaviour is
+        //     configurable in Settings: 'block' (default, open the existing
+        //     record) or 'warn' (confirm and allow if admin insists).
+        const qidDup = qidVal ? (findMembersByQid(qidVal, m.id)[0] || null) : null;
+        if (qidDup) {
+          const archivedNote = qidDup.deleted ? ' (currently archived)' : '';
+          const qidMode = state.settings?.qidDuplicateMode || 'block';
+          if (qidMode === 'warn') {
+            if (!confirm(`⚠ QID ${qidDup.qid} already belongs to "${qidDup.name || qidDup.nameArabic}"${archivedNote}.\n\nSave anyway?\n\nOK = save as a separate member · Cancel = review.`)) return;
+            // admin confirmed — fall through and save
+          } else {
+            toast(`QID ${qidDup.qid} already belongs to "${qidDup.name || qidDup.nameArabic}"${archivedNote}. Opening their profile to edit instead.`, 'error');
+            closeModal();
+            if (typeof editMember === 'function') editMember(qidDup.id);
+            else if (typeof viewMember === 'function') viewMember(qidDup.id);
+            return;
+          }
         }
 
         // 3. Email format (only if filled)
@@ -1311,7 +1679,7 @@ function showMemberForm(m) {
           if ((parseInt(r.classes) || 0) <= 0) return false;
           if ((parseFloat(r.price) || 0) <= 0) return false;
           // Coach required only for non-Summer-Camp sports
-          if (r.sport !== SUMMER_CAMP && !r.coachId) return false;
+          if (r.sport !== SUMMER_CAMP && !state.coaches.some(c => String(c.id) === String(r.coachId))) return false;
           return true;
         };
         const completeRows = allRows.filter(rowComplete);
@@ -1327,7 +1695,7 @@ function showMemberForm(m) {
             const isCamp = p.sport === SUMMER_CAMP;
             const missing = [];
             if (!p.sport) missing.push('sport');
-            if (!isCamp && !p.coachId) missing.push('coach');
+            if (!isCamp && !state.coaches.some(c => String(c.id) === String(p.coachId))) missing.push('coach');
             if (!(parseInt(p.classes) > 0)) missing.push(isCamp ? 'duration' : 'classes (>0)');
             if (!(parseFloat(p.price) > 0)) missing.push('price (>0)');
             toast(`Sport enrollment is incomplete — missing: ${missing.join(', ')}`, 'error');
@@ -1379,6 +1747,9 @@ function showMemberForm(m) {
 
         if (isNew) {
           state.members.push(data);
+          audit('member.create', `member:${data.id}`,
+            `Added ${data.name || data.nameArabic}`,
+            { memberId: data.id, name: data.name, nameArabic: data.nameArabic, phone: data.phone, sports: enrollments.map(e => e.sport) });
 
           const totalPay = enrollments.reduce((s, e) => s + e.price, 0);
           if (totalPay > 0) {
@@ -1565,6 +1936,9 @@ function showMemberForm(m) {
 
         data.subscriptions = subs;
         state.members[idx] = Object.assign({}, existing, data);
+        audit('member.update', `member:${data.id}`,
+          `Updated ${data.name || data.nameArabic}`,
+          { memberId: data.id, name: data.name, nameArabic: data.nameArabic, phone: data.phone });
         save();
         closeModal();
         render();
@@ -1623,6 +1997,7 @@ function showNewMemberInvoiceModal(invoiceId, customerName) {
     `,
     actions: [
       { label: 'Done', class: 'btn ghost', onclick: closeModal },
+      { label: '💬 Send to WhatsApp', class: 'btn ghost', onclick: () => { closeModal(); sendInvoiceWhatsApp(invoiceId); } },
       { label: '⬇ Export Invoice PDF', class: 'btn primary', onclick: () => { closeModal(); printInvoicePDF(invoiceId); } },
     ],
   });
@@ -1715,7 +2090,7 @@ window.viewCoach = function(id) {
       <div style="margin-bottom:16px;padding:12px;background:var(--surface-2);border-radius:8px">
         <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:8px">📇 Contact & Profile</div>
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px 16px;font-size:13px">
-          ${c.phone ? `<div><span class="text-mute" style="font-size:10px;display:block;text-transform:uppercase">Mobile</span>📱 ${escapeHtml(c.phone)}</div>` : ''}
+          ${c.phone ? `<div><span class="text-mute" style="font-size:10px;display:block;text-transform:uppercase">Mobile</span>${phoneCell(c.phone, { stop: false })}</div>` : ''}
           ${c.email ? `<div><span class="text-mute" style="font-size:10px;display:block;text-transform:uppercase">Email</span>✉️ ${escapeHtml(c.email)}</div>` : ''}
           ${c.qid ? `<div><span class="text-mute" style="font-size:10px;display:block;text-transform:uppercase">QID</span>🆔 ${escapeHtml(c.qid)}</div>` : ''}
           ${c.birthdate ? `<div><span class="text-mute" style="font-size:10px;display:block;text-transform:uppercase">Birthdate</span>🎂 ${fmtDate(c.birthdate)}</div>` : ''}
@@ -1789,7 +2164,7 @@ window.editCoach = function(id, defaultRole) {
         </div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Mobile <span style="color:var(--accent)">*</span></label><input id="c-phone" value="${escapeHtml(c.phone || '')}" placeholder="+974… (8+ digits)" /></div>
+        ${phoneInputHtml('c-phone', c.phone, { label: 'Mobile' })}
         <div class="field"><label>Email <span class="text-mute" style="font-size:10px">(optional)</span></label><input id="c-email" type="email" value="${escapeHtml(c.email || '')}" placeholder="name@example.com" /></div>
       </div>
       <div class="form-row">
@@ -1820,16 +2195,15 @@ window.editCoach = function(id, defaultRole) {
       { label: isNew ? 'Add' : 'Save', class: 'btn primary', onclick: () => {
         // ── Validation ──
         const name = $('#c-name').value.trim();
-        const phone = $('#c-phone').value.trim();
+        const phoneInput = readPhoneInput('c-phone');
+        const phone = phoneInput.phone;
         const email = $('#c-email').value.trim();
         const birthdate = $('#c-bdate').value;
 
         if (!name) { toast('Name required', 'error'); $('#c-name')?.focus(); return; }
-        if (!phone) { toast('Mobile number is required', 'error'); $('#c-phone')?.focus(); return; }
-        const phoneDigits = phone.replace(/\D/g, '');
-        if (phoneDigits.length < 8) {
-          toast(`Mobile must have at least 8 digits (got ${phoneDigits.length})`, 'error');
-          $('#c-phone')?.focus();
+        if (!phoneInput.valid) {
+          toast(phoneInput.error || 'Mobile number is invalid', 'error');
+          document.getElementById('c-phone-digits')?.focus();
           return;
         }
         if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
@@ -2609,7 +2983,7 @@ PAGES.invoices = (main) => {
           <div class="avatar" style="width:24px;height:24px;font-size:10px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(cust.name)}</div>
           <div>
             <div class="font-bold" style="${cust.isDeleted ? 'text-decoration:line-through;color:var(--text-mute)' : ''}">${escapeHtml(cust.name)}</div>
-            ${cust.phone ? `<div class="text-mute" style="font-size:10px">📱 ${escapeHtml(cust.phone)}</div>` : ''}
+            ${cust.phone ? `<div class="text-mute" style="font-size:10px">${phoneCell(cust.phone)}</div>` : ''}
           </div>
         </div>` : `<span class="text-mute">${escapeHtml((i.description || '').split(/\s/).slice(0, 2).join(' '))}</span>`;
       // Service cell — description with sport badge
@@ -2641,6 +3015,7 @@ PAGES.invoices = (main) => {
         <td class="text-right" style="white-space:nowrap">
           ${i.customerId ? `<button class="btn ghost sm" onclick="showInvoiceHistory(${i.customerId})" title="See all invoices for this customer">📜</button>` : ''}
           <button class="btn ghost sm" onclick="printInvoicePDF(${i.id})" title="Export invoice as PDF (filename = customer name)">⬇ Export</button>
+          <button class="btn ghost sm" onclick="sendInvoiceWhatsApp(${i.id})" title="Send invoice as WhatsApp message" style="color:#25D366">💬</button>
           <button class="btn ghost sm" onclick="editInvoiceQuick(${i.id})" title="Edit coach/sport">✏️</button>
           <button class="btn ghost sm" onclick="deleteInvoice(${i.id})" title="Delete">🗑</button>
         </td>
@@ -2908,7 +3283,7 @@ function addInvoice() {
           </div>
           <div id="cust-walkin-fields">
             <div class="field" style="margin-bottom:8px"><label>Name *</label><input type="text" id="sale-walkin-name" placeholder="Required" /></div>
-            <div class="field" style="margin-bottom:8px"><label>Mobile *</label><input type="text" id="sale-walkin-phone" placeholder="Required" /></div>
+            <div style="margin-bottom:8px">${phoneInputHtml('sale-walkin-phone', '', { label: 'Mobile', fieldStyle: 'margin:0' })}</div>
           </div>
 
           <div style="font-weight:700;font-size:13px;margin:14px 0 6px">📝 Details</div>
@@ -2978,7 +3353,7 @@ window.showInvoiceHistory = function(customerId) {
         <div class="avatar" style="width:44px;height:44px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(m.name)}</div>
         <div style="flex:1">
           <div style="font-weight:700;font-size:15px">${escapeHtml(m.name)}${m.nameArabic ? ` <span class="text-mute" style="font-size:12px" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}</div>
-          <div class="text-dim" style="font-size:12px">${m.phone ? '📱 ' + escapeHtml(m.phone) + ' · ' : ''}${escapeHtml(m.sport)} · ${escapeHtml(coachName(m.coachId))}</div>
+          <div class="text-dim" style="font-size:12px">${isRealPhone(m.phone) ? phoneCell(m.phone, { stop: false }) + ' · ' : ''}${escapeHtml(m.sport)} · ${escapeHtml(coachName(m.coachId))}</div>
         </div>
         <div class="text-right">
           <div class="text-mute" style="font-size:11px">Total billed</div>
@@ -3238,6 +3613,90 @@ window.deleteInvoice = function(id) {
   save();
   render();
   toast('Invoice deleted');
+};
+
+// ─── Membership ID Card (printable / saveable as PDF) ────────────────
+// Opens a popup with a credit-card-sized layout containing the member's
+// photo placeholder, name, member #, sport, coach, expiry, and a barcode-
+// style strip showing the QID. Designed to print 2-up on a single A4.
+window.printIdCard = function(memberId) {
+  const m = state.members.find(x => x.id === memberId);
+  if (!m) { toast('Member not found', 'error'); return; }
+  const status = memberStatus(m);
+  const statusColor = status === 'Active' ? '#10b981' : status === 'Expired' ? '#ef4444' : status === 'Frozen' ? '#5b8def' : '#666';
+  const sports = (() => {
+    const set = new Set();
+    if (m.sport) set.add(m.sport);
+    (m.enrollments || []).forEach(e => { if (e.sport) set.add(e.sport); });
+    return [...set];
+  })();
+  const primarySport = sports[0] || '—';
+  const coach = m.coachId ? coachName(m.coachId) : '—';
+
+  const w = window.open('', '_blank');
+  if (!w) { toast('Popup blocked — please allow popups', 'error'); return; }
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>ID Card · ${escapeHtml(m.name)}</title>
+    <style>
+      @page { size: A4; margin: 16mm; }
+      body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #f0f0f0; margin: 0; padding: 20px; }
+      .sheet { max-width: 600px; margin: 20px auto; }
+      .card {
+        width: 85.6mm; height: 53.98mm;   /* ISO/IEC 7810 ID-1 (credit-card size) */
+        background: linear-gradient(135deg, #1a1a2e 0%, #2d1a3d 100%);
+        border-radius: 12px; padding: 14px; color: white;
+        position: relative; box-shadow: 0 4px 16px rgba(0,0,0,.3);
+        display: grid; grid-template-rows: auto 1fr auto; gap: 6px;
+        font-family: 'Helvetica Neue', Arial, sans-serif;
+      }
+      .card-header { display: flex; align-items: center; justify-content: space-between; }
+      .logo { font-size: 11px; font-weight: 800; letter-spacing: 1px; color: #f26060; }
+      .star { color: #f26060; font-size: 14px; }
+      .sub { font-size: 7px; color: rgba(255,255,255,.65); text-transform: uppercase; letter-spacing: .8px; margin-top: -2px; }
+      .body { display: grid; grid-template-columns: 50px 1fr; gap: 10px; align-items: center; }
+      .avatar { width: 50px; height: 50px; background: linear-gradient(135deg,#5b8def,#a855f7); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 800; color: white; }
+      .info { font-size: 10px; line-height: 1.4; }
+      .name { font-size: 13px; font-weight: 700; margin-bottom: 2px; }
+      .meta { color: rgba(255,255,255,.7); }
+      .footer { display: flex; align-items: center; justify-content: space-between; font-size: 7px; color: rgba(255,255,255,.6); border-top: 1px solid rgba(255,255,255,.15); padding-top: 4px; letter-spacing: .5px; }
+      .status-pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 7px; font-weight: 700; letter-spacing: .5px; color: white; }
+      .barcode { background: rgba(255,255,255,.1); padding: 2px 8px; border-radius: 3px; font-family: 'Courier New', monospace; font-size: 8px; letter-spacing: 2px; }
+      .actions { text-align: center; margin: 14px 0; }
+      .btn { padding: 8px 16px; background: #5b8def; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; margin: 0 4px; }
+      .btn.ghost { background: #ddd; color: #333; }
+      @media print { body { background: white; padding: 0; } .actions { display: none; } .sheet { max-width: none; } }
+    </style>
+    </head><body>
+      <div class="sheet">
+        <div class="actions">
+          <button class="btn" onclick="window.print()">🖨 Print / Save as PDF</button>
+          <button class="btn ghost" onclick="window.close()">Close</button>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="logo"><span class="star">★</span> BLACK STARS</div>
+              <div class="sub">Sports Club · Waab, Doha</div>
+            </div>
+            <span class="status-pill" style="background:${statusColor}">${status.toUpperCase()}</span>
+          </div>
+          <div class="body">
+            <div class="avatar">${initials(m.name)}</div>
+            <div class="info">
+              <div class="name">${escapeHtml(m.name)}</div>
+              <div class="meta">${escapeHtml(primarySport)}${sports.length > 1 ? ` +${sports.length - 1}` : ''}${coach !== '—' ? ' · Coach ' + escapeHtml(coach) : ''}</div>
+              <div class="meta">${m.expiryDate ? 'Valid until ' + fmtDate(m.expiryDate) : 'No expiry on file'}</div>
+              ${m.phone && !m.phone.startsWith('+9747000') ? `<div class="meta">📱 ${escapeHtml(m.phone)}</div>` : ''}
+            </div>
+          </div>
+          <div class="footer">
+            <span>MEMBER #${String(m.id).padStart(5, '0')}</span>
+            ${m.qid ? `<span class="barcode">${escapeHtml(m.qid)}</span>` : `<span style="opacity:.5">no QID</span>`}
+          </div>
+        </div>
+      </div>
+    </body></html>
+  `);
+  w.document.close();
 };
 
 // ─── Invoice PDF (uses browser's "Save as PDF" via print dialog) ────────
@@ -3840,6 +4299,66 @@ window.printInvoicePDF = function(id) {
   toast(`Invoice opened — click "Export PDF" to save as ${fileName}.pdf`);
 };
 
+// ─── Send invoice to customer via WhatsApp ──────────────────────────
+// Pre-fills a WhatsApp message with the invoice details (ref, items, total)
+// at the customer's phone number. Admin reviews the message before sending.
+// Note: WhatsApp's URL scheme doesn't allow file attachments from web apps —
+// this sends a TEXT message that includes everything the customer needs.
+window.sendInvoiceWhatsApp = function(id) {
+  const inv = state.invoices.find(x => x.id === id);
+  if (!inv) { toast('Invoice not found', 'error'); return; }
+
+  // Resolve customer + phone
+  const cust = customerInfo(inv);
+  const phone = cust.phone || (inv.customerId
+    ? state.members.find(m => m.id === inv.customerId)?.phone
+    : null);
+  if (!isRealPhone(phone)) {
+    toast('Customer has no phone number on file', 'error');
+    return;
+  }
+
+  // Build a clean text invoice. Limit to lineItems if present, else single line.
+  const lines = [];
+  lines.push(`*Black Stars Sports Club*`);
+  lines.push(`Invoice ${inv.ref || `#${inv.id}`}`);
+  lines.push(`Date: ${fmtDate(inv.date)}`);
+  lines.push(``);
+  if (cust.name) lines.push(`Customer: ${cust.name}`);
+  lines.push(``);
+
+  const lineItems = Array.isArray(inv.lineItems) && inv.lineItems.length
+    ? inv.lineItems
+    : null;
+  if (lineItems) {
+    lines.push(`*Items:*`);
+    for (const li of lineItems) {
+      const label = li.durationLabel
+        ? `${li.sport} (${li.durationLabel})`
+        : `${li.sport}${li.classes ? ' · ' + li.classes + ' classes' : ''}`;
+      const coachClean = li.coach ? String(li.coach).replace(/^Coach\s+/i, '') : null;
+      const coachPart = coachClean && coachClean !== '—' ? ` · Coach ${coachClean}` : '';
+      lines.push(`• ${label}${coachPart} — ${fmt(li.price)} QAR`);
+    }
+  } else {
+    lines.push(`${inv.description || inv.sport || 'Service'} — ${fmt(inv.amount)} QAR`);
+  }
+  lines.push(``);
+  lines.push(`*Total: ${fmt(inv.amount)} QAR*`);
+  if (inv.method) lines.push(`Payment: ${inv.method}`);
+  lines.push(``);
+  lines.push(`Thank you! 🙏`);
+  lines.push(`Black Stars Sports Club · Waab, Doha`);
+
+  const text = lines.join('\n');
+  const url = waLink(phone, text);
+  if (!url) { toast('Invalid phone number', 'error'); return; }
+
+  // Open WhatsApp with pre-filled message
+  window.open(url, '_blank');
+  toast(`💬 Opened WhatsApp for ${cust.name || phone}`);
+};
+
 // Convert number to English words (for amount in words on invoice)
 function numberToWords(num) {
   if (num === 0) return 'Zero';
@@ -3876,7 +4395,7 @@ function numberToWords(num) {
 
 // ─── EXPENSES ──────────────────────────────────────────────────
 PAGES.expenses = (main) => {
-  let filter = { search: '', month: 'all', category: 'all', classification: 'all' };
+  let filter = { search: '', month: 'all', category: 'all' };
   const pg = makePager(10);
 
   function refresh() {
@@ -3884,27 +4403,32 @@ PAGES.expenses = (main) => {
       if (filter.search && !e.description.toLowerCase().includes(filter.search.toLowerCase())) return false;
       if (filter.month !== 'all' && e.month !== filter.month) return false;
       if (filter.category !== 'all' && e.category !== filter.category) return false;
-      if (filter.classification !== 'all' && e.classification !== filter.classification) return false;
       return true;
     }).sort((a,b) => b.date.localeCompare(a.date));
     const rows = paginate(allRows, pg);
 
-    const total = allRows.reduce((s,r) => s+r.amount, 0);
-    const monthlyTotal = allRows.filter(r => r.classification === 'monthly').reduce((s,r) => s+r.amount, 0);
-    const equipTotal = allRows.filter(r => r.classification === 'equipment').reduce((s,r) => s+r.amount, 0);
+    const total = allRows.reduce((s,r) => s + (r.amount || 0), 0);
+    // Per-category totals — replaces old monthly/equipment split since the
+    // Type field is removed. Top 3 categories shown in the subtitle.
+    const byCat = {};
+    for (const r of allRows) {
+      const c = r.category || 'Others';
+      byCat[c] = (byCat[c] || 0) + (r.amount || 0);
+    }
+    const topCats = Object.entries(byCat).sort((a,b) => b[1] - a[1]).slice(0, 3);
+    const topStr = topCats.map(([c, v]) => `${c} ${fmt(v)}`).join(' · ');
 
     $('#exp-tbody').innerHTML = rows.length ? rows.map(e => `
       <tr>
         <td class="text-dim" style="white-space:nowrap">${fmtDate(e.date)}</td>
         <td>${escapeHtml(e.description)}</td>
-        <td><span class="badge">${e.category}</span></td>
-        <td>${e.classification === 'monthly' ? '<span class="badge blue">Monthly</span>' : '<span class="badge purple">Equipment</span>'}</td>
-        <td><span class="badge ${e.method === 'card' ? 'blue' : ''}">${e.method}</span></td>
+        <td><span class="badge">${escapeHtml(e.category || 'Others')}</span></td>
+        <td><span class="badge ${e.method === 'card' ? 'blue' : e.method === 'transfer' ? 'cyan' : ''}">${escapeHtml(e.method || '—')}</span></td>
         <td class="text-right num font-bold">${fmt(e.amount)}</td>
         <td class="text-right" style="white-space:nowrap"><button class="btn ghost sm" onclick="editExpense(${e.id})" title="Edit">✏️</button> <button class="btn ghost sm" onclick="deleteExpense(${e.id})" title="Delete">🗑</button></td>
       </tr>
-    `).join('') : `<tr><td colspan="7" class="empty"><div class="empty-icon">💸</div>No expenses match</td></tr>`;
-    $('#exp-count').textContent = `${allRows.length} entries · ${fmtMoney(total)} · Monthly ${fmt(monthlyTotal)} · Equipment ${fmt(equipTotal)}`;
+    `).join('') : `<tr><td colspan="6" class="empty"><div class="empty-icon">💸</div>No expenses match</td></tr>`;
+    $('#exp-count').textContent = `${allRows.length} entries · ${fmtMoney(total)}${topStr ? ' · ' + topStr : ''}`;
     $('#exp-pagination').innerHTML = paginationBar(pg, allRows.length, 'exp');
     bindPagination('exp', pg, allRows.length, refresh);
   }
@@ -3926,19 +4450,14 @@ PAGES.expenses = (main) => {
           <option value="all">All months</option>
           ${[...new Set(state.expenses.map(e => e.month).filter(Boolean))].sort().reverse().map(m => `<option value="${m}">${fmtMonth(m)}</option>`).join('')}
         </select>
-        <select id="exp-cls" class="btn ghost">
-          <option value="all">All types</option>
-          <option value="monthly">Monthly</option>
-          <option value="equipment">Equipment</option>
-        </select>
         <select id="exp-cat" class="btn ghost">
           <option value="all">All categories</option>
-          ${EXP_CATS.map(c => `<option>${c}</option>`).join('')}
+          ${EXP_CATS.map(c => `<option>${escapeHtml(c)}</option>`).join('')}
         </select>
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Type</th><th>Method</th><th class="text-right">Amount</th><th></th></tr></thead>
+          <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Method</th><th class="text-right">Amount</th><th></th></tr></thead>
           <tbody id="exp-tbody"></tbody>
         </table>
       </div>
@@ -3947,7 +4466,6 @@ PAGES.expenses = (main) => {
   `;
   $('#exp-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   $('#exp-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
-  $('#exp-cls').addEventListener('change', e => { filter.classification = e.target.value; pg.page = 1; refresh(); });
   $('#exp-cat').addEventListener('change', e => { filter.category = e.target.value; pg.page = 1; refresh(); });
   $('#add-exp').addEventListener('click', addExpense);
   refresh();
@@ -3959,40 +4477,61 @@ window.editExpense = function(id) { showExpenseForm(id); };
 function showExpenseForm(id) {
   const e = id ? state.expenses.find(x => x.id === id) : null;
   const isNew = !e;
-  const cur = e || { description:'', amount:'', category: EXP_CATS[0], method:'cash', date: TODAY, classification:'equipment' };
+  // Default to first available category if creating fresh; preserve existing on edit
+  const cur = e || { description:'', amount:'', category: '', method:'', date: TODAY };
+  const cats = EXP_CATS;
   showModal({
     title: isNew ? 'New Expense' : 'Edit Expense',
     body: `
-      <div class="field"><label>Description</label><input id="f-desc" value="${escapeHtml(cur.description || '')}" /></div>
+      <div class="field"><label>Description <span style="color:var(--accent)">*</span></label><input id="f-desc" value="${escapeHtml(cur.description || '')}" placeholder="What was this expense for?" /></div>
       <div class="form-row">
-        <div class="field"><label>Amount (QAR)</label><input id="f-amt" type="number" step="0.01" value="${cur.amount ?? ''}" /></div>
-        <div class="field"><label>Category</label><select id="f-cat">${EXP_CATS.map(c => `<option ${c===cur.category?'selected':''}>${c}</option>`).join('')}</select></div>
+        <div class="field"><label>Amount (QAR) <span style="color:var(--accent)">*</span></label><input id="f-amt" type="number" min="0" step="0.01" value="${cur.amount ?? ''}" placeholder="0.00" /></div>
+        <div class="field"><label>Category <span style="color:var(--accent)">*</span></label>
+          <select id="f-cat">
+            <option value="" ${!cur.category ? 'selected' : ''}>— pick a category —</option>
+            ${cats.map(c => `<option value="${escapeHtml(c)}" ${c === cur.category ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+          </select>
+          <div class="text-mute" style="font-size:10px;margin-top:3px">Manage categories from System → Settings</div>
+        </div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Type</label><select id="f-cls"><option value="monthly" ${cur.classification==='monthly'?'selected':''}>Monthly</option><option value="equipment" ${cur.classification!=='monthly'?'selected':''}>Equipment</option></select></div>
-        <div class="field"><label>Method</label><select id="f-method"><option value="cash" ${cur.method==='cash'?'selected':''}>Cash</option><option value="card" ${cur.method==='card'?'selected':''}>Card</option></select></div>
+        <div class="field"><label>Date <span style="color:var(--accent)">*</span></label><input id="f-date" type="date" value="${cur.date || TODAY}" /></div>
+        <div class="field"><label>Payment method <span style="color:var(--accent)">*</span></label>
+          <select id="f-method">
+            <option value="" ${!cur.method ? 'selected' : ''}>— pick a method —</option>
+            <option value="cash" ${cur.method === 'cash' ? 'selected' : ''}>Cash</option>
+            <option value="card" ${cur.method === 'card' ? 'selected' : ''}>Card</option>
+            <option value="transfer" ${cur.method === 'transfer' ? 'selected' : ''}>Bank transfer</option>
+          </select>
+        </div>
       </div>
-      <div class="field"><label>Date</label><input id="f-date" type="date" value="${cur.date || TODAY}" /></div>
     `,
     actions: [
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
       { label: isNew ? 'Add' : 'Save', class: 'btn primary', onclick: () => {
+        // ── Full validation: every field is mandatory ─────────────
         const desc = $('#f-desc').value.trim();
-        const amt = parseFloat($('#f-amt').value);
-        if (!desc || isNaN(amt)) { toast('Fill required fields', 'error'); return; }
+        const amtRaw = $('#f-amt').value.trim();
+        const amt = parseFloat(amtRaw);
+        const category = $('#f-cat').value;
+        const method = $('#f-method').value;
+        const date = $('#f-date').value;
+        if (!desc) { toast('Description is required', 'error'); $('#f-desc')?.focus(); return; }
+        if (!amtRaw || isNaN(amt) || amt <= 0) { toast('Amount must be greater than 0', 'error'); $('#f-amt')?.focus(); return; }
+        if (!category) { toast('Category is required', 'error'); $('#f-cat')?.focus(); return; }
+        if (!method) { toast('Payment method is required', 'error'); $('#f-method')?.focus(); return; }
+        if (!date) { toast('Date is required', 'error'); $('#f-date')?.focus(); return; }
+
         const data = {
-          date: $('#f-date').value,
-          description: desc,
-          amount: amt,
-          category: $('#f-cat').value,
-          classification: $('#f-cls').value,
-          method: $('#f-method').value,
-          month: $('#f-date').value.slice(0,7),
+          date, description: desc, amount: amt,
+          category, method,
+          month: date.slice(0, 7),
         };
         if (isNew) {
           state.expenses.push({ id: nextId(state.expenses), ...data });
           toast('Expense added');
         } else {
+          // Preserve any legacy fields like `classification` from older data
           Object.assign(e, data);
           toast('Expense updated');
         }
@@ -4178,8 +4717,14 @@ window.recordAdvance = function(coachId, monthKey) {
         if (existing) {
           if (amt === 0) {
             state.salaries = state.salaries.filter(s => s.id !== existing.id);
+            audit('salary.advance_removed', `coach:${coachId}`,
+              `Removed advance for ${c.name} · ${fmtMonth(monthKey)}`,
+              { coachId, month: monthKey });
           } else {
             Object.assign(existing, { amount: amt, note, paidDate });
+            audit('salary.advance', `coach:${coachId}`,
+              `Updated advance ${fmt(amt)} QAR for ${c.name} · ${fmtMonth(monthKey)}`,
+              { coachId, month: monthKey, amount: amt });
           }
         } else if (amt > 0) {
           state.salaries.push({
@@ -4187,6 +4732,9 @@ window.recordAdvance = function(coachId, monthKey) {
             coachId, month: monthKey, kind: 'advance',
             amount: amt, note, paidDate,
           });
+          audit('salary.advance', `coach:${coachId}`,
+            `Recorded advance ${fmt(amt)} QAR for ${c.name} · ${fmtMonth(monthKey)}`,
+            { coachId, month: monthKey, amount: amt });
         }
         save(); closeModal(); render();
         toast(amt > 0 ? `Advance saved (${fmt(amt)} QAR)` : 'Advance removed');
@@ -4196,7 +4744,14 @@ window.recordAdvance = function(coachId, monthKey) {
 };
 
 window.deleteAdvance = function(id) {
+  const adv = (state.salaries || []).find(s => s.id === id);
   state.salaries = (state.salaries || []).filter(s => s.id !== id);
+  if (adv) {
+    const c = state.coaches.find(x => x.id === adv.coachId);
+    audit('salary.advance_removed', `coach:${adv.coachId}`,
+      `Removed advance${adv.amount ? ' (' + fmt(adv.amount) + ' QAR)' : ''} for ${c ? c.name : 'coach ' + adv.coachId}${adv.month ? ' · ' + fmtMonth(adv.month) : ''}`,
+      { coachId: adv.coachId, month: adv.month, amount: adv.amount });
+  }
   save(); closeModal(); render();
   toast('Advance removed');
 };
@@ -4225,6 +4780,9 @@ window.markPaid = function(coachId, monthKey) {
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
       ...(existing ? [{ label: 'Mark unpaid', class: 'btn ghost', onclick: () => {
         state.salaries = state.salaries.filter(s => s.id !== existing.id);
+        audit('salary.unpaid', `coach:${coachId}`,
+          `Marked ${c.name} unpaid for ${fmtMonth(monthKey)}`,
+          { coachId, month: monthKey, coachName: c.name });
         save(); closeModal(); render(); toast('Marked as pending');
       }}] : []),
       { label: existing ? 'Update' : '💰 Mark Paid', class: 'btn primary', onclick: () => {
@@ -4242,6 +4800,9 @@ window.markPaid = function(coachId, monthKey) {
             snapshotCommissionBase: pay.commissionBase,
           });
         }
+        audit('salary.paid', `coach:${coachId}`,
+          `${existing ? 'Updated payment for' : 'Paid'} ${c.name} · ${fmt(pay.net)} QAR for ${fmtMonth(monthKey)}`,
+          { coachId, month: monthKey, coachName: c.name, net: pay.net, gross: pay.gross, advance: pay.advance });
         save(); closeModal(); render(); toast(`${c.name}: ${fmt(pay.net)} QAR marked paid`);
       }},
     ],
@@ -4400,9 +4961,9 @@ window.showRevenueDetail = function(coachId, monthKey) {
     if (inv.month !== monthKey) continue;
     const cat = inv.category || 'Membership';
     if (cat !== 'Membership') continue;
-    if (!inv.customerId) continue;
-    const mem = state.members.find(x => x.id === inv.customerId);
-    if (!mem || !isActiveStatus(mem)) continue;
+    // RULE: commission follows the invoice — member's current status is irrelevant.
+    // We still look up the member NAME for display, but don't filter by status.
+    const mem = inv.customerId ? state.members.find(x => x.id === inv.customerId) : null;
     const lineItems = Array.isArray(inv.lineItems) && inv.lineItems.length
       ? inv.lineItems
       : [{ sport: inv.sport, coachId: inv.coachId, price: inv.amount || 0 }];
@@ -4411,8 +4972,8 @@ window.showRevenueDetail = function(coachId, monthKey) {
       // Summer Camp doesn't generate coach commission — skip it
       if (li.sport === SUMMER_CAMP) continue;
       lines.push({
-        memberName: mem.name,
-        memberId: mem.id,
+        memberName: mem ? mem.name : (inv.customerName || '— deleted member —'),
+        memberId: mem ? mem.id : null,
         sport: li.sport,
         price: parseFloat(li.price) || 0,
         isSwitch: !!inv.switchCredit,
@@ -4472,9 +5033,8 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
   for (const inv of state.invoices) {
     if (inv.month !== monthKey) continue;
     if ((inv.category || 'Membership') !== 'Membership') continue;
-    if (!inv.customerId) continue;
-    const mem = state.members.find(x => x.id === inv.customerId);
-    if (!mem || !isActiveStatus(mem)) continue;
+    // RULE: commission follows the invoice — member's current status is irrelevant.
+    const mem = inv.customerId ? state.members.find(x => x.id === inv.customerId) : null;
     const lineItems = Array.isArray(inv.lineItems) && inv.lineItems.length
       ? inv.lineItems
       : [{ sport: inv.sport, coachId: inv.coachId, price: inv.amount || 0 }];
@@ -4483,7 +5043,7 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
       // Summer Camp generates no coach commission — skip
       if (li.sport === SUMMER_CAMP) continue;
       lines.push({
-        memberName: mem.name,
+        memberName: mem ? mem.name : (inv.customerName || '— deleted member —'),
         sport: li.sport,
         price: parseFloat(li.price) || 0,
         isSwitch: !!inv.switchCredit,
@@ -4948,8 +5508,8 @@ PAGES.sales = (main) => {
       const custDisplay = s.historical
         ? '<span class="badge" style="background:var(--surface-2);color:var(--text-mute);font-size:10px">historical</span>'
         : (s.customerType === 'member'
-          ? `<div class="font-bold" style="${cust.isDeleted ? 'text-decoration:line-through;color:var(--text-mute)' : ''}">${escapeHtml(cust.name || '—')}</div><div class="text-mute" style="font-size:11px">🎟 member${cust.phone ? ' · 📱 ' + escapeHtml(cust.phone) : ''}</div>`
-          : `<div class="font-bold">${escapeHtml(cust.name || 'Walk-in')}</div>${cust.phone ? `<div class="text-mute" style="font-size:11px">📱 ${escapeHtml(cust.phone)}</div>` : ''}`);
+          ? `<div class="font-bold" style="${cust.isDeleted ? 'text-decoration:line-through;color:var(--text-mute)' : ''}">${escapeHtml(cust.name || '—')}</div><div class="text-mute" style="font-size:11px">🎟 member${cust.phone ? ' · ' + phoneCell(cust.phone) : ''}</div>`
+          : `<div class="font-bold">${escapeHtml(cust.name || 'Walk-in')}</div>${cust.phone ? `<div class="text-mute" style="font-size:11px">${phoneCell(cust.phone)}</div>` : ''}`);
       const balanceLabel = (s.balance || 0) > 0
         ? `<div style="font-size:10px;color:var(--accent-2)">${fmt(s.balance)} due</div>`
         : '';
@@ -5080,7 +5640,7 @@ function newSale(onDone) {
           </div>
           <div id="cust-walkin-fields">
             <div class="field" style="margin-bottom:8px"><label>Name *</label><input type="text" id="sale-walkin-name" placeholder="Required" /></div>
-            <div class="field" style="margin-bottom:8px"><label>Mobile *</label><input type="text" id="sale-walkin-phone" placeholder="Required" /></div>
+            <div style="margin-bottom:8px">${phoneInputHtml('sale-walkin-phone', '', { label: 'Mobile', fieldStyle: 'margin:0' })}</div>
           </div>
 
           <div style="font-weight:700;font-size:13px;margin:14px 0 6px">📝 Details</div>
@@ -5256,13 +5816,12 @@ function completeSale(onDone) {
     customerPhone = m.phone || null;
   } else {
     customerName = $('#sale-walkin-name').value.trim();
-    customerPhone = $('#sale-walkin-phone').value.trim();
+    const phoneInput = readPhoneInput('sale-walkin-phone');
+    customerPhone = phoneInput.phone;
     if (!customerName) { toast('Walk-in customer name required', 'error'); $('#sale-walkin-name')?.focus(); return; }
-    if (!customerPhone) { toast('Walk-in mobile is required', 'error'); $('#sale-walkin-phone')?.focus(); return; }
-    const walkinDigits = customerPhone.replace(/\D/g, '');
-    if (walkinDigits.length < 8) {
-      toast(`Mobile must have at least 8 digits (got ${walkinDigits.length})`, 'error');
-      $('#sale-walkin-phone')?.focus();
+    if (!phoneInput.valid) {
+      toast(phoneInput.error || 'Walk-in mobile is invalid', 'error');
+      document.getElementById('sale-walkin-phone-digits')?.focus();
       return;
     }
     // Auto-link to existing member if same mobile
@@ -5339,7 +5898,7 @@ window.viewSaleDetail = function(id) {
         </div>
         <div>
           <div class="text-mute" style="font-size:11px">Customer</div>
-          <div class="font-bold" style="${cust.isDeleted ? 'text-decoration:line-through;color:var(--text-mute)' : ''}">${escapeHtml(cust.name || 'Walk-in')}${cust.phone ? ` · 📱 ${escapeHtml(cust.phone)}` : ''}</div>
+          <div class="font-bold" style="${cust.isDeleted ? 'text-decoration:line-through;color:var(--text-mute)' : ''}">${escapeHtml(cust.name || 'Walk-in')}${cust.phone ? ` · ${phoneCell(cust.phone, { stop: false })}` : ''}</div>
           <div class="text-mute" style="font-size:11px">${s.historical ? 'Historical (imported)' : s.customerType === 'member' ? '🎟 Member' : '🚶 Walk-in'}${cust.nationality ? ' · 🌍 ' + escapeHtml(cust.nationality) : ''}</div>
         </div>
       </div>
@@ -5679,6 +6238,122 @@ window.moveSport = function(name, delta) {
 };
 
 // ─── SETTINGS ──────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// AUDIT LOG PAGE — view who changed what, when.
+// Read-only. Records hooked from key actions in app.js audit() helper.
+// ═══════════════════════════════════════════════════════════════════
+PAGES.audit = (main) => {
+  let filter = { search: '', action: 'all', days: '30' };
+  const pg = makePager(50);
+
+  function refresh() {
+    const log = Array.isArray(state.auditLog) ? state.auditLog : [];
+    // Newest first
+    const sorted = [...log].sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+    const cutoff = filter.days === 'all' ? null
+      : new Date(Date.now() - parseInt(filter.days) * 86400000).toISOString();
+    const all = sorted.filter(e => {
+      if (cutoff && e.ts < cutoff) return false;
+      if (filter.action !== 'all' && !e.action.startsWith(filter.action)) return false;
+      if (filter.search) {
+        const q = filter.search.toLowerCase();
+        const hay = [e.action, e.target, e.summary, e.user].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    const rows = paginate(all, pg);
+
+    $('#audit-count').textContent = `${all.length} entries${cutoff ? ' · last ' + filter.days + ' days' : ''}`;
+    $('#audit-tbody').innerHTML = rows.length ? rows.map(e => {
+      const ts = new Date(e.ts);
+      const dateStr = isNaN(ts) ? '—' : ts.toLocaleString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:false });
+      const actionColor = e.action.includes('archive') ? 'var(--red)'
+                       : e.action.includes('restore') ? 'var(--green)'
+                       : e.action.includes('withdraw') ? 'var(--accent-2)'
+                       : 'var(--blue)';
+      return `
+        <tr>
+          <td class="text-mute" style="white-space:nowrap;font-size:11px">${dateStr}</td>
+          <td><span class="badge" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:${actionColor}">${escapeHtml(e.action)}</span></td>
+          <td style="font-weight:500">${escapeHtml(e.summary || '—')}</td>
+          <td class="text-mute" style="font-size:11px">${escapeHtml(e.user || 'unknown')}</td>
+          <td class="text-mute" style="font-family:'JetBrains Mono',monospace;font-size:10px">${escapeHtml(e.target || '')}</td>
+        </tr>
+      `;
+    }).join('') : `<tr><td colspan="5" class="empty"><div class="empty-icon">📋</div>No audit entries match these filters</td></tr>`;
+
+    $('#audit-pagination').innerHTML = paginationBar(pg, all.length, 'audit');
+    bindPagination('audit', pg, all.length, refresh);
+  }
+
+  // Build list of action prefixes present
+  const log = Array.isArray(state.auditLog) ? state.auditLog : [];
+  const prefixes = [...new Set(log.map(e => (e.action || '').split('.')[0]))].filter(Boolean).sort();
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>Audit Log</h1>
+        <div class="subtitle"><span id="audit-count">Loading…</span> · last 1000 actions retained</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" id="audit-export">📥 Export CSV</button>
+        <button class="btn ghost" id="audit-clear" title="Permanently clear the audit log">🗑 Clear</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="filter-bar">
+        <div class="search"><input id="audit-search" type="text" placeholder="Search action, summary, user…" /></div>
+        <select id="audit-action" class="btn ghost">
+          <option value="all">All actions</option>
+          ${prefixes.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')}
+        </select>
+        <select id="audit-days" class="btn ghost">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="all">All time</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th style="width:140px">When</th>
+            <th style="width:140px">Action</th>
+            <th>What happened</th>
+            <th style="width:100px">By</th>
+            <th style="width:120px">Target</th>
+          </tr></thead>
+          <tbody id="audit-tbody"></tbody>
+        </table>
+      </div>
+      <div id="audit-pagination"></div>
+    </div>
+  `;
+  $('#audit-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
+  $('#audit-action').addEventListener('change', e => { filter.action = e.target.value; pg.page = 1; refresh(); });
+  $('#audit-days').addEventListener('change', e => { filter.days = e.target.value; pg.page = 1; refresh(); });
+  $('#audit-export').addEventListener('click', () => {
+    const log = state.auditLog || [];
+    if (!log.length) { toast('Nothing to export', 'error'); return; }
+    const csv = [
+      ['Timestamp','User','Action','Target','Summary'],
+      ...log.map(e => [e.ts, e.user, e.action, e.target, e.summary]),
+    ].map(r => r.map(c => `"${String(c || '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    downloadFile(`audit-log-${TODAY}.csv`, csv, 'text/csv');
+    toast(`Exported ${log.length} entries`);
+  });
+  $('#audit-clear').addEventListener('click', () => {
+    if (!confirm('Clear the entire audit log? This cannot be undone.\n\n(Tip: Export to CSV first if you need a copy.)')) return;
+    state.auditLog = [];
+    save();
+    render();
+    toast('Audit log cleared');
+  });
+  refresh();
+};
+
 PAGES.settings = (main) => {
   // Ensure settings exists
   if (!state.settings) state.settings = {};
@@ -5756,6 +6431,16 @@ PAGES.settings = (main) => {
           <div class="text-mute" style="font-size:11px;margin-top:4px">Inventory items at or below this count are flagged LOW.</div>
         </div>
       </div>
+      <div class="form-row">
+        <div class="field">
+          <label>Duplicate QID handling</label>
+          <select id="pref-qidmode">
+            <option value="block" ${(cur.qidDuplicateMode || 'block') === 'block' ? 'selected' : ''}>Block &amp; open the existing member (recommended)</option>
+            <option value="warn" ${cur.qidDuplicateMode === 'warn' ? 'selected' : ''}>Warn only — allow saving after confirmation</option>
+          </select>
+          <div class="text-mute" style="font-size:11px;margin-top:4px">A national ID belongs to one person. "Block" reopens the existing record; "Warn" lets you save anyway after a confirmation. (Mobile + Name duplicates are always blocked.)</div>
+        </div>
+      </div>
       <div style="margin-top:12px"><button class="btn primary" id="save-prefs">💾 Save preferences</button></div>
     </div>
 
@@ -5780,6 +6465,63 @@ PAGES.settings = (main) => {
         </table>
       </div>
       <div style="margin-top:12px"><button class="btn primary" id="save-commissions">💾 Save commission rates</button></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">💸 Expense Categories</div><div class="card-subtitle">Customize the categories shown in the New Expense form. "Others" is always available and cannot be removed.</div></div></div>
+      <div id="cat-rows" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px">
+        ${EXP_CATS.map((c, i) => {
+          const usage = (state.expenses || []).filter(e => e.category === c).length;
+          const isReserved = RESERVED_EXPENSE_CATEGORIES.includes(c);
+          const canDelete = !isReserved && usage === 0;
+          return `
+            <div class="cat-row" data-cat="${escapeHtml(c)}" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface-2);border-radius:8px;border:1px solid var(--border)">
+              <span style="font-size:14px;font-weight:600;flex:1">${escapeHtml(c)}${isReserved ? ' <span class="badge" style="font-size:9px;padding:1px 6px;margin-left:6px">RESERVED</span>' : ''}</span>
+              <span class="text-mute" style="font-size:11px">${usage} use${usage === 1 ? '' : 's'}</span>
+              ${canDelete
+                ? `<button class="btn ghost sm" data-cat-delete="${escapeHtml(c)}" style="color:var(--red)" title="Delete this category">🗑</button>`
+                : `<button class="btn ghost sm" disabled style="opacity:.4" title="${isReserved ? 'Reserved — cannot be deleted' : usage + ' expense' + (usage === 1 ? '' : 's') + ' use this category — cannot be deleted'}">🔒</button>`}
+            </div>
+          `;
+        }).join('')}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <input id="cat-new" type="text" placeholder="New category name..." style="flex:1;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)" />
+        <button class="btn primary" id="cat-add">+ Add category</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">💬 WhatsApp Reminder Templates</div><div class="card-subtitle">Bilingual messages auto-sent from the Expiring page. Tokens: <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{name}</code> <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{nameArabic}</code> <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{sport}</code> <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{coach}</code> <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{expiry}</code> <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{daysAgo}</code> <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{daysLeft}</code></div></div></div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div class="field" style="margin:0">
+          <label style="display:flex;align-items:center;gap:6px"><span style="background:rgba(239,68,68,.15);color:var(--red);padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700">EXPIRED</span> English</label>
+          <textarea id="tpl-expired-en" rows="8" style="width:100%;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;line-height:1.5;resize:vertical">${escapeHtml(reminderTemplate('expired_en'))}</textarea>
+        </div>
+        <div class="field" style="margin:0">
+          <label style="display:flex;align-items:center;gap:6px"><span style="background:rgba(239,68,68,.15);color:var(--red);padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700">EXPIRED</span> العربية</label>
+          <textarea id="tpl-expired-ar" rows="8" dir="rtl" style="width:100%;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;line-height:1.5;resize:vertical">${escapeHtml(reminderTemplate('expired_ar'))}</textarea>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div class="field" style="margin:0">
+          <label style="display:flex;align-items:center;gap:6px"><span style="background:rgba(245,158,11,.15);color:var(--accent-2);padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700">EXPIRING SOON</span> English</label>
+          <textarea id="tpl-expiring-en" rows="8" style="width:100%;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;line-height:1.5;resize:vertical">${escapeHtml(reminderTemplate('expiring_en'))}</textarea>
+        </div>
+        <div class="field" style="margin:0">
+          <label style="display:flex;align-items:center;gap:6px"><span style="background:rgba(245,158,11,.15);color:var(--accent-2);padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700">EXPIRING SOON</span> العربية</label>
+          <textarea id="tpl-expiring-ar" rows="8" dir="rtl" style="width:100%;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;line-height:1.5;resize:vertical">${escapeHtml(reminderTemplate('expiring_ar'))}</textarea>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn primary" id="save-tpls">💾 Save templates</button>
+        <button class="btn ghost" id="reset-tpls" title="Restore the default English + Arabic messages">↻ Restore defaults</button>
+        <button class="btn ghost" id="preview-tpl" title="Open WhatsApp with a sample message using the first member">👁 Preview</button>
+        <span class="text-mute" style="font-size:11px;margin-left:auto">If a member has no Arabic name, only the English section is sent.</span>
+      </div>
     </div>
 
     <div class="card" style="border:1px solid var(--accent);background:var(--surface)">
@@ -5854,6 +6596,8 @@ PAGES.settings = (main) => {
     if (isNaN(days) || days < 1) { toast('Days must be ≥ 1', 'error'); return; }
     state.settings.expiringSoonDays = days;
     state.settings.lowStockThreshold = isNaN(lowStock) ? 3 : lowStock;
+    const qidMode = $('#pref-qidmode')?.value;
+    if (qidMode === 'block' || qidMode === 'warn') state.settings.qidDuplicateMode = qidMode;
     save();
     toast(`Preferences saved (alert ${days} days before expiry)`);
   });
@@ -5880,6 +6624,114 @@ PAGES.settings = (main) => {
     save();
     render();
     toast(changed ? `Updated commission for ${changed} coach${changed !== 1 ? 'es' : ''}` : 'No changes to save');
+  });
+
+  // ── Expense categories management ─────────────────────────────
+  // Lazy-init from defaults on first edit if not yet set
+  function ensureCategories() {
+    if (!state.settings) state.settings = {};
+    if (!Array.isArray(state.settings.expenseCategories) || !state.settings.expenseCategories.length) {
+      state.settings.expenseCategories = [...DEFAULT_EXPENSE_CATEGORIES];
+    }
+  }
+  $('#cat-add')?.addEventListener('click', () => {
+    const inp = $('#cat-new');
+    const name = (inp?.value || '').trim();
+    if (!name) { toast('Enter a category name', 'error'); inp?.focus(); return; }
+    if (name.length > 40) { toast('Category name is too long (max 40 chars)', 'error'); return; }
+    ensureCategories();
+    // Case-insensitive duplicate check
+    if (state.settings.expenseCategories.some(c => c.toLowerCase() === name.toLowerCase())) {
+      toast(`"${name}" already exists`, 'error');
+      return;
+    }
+    state.settings.expenseCategories.push(name);
+    save();
+    render();
+    toast(`Added category: ${name}`);
+  });
+  document.querySelectorAll('[data-cat-delete]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const name = e.currentTarget.dataset.catDelete;
+      if (RESERVED_EXPENSE_CATEGORIES.includes(name)) {
+        toast(`"${name}" is reserved and cannot be deleted`, 'error');
+        return;
+      }
+      const usage = (state.expenses || []).filter(x => x.category === name).length;
+      if (usage > 0) {
+        toast(`"${name}" is used by ${usage} expense${usage === 1 ? '' : 's'} — cannot delete`, 'error');
+        return;
+      }
+      if (!confirm(`Delete category "${name}"?\n\nThis only removes it from the dropdown. No expense data is affected.`)) return;
+      ensureCategories();
+      state.settings.expenseCategories = state.settings.expenseCategories.filter(c => c !== name);
+      save();
+      render();
+      toast(`Deleted: ${name}`);
+    });
+  });
+  // Allow Enter key in the new-category input to trigger Add
+  $('#cat-new')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); $('#cat-add')?.click(); }
+  });
+
+  // ── Reminder templates ─────────────────────────────────────────
+  $('#save-tpls')?.addEventListener('click', () => {
+    if (!state.settings) state.settings = {};
+    state.settings.reminderTemplates = {
+      expired_en:  $('#tpl-expired-en').value,
+      expired_ar:  $('#tpl-expired-ar').value,
+      expiring_en: $('#tpl-expiring-en').value,
+      expiring_ar: $('#tpl-expiring-ar').value,
+    };
+    save();
+    toast('💬 Reminder templates saved');
+  });
+  $('#reset-tpls')?.addEventListener('click', () => {
+    if (!confirm('Restore default reminder templates?\n\nYour current customizations will be replaced with the bundled English + Arabic defaults.')) return;
+    if (state.settings) delete state.settings.reminderTemplates;
+    save();
+    render();
+    toast('Templates restored to defaults');
+  });
+  $('#preview-tpl')?.addEventListener('click', () => {
+    // Pick the first non-archived member with an expiry to demo with
+    const sample = activeMembers().find(m => m.expiryDate) || activeMembers()[0];
+    if (!sample) { toast('No members to preview with', 'error'); return; }
+    const days = sample.expiryDate ? (daysUntil(sample.expiryDate) ?? 0) : -3;
+    const kind = days < 0 ? 'expired' : 'expiring';
+    // Use the LIVE textarea values, not the saved settings (so preview reflects edits)
+    const liveTemplates = {
+      expired_en:  $('#tpl-expired-en').value,
+      expired_ar:  $('#tpl-expired-ar').value,
+      expiring_en: $('#tpl-expiring-en').value,
+      expiring_ar: $('#tpl-expiring-ar').value,
+    };
+    // Temporarily inject live values
+    const prevSaved = state.settings?.reminderTemplates;
+    if (!state.settings) state.settings = {};
+    state.settings.reminderTemplates = liveTemplates;
+    const msg = buildReminderMessage(sample, kind, days);
+    state.settings.reminderTemplates = prevSaved;  // restore — don't persist
+    // Show in a modal so admin can read before sending
+    showModal({
+      title: `💬 Preview · ${sample.name} (${kind === 'expired' ? 'Expired' : 'Expiring'})`,
+      wide: true,
+      body: `
+        <div class="text-mute" style="font-size:12px;margin-bottom:10px">This is what the WhatsApp message will look like for <b>${escapeHtml(sample.name)}</b>. Tokens have been filled in with this member's actual data.</div>
+        <pre style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:14px;white-space:pre-wrap;font-family:inherit;font-size:13px;line-height:1.6;max-height:400px;overflow-y:auto">${escapeHtml(msg)}</pre>
+      `,
+      actions: [
+        { label: 'Close', class: 'btn ghost', onclick: closeModal },
+        ...(sample.phone && !sample.phone.startsWith('+9747000') ? [{
+          label: '💬 Open in WhatsApp', class: 'btn primary', onclick: () => {
+            const ph = sample.phone.replace(/[^\d]/g, '');
+            window.open(`https://wa.me/${ph}?text=${encodeURIComponent(msg)}`, '_blank');
+            closeModal();
+          }
+        }] : []),
+      ],
+    });
   });
 
 window.downloadBackup = function() {
@@ -6045,6 +6897,7 @@ PAGES.attendance = (main) => {
     // legacy field that didn't track real enrollment.
     const rows = [];
     for (const m of state.members) {
+      if (m.deleted) continue;  // archived members are out of the active roster
       if (filter.coach !== 'all' && m.coachId !== parseInt(filter.coach)) continue;
       if (filter.memberId != null && m.id !== filter.memberId) continue;
       const sports = memberSports(m);
@@ -6097,7 +6950,7 @@ PAGES.attendance = (main) => {
   function cellRender(memberId, sport, day, mark) {
     const cls = mark === 'Y' ? 'att-y' : mark === 'N' ? 'att-n' : 'att-empty';
     const txt = mark || '·';
-    const sportEsc = sport.replace(/'/g, "\\'");
+    const sportEsc = sport.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
     return `<td class="att-cell ${cls}" onclick="window._attMark(${memberId}, '${sportEsc}', ${day}, ${mark ? `'${mark}'` : 'null'})">${txt}</td>`;
   }
 
@@ -6125,7 +6978,7 @@ PAGES.attendance = (main) => {
       }).join('');
       const total = y + n;
       const rate = total ? Math.round(y/total*100) : 0;
-      const sportEsc = sport.replace(/'/g, "\\'");
+      const sportEsc = sport.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
       const status = memberStatus(m);
       const isExpired = status === 'Expired';
       const rowStyle = isExpired ? 'background:rgba(120,120,140,.06)' : '';
@@ -6136,9 +6989,9 @@ PAGES.attendance = (main) => {
           : '');
       return `
         <tr style="${rowStyle}">
-          <td class="att-name-cell" title="${escapeHtml(m.name)} · ${escapeHtml(sport)} · ${escapeHtml(coachName(coachId))}${isExpired ? ' · expired ' + fmtDate(m.expiryDate) : ''}">
+          <td class="att-name-cell" title="${escapeHtml(m.name)} · ${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}${isExpired ? ' · expired ' + fmtDate(m.expiryDate) : ''}">
             <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.name)}${statusBadge}</div>
-            <div class="text-mute" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(sport)} · ${escapeHtml(coachName(coachId))}</div>
+            <div class="text-mute" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}</div>
           </td>
           ${cells}
           <td class="att-total"><span style="color:var(--green);font-weight:600">${y}</span><span class="text-mute"> / ${total || '—'}</span></td>
@@ -6459,7 +7312,7 @@ PAGES.attendance = (main) => {
     const rows = getRows();
     if (!rows.length) { toast('No students to export', 'error'); return; }
 
-    const dayHeads = Array.from({length:days},(_,i) => `<th style="border:1px solid #e5e5ea;padding:3px 1px;font-size:8px;color:#777;width:16px">${i+1}</th>`).join('');
+    const dayHeads = Array.from({length:days},(_,i) => `<th style="border:1px solid #e5e5ea;padding:3px 1px;font-size:8px;color:#777">${i+1}</th>`).join('');
     let grandY = 0, grandSlots = 0;
     const bodyRows = rows.map(({ m, sport, coachId }) => {
       const dd = m.dailyAttendance?.[gM]?.[sport] || {};
@@ -6475,10 +7328,10 @@ PAGES.attendance = (main) => {
       grandY += y; grandSlots += tot;
       const rcol = rate>=75?'#059669':rate>=40?'#d97706':rate>0?'#dc2626':'#999';
       return `<tr>
-        <td style="border:1px solid #e5e5ea;padding:4px 8px;font-size:10px;font-weight:600;white-space:nowrap">${escapeHtml(m.name)}<div style="font-size:8px;color:#999;font-weight:400">${escapeHtml(sport)} · ${escapeHtml(coachName(coachId))}</div></td>
+        <td style="border:1px solid #e5e5ea;padding:4px 6px;font-size:9px;font-weight:600;overflow:hidden;text-overflow:ellipsis"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(m.name)}</div><div style="font-size:7.5px;color:#999;font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}</div></td>
         ${cells}
-        <td style="border:1px solid #e5e5ea;text-align:center;font-size:10px;font-weight:700">${y}/${tot||'—'}</td>
-        <td style="border:1px solid #e5e5ea;text-align:center;font-size:10px;font-weight:700;color:${rcol}">${tot?rate+'%':'—'}</td>
+        <td style="border:1px solid #e5e5ea;text-align:center;font-size:9px;font-weight:700">${y}/${tot||'—'}</td>
+        <td style="border:1px solid #e5e5ea;text-align:center;font-size:9px;font-weight:700;color:${rcol}">${tot?rate+'%':'—'}</td>
       </tr>`;
     }).join('');
 
@@ -6487,20 +7340,32 @@ PAGES.attendance = (main) => {
     const overallRate = grandSlots ? Math.round(grandY/grandSlots*100) : 0;
     const distinctMembers = new Set(rows.map(r => r.m.id)).size;
 
+    // Build a <colgroup> so the table respects column widths instead of letting
+    // the Student column stretch wide. `table-layout: fixed` + colgroup is the
+    // canonical way to lock layout for print.
+    const dayColWidth = `calc((100% - 200px) / ${days})`;  // 200px = student(140) + Y/Tot(34) + Rate(26)
+    const colgroup = `<colgroup>
+      <col style="width:140px">
+      ${Array.from({length:days},() => `<col style="width:${dayColWidth}">`).join('')}
+      <col style="width:34px">
+      <col style="width:26px">
+    </colgroup>`;
+
     const win = window.open('', '_blank');
     win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>attendance_${gM}</title>
     <style>
       *{margin:0;padding:0;box-sizing:border-box}
       @page{size:A4 landscape;margin:8mm}
-      body{font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:18px}
-      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f26060;padding-bottom:12px;margin-bottom:14px}
-      .brand{font-size:20px;font-weight:800}.brand span{color:#f26060}
+      body{font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:14px}
+      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f26060;padding-bottom:10px;margin-bottom:12px}
+      .brand{font-size:18px;font-weight:800}.brand span{color:#f26060}
       .sub{color:#777;font-size:11px;margin-top:2px}
-      .meta{font-size:11px;color:#555;margin-bottom:12px}
+      .meta{font-size:11px;color:#555;margin-bottom:10px}
       .meta b{color:#1a1a1a}
-      table{border-collapse:collapse;width:100%}
-      thead th{background:#fafafa}
-      .foot{margin-top:16px;font-size:9px;color:#aaa;text-align:center;border-top:1px solid #eee;padding-top:8px}
+      table{border-collapse:collapse;width:100%;table-layout:fixed}
+      thead th{background:#fafafa;text-align:center}
+      td{overflow:hidden}
+      .foot{margin-top:14px;font-size:9px;color:#aaa;text-align:center;border-top:1px solid #eee;padding-top:6px}
     </style></head><body>
       <div class="head">
         <div><div class="brand">Black <span>Stars</span> Sports Club</div><div class="sub">Waab, Doha · Attendance Report</div></div>
@@ -6508,7 +7373,8 @@ PAGES.attendance = (main) => {
       </div>
       <div class="meta"><b>${fmtMonth(gM)}</b> · ${escapeHtml(coachLabel)} · ${escapeHtml(sportLabel)} · <b>${distinctMembers}</b> student${distinctMembers===1?'':'s'} · <b>${rows.length}</b> row${rows.length===1?'':'s'} · overall <b>${overallRate}%</b></div>
       <table>
-        <thead><tr><th style="border:1px solid #e5e5ea;padding:4px 8px;font-size:9px;color:#777;text-align:left">Student · Sport</th>${dayHeads}<th style="border:1px solid #e5e5ea;font-size:9px;color:#777;width:34px">Y/Tot</th><th style="border:1px solid #e5e5ea;font-size:9px;color:#777;width:30px">Rate</th></tr></thead>
+        ${colgroup}
+        <thead><tr><th style="border:1px solid #e5e5ea;padding:4px 6px;font-size:9px;color:#777;text-align:left">Student · Sport</th>${dayHeads}<th style="border:1px solid #e5e5ea;font-size:9px;color:#777">Y/Tot</th><th style="border:1px solid #e5e5ea;font-size:9px;color:#777">Rate</th></tr></thead>
         <tbody>${bodyRows}</tbody>
       </table>
       <div class="foot">Black Stars CRM · Y = present · N = absent · · = not marked</div>
@@ -6531,7 +7397,7 @@ PAGES.attendance = (main) => {
         if (v === 'N') n++;
         return v;
       });
-      csvRows.push([m.name, sport, coachName(coachId), ...cells, y, n, y+n ? Math.round(y/(y+n)*100)+'%' : '']);
+      csvRows.push([m.name, sport, sport === SUMMER_CAMP ? '' : coachName(coachId), ...cells, y, n, y+n ? Math.round(y/(y+n)*100)+'%' : '']);
     }
     const csv = csvRows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
     downloadFile(`attendance-${gridMonth()}.csv`, csv, 'text/csv');
@@ -6701,7 +7567,7 @@ PAGES.history = (main) => {
             <div class="text-dim" style="font-size:13px">${escapeHtml(m.sport)} · ${escapeHtml(coachName(m.coachId))}${m.level ? ' · '+escapeHtml(m.level) : ''}</div>
             <div class="mt-1">
               <span class="badge ${memberStatus(m).toLowerCase()}">${memberStatus(m)}</span>
-              ${m.phone && !m.phone.startsWith('+9747000') ? `<span class="text-mute" style="margin-left:8px;font-size:11px">📱 ${escapeHtml(m.phone)}</span>` : ''}
+              ${isRealPhone(m.phone) ? `<span class="text-mute" style="margin-left:8px;font-size:11px">📱 ${phoneCell(m.phone, { stop: false })}</span>` : ''}
               ${m.qid ? `<span class="text-mute" style="margin-left:8px;font-size:11px">🆔 ${escapeHtml(m.qid)}</span>` : ''}
             </div>
           </div>
@@ -6709,6 +7575,7 @@ PAGES.history = (main) => {
             <button class="btn ghost sm" onclick="editMember(${m.id})" title="Edit member">✏️ Edit</button>
             <button class="btn ghost sm" onclick="freezeMember(${m.id})" title="Freeze membership (pause and shift expiry)">❄️ Freeze</button>
             <button class="btn ghost sm" onclick="switchSport(${m.id})" title="Switch this member to a different sport/coach">🔄 Switch Sport</button>
+            <button class="btn ghost sm" onclick="printIdCard(${m.id})" title="Print membership ID card">🪪 ID Card</button>
             <button class="btn primary sm" onclick="addRenewal(${m.id})" title="Record a new subscription / renewal">+ Add Renewal</button>
           </div>
         </div>
@@ -6855,6 +7722,43 @@ PAGES.history = (main) => {
         </div>
         ` : ''}
 
+        ${(m.withdrawals && m.withdrawals.length) ? `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:18px 0 10px">
+          <h3 style="font-size:14px;font-weight:600">↩ Withdrawal History</h3>
+          <span class="text-mute" style="font-size:11px">${m.withdrawals.length} withdrawal${m.withdrawals.length === 1 ? '' : 's'} · ${fmt(m.withdrawals.reduce((s,w) => s + (w.refundAmount || 0), 0))} QAR refunded</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Sport</th>
+                <th>Coach</th>
+                <th class="text-right">Paid</th>
+                <th class="text-right">Attended</th>
+                <th class="text-right">Used</th>
+                <th class="text-right">Refunded</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${m.withdrawals.slice().reverse().map(w => `
+                <tr>
+                  <td>${fmtDate(w.date)}</td>
+                  <td><span class="badge">${escapeHtml(w.sport)}</span></td>
+                  <td class="text-mute" style="font-size:12px">${w.sport === SUMMER_CAMP ? '<span style="font-style:italic">no coach</span>' : escapeHtml(w.coachName || coachName(w.coachId) || '—')}</td>
+                  <td class="text-right num">${fmt(w.originalPrice)}</td>
+                  <td class="text-right num">${w.attendedClasses}/${w.totalClasses}</td>
+                  <td class="text-right num" style="color:var(--green)">${fmt(w.usedAmount)}</td>
+                  <td class="text-right num" style="color:var(--accent-2);font-weight:700">${fmt(w.refundAmount)}</td>
+                  <td class="text-mute" style="font-size:12px">${escapeHtml(w.reason || '—')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        ` : ''}
+
         ${(() => {
           // Other transactions: rentals (matched by phone/QID) + product sales (matched by customerId)
           const memberSales = (state.sales || []).filter(s => s.customerId === m.id);
@@ -6987,6 +7891,211 @@ PAGES.history = (main) => {
 // History preservation: the OLD sport attendance and subscription rows STAY
 // in place. The enrollment row is updated to the new sport+coach. Future
 // commission ONLY comes from the new enrollment.
+// ─── Withdraw / Refund flow ─────────────────────────────────────────
+// When a paying member wants to leave a sport mid-cycle, we calculate the
+// refund based on classes attended vs total purchased, then create a
+// "withdraw-credit" invoice that:
+//   1. Reduces revenue by the refund amount (negative invoice amount)
+//   2. Reduces coach commission base by the unused portion (negative line item)
+//   3. Removes the enrollment from the member
+//
+// The original payment invoice stays UNTOUCHED — audit trail. The withdraw
+// invoice nets the difference, and shows up in the withdraw month's payroll.
+//
+// Math (matches Switch Sport reconciliation, simplified to one-side):
+//   attendedRatio = attendedClasses / totalClasses
+//   usedAmount    = price × attendedRatio    (member's value received)
+//   refundAmount  = price − usedAmount       (what we return)
+//   commissionAdj = −refundAmount            (coach loses commission on unused portion)
+window.withdrawSport = function(memberId, sport) {
+  const m = state.members.find(x => x.id === memberId);
+  if (!m) { toast('Member not found', 'error'); return; }
+
+  // Find the enrollment row
+  const enrollment = (m.enrollments || []).find(e => e.sport === sport);
+  if (!enrollment) { toast(`No enrollment for ${sport}`, 'error'); return; }
+
+  const totalClasses = parseInt(enrollment.classes) || 0;
+  const price = parseFloat(enrollment.price) || 0;
+  if (price <= 0) {
+    toast('Cannot withdraw a free enrollment — just delete the row instead', 'error');
+    return;
+  }
+
+  // Count attended classes for this sport (Y marks in dailyAttendance)
+  let attended = 0;
+  const ymKeys = Object.keys(m.dailyAttendance || {});
+  for (const ym of ymKeys) {
+    const sportData = m.dailyAttendance[ym]?.[sport] || {};
+    for (const mark of Object.values(sportData)) {
+      if (mark === 'Y') attended++;
+    }
+  }
+
+  const isCamp = sport === SUMMER_CAMP;
+  const attendedRatio = totalClasses > 0 ? Math.min(attended / totalClasses, 1) : 0;
+  const usedAmount = Math.round(price * attendedRatio * 100) / 100;
+  const refundAmount = Math.round((price - usedAmount) * 100) / 100;
+
+  // Show the withdrawal confirmation modal
+  showModal({
+    title: `↩ Withdraw ${m.name} from ${sport}`,
+    body: `
+      <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px">
+        <div style="font-weight:700;margin-bottom:6px;color:var(--accent-2)">⚠ This will:</div>
+        <ul style="margin:0;padding-left:18px;line-height:1.7">
+          <li>Issue a refund of <b>${fmt(refundAmount)} QAR</b> to the member</li>
+          <li>Remove ${sport} from their enrollments</li>
+          ${!isCamp && enrollment.coachId
+            ? `<li>Deduct <b>${fmt(refundAmount)} QAR</b> from <b>${escapeHtml(coachName(enrollment.coachId))}</b>'s commission base in ${fmtMonth(currentMonth())}</li>`
+            : isCamp
+              ? `<li>No coach commission impact (Summer Camp revenue belongs to club)</li>`
+              : `<li>No coach assigned — no commission impact</li>`}
+          <li>The original payment invoice stays untouched (audit trail)</li>
+        </ul>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div class="field" style="margin:0">
+          <label>Original payment</label>
+          <div style="padding:10px;background:var(--surface-2);border-radius:8px;font-weight:700">${fmt(price)} QAR</div>
+        </div>
+        <div class="field" style="margin:0">
+          <label>Classes attended</label>
+          <div style="padding:10px;background:var(--surface-2);border-radius:8px">
+            <b>${attended} / ${totalClasses}</b>
+            <span class="text-mute" style="font-size:11px"> · ${Math.round(attendedRatio * 100)}% used</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div class="field" style="margin:0">
+          <label>Used (kept by club)</label>
+          <div style="padding:10px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px;color:var(--green);font-weight:700">${fmt(usedAmount)} QAR</div>
+        </div>
+        <div class="field" style="margin:0">
+          <label>Refund to member <span style="color:var(--accent)">*</span></label>
+          <input id="wd-refund" type="number" min="0" max="${price}" step="0.01" value="${refundAmount}" style="font-size:18px;font-weight:700;color:var(--accent-2)" />
+          <div class="text-mute" style="font-size:10px;margin-top:3px">Auto-calculated; adjust if needed</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Refund date</label>
+        <input id="wd-date" type="date" value="${TODAY}" />
+      </div>
+
+      <div class="field">
+        <label>Refund method</label>
+        <select id="wd-method">
+          <option value="cash">Cash</option>
+          <option value="card">Card</option>
+          <option value="transfer">Bank transfer</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Reason (recorded in audit trail)</label>
+        <input id="wd-reason" placeholder="e.g. moved to another club, schedule conflict" />
+      </div>
+    `,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      { label: '↩ Confirm Withdrawal', class: 'btn danger', onclick: () => {
+        const refund = Math.max(0, parseFloat(document.getElementById('wd-refund').value) || 0);
+        const refundDate = document.getElementById('wd-date').value || TODAY;
+        const method = document.getElementById('wd-method').value || 'cash';
+        const reason = document.getElementById('wd-reason').value.trim() || null;
+
+        if (refund > price) { toast(`Refund cannot exceed paid amount (${fmt(price)} QAR)`, 'error'); return; }
+
+        const refundMonth = refundDate.slice(0, 7);
+        const withdrawRef = `WD-${Date.now().toString().slice(-6)}`;
+
+        // Create the withdraw-credit invoice. NEGATIVE amount + negative line
+        // item so coach commission base goes down by `refund` in this month.
+        // Summer Camp has no commission anyway (Summer Camp filter handles it).
+        const lineItems = [{
+          sport,
+          coach: enrollment.coachId ? coachName(enrollment.coachId) : null,
+          coachId: enrollment.coachId || null,
+          classes: -(totalClasses - attended),  // negative visual cue
+          price: -refund,                       // negative price → negative commission base
+        }];
+        state.invoices.push({
+          id: nextId(state.invoices),
+          date: refundDate,
+          description: `${m.name} — withdrawal refund: ${sport}` + (reason ? ` (${reason})` : ''),
+          amount: -refund,           // negative → reduces revenue
+          method,
+          month: refundMonth,
+          ref: withdrawRef,
+          sport,
+          coach: enrollment.coachId ? coachName(enrollment.coachId) : null,
+          coachId: enrollment.coachId || null,
+          customerId: m.id,
+          customerName: m.name,
+          category: 'Membership',
+          activityType: 'withdraw-credit',
+          withdrawCredit: true,
+          reason,
+          lineItems,
+        });
+
+        // Record on member: withdrawal audit + remove enrollment
+        if (!Array.isArray(m.withdrawals)) m.withdrawals = [];
+        m.withdrawals.push({
+          id: 'wd_' + Date.now(),
+          date: refundDate,
+          sport,
+          coachId: enrollment.coachId || null,
+          coachName: enrollment.coachId ? coachName(enrollment.coachId) : null,
+          originalPrice: price,
+          totalClasses,
+          attendedClasses: attended,
+          usedAmount,
+          refundAmount: refund,
+          method,
+          reason,
+          invoiceRef: withdrawRef,
+          createdAt: new Date().toISOString(),
+        });
+        // Remove from enrollments
+        m.enrollments = (m.enrollments || []).filter(e => e.sport !== sport);
+        // Recalculate expiry: latest end across remaining enrollments via subs
+        const remainingEnds = (m.subscriptions || [])
+          .filter(s => s.activity !== sport && s.end)
+          .map(s => s.end);
+        m.expiryDate = remainingEnds.length ? remainingEnds.sort().pop() : null;
+        // If this was the legacy primary sport, switch to any remaining one
+        if (m.sport === sport) {
+          const nextEnr = (m.enrollments || [])[0];
+          if (nextEnr) {
+            m.sport = nextEnr.sport;
+            m.coachId = nextEnr.coachId;
+          } else {
+            // Last sport withdrawn — clear the legacy primary fields so the
+            // member no longer appears on the Enrolled report via the m.sport
+            // fallback (this was the "ghost enrollment" bug).
+            m.sport = null;
+            m.coachId = null;
+          }
+        }
+
+        save();
+        closeModal();
+        audit('sport.withdraw', `member:${m.id}`,
+          `Withdrew ${m.name} from ${sport} — refunded ${fmt(refund)} QAR`,
+          { memberId: m.id, sport, originalPrice: price, usedAmount, refundAmount: refund, attended, totalClasses, invoiceRef: withdrawRef });
+        render();
+        toast(`✓ Refund issued: ${fmt(refund)} QAR · ${sport} removed from ${m.name}`);
+        setTimeout(() => viewMember(m.id), 200);
+      }},
+    ],
+  });
+};
+
 window.switchSport = function(memberId) {
   const m = state.members.find(x => x.id === memberId);
   if (!m) return;
@@ -7214,6 +8323,10 @@ window.switchSport = function(memberId) {
           m.coachId = finalToCoachId;
         }
 
+        audit('sport.switch', `member:${m.id}`,
+          `Switched ${from.sport} → ${toSport} for ${m.name || m.nameArabic}`,
+          { memberId: m.id, name: m.name, fromSport: from.sport, toSport, fromCoachId: from.coachId, toCoachId });
+
         save();
         closeModal();
         render();
@@ -7277,7 +8390,7 @@ window.switchSport = function(memberId) {
       const bCommission = bShare * newRate / 100;
       body = `
         <div style="font-weight:700;margin-bottom:6px">📊 Commission reconciliation (${escapeHtml(monthLabel)})</div>
-        <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">${escapeHtml(oldCoachName)} attended ${attended} of ${totalClasses} classes (${Math.round(attended/totalClasses*100)}%) — he keeps ${fmt(aShare)} QAR base, ${escapeHtml(newCoachName)} gets ${fmt(bShare)} QAR.</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">${escapeHtml(oldCoachName)} attended ${attended} of ${totalClasses} classes (${totalClasses ? Math.round(attended/totalClasses*100) : 0}%) — he keeps ${fmt(aShare)} QAR base, ${escapeHtml(newCoachName)} gets ${fmt(bShare)} QAR.</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
           <div style="padding:8px;background:rgba(242,96,96,.06);border:1px solid rgba(242,96,96,.2);border-radius:6px">
             <div style="font-size:10px;color:var(--red);text-transform:uppercase;font-weight:600">${escapeHtml(oldCoachName)} · deduction</div>
@@ -7477,8 +8590,14 @@ window.addRenewal = function(memberId) {
         if (end && (!m.expiryDate || end > m.expiryDate)) m.expiryDate = end;
         if ($('#rn-status').value === 'active') m.status = 'Active';
 
+        audit('subscription.renew', `member:${m.id}`,
+          `Renewed ${renewedSport} for ${m.name || m.nameArabic}`,
+          { memberId: m.id, name: m.name, sport: renewedSport, amount, start, end, invoiceRef: ref });
+
         save();
         closeModal();
+        // Clear modal-scoped state so a later renewal doesn't carry over
+        window._rnPendingDeduction = 0;
         render();
         toast(`Renewal recorded — ${renewedSport} (#${m.renewalsBySport[renewedSport]} for this sport) · invoice ${ref}${amount > 0 ? ' · ' + fmt(amount) + ' QAR' : ''}${deductedCount > 0 ? ' · −' + deductedCount + ' post-expiry class' + (deductedCount === 1 ? '' : 'es') : ''}`);
       }},
@@ -7560,6 +8679,9 @@ window.addRenewal = function(memberId) {
     return total;
   }
   function recalcRnDeduction() {
+    // Reset stale state first — runs every time on every modal open.
+    // Avoids cross-modal leakage if the DOM lookup below fails.
+    window._rnPendingDeduction = 0;
     const actEl = document.getElementById('rn-act');
     const banner = document.getElementById('rn-deduct-banner');
     if (!actEl || !banner) return;
@@ -7569,8 +8691,6 @@ window.addRenewal = function(memberId) {
     if (!lastEnd || count === 0) {
       banner.style.display = 'none';
       banner.innerHTML = '';
-      // Make sure no stale deduction state lingers
-      window._rnPendingDeduction = 0;
       return;
     }
     window._rnPendingDeduction = count;
@@ -7658,6 +8778,7 @@ PAGES.expiring = (main) => {
   const upcoming = [];
 
   for (const m of state.members) {
+    if (m.deleted) continue;  // archived members don't appear in expiring
     if (!m.expiryDate) continue;
     // Skip frozen members — their expiry was shifted, they aren't really expiring
     if (memberStatus(m) === 'Frozen') continue;
@@ -7699,6 +8820,14 @@ PAGES.expiring = (main) => {
     const phone = m.phone && !m.phone.startsWith('+9747000') ? m.phone : null;
     const lastR = lastRenewalDate(m);
     const isChecked = selectedIds.has(m.id);
+    // Pre-build the WhatsApp reminder link (bilingual template, EN + AR)
+    let reminderHref = '';
+    if (phone) {
+      const kind = bucket === 'expired' ? 'expired' : 'expiring';
+      const msg = buildReminderMessage(m, kind, days);
+      const cleanPhone = String(phone).replace(/[^\d]/g, '');
+      reminderHref = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
+    }
     return `
       <tr style="cursor:pointer" data-id="${m.id}">
         <td style="width:32px;text-align:center" onclick="event.stopPropagation()">
@@ -7713,13 +8842,15 @@ PAGES.expiring = (main) => {
             </div>
           </div>
         </td>
-        <td>${phone ? `<a href="tel:${escapeHtml(phone)}" style="color:var(--blue)" onclick="event.stopPropagation()">${escapeHtml(phone)}</a>` : '<span class="text-mute">—</span>'}</td>
+        <td>${phoneCell(phone)}</td>
         <td>${lastR ? fmtDate(lastR) : '<span class="text-mute">—</span>'}</td>
         <td><span style="color:${color};font-weight:600">${fmtDate(m.expiryDate)}</span></td>
         <td><span style="color:${color};font-weight:700">${label}</span></td>
         <td class="text-right" style="white-space:nowrap">
-          ${phone ? `<a class="btn ghost sm" href="https://wa.me/${(phone || '').replace(/[^\d]/g, '')}" target="_blank" onclick="event.stopPropagation()" title="Open WhatsApp">💬 WA</a>` : ''}
-          <button class="btn primary sm" onclick="event.stopPropagation();addRenewal(${m.id})" title="Record renewal">🔄 Renew</button>
+          ${phone
+            ? `<a class="btn primary sm" href="${reminderHref}" target="_blank" onclick="event.stopPropagation()" title="Send bilingual reminder via WhatsApp">💬 Remind</a>`
+            : `<span class="text-mute" style="font-size:11px">No phone</span>`}
+          <button class="btn ghost sm" onclick="event.stopPropagation();addRenewal(${m.id})" title="Record renewal">🔄 Renew</button>
         </td>
       </tr>
     `;
@@ -7831,7 +8962,7 @@ PAGES.expiring = (main) => {
       </div>
       <button class="btn ghost sm" id="exp-bulk-copy" title="Copy phone numbers (comma-separated) to clipboard">📋 Copy phones</button>
       <button class="btn ghost sm" id="exp-bulk-message" title="Copy a renewal reminder message">📝 Copy message</button>
-      <button class="btn primary sm" id="exp-bulk-whatsapp" title="Open WhatsApp for each member in a new tab">💬 Open WhatsApp</button>
+      <button class="btn primary sm" id="exp-bulk-whatsapp" title="Open WhatsApp for each selected member with a bilingual reminder pre-filled">💬 Send Reminders</button>
       <button class="btn ghost sm" id="exp-bulk-clear" style="color:var(--text-mute)" title="Clear selection">✕</button>
     </div>
   `;
@@ -7987,17 +9118,27 @@ Waab, Doha`;
     const members = selectedMembersWithPhone();
     if (!members.length) { toast('No selected members have phone numbers', 'error'); return; }
     // Browsers block opening >1 popup without user gesture — warn for 5+ tabs
-    if (members.length > 5 && !confirm(`This will open ${members.length} WhatsApp tabs.\n\nMany browsers block multiple tabs without explicit permission. Continue?`)) return;
+    if (members.length > 5 && !confirm(`This will open ${members.length} WhatsApp tabs, each with a personalized bilingual reminder.\n\nMany browsers block multiple tabs without explicit permission. Continue?`)) return;
+    // Build a lookup of memberId → bucket + days. We already computed these
+    // when rendering the page, so reuse them rather than recomputing.
+    const bucketOf = new Map();
+    expired.forEach(x => bucketOf.set(x.m.id, { kind: 'expired',  days: x.days }));
+    expiringSoon.forEach(x => bucketOf.set(x.m.id, { kind: 'expiring', days: x.days }));
+    upcoming.forEach(x => bucketOf.set(x.m.id, { kind: 'expiring', days: x.days }));
+
     let opened = 0, blocked = 0;
     for (const m of members) {
+      const info = bucketOf.get(m.id) || { kind: 'expiring', days: 0 };
+      const msg = buildReminderMessage(m, info.kind, info.days);
       const ph = m.phone.replace(/[^\d]/g, '');
-      const w = window.open(`https://wa.me/${ph}`, '_blank');
+      const url = `https://wa.me/${ph}?text=${encodeURIComponent(msg)}`;
+      const w = window.open(url, '_blank');
       if (w) opened++; else blocked++;
     }
     if (blocked) {
       toast(`Opened ${opened} · ${blocked} blocked by browser. Allow popups to open the rest.`, 'error');
     } else {
-      toast(`💬 Opened ${opened} WhatsApp tab${opened === 1 ? '' : 's'}`);
+      toast(`💬 Opened ${opened} reminder${opened === 1 ? '' : 's'} (bilingual)`);
     }
   });
 
@@ -8056,7 +9197,7 @@ PAGES.trials = (main) => {
               </div>
             </div>
           </td>
-          <td>${phone ? `<a href="tel:${escapeHtml(phone)}" style="color:var(--blue)">${escapeHtml(phone)}</a>` : '<span class="text-mute">—</span>'}</td>
+          <td>${phoneCell(phone)}</td>
           <td>${escapeHtml(t.sport || '—')}</td>
           <td>${t.coachId ? escapeHtml(coachName(t.coachId)) : '<span class="text-mute">—</span>'}</td>
           <td>${t.trialDate ? fmtDate(t.trialDate) : '<span class="text-mute">—</span>'}${daysSince != null ? `<div class="text-mute" style="font-size:10px">${daysSince}d ago</div>` : ''}</td>
@@ -8211,12 +9352,12 @@ function showTrialForm(t) {
         <div class="field"><label>Name (Arabic)</label><input id="t-name-ar" dir="rtl" value="${escapeHtml(t.nameArabic || '')}" /></div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Mobile</label><input id="t-phone" value="${escapeHtml(t.phone || '')}" placeholder="+974…" /></div>
+        ${phoneInputHtml('t-phone', t.phone, { label: 'Mobile' })}
         <div class="field"><label>Email (optional)</label><input id="t-email" type="email" value="${escapeHtml(t.email || '')}" /></div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Sport tried</label><select id="t-sport">${SPORTS.map(s => `<option ${s===t.sport?'selected':''}>${s}</option>`).join('')}</select></div>
-        <div class="field"><label>With Coach</label><select id="t-coach"><option value="">— none —</option>${activeCoaches().map(c => `<option value="${c.id}" ${c.id===t.coachId?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>Sport tried <span style="color:var(--accent)">*</span></label><select id="t-sport"><option value="" ${!t.sport ? 'selected' : ''}>— pick a sport —</option>${SPORTS.map(s => `<option ${s===t.sport?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div class="field"><label>With Coach <span style="color:var(--accent)">*</span></label><select id="t-coach"><option value="" ${!t.coachId ? 'selected' : ''}>— pick a coach —</option>${activeCoaches().map(c => `<option value="${c.id}" ${c.id===t.coachId?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select></div>
       </div>
       <div class="form-row">
         <div class="field"><label>Trial date</label><input id="t-date" type="date" value="${t.trialDate || TODAY}" /></div>
@@ -8244,14 +9385,39 @@ function showTrialForm(t) {
     actions: [
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
       { label: isNew ? 'Add' : 'Save', class: 'btn primary', onclick: () => {
+        // ── Validation: name, mobile (8+ digits), sport, coach ──
+        const name = $('#t-name').value.trim();
+        const nameAr = $('#t-name-ar').value.trim();
+        if (!name && !nameAr) {
+          toast('Name required (English or Arabic)', 'error');
+          $('#t-name')?.focus();
+          return;
+        }
+        const phoneInput = readPhoneInput('t-phone');
+        if (!phoneInput.valid) {
+          toast(phoneInput.error || 'Mobile number is invalid', 'error');
+          document.getElementById('t-phone-digits')?.focus();
+          return;
+        }
+        const sport = $('#t-sport').value;
+        const coachId = parseInt($('#t-coach').value);
+        if (!sport) { toast('Sport is required', 'error'); $('#t-sport')?.focus(); return; }
+        if (!coachId) { toast('Coach is required (so admin knows who delivered the trial)', 'error'); $('#t-coach')?.focus(); return; }
+        const email = $('#t-email').value.trim();
+        if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+          toast('Email format is invalid', 'error');
+          $('#t-email')?.focus();
+          return;
+        }
+
         const data = {
           id: t.id,
-          name: $('#t-name').value.trim(),
-          nameArabic: $('#t-name-ar').value.trim() || null,
-          phone: $('#t-phone').value.trim(),
-          email: $('#t-email').value.trim() || null,
-          sport: $('#t-sport').value,
-          coachId: parseInt($('#t-coach').value) || null,
+          name: name || nameAr,
+          nameArabic: nameAr || null,
+          phone: phoneInput.phone,
+          email: email || null,
+          sport,
+          coachId,
           trialDate: $('#t-date').value || TODAY,
           followUpDate: $('#t-fu').value || null,
           status: $('#t-status').value,
@@ -8259,8 +9425,6 @@ function showTrialForm(t) {
           notes: $('#t-notes').value.trim() || null,
           createdAt: t.createdAt || new Date().toISOString(),
         };
-        if (!data.name) { toast('Name required', 'error'); return; }
-        if (!data.phone) { toast('Mobile required (for follow-up)', 'error'); return; }
         if (!state.trials) state.trials = [];
         if (isNew) state.trials.push(data);
         else {
@@ -8287,40 +9451,125 @@ window.deleteTrial = function(id) {
 window.convertTrialToMember = function(id) {
   const t = (state.trials || []).find(x => x.id === id);
   if (!t) return;
-  if (!confirm(`Convert "${t.name}" to a paying member? This creates a Member record and marks the trial as Converted.`)) return;
+  // Open a single-step modal: capture classes + validity + price + payment method.
+  // On submit, create the Member, create a subscription, create an invoice — all atomically.
+  const coachOpts = activeCoaches().map(c => `<option value="${c.id}" ${c.id === t.coachId ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
+  const sportOpts = SPORTS.map(s => `<option ${s === t.sport ? 'selected' : ''}>${s}</option>`).join('');
+  showModal({
+    title: `→ Convert "${t.name}" to Member`,
+    body: `
+      <div style="background:rgba(91,141,239,.08);border:1px solid rgba(91,141,239,.2);border-radius:8px;padding:10px;margin-bottom:14px;font-size:12px;color:var(--text-dim)">
+        💡 Creates a new Member record + their first subscription + an invoice — all in one step. Pre-filled from the trial; adjust as needed.
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Sport <span style="color:var(--accent)">*</span></label><select id="cv-sport">${sportOpts}</select></div>
+        <div class="field"><label>Coach <span style="color:var(--accent)">*</span></label><select id="cv-coach">${coachOpts}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Classes <span style="color:var(--accent)">*</span></label><input id="cv-classes" type="number" min="1" step="1" value="8" /></div>
+        <div class="field"><label>Validity</label><select id="cv-validity">${VALIDITY_OPTIONS.map(v => `<option value="${v}" ${v===DEFAULT_VALIDITY?'selected':''}>${v} days</option>`).join('')}</select></div>
+        <div class="field"><label>Price (QAR) <span style="color:var(--accent)">*</span></label><input id="cv-price" type="number" min="0" step="0.01" value="" placeholder="350" /></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Start date</label><input id="cv-start" type="date" value="${TODAY}" /></div>
+        <div class="field"><label>Payment method</label><select id="cv-method">
+          <option value="cash">Cash</option><option value="card">Card</option><option value="transfer">Transfer</option>
+        </select></div>
+      </div>
+    `,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      { label: '→ Create Member + Subscription', class: 'btn primary', onclick: () => {
+        const sport = $('#cv-sport').value;
+        const coachId = parseInt($('#cv-coach').value);
+        const classes = parseInt($('#cv-classes').value) || 0;
+        const validity = parseInt($('#cv-validity').value) || DEFAULT_VALIDITY;
+        const price = parseFloat($('#cv-price').value) || 0;
+        const start = $('#cv-start').value || TODAY;
+        const method = $('#cv-method').value || 'cash';
 
-  // Create member from trial data
-  const newMember = {
-    id: nextId(state.members),
-    name: t.name,
-    nameArabic: t.nameArabic || null,
-    phone: t.phone || '',
-    email: t.email || '',
-    qid: null,
-    birthdate: null,
-    level: null,
-    sport: t.sport || 'MMA',
-    coachId: t.coachId || 1,
-    joinDate: TODAY,
-    expiryDate: null,
-    status: 'Active',
-    months: [],
-    subscriptions: [],
-    renewals: [],
-    convertedFromTrialId: t.id,
-  };
-  state.members.push(newMember);
+        if (!sport || !coachId) { toast('Sport and coach required', 'error'); return; }
+        if (classes <= 0) { toast('Classes must be > 0', 'error'); return; }
+        if (price <= 0) { toast('Price must be > 0', 'error'); return; }
 
-  // Mark trial converted
-  t.status = 'converted';
-  t.convertedMemberId = newMember.id;
-  t.convertedAt = new Date().toISOString();
+        const end = addDays(start, validity);
+        const monthKey = start.slice(0, 7);
+        const ref = nextInvoiceRef();
+        const _sid = 's' + Date.now();
 
-  save();
-  render();
-  toast(`${t.name} converted to member. Use 🔄 Renew to record their first subscription.`);
-  // Take user straight to the new member's history
-  setTimeout(() => openMemberHistory(newMember.id), 200);
+        // 1. Create Member
+        const newMember = {
+          id: nextId(state.members),
+          name: t.name,
+          nameArabic: t.nameArabic || null,
+          phone: t.phone || '',
+          email: t.email || '',
+          qid: null,
+          birthdate: null,
+          level: null,
+          sport,
+          coachId,
+          firstRegistration: start,
+          startDate: start,
+          joinDate: start,
+          expiryDate: end,
+          status: 'Active',
+          months: [],
+          subscriptions: [{
+            _sid, _rid: 'r' + Date.now(),
+            month: ymToShort(monthKey) || monthKey,
+            activity: sport,
+            coach: coachName(coachId),
+            coachId,
+            firstRegistration: start,
+            start, validity, end,
+            status: 'active',
+            totalClasses: classes,
+            attendedClasses: 0,
+            amountPaid: price,
+            invoiceNumber: ref,
+          }],
+          enrollments: [{ sport, coachId, classes, price }],
+          renewals: [],
+          renewalsBySport: { [sport]: 1 },
+          sportSwitches: [],
+          convertedFromTrialId: t.id,
+        };
+        state.members.push(newMember);
+
+        // 2. Create Invoice
+        state.invoices.push({
+          id: nextId(state.invoices),
+          date: start,
+          description: `${t.name} — converted from trial · ${sport}`,
+          amount: price,
+          method,
+          month: monthKey,
+          ref,
+          sport,
+          coach: coachName(coachId),
+          coachId,
+          customerId: newMember.id,
+          customerName: t.name,
+          category: 'Membership',
+          activityType: 'subscription',
+          lineItems: [{ sport, coach: coachName(coachId), coachId, classes, price }],
+        });
+
+        // 3. Mark trial converted
+        t.status = 'converted';
+        t.convertedMemberId = newMember.id;
+        t.convertedAt = new Date().toISOString();
+
+        save();
+        closeModal();
+        render();
+        toast(`✓ ${t.name} is now a member · invoice ${ref} · ${fmt(price)} QAR`);
+        // Show their profile so admin can verify
+        setTimeout(() => viewMember(newMember.id), 200);
+      }},
+    ],
+  });
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -8557,6 +9806,294 @@ PAGES.attreport = (main) => {
 // ═══════════════════════════════════════════════════════════════════
 // RENEWALS REPORT — global view of renewals by sport + per-member
 // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// ENROLLED MEMBERS REPORT — one row per (member, sport) showing what
+// they paid, attended, and the period covered.
+// ═══════════════════════════════════════════════════════════════════
+PAGES.enrolled = (main) => {
+  // Default to ALL members (not just active) so newly added ones show up
+  // immediately. The status filter is opt-in for narrowing.
+  let filter = loadFilter('enrolled', {
+    search: '', sport: 'all', coach: 'all', status: 'all', month: 'all',
+  });
+  const pg = makePager(20);
+
+  // Build one row per (member, sport). The data is assembled from each
+  // member's enrollments[] (current state) PLUS subscriptions (history).
+  // For "current" view, we take the LATEST subscription per (member, sport).
+  function buildRows() {
+    const rows = [];
+    // When a specific month is selected, the report becomes a per-month view:
+    // Paid/Attended are scoped to that month and only rows with activity show.
+    const monthSel = (filter.month && filter.month !== 'all') ? filter.month : null;
+    for (const m of state.members) {
+      if (m.deleted) continue;
+      // Group subscriptions by sport, keep most recent
+      const subsBySport = new Map();
+      for (const s of (m.subscriptions || [])) {
+        if (!s.activity) continue;
+        const prev = subsBySport.get(s.activity);
+        // Prefer the one with the latest end-date; fall back to start
+        if (!prev || (s.end || s.start || '') > (prev.end || prev.start || '')) {
+          subsBySport.set(s.activity, s);
+        }
+      }
+      // Use enrollments[] as the source of truth for active sports.
+      // For each enrolled sport, find the matching latest subscription.
+      const enrolledSports = new Set();
+      (m.enrollments || []).forEach(e => { if (e.sport) enrolledSports.add(e.sport); });
+      // Fall back to legacy m.sport if no enrollments[] yet — but NOT if that
+      // sport was withdrawn (guards ghost rows from older data where m.sport
+      // wasn't cleared on the last withdrawal).
+      if (!enrolledSports.size && m.sport) {
+        const wasWithdrawn = (m.withdrawals || []).some(w => w.sport === m.sport);
+        if (!wasWithdrawn) enrolledSports.add(m.sport);
+      }
+
+      for (const sport of enrolledSports) {
+        const enr = (m.enrollments || []).find(e => e.sport === sport);
+        const sub = subsBySport.get(sport);
+        const coachId = enr?.coachId ?? (sport === SUMMER_CAMP ? null : (sub?.coachId ?? m.coachId));
+
+        // Total paid for this (member, sport): sum positive line items
+        // across invoices (scoped to the selected month if one is chosen).
+        // Withdrawals/refunds are negative line items so they net correctly.
+        let paid = 0;
+        for (const inv of (state.invoices || [])) {
+          if (inv.customerId !== m.id) continue;
+          if ((inv.category || 'Membership') !== 'Membership') continue;
+          if (monthSel && inv.month !== monthSel) continue;
+          for (const li of (inv.lineItems || [])) {
+            if (li.sport === sport) paid += parseFloat(li.price) || 0;
+          }
+        }
+
+        // Attended classes for this sport (scoped to the month if selected).
+        let attended = 0;
+        const ymKeys = monthSel ? [monthSel] : Object.keys(m.dailyAttendance || {});
+        for (const ym of ymKeys) {
+          const sportData = m.dailyAttendance?.[ym]?.[sport] || {};
+          for (const v of Object.values(sportData)) if (v === 'Y') attended++;
+        }
+
+        const totalClasses = parseInt(enr?.classes ?? sub?.totalClasses) || 0;
+        const startDate = sub?.start || m.startDate || m.firstRegistration || null;
+        const endDate = sub?.end || m.expiryDate || null;
+
+        // In month-scoped mode, only include rows that had activity that month.
+        if (monthSel && paid <= 0 && attended <= 0) continue;
+
+        rows.push({
+          m, sport, coachId, paid, attended, totalClasses, startDate, endDate,
+        });
+      }
+    }
+    return rows;
+  }
+
+  function applyFilter(rows) {
+    return rows.filter(r => {
+      if (filter.search) {
+        const q = filter.search.toLowerCase();
+        const hay = [r.m.name, r.m.nameArabic, r.m.phone, r.m.qid].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (filter.sport !== 'all' && r.sport !== filter.sport) return false;
+      if (filter.coach !== 'all' && String(r.coachId || '') !== filter.coach) return false;
+      if (filter.status !== 'all') {
+        const st = memberStatus(r.m);
+        if (filter.status === 'active' && st !== 'Active') return false;
+        if (filter.status === 'expired' && st !== 'Expired') return false;
+        if (filter.status === 'frozen' && st !== 'Frozen') return false;
+      }
+      return true;
+    });
+  }
+
+  function refresh() {
+    const unfilteredRows = buildRows();
+    const allRows = applyFilter(unfilteredRows).sort((a, b) => a.m.name.localeCompare(b.m.name));
+    const hiddenByFilters = unfilteredRows.length - allRows.length;
+    const anyFilterActive = filter.search || filter.sport !== 'all' || filter.coach !== 'all' || filter.status !== 'all' || filter.month !== 'all';
+
+    // Aggregate KPIs
+    const totalPaid = allRows.reduce((s, r) => s + r.paid, 0);
+    const totalAttended = allRows.reduce((s, r) => s + r.attended, 0);
+    const totalClasses = allRows.reduce((s, r) => s + r.totalClasses, 0);
+    const uniqueMembers = new Set(allRows.map(r => r.m.id)).size;
+
+    $('#enr-count').innerHTML = `<b>${allRows.length}</b> enrollment row${allRows.length === 1 ? '' : 's'} · <b>${uniqueMembers}</b> member${uniqueMembers === 1 ? '' : 's'} · <b>${fmt(totalPaid)} QAR</b> paid · <b>${totalAttended}</b>/${totalClasses} classes attended`;
+
+    // "Filters hiding rows" banner — shows when filters reduce visible rows.
+    // Helps admin spot the case where a new member doesn't appear because of
+    // a stale filter from a previous session.
+    const banner = $('#enr-filter-banner');
+    if (anyFilterActive && hiddenByFilters > 0) {
+      banner.style.display = 'flex';
+      banner.innerHTML = `
+        <span style="font-size:16px">⚠️</span>
+        <div style="flex:1;font-size:12px">
+          Filters are hiding <b>${hiddenByFilters}</b> row${hiddenByFilters === 1 ? '' : 's'}. If you don't see a recently-added member, clear filters.
+        </div>
+        <button class="btn ghost sm" id="enr-clear-filters" style="white-space:nowrap">↻ Clear filters</button>
+      `;
+      $('#enr-clear-filters')?.addEventListener('click', () => {
+        filter = { search: '', sport: 'all', coach: 'all', status: 'all', month: 'all' };
+        saveFilter('enrolled', filter);
+        pg.page = 1;
+        // Re-render the controls so dropdowns reset visually
+        const searchEl = $('#enr-search'); if (searchEl) searchEl.value = '';
+        const sportEl = $('#enr-sport'); if (sportEl) sportEl.value = 'all';
+        const coachEl = $('#enr-coach'); if (coachEl) coachEl.value = 'all';
+        const statusEl = $('#enr-status'); if (statusEl) statusEl.value = 'all';
+        const monthEl = $('#enr-month'); if (monthEl) monthEl.value = 'all';
+        refresh();
+      });
+    } else {
+      banner.style.display = 'none';
+      banner.innerHTML = '';
+    }
+
+    const page = paginate(allRows, pg);
+
+    $('#enr-tbody').innerHTML = page.length ? page.map(r => {
+      const st = memberStatus(r.m);
+      const stClass = st.toLowerCase();
+      const rate = r.totalClasses > 0 ? Math.round(r.attended / r.totalClasses * 100) : 0;
+      const rateColor = rate >= 75 ? 'var(--green)' : rate >= 40 ? 'var(--accent-2)' : rate > 0 ? 'var(--red)' : 'var(--text-mute)';
+      const period = r.startDate && r.endDate
+        ? `${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}`
+        : r.startDate ? `from ${fmtDate(r.startDate)}` : '—';
+      const isCamp = r.sport === SUMMER_CAMP;
+      return `
+        <tr style="cursor:pointer" onclick="viewMember(${r.m.id})">
+          <td>
+            <div style="display:flex;align-items:center;gap:10px">
+              <div class="avatar" style="width:30px;height:30px;font-size:10px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(r.m.name)}</div>
+              <div>
+                <div style="font-weight:600">${escapeHtml(r.m.name)}</div>
+                <div class="text-mute" style="font-size:11px">${phoneCell(r.m.phone)}</div>
+              </div>
+            </div>
+          </td>
+          <td><span class="badge ${isCamp ? 'orange' : ''}">${escapeHtml(r.sport)}</span></td>
+          <td class="text-mute" style="font-size:12px">${isCamp ? '<span style="font-style:italic">no coach</span>' : escapeHtml(coachName(r.coachId))}</td>
+          <td class="text-right num font-bold">${fmt(r.paid)}</td>
+          <td class="text-right num">
+            <span style="font-weight:600">${r.attended}</span>
+            <span class="text-mute" style="font-size:11px">/ ${r.totalClasses || '—'}</span>
+            ${r.totalClasses > 0 ? `<div style="font-size:10px;color:${rateColor};font-weight:600">${rate}%</div>` : ''}
+          </td>
+          <td class="text-mute" style="font-size:12px">${period}</td>
+          <td><span class="badge ${stClass}">${st}</span></td>
+        </tr>
+      `;
+    }).join('') : `<tr><td colspan="7" class="empty"><div class="empty-icon">🎓</div>No enrollments match your filters</td></tr>`;
+
+    $('#enr-pagination').innerHTML = paginationBar(pg, allRows.length, 'enr');
+    bindPagination('enr', pg, allRows.length, refresh);
+  }
+
+  // List of sports/coaches present in the data for filter dropdowns
+  const sportsInData = [...new Set(state.members.flatMap(m => [m.sport, ...(m.enrollments || []).map(e => e.sport)]).filter(Boolean))].sort();
+  const coachesInData = state.coaches.filter(c => isCoachActive(c));
+  // Months present in the data (from invoices + attendance), newest first.
+  const monthsInData = [...new Set([
+    ...(state.invoices || []).map(i => i.month),
+    ...state.members.flatMap(m => Object.keys(m.dailyAttendance || {})),
+  ].filter(Boolean))].sort().reverse();
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>Enrolled Members</h1>
+        <div class="subtitle"><span id="enr-count">Loading…</span></div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" id="enr-export">📥 Export CSV</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div id="enr-filter-banner" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:8px"></div>
+      <div class="filter-bar">
+        <div class="search"><input id="enr-search" type="text" placeholder="Search name, phone, QID..." value="${escapeHtml(filter.search || '')}" /></div>
+        <select id="enr-sport" class="btn ghost">
+          <option value="all">All sports</option>
+          ${sportsInData.map(s => `<option value="${escapeHtml(s)}" ${filter.sport === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+        </select>
+        <select id="enr-coach" class="btn ghost">
+          <option value="all">All coaches</option>
+          ${coachesInData.map(c => `<option value="${c.id}" ${String(filter.coach) === String(c.id) ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+        <select id="enr-status" class="btn ghost">
+          <option value="all"     ${filter.status === 'all' ? 'selected' : ''}>All members</option>
+          <option value="active"  ${filter.status === 'active' ? 'selected' : ''}>Active only</option>
+          <option value="expired" ${filter.status === 'expired' ? 'selected' : ''}>Expired only</option>
+          <option value="frozen"  ${filter.status === 'frozen' ? 'selected' : ''}>❄️ Frozen only</option>
+        </select>
+        <select id="enr-month" class="btn ghost" title="Scope Paid & Attended to one month">
+          <option value="all" ${filter.month === 'all' ? 'selected' : ''}>All months</option>
+          ${monthsInData.map(mo => `<option value="${mo}" ${filter.month === mo ? 'selected' : ''}>${fmtMonth ? fmtMonth(mo) : mo}</option>`).join('')}
+        </select>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Member</th>
+              <th>Sport</th>
+              <th>Coach</th>
+              <th class="text-right">Paid (QAR)</th>
+              <th class="text-right">Attended</th>
+              <th>Period</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="enr-tbody"></tbody>
+        </table>
+      </div>
+      <div id="enr-pagination"></div>
+    </div>
+  `;
+
+  const saveAndRefresh = () => { saveFilter('enrolled', filter); pg.page = 1; refresh(); };
+  $('#enr-search').addEventListener('input', e => { filter.search = e.target.value; saveAndRefresh(); });
+  $('#enr-sport').addEventListener('change', e => { filter.sport = e.target.value; saveAndRefresh(); });
+  $('#enr-coach').addEventListener('change', e => { filter.coach = e.target.value; saveAndRefresh(); });
+  $('#enr-status').addEventListener('change', e => { filter.status = e.target.value; saveAndRefresh(); });
+  $('#enr-month').addEventListener('change', e => { filter.month = e.target.value; saveAndRefresh(); });
+
+  $('#enr-export').addEventListener('click', () => {
+    const allRows = applyFilter(buildRows()).sort((a, b) => a.m.name.localeCompare(b.m.name));
+    if (!allRows.length) { toast('No rows to export', 'error'); return; }
+    const csvRows = [['Member','Mobile','QID','Sport','Coach','Paid (QAR)','Attended','Total Classes','Attendance %','Start','End','Status']];
+    for (const r of allRows) {
+      const rate = r.totalClasses > 0 ? Math.round(r.attended / r.totalClasses * 100) + '%' : '';
+      csvRows.push([
+        r.m.name,
+        r.m.phone || '',
+        r.m.qid || '',
+        r.sport,
+        r.sport === SUMMER_CAMP ? '' : coachName(r.coachId),
+        r.paid,
+        r.attended,
+        r.totalClasses,
+        rate,
+        r.startDate || '',
+        r.endDate || '',
+        memberStatus(r.m),
+      ]);
+    }
+    const csv = csvRows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    downloadFile(`enrolled-members-${TODAY}.csv`, csv, 'text/csv');
+    toast(`Exported ${allRows.length} row${allRows.length === 1 ? '' : 's'}`);
+  });
+
+  refresh();
+};
+
 PAGES.renewals = (main) => {
   // Aggregate renewals: from member.renewalsBySport (per-sport counters) and
   // from manual renewal records (m.renewals[]) as a fallback signal.
@@ -8876,14 +10413,16 @@ PAGES.reports = (main) => {
     // Top expenses for the period
     const topExp = [...exps].sort((a, b) => b.amount - a.amount).slice(0, 10);
 
-    // Active members + churn (members with expiry inside or before this period)
-    const activeMembers = state.members.filter(m => isActiveStatus(m)).length;
-    const totalMembers = state.members.length;
-    const expiredInPeriod = state.members.filter(m => inPeriodDate(m.expiryDate) && m.status === 'Expired').length;
+    // Active members + churn (members with expiry inside or before this period).
+    // Excludes archived (soft-deleted) members.
+    const _activeList = activeMembers();
+    const activeMembers_ = _activeList.filter(m => isActiveStatus(m)).length;
+    const totalMembers = _activeList.length;
+    const expiredInPeriod = _activeList.filter(m => inPeriodDate(m.expiryDate) && m.status === 'Expired').length;
 
     return { invs, exps, sals, revenue, expensesTotal, salariesTotal, profit, profitMargin,
              avgInvoice, prevRev, revByCat, sportRev, expByCat, topExp,
-             activeMembers, totalMembers, expiredInPeriod, newMembers, invCount: invs.length };
+             activeMembers: activeMembers_, totalMembers, expiredInPeriod, newMembers, invCount: invs.length };
   }
 
   function periodLabel() {
@@ -9303,10 +10842,15 @@ function importMembers(sheets) {
   const coachIdByName = {};
   for (const c of coaches) coachIdByName[c.name.toLowerCase()] = c.id;
 
-  // Group rows by member name → multi-sport enrollments
+  // Group rows by the COMPOSITE key (name + mobile) → multi-sport enrollments.
+  // Matches the app's uniqueness rule: same name + same phone = one person
+  // (rows merge into multi-sport enrollments); same name + DIFFERENT phone =
+  // distinct people (kept separate instead of being wrongly merged).
   const memberMap = new Map();
   for (const r of allRows) {
-    const key = r.name.toLowerCase().trim();
+    const nameKey = (r.name || '').toLowerCase().trim();
+    const phoneKey = r.mobile ? String(r.mobile).replace(/\D/g, '').slice(-8) : '';
+    const key = nameKey + '|' + phoneKey;
     if (!memberMap.has(key)) memberMap.set(key, { name: r.name, rows: [] });
     memberMap.get(key).rows.push(r);
   }
@@ -10165,7 +11709,7 @@ PAGES.rentals = (main) => {
         <td><span class="badge ${r.facility==='Football Court'?'green':r.facility==='Swimming Pool'?'cyan':''}">${r.facility === 'Football Court' ? '⚽' : r.facility === 'Boxing Room' ? '🥊' : '🏊'} ${escapeHtml(r.facility)}</span></td>
         <td>
           <div class="font-bold">${escapeHtml(r.customerName || '—')}</div>
-          ${r.customerPhone ? `<div class="text-mute" style="font-size:11px">📱 ${escapeHtml(r.customerPhone)}</div>` : ''}
+          ${r.customerPhone ? `<div class="text-mute" style="font-size:11px">${phoneCell(r.customerPhone)}</div>` : ''}
         </td>
         <td class="text-right num">${r.hours || 0}h</td>
         <td class="text-right num text-dim">${fmt(r.hourlyRate || 0)}/hr</td>
@@ -10314,7 +11858,7 @@ function rentalFormHtml(r) {
       </div>
       <div class="form-row">
         <div class="field"><label>Customer name *</label><input type="text" id="r-name" value="${escapeHtml(r.customerName || '')}" placeholder="Required" /></div>
-        <div class="field"><label>Mobile *</label><input type="text" id="r-phone" value="${escapeHtml(r.customerPhone || '')}" placeholder="Required" /></div>
+        ${phoneInputHtml('r-phone', r.customerPhone, { label: 'Mobile' })}
       </div>
       <div class="form-row">
         <div class="field"><label>QID (optional)</label><input type="text" id="r-qid" value="${escapeHtml(r.customerQid || '')}" /></div>
@@ -10363,7 +11907,16 @@ function wireRentalForm() {
   const searchInp = $('#r-cust-search');
   const resultsBox = $('#r-cust-results');
   const nameInp = $('#r-name');
-  const phoneInp = $('#r-phone');
+  // The phone is now a two-field input (code + digits) — see phoneInputHtml.
+  // Use a small helper to set/clear it from existing customer picker.
+  function setPhone(phone) {
+    const { code, digits } = parseStoredPhone(phone || '');
+    const codeEl = document.getElementById('r-phone-code');
+    const digitsEl = document.getElementById('r-phone-digits');
+    if (codeEl) codeEl.value = code;
+    if (digitsEl) digitsEl.value = digits;
+  }
+  function clearPhone() { setPhone(''); }
   const qidInp = $('#r-qid');
   const hiddenId = $('#r-cust-id');
   const hintEl = $('#r-cust-hint');
@@ -10429,7 +11982,7 @@ function wireRentalForm() {
       return `<div class="rcust-item" data-rckind="${c.kind}" data-rcid="${c.id}" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:8px;align-items:center">
         <div style="flex:1;min-width:0">
           <div style="display:flex;gap:6px;align-items:center"><span class="font-bold" style="font-size:13px">${escapeHtml(c.name)}</span> ${badge}</div>
-          <div class="text-mute" style="font-size:11px">📱 ${escapeHtml(c.phone || '—')}${c.qid ? ' · QID: ' + escapeHtml(c.qid) : ''}</div>
+          <div class="text-mute" style="font-size:11px">${c.phone ? phoneCell(c.phone, { stop: false }) : '<span class="text-mute">—</span>'}${c.qid ? ' · QID: ' + escapeHtml(c.qid) : ''}</div>
         </div>
         <div class="text-mute" style="font-size:10px;white-space:nowrap">${n} booking${n===1?'':'s'}</div>
       </div>`;
@@ -10456,7 +12009,7 @@ function wireRentalForm() {
         }
         hiddenId.value = recordId;
         nameInp.value = name;
-        phoneInp.value = phone;
+        setPhone(phone);
         qidInp.value = qid;
         searchInp.value = name + (phone ? ' · ' + phone : '');
         resultsBox.style.display = 'none';
@@ -10465,7 +12018,7 @@ function wireRentalForm() {
           hintEl.innerHTML = `✓ Using ${tag}${kind === 'R' ? ` · <a href="javascript:void(0)" id="r-cust-history" style="color:var(--blue)">view ${n} booking${n===1?'':'s'}</a>` : ''} · <a href="javascript:void(0)" id="r-cust-clear" style="color:var(--blue)">change</a>`;
           const clearLink = document.getElementById('r-cust-clear');
           if (clearLink) clearLink.addEventListener('click', () => {
-            hiddenId.value = ''; nameInp.value = ''; phoneInp.value = ''; qidInp.value = '';
+            hiddenId.value = ''; nameInp.value = ''; clearPhone(); qidInp.value = '';
             searchInp.value = ''; searchInp.focus();
             const total = (state.members || []).length + (state.rentalCustomers || []).length;
             hintEl.textContent = `${total} known people (members + rental customers). Type to filter, or fill in a new one below.`;
@@ -10603,7 +12156,7 @@ window.editRentalCustomer = function(rcustId) {
     body: `
       <div class="form-row">
         <div class="field"><label>Name *</label><input type="text" id="ec-name" value="${escapeHtml(c.name)}" /></div>
-        <div class="field"><label>Mobile *</label><input type="text" id="ec-phone" value="${escapeHtml(c.phone || '')}" /></div>
+        ${phoneInputHtml('ec-phone', c.phone, { label: 'Mobile' })}
       </div>
       <div class="form-row">
         <div class="field"><label>QID (optional)</label><input type="text" id="ec-qid" value="${escapeHtml(c.qid || '')}" /></div>
@@ -10617,11 +12170,11 @@ window.editRentalCustomer = function(rcustId) {
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
       { label: '💾 Save', class: 'btn primary', onclick: () => {
         const name = $('#ec-name').value.trim();
-        const phone = $('#ec-phone').value.trim();
+        const phoneInput = readPhoneInput('ec-phone');
         if (!name) { toast('Name required', 'error'); return; }
-        if (!phone) { toast('Mobile required', 'error'); return; }
+        if (!phoneInput.valid) { toast(phoneInput.error || 'Mobile invalid', 'error'); return; }
         c.name = name;
-        c.phone = phone;
+        c.phone = phoneInput.phone;
         c.qid = $('#ec-qid').value.trim() || null;
         c.notes = $('#ec-notes').value.trim() || null;
         // Propagate to existing rentals (so search/display reflects the change)
@@ -10725,13 +12278,12 @@ window.deleteRental = function(id) {
 
 function saveRental(existingId, onDone) {
   const name = $('#r-name').value.trim();
-  const phone = $('#r-phone').value.trim();
+  const phoneInput = readPhoneInput('r-phone');
+  const phone = phoneInput.phone;
   if (!name) { toast('Customer name required', 'error'); $('#r-name')?.focus(); return; }
-  if (!phone) { toast('Mobile number is required for every booking', 'error'); $('#r-phone')?.focus(); return; }
-  const phoneDigits = phone.replace(/\D/g, '');
-  if (phoneDigits.length < 8) {
-    toast(`Mobile must have at least 8 digits (got ${phoneDigits.length})`, 'error');
-    $('#r-phone')?.focus();
+  if (!phoneInput.valid) {
+    toast(phoneInput.error || 'Mobile number is invalid', 'error');
+    document.getElementById('r-phone-digits')?.focus();
     return;
   }
   const facility = $('#r-facility').value;

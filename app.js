@@ -14,11 +14,11 @@ const LS_VERSION_KEY = 'blackstars-crm-dataver';
 //                a required field that needs back-filling on existing data).
 //                A bump here triggers the runMigrations() pipeline which
 //                MUTATES existing data in place rather than wiping it.
-const APP_VERSION = '4.59.0';
-const SCHEMA_VERSION = 8;       // v8: Summer Camp 2w/3w tiers added
+const APP_VERSION = '4.73.1';
+const SCHEMA_VERSION = 9;       // v9: clean Summer Camp coachIds from legacy data
 
 // Legacy: kept for the version-bump UI toast, but no longer used to wipe data
-const SEED_VERSION = '2026-06-02-v102-status-export-incomplete';
+const SEED_VERSION = '2026-06-03-v121b-footer-align-only';
 // TODAY is the actual current date. The data file is mostly Apr/May 2026, so
 // for testing in a different real-time period it's fine — comparisons against
 // expiry dates etc. use the actual today.
@@ -63,7 +63,25 @@ Object.defineProperty(globalThis, 'ALL_SPORTS', {
     return DEFAULT_SPORTS;
   },
 });
-const EXP_CATS = ['Equipment','Cleaning','Utilities','Marketing','Subscriptions','Transport','Operations','Rent','Coach Pool','Coach Commission','Salary'];
+// Expense categories — admin-configurable from Settings page.
+// DEFAULT_EXPENSE_CATEGORIES seeds new installs; once settings.expenseCategories
+// is populated, the getter below reads from there. "Others" is always available
+// as a safety-net fallback the admin can't accidentally delete (see settings UI).
+const DEFAULT_EXPENSE_CATEGORIES = [
+  'Equipment','Cleaning','Utilities','Marketing','Subscriptions',
+  'Transport','Operations','Rent','Coach Pool','Coach Commission','Salary','Others',
+];
+// Reserved categories that should always exist (used by other features or
+// kept as common safety options). Admin cannot delete these from settings.
+const RESERVED_EXPENSE_CATEGORIES = ['Others'];
+
+Object.defineProperty(globalThis, 'EXP_CATS', {
+  get() {
+    const cats = state?.settings?.expenseCategories;
+    return (Array.isArray(cats) && cats.length) ? cats : DEFAULT_EXPENSE_CATEGORIES;
+  },
+});
+
 const INVOICE_CATS = ['Membership','Court Rental','Boxing Room','Product','Other'];
 // Validity periods in days for membership/enrollment transactions
 const VALIDITY_OPTIONS = [30, 45, 60, 90, 180];
@@ -128,6 +146,7 @@ let state = {
   rentals: [],            // booking log: facility, customer, date, hours, amount
   rentalCustomers: [],    // {id, name, phone, qid, notes} — reusable rental contacts
   schedule: [],           // class schedule: {id, day, slot, sport, coachId}
+  auditLog: [],           // {id, ts, user, action, target, summary, details}
   settings: {
     expiringSoonDays: 3,
     lowStockThreshold: 3,
@@ -150,13 +169,61 @@ const FACILITIES = ['Football Court', 'Boxing Room', 'Swimming Pool'];
 // chooses between localStorage and Firebase based on firebase-config.js.
 // We tag the state with the current schema version on every save.
 
+// localStorage capacity monitoring. Browsers cap localStorage at ~5MB; once
+// it's full, setItem throws QuotaExceededError and changes are silently lost.
+// We warn the admin before that happens (gentle at 70%, urgent at 90%) and
+// loudly if a save actually fails.
+const LS_LIMIT_BYTES = 5 * 1024 * 1024;   // ~5 MB typical quota
+let _lastStorageWarnLevel = 0;            // 0 / 70 / 90 — dedupe repeat warnings
+
+// Storage-capacity warning that doubles as a one-click backup: clicking the
+// toast triggers a JSON backup export so the admin can act immediately.
+function storageToast(msg, type) {
+  toast(msg, type);
+  const el = document.querySelector('.toast');
+  if (el) {
+    el.style.cursor = 'pointer';
+    el.title = 'Click to export a backup now';
+    el.addEventListener('click', () => {
+      if (typeof window.downloadBackup === 'function') window.downloadBackup();
+    });
+  }
+}
+
 function save() {
+  let stateToSave;
   try {
-    const stateToSave = { ...state, __schema: SCHEMA_VERSION };
+    stateToSave = { ...state, __schema: SCHEMA_VERSION };
+
+    // Capacity check on the serialized payload (the dominant localStorage user).
+    let approxBytes = 0;
+    try { approxBytes = JSON.stringify(stateToSave).length; } catch (_) {}
+    const pct = LS_LIMIT_BYTES ? (approxBytes / LS_LIMIT_BYTES * 100) : 0;
+    const mb = (approxBytes / 1048576).toFixed(1);
+    if (pct >= 90 && _lastStorageWarnLevel < 90) {
+      _lastStorageWarnLevel = 90;
+      storageToast(`⚠ Storage ${Math.round(pct)}% full (${mb}MB of ~5MB). Click to export a backup now, then archive old data — saves may soon start failing.`, 'error');
+    } else if (pct >= 70 && _lastStorageWarnLevel < 70) {
+      _lastStorageWarnLevel = 70;
+      storageToast(`Storage is ${Math.round(pct)}% full (${mb}MB of ~5MB). Click here to export a backup.`, 'info');
+    } else if (pct < 70) {
+      _lastStorageWarnLevel = 0;   // dropped back down (e.g. after archiving) — re-arm
+    }
+
     window.Storage.save(stateToSave);
     localStorage.setItem(LS_VERSION_KEY, SEED_VERSION);
   } catch (e) {
-    console.warn('Save failed:', e);
+    const isQuota = e && (e.name === 'QuotaExceededError' || e.code === 22 ||
+      e.code === 1014 || /quota/i.test(e.message || ''));
+    if (isQuota) {
+      _lastStorageWarnLevel = 90;
+      console.error('Save failed — storage quota exceeded:', e);
+      try {
+        storageToast('❌ SAVE FAILED — browser storage is full. Your latest change was NOT saved. Click here to export a backup now, then archive or delete old records to free space.', 'error');
+      } catch (_) {}
+    } else {
+      console.warn('Save failed:', e);
+    }
   }
 }
 
@@ -372,6 +439,26 @@ function runMigrations(data, fromVersion) {
       data.settings.summerCampPrices.sort((a, b) => (a.days || 0) - (b.days || 0));
     }
   }
+
+  // 8 → 9: Strip coachId from existing Summer Camp enrollments + subscriptions.
+  // From v100 onward, Summer Camp has no coach — but older data may have coach
+  // assignments that now confuse the UI. Clean them up on first load.
+  if (fromVersion < 9) {
+    for (const m of (data.members || [])) {
+      (m.enrollments || []).forEach(e => {
+        if (e.sport === SUMMER_CAMP) { e.coachId = null; e.coach = null; }
+      });
+      (m.subscriptions || []).forEach(s => {
+        if (s.activity === SUMMER_CAMP) { s.coachId = null; s.coach = null; }
+      });
+    }
+    // Also clean line items on existing invoices
+    for (const inv of (data.invoices || [])) {
+      (inv.lineItems || []).forEach(li => {
+        if (li.sport === SUMMER_CAMP) { li.coachId = null; li.coach = null; }
+      });
+    }
+  }
   // Future migrations go here as more `if (fromVersion < N)` blocks.
 }
 
@@ -553,6 +640,361 @@ function initials(name) {
   return ((parts[0][0] || '') + (parts[1]?.[0] || '')).toUpperCase();
 }
 
+// ─── Phone display + WhatsApp helpers ───────────────────────────────
+// List of country codes shown in the mobile-input dropdown. Ordered by
+// relevance to a Qatar-based club: GCC first, then Levant + nearby Arab
+// states, then the most common nationalities working in Qatar, then a
+// few major Western codes for visiting members. Qatar is the default.
+const COUNTRY_CODES = [
+  { code: '+974', flag: '🇶🇦', name: 'Qatar' },
+  { code: '+971', flag: '🇦🇪', name: 'UAE' },
+  { code: '+966', flag: '🇸🇦', name: 'Saudi Arabia' },
+  { code: '+965', flag: '🇰🇼', name: 'Kuwait' },
+  { code: '+973', flag: '🇧🇭', name: 'Bahrain' },
+  { code: '+968', flag: '🇴🇲', name: 'Oman' },
+  { code: '+20',  flag: '🇪🇬', name: 'Egypt' },
+  { code: '+962', flag: '🇯🇴', name: 'Jordan' },
+  { code: '+961', flag: '🇱🇧', name: 'Lebanon' },
+  { code: '+963', flag: '🇸🇾', name: 'Syria' },
+  { code: '+964', flag: '🇮🇶', name: 'Iraq' },
+  { code: '+967', flag: '🇾🇪', name: 'Yemen' },
+  { code: '+970', flag: '🇵🇸', name: 'Palestine' },
+  { code: '+218', flag: '🇱🇾', name: 'Libya' },
+  { code: '+216', flag: '🇹🇳', name: 'Tunisia' },
+  { code: '+213', flag: '🇩🇿', name: 'Algeria' },
+  { code: '+212', flag: '🇲🇦', name: 'Morocco' },
+  { code: '+249', flag: '🇸🇩', name: 'Sudan' },
+  { code: '+91',  flag: '🇮🇳', name: 'India' },
+  { code: '+92',  flag: '🇵🇰', name: 'Pakistan' },
+  { code: '+880', flag: '🇧🇩', name: 'Bangladesh' },
+  { code: '+94',  flag: '🇱🇰', name: 'Sri Lanka' },
+  { code: '+977', flag: '🇳🇵', name: 'Nepal' },
+  { code: '+63',  flag: '🇵🇭', name: 'Philippines' },
+  { code: '+62',  flag: '🇮🇩', name: 'Indonesia' },
+  { code: '+60',  flag: '🇲🇾', name: 'Malaysia' },
+  { code: '+90',  flag: '🇹🇷', name: 'Turkey' },
+  { code: '+98',  flag: '🇮🇷', name: 'Iran' },
+  { code: '+254', flag: '🇰🇪', name: 'Kenya' },
+  { code: '+27',  flag: '🇿🇦', name: 'South Africa' },
+  { code: '+44',  flag: '🇬🇧', name: 'UK' },
+  { code: '+1',   flag: '🇺🇸', name: 'USA / Canada' },
+  { code: '+49',  flag: '🇩🇪', name: 'Germany' },
+  { code: '+33',  flag: '🇫🇷', name: 'France' },
+];
+const DEFAULT_COUNTRY_CODE = '+974';
+const MIN_PHONE_DIGITS = 8;  // National-number portion (excluding country code)
+
+// Parse a stored phone string like "+97450012345" or "97450012345" or
+// "974 5001 2345" into { code, digits }. Best-effort: matches the longest
+// known country code prefix; if none matches, defaults to Qatar.
+function parseStoredPhone(stored) {
+  if (!stored) return { code: DEFAULT_COUNTRY_CODE, digits: '' };
+  let s = String(stored).trim();
+  const leadPlus = s.startsWith('+');
+  const cleaned = s.replace(/[^\d]/g, '');
+  // Sort codes by length DESC so '+974' wins over '+9'
+  const codesSorted = [...COUNTRY_CODES].sort((a, b) => b.code.length - a.code.length);
+
+  // Pass 1: explicit '+' prefix → match by country code
+  if (leadPlus) {
+    for (const c of codesSorted) {
+      const digitsOfCode = c.code.replace('+', '');
+      if (cleaned.startsWith(digitsOfCode)) {
+        return { code: c.code, digits: cleaned.slice(digitsOfCode.length) };
+      }
+    }
+  }
+
+  // Pass 2: no '+' but the digits start with a known country code AND the
+  // remaining national-number portion is at least MIN_PHONE_DIGITS long.
+  // This catches CSV imports / legacy data where the leading '+' was missing.
+  // Example: "97450012345" → +974 + 50012345
+  for (const c of codesSorted) {
+    const digitsOfCode = c.code.replace('+', '');
+    if (cleaned.startsWith(digitsOfCode) &&
+        cleaned.length - digitsOfCode.length >= MIN_PHONE_DIGITS) {
+      return { code: c.code, digits: cleaned.slice(digitsOfCode.length) };
+    }
+  }
+
+  // Pass 3: no country code detectable — treat the whole thing as the local
+  // number under the default country (Qatar).
+  return { code: DEFAULT_COUNTRY_CODE, digits: cleaned };
+}
+
+// Render the country-code dropdown + digit input as a single block.
+// idPrefix: e.g. 'f-phone' → produces #f-phone-code and #f-phone-digits.
+// currentPhone: stored value to pre-populate (best-effort parse).
+function phoneInputHtml(idPrefix, currentPhone, opts = {}) {
+  const { code, digits } = parseStoredPhone(currentPhone);
+  const placeholder = opts.placeholder || `e.g. 50012345`;
+  const required = opts.required !== false;
+  const reqStar = required ? ' <span style="color:var(--accent)">*</span>' : '';
+  const label = opts.label || 'Mobile';
+  const fieldStyle = opts.fieldStyle || '';
+  return `
+    <div class="field" style="${fieldStyle}">
+      <label>${escapeHtml(label)}${reqStar}</label>
+      <div style="display:grid;grid-template-columns:120px 1fr;gap:6px">
+        <select id="${idPrefix}-code">
+          ${COUNTRY_CODES.map(c => `<option value="${c.code}" ${c.code === code ? 'selected' : ''}>${c.flag} ${c.code}</option>`).join('')}
+        </select>
+        <input id="${idPrefix}-digits" type="tel" inputmode="numeric" pattern="[0-9]*" value="${escapeHtml(digits)}" placeholder="${escapeHtml(placeholder)}" />
+      </div>
+      <div class="text-mute" style="font-size:10px;margin-top:3px">Country + ${MIN_PHONE_DIGITS}+ digits</div>
+    </div>
+  `;
+}
+
+// Read the phone input back. Returns { phone, code, digits, valid, error }.
+// `phone` is the canonical combined string like "+97450012345".
+// `valid` is false if digits < MIN_PHONE_DIGITS (caller decides what to do).
+function readPhoneInput(idPrefix) {
+  const codeEl = document.getElementById(idPrefix + '-code');
+  const digitsEl = document.getElementById(idPrefix + '-digits');
+  const code = codeEl ? codeEl.value : DEFAULT_COUNTRY_CODE;
+  const rawDigits = digitsEl ? digitsEl.value.replace(/[^\d]/g, '') : '';
+  // If admin pasted "+97450012345" into the digits field, strip the redundant code
+  let digits = rawDigits;
+  const codeDigits = code.replace('+', '');
+  if (digits.startsWith(codeDigits) && digits.length > MIN_PHONE_DIGITS) {
+    digits = digits.slice(codeDigits.length);
+  }
+  const valid = digits.length >= MIN_PHONE_DIGITS;
+  const phone = digits ? `${code}${digits}` : '';
+  return {
+    phone,
+    code,
+    digits,
+    valid,
+    error: !digits ? 'Mobile required' : (!valid ? `Mobile must be at least ${MIN_PHONE_DIGITS} digits` : null),
+  };
+}
+
+// Renders a phone number with a clickable WhatsApp icon. Used everywhere
+// admin sees a phone (Members, Invoices, Rentals, Coaches, etc.) so the
+// "message this person" action is always one click away.
+//
+// Filters out the +9747000... placeholder phones from old imports — they
+// look like real numbers but reach nobody.
+//
+// opts:
+//   stop:  default true — adds event.stopPropagation() so clicking the icon
+//          inside a row doesn't also open the row's detail view
+//   empty: HTML to show when no phone — defaults to a muted "—"
+//   text:  pre-filled WhatsApp message (URL-encoded automatically)
+function isRealPhone(phone) {
+  if (!phone) return false;
+  const trimmed = String(phone).trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith('+9747000')) return false;  // legacy placeholder
+  return true;
+}
+
+function waLink(phone, text) {
+  if (!isRealPhone(phone)) return null;
+  const clean = String(phone).replace(/[^\d]/g, '');
+  const t = text ? `?text=${encodeURIComponent(text)}` : '';
+  return `https://wa.me/${clean}${t}`;
+}
+
+// ─── REMINDER TEMPLATES ──────────────────────────────────────────
+// Bilingual WhatsApp messages for renewal nudges. Stored in settings so
+// admin can customize from System → Settings. Tokens are substituted at
+// send time: {name}, {nameArabic}, {sport}, {coach}, {expiry}, {daysAgo}, {daysLeft}.
+// If a member has no Arabic name, the Arabic section is skipped automatically.
+const DEFAULT_REMINDER_TEMPLATES = {
+  expired_en: `Hi {name} 👋
+
+Your {sport} membership at Black Stars Sports Club expired {daysAgo} ago (on {expiry}).
+
+Come back and renew today — we miss you! Reply here or call us anytime.
+
+— Black Stars Sports Club`,
+  expired_ar: `مرحباً {nameArabic} 👋
+
+انتهى اشتراكك في {sport} في نادي بلاك ستارز الرياضي منذ {daysAgo} (بتاريخ {expiry}).
+
+نتمنى عودتك — جدد اشتراكك اليوم! يمكنك الرد هنا أو الاتصال بنا في أي وقت.
+
+— نادي بلاك ستارز الرياضي`,
+  expiring_en: `Hi {name} 👋
+
+Friendly reminder: your {sport} membership at Black Stars Sports Club expires in {daysLeft} (on {expiry}).
+
+Renew now to keep training without interruption. Reply here to confirm.
+
+— Black Stars Sports Club`,
+  expiring_ar: `مرحباً {nameArabic} 👋
+
+تذكير ودي: اشتراكك في {sport} في نادي بلاك ستارز الرياضي سينتهي خلال {daysLeft} (بتاريخ {expiry}).
+
+جدد اشتراكك الآن لمواصلة التدريب دون انقطاع. يمكنك الرد هنا للتأكيد.
+
+— نادي بلاك ستارز الرياضي`,
+};
+
+function reminderTemplate(key) {
+  const fromSettings = state.settings?.reminderTemplates?.[key];
+  return (typeof fromSettings === 'string' && fromSettings.trim())
+    ? fromSettings
+    : DEFAULT_REMINDER_TEMPLATES[key];
+}
+
+// Build the WhatsApp message body for a given member + scenario.
+// `kind` is 'expired' or 'expiring'. Pads English + Arabic, separated by a
+// horizontal divider. Skips the Arabic section if the member has no Arabic name.
+function buildReminderMessage(m, kind, daysFromToday) {
+  const sport = m.sport || (m.enrollments?.[0]?.sport) || 'membership';
+  const coach = m.coachId ? coachName(m.coachId) : '';
+  const expiry = fmtDate(m.expiryDate);
+  // Days strings — Arabic uses Arabic numerals naturally via the locale; we
+  // emit plain numbers since WhatsApp renders them correctly in both contexts
+  const daysAbs = Math.abs(daysFromToday || 0);
+  const daysAgoEn = daysAbs === 1 ? '1 day' : `${daysAbs} days`;
+  const daysAgoAr = daysAbs === 1 ? 'يوم واحد' : daysAbs === 2 ? 'يومين' : `${daysAbs} أيام`;
+  const daysLeftEn = daysAbs === 0 ? 'today' : daysAbs === 1 ? '1 day' : `${daysAbs} days`;
+  const daysLeftAr = daysAbs === 0 ? 'اليوم' : daysAbs === 1 ? 'يوم واحد' : daysAbs === 2 ? 'يومين' : `${daysAbs} أيام`;
+
+  function fill(tpl, isArabic) {
+    return tpl
+      .replace(/\{name\}/g, m.name || '')
+      .replace(/\{nameArabic\}/g, m.nameArabic || m.name || '')
+      .replace(/\{sport\}/g, sport)
+      .replace(/\{coach\}/g, coach)
+      .replace(/\{expiry\}/g, expiry || '')
+      .replace(/\{daysAgo\}/g, isArabic ? daysAgoAr : daysAgoEn)
+      .replace(/\{daysLeft\}/g, isArabic ? daysLeftAr : daysLeftEn);
+  }
+
+  const enKey = kind === 'expired' ? 'expired_en' : 'expiring_en';
+  const arKey = kind === 'expired' ? 'expired_ar' : 'expiring_ar';
+  const en = fill(reminderTemplate(enKey), false);
+  const includeArabic = !!(m.nameArabic && m.nameArabic.trim());
+  const ar = includeArabic ? fill(reminderTemplate(arKey), true) : '';
+  return includeArabic ? `${en}\n\n— — — — — — —\n\n${ar}` : en;
+}
+
+// ─── DUPLICATE DETECTION ─────────────────────────────────────────
+// Normalizes a phone for comparison: digits-only.
+// Two phones are considered "duplicates" if:
+//   (a) their digits-only forms are equal, OR
+//   (b) one is a suffix of the other AND the shorter one has ≥ 8 digits
+//       (catches the "+97450012345" vs "50012345" case where one stored the
+//        country code and the other didn't)
+function normalizePhoneForCompare(phone) {
+  if (!phone) return '';
+  return String(phone).replace(/[^\d]/g, '');
+}
+
+// Returns true if two stored phones likely refer to the same person.
+function phonesMatch(a, b) {
+  const aD = normalizePhoneForCompare(a);
+  const bD = normalizePhoneForCompare(b);
+  if (!aD || !bD) return false;
+  if (aD === bD) return true;
+  // Suffix match — the shorter one is missing the country code
+  const minLen = MIN_PHONE_DIGITS;  // 8
+  if (aD.length >= minLen && bD.length >= minLen) {
+    if (aD.endsWith(bD) || bD.endsWith(aD)) return true;
+  }
+  return false;
+}
+
+// Find existing members (active OR archived) whose QID matches. Case-insensitive
+// trim, exact match.
+function findMembersByQid(qid, excludeId) {
+  if (!qid) return [];
+  const target = String(qid).trim().toUpperCase();
+  if (!target) return [];
+  return state.members.filter(m => {
+    if (m.id === excludeId) return false;
+    const mQid = String(m.qid || '').trim().toUpperCase();
+    return mQid && mQid === target;
+  });
+}
+
+// ─── NAME MATCHING (for the composite uniqueness key) ────────────
+// A member is uniquely identified by Mobile + Name. Two records with the
+// same phone are only the SAME person when a name also matches; if the names
+// differ they're distinct people (e.g. a family sharing one phone), which is
+// allowed. Names match on EITHER the English or the Arabic field.
+function normalizeNameForCompare(name) {
+  if (!name) return '';
+  // Trim, lowercase (no-op for Arabic), collapse internal whitespace.
+  return String(name).trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+// True if two members share an English name OR an Arabic name (non-empty).
+function namesMatch(a, b) {
+  const aEn = normalizeNameForCompare(a.name);
+  const bEn = normalizeNameForCompare(b.name);
+  if (aEn && bEn && aEn === bEn) return true;
+  const aAr = normalizeNameForCompare(a.nameArabic);
+  const bAr = normalizeNameForCompare(b.nameArabic);
+  if (aAr && bAr && aAr === bAr) return true;
+  return false;
+}
+
+// Composite-key duplicate lookup used at save time. Returns the existing
+// member (active OR archived) that is the SAME person as the one being saved
+// — i.e. phone matches AND a name matches — or null. Same phone with a
+// different name is NOT a duplicate (returns null).
+function findDuplicateMember(phone, nameEn, nameAr, excludeId) {
+  if (!phone) return null;
+  const candidate = { name: nameEn, nameArabic: nameAr };
+  return state.members.find(m => {
+    if (m.id === excludeId) return false;
+    if (!phonesMatch(m.phone, phone)) return false;
+    return namesMatch(m, candidate);
+  }) || null;
+}
+
+// Group members into TRUE duplicate clusters: same phone AND same name.
+// Returns an array of arrays, each inner array being 2+ members that are the
+// same person. Members who merely share a phone (different names — families)
+// are intentionally NOT clustered.
+function findAllDuplicateMembers() {
+  // 1. Bucket by phone (last 8 digits — the stable portion across formats).
+  const phoneBuckets = new Map();  // phoneKey -> [members]
+  for (const m of state.members) {
+    const d = normalizePhoneForCompare(m.phone);
+    if (!d || d.length < MIN_PHONE_DIGITS) continue;
+    const key = d.slice(-8);
+    if (!phoneBuckets.has(key)) phoneBuckets.set(key, []);
+    phoneBuckets.get(key).push(m);
+  }
+  // 2. Within each phone bucket, sub-group members whose names also match.
+  const clusters = [];
+  for (const members of phoneBuckets.values()) {
+    if (members.length < 2) continue;
+    const used = new Set();
+    for (let i = 0; i < members.length; i++) {
+      if (used.has(members[i].id)) continue;
+      const group = [members[i]];
+      used.add(members[i].id);
+      for (let j = i + 1; j < members.length; j++) {
+        if (used.has(members[j].id)) continue;
+        if (namesMatch(members[i], members[j])) {
+          group.push(members[j]);
+          used.add(members[j].id);
+        }
+      }
+      if (group.length >= 2) clusters.push(group);
+    }
+  }
+  return clusters;
+}
+
+function phoneCell(phone, opts = {}) {
+  if (!isRealPhone(phone)) {
+    return opts.empty != null ? opts.empty : '<span class="text-mute">—</span>';
+  }
+  const url = waLink(phone, opts.text);
+  const stop = opts.stop === false ? '' : 'event.stopPropagation();';
+  return `<span style="white-space:nowrap">${escapeHtml(phone)} <a href="${url}" target="_blank" onclick="${stop}" title="Open WhatsApp" style="color:#25D366;text-decoration:none;font-size:14px;vertical-align:middle;margin-left:2px">💬</a></span>`;
+}
+
 function coachName(id) {
   if (id == null) return '—';
   const c = state.coaches.find(x => x.id === id);
@@ -711,6 +1153,58 @@ function lastRenewalDate(m) {
 // Did the member finish all classes in a package within < 1 month?
 // Returns true if ANY subscription/renewal has attended === total (and >0)
 // AND the start→end gap is under ~30 days.
+// ─── Member helpers: age, tenure, birthday ──────────────────────────
+// All accept ISO date strings (YYYY-MM-DD) and return display values.
+
+// Years from birthdate to today. Returns null if birthdate missing/invalid.
+function memberAge(birthdate) {
+  if (!birthdate) return null;
+  const b = new Date(birthdate);
+  if (isNaN(b)) return null;
+  const t = new Date(TODAY);
+  let age = t.getFullYear() - b.getFullYear();
+  const m = t.getMonth() - b.getMonth();
+  // Adjust if the birthday hasn't happened yet this year
+  if (m < 0 || (m === 0 && t.getDate() < b.getDate())) age--;
+  return age >= 0 ? age : null;
+}
+
+// Returns true if the member's birthday falls in the given YYYY-MM (default: this month)
+function isBirthdayInMonth(birthdate, monthKey) {
+  if (!birthdate) return false;
+  const m = (monthKey || currentMonth()).slice(5, 7);
+  return birthdate.slice(5, 7) === m;
+}
+
+// Days until next birthday (positive number). null if no birthdate.
+function daysUntilBirthday(birthdate) {
+  if (!birthdate) return null;
+  const b = new Date(birthdate);
+  if (isNaN(b)) return null;
+  const t = new Date(TODAY);
+  // Build this year's birthday, then advance to next year if it's already passed
+  let next = new Date(t.getFullYear(), b.getMonth(), b.getDate());
+  if (next < t) next = new Date(t.getFullYear() + 1, b.getMonth(), b.getDate());
+  return Math.round((next - t) / 86400000);
+}
+
+// "1 year 4 months" since the given date. Returns null if missing/future.
+function memberTenure(joinDateStr) {
+  if (!joinDateStr) return null;
+  const j = new Date(joinDateStr);
+  if (isNaN(j)) return null;
+  const t = new Date(TODAY);
+  if (j > t) return null;
+  let years = t.getFullYear() - j.getFullYear();
+  let months = t.getMonth() - j.getMonth();
+  if (t.getDate() < j.getDate()) months--;
+  if (months < 0) { years--; months += 12; }
+  if (years === 0 && months === 0) return 'New';
+  if (years === 0) return `${months} month${months === 1 ? '' : 's'}`;
+  if (months === 0) return `${years} year${years === 1 ? '' : 's'}`;
+  return `${years} year${years === 1 ? '' : 's'} ${months} month${months === 1 ? '' : 's'}`;
+}
+
 function isCompleted(m) {
   if (!m) return false;
   const subs = [...(m.subscriptions || []), ...(m.renewals || [])];
@@ -757,6 +1251,14 @@ function memberStatus(m) {
 
 // Is the member counted as active (Active, Completed, AND Frozen all count)?
 // Frozen members are not Expired — they're paused but still paying customers.
+// Returns the list of members NOT soft-deleted. Use for active-state operations
+// (lists, dashboards, counts, exports). For looking up a specific member by id
+// (e.g. to show their name on an old invoice), still use state.members.find()
+// directly — historical references should resolve even for archived members.
+function activeMembers() {
+  return state.members.filter(m => !m.deleted);
+}
+
 function isActiveStatus(m) {
   return memberStatus(m) !== 'Expired';
 }
@@ -797,9 +1299,10 @@ function computeMonthlyPay(coachId, monthKey) {
     // 'switch-credit'), since those carry the new coach's locked share.
     const cat = inv.category || 'Membership';
     if (cat !== 'Membership') continue;
-    if (!inv.customerId) continue;
-    const mem = state.members.find(x => x.id === inv.customerId);
-    if (!mem || !isActiveStatus(mem)) continue;
+    // RULE (set by admin): any Membership income that month → coach earns
+    // commission on it. Member's current status (Active/Expired/Frozen) is
+    // irrelevant — what matters is that the invoice was recorded that month.
+    // No member-lookup or attendance check.
     const lineItems = Array.isArray(inv.lineItems) && inv.lineItems.length
       ? inv.lineItems
       : [{ sport: inv.sport, coachId: inv.coachId, price: inv.amount || 0 }];
@@ -1029,6 +1532,28 @@ function bindPagination(id, pg, totalCount, onChange) {
 }
 
 let toastTimer;
+// ─── AUDIT LOG ─────────────────────────────────────────────────────
+// Records significant actions so admin can trace "who changed what, when".
+// Lightweight: just an in-array log capped at 1000 entries (oldest dropped).
+// Hook into delete/restore, withdraw, refunds, expense edits, salary marks,
+// member edits — any action that affects money or membership state.
+function audit(action, target, summary, details = null) {
+  if (!Array.isArray(state.auditLog)) state.auditLog = [];
+  state.auditLog.push({
+    id: 'al_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+    ts: new Date().toISOString(),
+    user: state.user?.username || state.user?.email || state.user?.name || 'unknown',
+    action,         // e.g. 'member.archive', 'member.restore', 'sport.withdraw'
+    target,         // e.g. 'member:42', 'invoice:107'
+    summary,        // short human description
+    details,        // optional object with extra context
+  });
+  // Cap at 1000 entries — drop oldest to keep state size sane
+  if (state.auditLog.length > 1000) {
+    state.auditLog = state.auditLog.slice(-1000);
+  }
+}
+
 function toast(msg, type = 'success') {
   const existing = $('.toast');
   if (existing) existing.remove();
@@ -1129,12 +1654,14 @@ const ROUTES = {
   salaries:   { label: 'Salaries',   icon: '💰', section: 'Finance' },
   products:   { label: 'Products',   icon: '📦', section: 'Finance' },
   reports:    { label: 'Reports',    icon: '📈', section: 'Insights' },
+  enrolled:   { label: 'Enrolled Members', icon: '🎓', section: 'Insights' },
   coachperf:  { label: 'Coach Performance', icon: '📊', section: 'Insights' },
   renewals:   { label: 'Renewals',   icon: '🔄', section: 'Insights' },
   attreport:  { label: 'Attendance Report', icon: '📋', section: 'Insights' },
   dataimport: { label: 'Data Import', icon: '📥', section: 'System' },
   dataexport: { label: 'Data Export', icon: '📤', section: 'System' },
   sports:     { label: 'Sports',     icon: '🥋', section: 'System' },
+  audit:      { label: 'Audit Log',  icon: '📋', section: 'System' },
   settings:   { label: 'Settings',   icon: '⚙️', section: 'System' },
 };
 
@@ -1158,6 +1685,34 @@ function render() {
   const toastClone = liveToast ? liveToast.cloneNode(true) : null;
 
   document.body.innerHTML = '';
+
+  // Mobile hamburger button — visible only via CSS at < 900px.
+  // Toggles the .open class on .sidebar and .sidebar-backdrop.
+  const menuBtn = el('button', {
+    className: 'mobile-menu-btn',
+    'aria-label': 'Toggle menu',
+    title: 'Menu',
+    innerHTML: '☰',
+  });
+  const backdrop = el('div', { className: 'sidebar-backdrop' });
+  function closeDrawer() {
+    document.querySelector('.sidebar')?.classList.remove('open');
+    backdrop.classList.remove('open');
+  }
+  menuBtn.addEventListener('click', () => {
+    const sb = document.querySelector('.sidebar');
+    const isOpen = sb?.classList.contains('open');
+    if (isOpen) {
+      closeDrawer();
+    } else {
+      sb?.classList.add('open');
+      backdrop.classList.add('open');
+    }
+  });
+  backdrop.addEventListener('click', closeDrawer);
+  document.body.append(menuBtn);
+  document.body.append(backdrop);
+
   const app = el('div', { id: 'app' });
   const sidebar = renderSidebar();
   const main = el('main', { className: 'main' });
@@ -1165,6 +1720,13 @@ function render() {
   app.append(sidebar);
   app.append(main);
   document.body.append(app);
+
+  // Close drawer when a nav item is clicked (mobile UX)
+  sidebar.addEventListener('click', e => {
+    if (e.target.closest('.nav-item') && window.innerWidth <= 900) {
+      closeDrawer();
+    }
+  });
 
   // Re-append the surviving toast (already on its timer; will fade naturally)
   if (toastClone) document.body.append(toastClone);
@@ -1242,9 +1804,10 @@ function renderSidebar() {
         <div style="font-size:10px;color:var(--text-mute)">Administrator · v${APP_VERSION} · ${window.Storage?.isCloud() ? '☁️ cloud' : '💾 offline'}</div>
       </div>
     </div>
-    <button class="btn ghost sm full" id="sidebar-backup" style="margin-bottom:6px" title="Download a full JSON backup of your data">💾 Quick backup</button>
-    <a href="guide.html" target="_blank" class="btn ghost sm full" style="margin-bottom:6px;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px">📖 User Guide</a>
-    <button class="btn ghost sm full" id="logout-btn">Sign out</button>
+    <button class="btn ghost sm full" id="sidebar-cmdk" style="margin-bottom:6px;display:flex;align-items:center;justify-content:flex-start;gap:8px;text-align:left" title="Quick search (Ctrl+K / ⌘K)"><span style="width:18px;text-align:center;flex-shrink:0">🔎</span><span style="flex:1;min-width:0">Quick search</span><span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:9px;padding:1px 4px;background:var(--surface);border:1px solid var(--border);border-radius:4px;flex-shrink:0">⌘K</span></button>
+    <button class="btn ghost sm full" id="sidebar-backup" style="margin-bottom:6px;display:flex;align-items:center;justify-content:flex-start;gap:8px;text-align:left" title="Download a full JSON backup of your data"><span style="width:18px;text-align:center;flex-shrink:0">💾</span><span style="flex:1;min-width:0">Quick backup</span></button>
+    <a href="guide.html" target="_blank" class="btn ghost sm full" style="margin-bottom:6px;text-decoration:none;display:flex;align-items:center;justify-content:flex-start;gap:8px;text-align:left"><span style="width:18px;text-align:center;flex-shrink:0">📖</span><span style="flex:1;min-width:0">User Guide</span></a>
+    <button class="btn ghost sm full" id="logout-btn" style="display:flex;align-items:center;justify-content:flex-start;gap:8px;text-align:left"><span style="width:18px;text-align:center;flex-shrink:0">🚪</span><span style="flex:1;min-width:0">Sign out</span></button>
   `;
   sb.append(footer);
   footer.querySelector('#logout-btn').addEventListener('click', logout);
@@ -1252,12 +1815,49 @@ function renderSidebar() {
     if (typeof window.downloadBackup === 'function') window.downloadBackup();
     else toast('Backup function not loaded yet', 'error');
   });
+  footer.querySelector('#sidebar-cmdk').addEventListener('click', () => {
+    if (typeof openCmdK === 'function') openCmdK();
+  });
 
   return sb;
 }
 
 // ─── Page registry (filled in pages.js) ──────────────────────────
 const PAGES = {};
+
+// ─── Persistent filter helpers ──────────────────────────────────────
+// Page-level filter state survives navigation within a session, so admin
+// doesn't have to re-pick "Active" / sport / coach every time they switch
+// pages. Stored in sessionStorage (per-tab); resets on browser close.
+function loadFilter(pageKey, defaults) {
+  try {
+    const raw = sessionStorage.getItem('bs-filter-' + pageKey);
+    if (!raw) return { ...defaults };
+    const parsed = JSON.parse(raw);
+    return { ...defaults, ...parsed };
+  } catch { return { ...defaults }; }
+}
+function saveFilter(pageKey, filter) {
+  try { sessionStorage.setItem('bs-filter-' + pageKey, JSON.stringify(filter)); }
+  catch {}
+}
+
+// ─── Recently viewed members (last 5, per-tab) ──────────────────
+function pushRecentMember(memberId) {
+  if (!memberId) return;
+  let list = [];
+  try { list = JSON.parse(sessionStorage.getItem('bs-recent-members') || '[]'); }
+  catch { list = []; }
+  list = [memberId, ...list.filter(id => id !== memberId)].slice(0, 5);
+  try { sessionStorage.setItem('bs-recent-members', JSON.stringify(list)); }
+  catch {}
+}
+function getRecentMembers() {
+  try {
+    const ids = JSON.parse(sessionStorage.getItem('bs-recent-members') || '[]');
+    return ids.map(id => state.members.find(m => m.id === id)).filter(Boolean);
+  } catch { return []; }
+}
 
 // ─── Init ──────────────────────────────────────────────────────────
 // ─── Theme manager ──────────────────────────────────────────────────
@@ -1333,6 +1933,250 @@ async function init() {
   // Banner: which backend
   if (window.Storage.isCloud()) {
     setTimeout(() => toast('☁️ Connected to cloud — data syncs across devices', 'success'), 400);
+  }
+
+  // ─── Global keyboard shortcuts ─────────────────────────────────
+  // Press "/" to focus the first search box on the current page.
+  // Ignored when the user is already typing in an input/textarea.
+  document.addEventListener('keydown', (e) => {
+    // Cmd+K / Ctrl+K → global command palette (jump anywhere)
+    if (e.key === 'k' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      openCmdK();
+      return;
+    }
+    if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+    const tag = (e.target.tagName || '').toUpperCase();
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (e.target.isContentEditable) return;
+    // Find the first visible input that looks like a search box
+    const candidates = document.querySelectorAll('input[type="text"], input[type="search"], input[id*="search"], input[placeholder*="earch"]');
+    for (const inp of candidates) {
+      if (inp.offsetParent !== null) {  // visible
+        e.preventDefault();
+        inp.focus();
+        inp.select?.();
+        return;
+      }
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Cmd+K Command Palette — global quick-jump search
+// Triggered by Ctrl+K / Cmd+K from any page. Searches:
+//   • Members (active first, then archived)
+//   • Coaches/staff
+//   • All navigation routes (pages)
+// Selecting jumps to the page or opens member detail.
+// ═══════════════════════════════════════════════════════════════════
+function openCmdK() {
+  // Security: the command palette can jump to members, coaches, money pages —
+  // it must never be reachable before login. Bail out if no user is signed in.
+  if (!state.user) return;
+  // Don't open twice
+  if (document.querySelector('.cmdk-backdrop')) return;
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'cmdk-backdrop';
+  backdrop.innerHTML = `
+    <div class="cmdk-palette" role="dialog" aria-label="Quick search">
+      <div class="cmdk-input-wrap">
+        <span class="cmdk-icon">🔎</span>
+        <input id="cmdk-input" class="cmdk-input" type="text" placeholder="Search members, coaches, pages…" autocomplete="off" spellcheck="false" />
+        <span class="cmdk-hint">ESC</span>
+      </div>
+      <div id="cmdk-results" class="cmdk-results"></div>
+      <div class="cmdk-footer">
+        <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+        <span><kbd>↵</kbd> open</span>
+        <span><kbd>esc</kbd> close</span>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+
+  const input = backdrop.querySelector('#cmdk-input');
+  const results = backdrop.querySelector('#cmdk-results');
+  let activeIdx = 0;
+  let currentItems = [];
+
+  function close() {
+    backdrop.remove();
+    document.removeEventListener('keydown', onKey);
+  }
+
+  function buildItems(query) {
+    const q = query.trim().toLowerCase();
+    const items = [];
+
+    // Pages — always shown, filter by query
+    const pages = Object.entries(ROUTES).map(([key, route]) => ({
+      type: 'page',
+      icon: route.icon,
+      title: route.label,
+      subtitle: route.section,
+      action: () => { navigate(key); },
+      score: scoreMatch(q, route.label.toLowerCase()),
+    })).filter(p => !q || p.score > 0);
+
+    // Members — active first, archived last
+    const members = state.members.map(m => ({
+      type: 'member',
+      icon: m.deleted ? '📦' : '👤',
+      title: m.name + (m.nameArabic ? ' · ' + m.nameArabic : ''),
+      subtitle: [
+        m.deleted ? 'Archived' : memberStatus(m),
+        m.sport,
+        m.phone ? formatPhone(m.phone) : null,
+      ].filter(Boolean).join(' · '),
+      action: () => { window.viewMember?.(m.id); },
+      score: scoreMatch(q, (m.name + ' ' + (m.nameArabic || '') + ' ' + (m.phone || '') + ' ' + (m.qid || '')).toLowerCase()),
+      _archived: !!m.deleted,
+    })).filter(m => !q || m.score > 0);
+
+    // Coaches
+    const coaches = state.coaches.map(c => ({
+      type: 'coach',
+      icon: c.role === 'staff' ? '👔' : '🥋',
+      title: c.name,
+      subtitle: [
+        c.role === 'staff' ? 'Staff' : 'Coach',
+        isCoachActive(c) ? 'Active' : 'Inactive',
+        c.phone ? formatPhone(c.phone) : null,
+      ].filter(Boolean).join(' · '),
+      action: () => { navigate('coaches'); },
+      score: scoreMatch(q, (c.name + ' ' + (c.phone || '')).toLowerCase()),
+    })).filter(c => !q || c.score > 0);
+
+    // Sort each group by score (descending), then alphabetically
+    pages.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
+    members.sort((a, b) => {
+      if (a._archived !== b._archived) return a._archived ? 1 : -1;
+      return b.score - a.score || a.title.localeCompare(b.title);
+    });
+    coaches.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
+
+    // Cap each section so the palette stays focused
+    const capped = (arr, n) => arr.slice(0, n);
+
+    if (!q) {
+      items.push({ section: 'Pages' });
+      capped(pages, 8).forEach(p => items.push(p));
+    } else {
+      if (members.length) { items.push({ section: 'Members' }); capped(members, 8).forEach(m => items.push(m)); }
+      if (coaches.length) { items.push({ section: 'Team' });    capped(coaches, 5).forEach(c => items.push(c)); }
+      if (pages.length)   { items.push({ section: 'Pages' });   capped(pages, 6).forEach(p => items.push(p)); }
+    }
+    return items;
+  }
+
+  // Simple fuzzy-ish scoring: exact match > startsWith > contains > word-boundary contains
+  function scoreMatch(q, hay) {
+    if (!q) return 1;
+    if (!hay) return 0;
+    if (hay === q) return 100;
+    if (hay.startsWith(q)) return 80;
+    // Word boundary match (any word starts with query)
+    if (new RegExp('\\b' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(hay)) return 60;
+    if (hay.includes(q)) return 40;
+    return 0;
+  }
+
+  function renderResults() {
+    const q = input.value;
+    const items = buildItems(q);
+    currentItems = items.filter(i => !i.section);
+    if (!currentItems.length) {
+      results.innerHTML = '<div class="cmdk-empty">No matches. Try a member name, phone, or page name.</div>';
+      activeIdx = 0;
+      return;
+    }
+    activeIdx = Math.min(activeIdx, currentItems.length - 1);
+
+    let html = '';
+    let itemIdx = 0;
+    for (const it of items) {
+      if (it.section) {
+        html += `<div class="cmdk-section">${escapeHtml(it.section)}</div>`;
+      } else {
+        const isActive = itemIdx === activeIdx;
+        html += `
+          <div class="cmdk-item ${isActive ? 'active' : ''}" data-idx="${itemIdx}">
+            <div class="cmdk-item-icon">${it.icon}</div>
+            <div class="cmdk-item-text">
+              <div class="cmdk-item-title">${escapeHtml(it.title)}</div>
+              <div class="cmdk-item-subtitle">${escapeHtml(it.subtitle || '')}</div>
+            </div>
+          </div>`;
+        itemIdx++;
+      }
+    }
+    results.innerHTML = html;
+
+    // Bind clicks
+    results.querySelectorAll('.cmdk-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const idx = parseInt(el.dataset.idx);
+        const item = currentItems[idx];
+        if (item?.action) {
+          close();
+          item.action();
+        }
+      });
+      el.addEventListener('mouseenter', () => {
+        activeIdx = parseInt(el.dataset.idx);
+        results.querySelectorAll('.cmdk-item').forEach((x, i) => x.classList.toggle('active', i === activeIdx));
+      });
+    });
+
+    // Scroll active item into view
+    const active = results.querySelector('.cmdk-item.active');
+    active?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function onKey(e) {
+    if (e.key === 'Escape') { e.preventDefault(); close(); return; }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      activeIdx = Math.min(activeIdx + 1, currentItems.length - 1);
+      renderResults();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      activeIdx = Math.max(activeIdx - 1, 0);
+      renderResults();
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const item = currentItems[activeIdx];
+      if (item?.action) {
+        close();
+        item.action();
+      }
+    }
+  }
+
+  input.addEventListener('input', renderResults);
+  document.addEventListener('keydown', onKey);
+  backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
+
+  renderResults();
+  // Defer focus to next frame so the modal animation completes
+  requestAnimationFrame(() => input.focus());
+}
+window.openCmdK = openCmdK;
+
+// Helper: format a phone for display (uses parseStoredPhone if available)
+function formatPhone(stored) {
+  if (!stored) return '';
+  try {
+    const p = parseStoredPhone(stored);
+    return p.code + ' ' + p.digits;
+  } catch (e) {
+    return stored;
   }
 }
 

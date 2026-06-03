@@ -1,48 +1,23 @@
 # Black Stars CRM
-Version 4.59.0 — Status auto-sync + CSV exports + data-quality filter.
+Version 4.73.1 — Sidebar footer alignment fix (only change vs v121).
 
-## What's new
+## What changed
+Just the one UI bug you circled: the sidebar footer actions were
+inconsistently aligned — "Quick search" sat left while "Quick backup",
+"User Guide" and "Sign out" were centred, so the column looked ragged.
 
-### 1. Auto-status sync on app load
-A one-time sweep aligns each member's stored `m.status` field with the live derived status (based on `expiryDate` vs today). Frozen and Completed members are not touched. If any changes happen, a toast shows the count: *"✓ Refreshed status on N members (date-based)"*.
+They are now a consistent left-aligned menu: each is an icon + label row
+(Sign out gained a 🚪 icon), and the ⌘K hint on Quick search stays pinned to
+the right edge.
 
-**Why:** the UI always uses `memberStatus()` which correctly derives Expired from dates, but the stored `m.status` could drift after imports or over time. CSV exports and any other consumer reading `m.status` directly now see fresh values.
+## What did NOT change
+- No collapse/expand. No hide button. No floating buttons.
+- The brand/header row is exactly as it was in v121 (logo + title + theme).
+- Everything else (all v121 features and fixes) is untouched.
 
-### 2. Rentals CSV export
-The Rentals page now has a **📥 Export** button in the topbar. Exports the CURRENT filtered set (respects facility + month + search filters). 12 columns:
+The fix is written with inline styles in app.js, so a cached styles.css
+cannot interfere with it.
 
-Date · Time · Facility · Customer · Mobile · QID · Hours · Rate/hr · Amount · Method · Notes · Invoice Ref
-
-Filename includes today's date for easy archiving (e.g. `rentals-2026-06-02.csv`).
-
-### 3. Invoices CSV export — fixed + enhanced
-The existing **📥 Export** button on Invoices now:
-- **Respects the current filter** (was: exported ALL invoices regardless of filter dropdowns)
-- **Adds 3 new columns**: Month, Category, QID
-- **Sorted** newest-first
-- **Empty-state warning** if nothing matches the filter
-- **Filename** includes today's date (`invoices-2026-06-02.csv`)
-
-### 4. Members data-quality filter
-New filter dropdown on the Members page (next to nationality):
-- **📋 All data** (default)
-- **⚠️ Missing any field**
-- **⚠️ No phone**
-- **⚠️ No QID**
-- **⚠️ No email**
-- **⚠️ No birthdate**
-- **⚠️ No nationality**
-
-Smart phone detection: treats `+9747000...` placeholder numbers from old imports as "no phone".
-
-**Use case:** the prior data audit flagged 191/207 members missing contact info. Now you can progressively clean up by filtering "No phone" → bulk-edit those members.
-
-## Verified
-- Status sync: stale 'Active' with expired date → flipped to 'Expired'; stale 'Expired' with future date → flipped to 'Active'; Frozen + Completed untouched ✓
-- Data-quality filter excludes placeholder `+9747000...` phones ✓
-- Invoices/Rentals export respects filter state ✓
-
-## Backwards compat
-- No schema bump
-- Status sync is idempotent — running it again does nothing
-- All existing exports still work
+## To load
+Replace the files in C:\Users\kshawky\Desktop\CRM\blackstars-localhost\ with
+these, refresh, and the footer (bottom of the sidebar) should read v4.73.1.

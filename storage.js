@@ -47,6 +47,14 @@
         delete persistable.route;
         localStorage.setItem(LS_KEY, JSON.stringify(persistable));
       } catch (e) {
+        // Quota errors must reach the app layer so the user gets a loud warning
+        // (their change wasn't saved). Other errors are swallowed as before.
+        const isQuota = e && (e.name === 'QuotaExceededError' || e.code === 22 ||
+          e.code === 1014 || /quota/i.test(e.message || ''));
+        if (isQuota) {
+          console.error('[Storage:local] save failed — quota exceeded:', e);
+          throw e;
+        }
         console.warn('[Storage:local] save failed:', e);
       }
     },
@@ -131,7 +139,8 @@
         docRef().set(persistable, { merge: false })
           .catch(e => console.warn('[Storage:firebase] save failed (will retry on next save):', e));
         // Also save locally as a safety net (in case Firestore offline cache misses)
-        localBackend.save(state);
+        try { localBackend.save(state); }
+        catch (e) { console.warn('[Storage:firebase] local safety-net save failed:', e); }
       },
       onRemoteUpdate(callback) {
         remoteUpdateCallback = callback;
