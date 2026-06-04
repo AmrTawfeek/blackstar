@@ -13,12 +13,12 @@ function computeStats() {
   d.setDate(0);
   const prev = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 
-  const currRevenue = state.invoices.filter(i => i.month === curr).reduce((s,i) => s+i.amount, 0);
-  const prevRevenue = state.invoices.filter(i => i.month === prev).reduce((s,i) => s+i.amount, 0);
+  const currRevenue = state.invoices.reduce((s, i) => s + cashInMonth(i, curr), 0);
+  const prevRevenue = state.invoices.reduce((s, i) => s + cashInMonth(i, prev), 0);
 
   // Split revenue: coaching/membership vs court rental
-  const currRentalRevenue = state.invoices.filter(i => i.month === curr && i.activityType === 'rental').reduce((s,i) => s+i.amount, 0);
-  const prevRentalRevenue = state.invoices.filter(i => i.month === prev && i.activityType === 'rental').reduce((s,i) => s+i.amount, 0);
+  const currRentalRevenue = state.invoices.filter(i => i.activityType === 'rental').reduce((s, i) => s + cashInMonth(i, curr), 0);
+  const prevRentalRevenue = state.invoices.filter(i => i.activityType === 'rental').reduce((s, i) => s + cashInMonth(i, prev), 0);
   const currCoachingRevenue = currRevenue - currRentalRevenue;
   const prevCoachingRevenue = prevRevenue - prevRentalRevenue;
 
@@ -26,8 +26,8 @@ function computeStats() {
   const prevRentalCount = state.invoices.filter(i => i.month === prev && i.activityType === 'rental').length;
 
   // Product sales revenue (sales auto-create invoices with category='Product')
-  const currSalesRevenue = state.invoices.filter(i => i.month === curr && i.activityType === 'sale').reduce((s,i) => s+i.amount, 0);
-  const prevSalesRevenue = state.invoices.filter(i => i.month === prev && i.activityType === 'sale').reduce((s,i) => s+i.amount, 0);
+  const currSalesRevenue = state.invoices.filter(i => i.activityType === 'sale').reduce((s, i) => s + cashInMonth(i, curr), 0);
+  const prevSalesRevenue = state.invoices.filter(i => i.activityType === 'sale').reduce((s, i) => s + cashInMonth(i, prev), 0);
 
   const currExpenses = state.expenses.filter(e => e.month === curr).reduce((s,e) => s+e.amount, 0);
   const prevExpenses = state.expenses.filter(e => e.month === prev).reduce((s,e) => s+e.amount, 0);
@@ -1164,7 +1164,10 @@ function viewMember(id) {
           ${m.siblingGroup ? `<div class="text-mute" style="font-size:11px;margin-top:4px">👨‍👩‍👧 Split from group registration: "${escapeHtml(m.siblingGroup)}"</div>` : ''}
           ${(m.renewalsBySport && Object.keys(m.renewalsBySport).length) ? `<div class="mt-1" style="display:flex;flex-wrap:wrap;gap:6px">${Object.entries(m.renewalsBySport).map(([sp, c]) => `<span class="badge" style="background:rgba(242,163,60,.15);color:var(--accent-2)" title="Renewed ${c} time${c>1?'s':''}">🔄 ${escapeHtml(sp)}: ${c}</span>`).join('')}</div>` : ''}
           ${(m.invoiceLinks && m.invoiceLinks.length) ? `<div class="text-mute" style="font-size:11px;margin-top:4px">🧾 ${m.invoiceLinks.length} invoice${m.invoiceLinks.length>1?'s':''} · ${fmt(m.invoiceLinks.reduce((a,x)=>a+(x.amount||0),0))} QAR paid${m.invoiceLinks.filter(x=>x.ref).length?' · '+m.invoiceLinks.filter(x=>x.ref).map(x=>x.ref).join(', '):''}</div>` : ''}
-          <div class="mt-1"><span class="badge ${memberStatus(m).toLowerCase()}">${memberStatus(m)}</span> <span class="badge">${(m.months || []).join(' + ').toUpperCase()}</span></div>
+          <div class="mt-1"><span class="badge ${memberStatus(m).toLowerCase()}">${memberStatus(m)}</span> <span class="badge">${(m.months || []).join(' + ').toUpperCase()}</span>${(() => {
+            const ob = memberOutstanding(m.id);
+            return ob > 0.001 ? ` <span class="badge" style="background:rgba(242,163,60,.18);color:var(--accent-2)" title="Outstanding balance across this member's invoices">💰 ${fmt(ob)} due</span>` : '';
+          })()}</div>
         </div>
       </div>
       <div class="row row-2 mb-3">
@@ -1446,17 +1449,37 @@ function enrollRowHtml(row, idx) {
        </div>`
     : `<div class="field" style="margin:0"><label style="font-size:10px">Coach <span style="color:var(--accent)">*</span></label><select data-en="coachId" data-i="${idx}">${coachOpts}</select></div>`;
 
+  // Per-sport validity. Summer Camp uses its duration (days) as its validity.
+  const valSel = parseInt(row.validity) || DEFAULT_VALIDITY;
+  const validityField = isCamp
+    ? `<div class="field" style="margin:0"><label style="font-size:10px;color:var(--text-mute)">Validity</label><div style="padding:10px 12px;background:var(--surface);border:1px dashed var(--border);border-radius:8px;color:var(--text-mute);font-size:11px;font-style:italic">${classesNum > 0 ? classesNum + ' days (duration)' : 'set duration'}</div></div>`
+    : `<div class="field" style="margin:0"><label style="font-size:10px">Validity <span style="color:var(--accent)">*</span></label><select data-en="validity" data-i="${idx}">${VALIDITY_OPTIONS.map(v => `<option value="${v}" ${v === valSel ? 'selected' : ''}>${v} days</option>`).join('')}</select></div>`;
+  // This sport's own expiry = its start + its validity (days)
+  const eDays = isCamp ? classesNum : valSel;
+  const expiryHint = (row.start && eDays > 0) ? `⏳ ${escapeHtml(row.sport)} expires <b>${fmtDate(addDays(row.start, eDays))}</b>` : '';
+
+  const buttonCell = row.paid
+    ? `<div style="display:flex;gap:4px;align-items:end">
+         <button type="button" class="btn ghost sm" data-en-withdraw="${idx}" style="padding:8px 10px;color:var(--accent-2);margin-bottom:1px;border:1px solid var(--accent-2);background:rgba(245,158,11,.06)" title="Member already paid — process a withdrawal (refund based on attendance)">↩ Withdraw</button>
+         <button type="button" class="btn ghost sm" data-en-delete="${idx}" style="padding:8px 9px;color:var(--red);margin-bottom:1px;border:1px solid var(--red)" title="Added by mistake — delete this enrollment with NO refund">🗑</button>
+       </div>`
+    : `<button type="button" class="btn ghost sm" data-en-remove="${idx}" style="padding:8px 10px;color:var(--red);margin-bottom:1px" ${window._enrollRows.length <= 1 ? 'tabindex="-1"' : ''} title="Remove sport">✕</button>`;
+
   return `
-    <div class="enroll-row" data-enroll-idx="${idx}" style="display:grid;grid-template-columns:1.3fr 1.3fr .8fr .9fr auto;gap:8px;align-items:end;margin-bottom:8px">
-      <div class="field" style="margin:0"><label style="font-size:10px">Sport <span style="color:var(--accent)">*</span></label><select data-en="sport" data-i="${idx}" ${row.paid ? 'disabled title="Already paid — use Switch Sport instead to change"' : ''}>${sportOpts}</select></div>
-      ${coachField}
-      ${classesField}
-      <div class="field" style="margin:0"><label style="font-size:10px">Price (QAR) <span style="color:var(--accent)">*</span></label><input data-en="price" data-i="${idx}" type="number" min="0" step="0.01" value="${row.price ?? ''}" placeholder="350" style="${priceStyle}" ${row.paid ? 'readonly title="Already paid — cannot edit price directly"' : ''} /></div>
-      ${row.paid
-        ? `<button type="button" class="btn ghost sm" data-en-withdraw="${idx}" style="padding:8px 10px;color:var(--accent-2);margin-bottom:1px;border:1px solid var(--accent-2);background:rgba(245,158,11,.06)" title="Member already paid — process a withdrawal (refund based on attendance)">↩ Withdraw</button>`
-        : `<button type="button" class="btn ghost sm" data-en-remove="${idx}" style="padding:8px 10px;color:var(--red);margin-bottom:1px" ${window._enrollRows.length <= 1 ? 'tabindex="-1"' : ''} title="Remove sport">✕</button>`
-      }
-    </div>${isCamp ? `<div style="font-size:10px;color:var(--blue);margin:-4px 0 8px;padding-left:4px">🌞 Summer Camp · expires ${classesNum > 0 ? classesNum + ' day' + (classesNum === 1 ? '' : 's') : '—'} from start date · revenue goes to club, no coach commission</div>` : ''}${row.paid ? `<div style="font-size:10px;color:var(--text-mute);margin:-4px 0 8px;padding-left:4px">🔒 Paid — use <b style="color:var(--accent-2)">↩ Withdraw</b> for refund, or <b style="color:var(--blue)">Switch Sport</b> from member profile</div>` : ''}`;
+    <div class="enroll-block" data-enroll-idx="${idx}" style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;background:rgba(59,130,246,.045)">
+      <div style="display:grid;grid-template-columns:1.3fr 1.3fr .8fr .9fr auto;gap:8px;align-items:end">
+        <div class="field" style="margin:0"><label style="font-size:10px">Sport <span style="color:var(--accent)">*</span></label><select data-en="sport" data-i="${idx}" ${row.paid ? 'disabled title="Already paid — use Switch Sport instead to change"' : ''}>${sportOpts}</select></div>
+        ${coachField}
+        ${classesField}
+        <div class="field" style="margin:0"><label style="font-size:10px">Price (QAR) <span style="color:var(--accent)">*</span></label><input data-en="price" data-i="${idx}" type="number" min="0" step="0.01" value="${row.price ?? ''}" placeholder="350" style="${priceStyle}" ${row.paid ? 'readonly title="Already paid — cannot edit price directly"' : ''} /></div>
+        ${buttonCell}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+        <div class="field" style="margin:0"><label style="font-size:10px">📅 Start date <span style="color:var(--accent)">*</span></label><input data-en="start" data-i="${idx}" type="date" value="${row.start || ''}" /></div>
+        ${validityField}
+      </div>
+      ${expiryHint ? `<div style="font-size:10px;color:var(--blue);margin-top:7px;padding-left:2px">${expiryHint}</div>` : ''}${isCamp ? `<div style="font-size:10px;color:var(--blue);margin-top:5px;padding-left:2px">🌞 Summer Camp · revenue goes to club, no coach commission</div>` : ''}${row.paid ? `<div style="font-size:10px;color:var(--text-mute);margin-top:5px;padding-left:2px">🔒 Paid — editing start/validity adjusts this sport's window. Use <b style="color:var(--accent-2)">↩ Withdraw</b> for a refund, <b style="color:var(--red)">🗑</b> to delete a mistake, or <b style="color:var(--blue)">Switch Sport</b> from the member profile.</div>` : ''}
+    </div>`;
 }
 
 function renderEnrollRows() {
@@ -1469,6 +1492,16 @@ function renderEnrollRows() {
     const cls = window._enrollRows.reduce((s, r) => s + (parseInt(r.classes) || 0), 0);
     totalEl.textContent = `${window._enrollRows.length} sport${window._enrollRows.length !== 1 ? 's' : ''} · ${cls} classes/days · ${fmt(total)} QAR`;
   }
+  // Overall membership expiry = latest end across all sports (start + validity)
+  const readout = document.getElementById('f-expiry-readout');
+  if (readout) {
+    const ends = window._enrollRows.map(r => {
+      const days = r.sport === SUMMER_CAMP ? (parseInt(r.classes) || 0) : (parseInt(r.validity) || 0);
+      return (r.start && days > 0) ? addDays(r.start, days) : null;
+    }).filter(Boolean).sort();
+    readout.textContent = ends.length ? fmtDate(ends[ends.length - 1]) : '—';
+  }
+  updatePaidNowHint();
   // Wire inputs
   wrap.querySelectorAll('[data-en]').forEach(inp => {
     const handle = (e) => {
@@ -1516,7 +1549,7 @@ function renderEnrollRows() {
       } else {
         row[key] = val;
       }
-      if (key === 'price' || key === 'classes') renderEnrollRows();
+      if (key === 'price' || key === 'classes' || key === 'validity' || key === 'start') renderEnrollRows();
     };
     inp.addEventListener('change', handle);
     inp.addEventListener('input', (e) => {
@@ -1547,13 +1580,49 @@ function renderEnrollRows() {
       withdrawSport(memberId, row.originalSport || row.sport);
     });
   });
+  // Delete (added by mistake) — removes the enrollment, subscription and invoice
+  // line with NO refund record (distinct from Withdraw).
+  wrap.querySelectorAll('[data-en-delete]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const i = parseInt(e.currentTarget.dataset.enDelete);
+      const row = window._enrollRows[i];
+      const memberId = window._editingMemberId;
+      if (!memberId || !row) return;
+      removeEnrollmentMistake(memberId, row.originalSport || row.sport);
+    });
+  });
 }
 
-function addEnrollRow() {
-  const last = window._enrollRows[window._enrollRows.length - 1];
-  window._enrollRows.push({ sport: SPORTS[0], coachId: state.coaches[0]?.id, classes: '', price: '' });
+// Live "Paid now (deposit)" hint: shows the balance that will be due.
+function updatePaidNowHint() {
+  const hint = document.getElementById('f-paidnow-hint');
+  const inp = document.getElementById('f-paidnow');
+  if (!hint || !inp) return;
+  const total = (window._enrollRows || []).reduce((s, r) => s + (parseFloat(r.price) || 0), 0);
+  const raw = inp.value;
+  if (raw === '' || raw == null) { hint.textContent = `Full payment: ${fmt(total)} QAR`; hint.style.color = 'var(--text-mute)'; return; }
+  const paid = Math.max(0, Math.min(parseFloat(raw) || 0, total));
+  const bal = Math.max(0, total - paid);
+  if (bal > 0.001) { hint.textContent = `Paid ${fmt(paid)} · ${fmt(bal)} due`; hint.style.color = 'var(--accent-2)'; }
+  else { hint.textContent = `Paid in full: ${fmt(total)} QAR`; hint.style.color = 'var(--green)'; }
+}
+
+function addEnrollRow() {  const last = window._enrollRows[window._enrollRows.length - 1];
+  window._enrollRows.push({ sport: SPORTS[0], coachId: state.coaches[0]?.id, classes: '', price: '', start: TODAY, validity: DEFAULT_VALIDITY });
   renderEnrollRows();
 }
+
+// Delete an enrollment that was added by mistake — no refund (use Withdraw for that).
+window.removeEnrollmentMistake = function(memberId, sport) {
+  const m = state.members.find(x => x.id === memberId);
+  if (!m || !sport) return;
+  if (!confirm(`Delete the "${sport}" enrollment as a MISTAKE?\n\nThis removes the enrollment, its subscription and its invoice line entirely — with NO refund record. If the member actually paid and needs money back, use ↩ Withdraw instead.`)) return;
+  removeEnrollmentData(m, sport);
+  save();
+  closeModal();
+  render();
+  toast(`"${sport}" enrollment removed`);
+};
 
 function showMemberForm(m) {
   const isNew = !state.members.find(x => x.id === m.id);
@@ -1574,18 +1643,31 @@ function showMemberForm(m) {
       (inv.lineItems || []).some(li => li.sport === sport && (parseFloat(li.price) || 0) > 0)
     );
   }
+  // Latest subscription for a sport (subs are append-only, last wins) — gives
+  // us this sport's own start date + validity to pre-fill its card.
+  function latestSubFor(member, sport) {
+    let found = null;
+    for (const s of (member.subscriptions || [])) if (s.activity === sport) found = s;
+    return found;
+  }
   if (isNew) {
-    window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', paid: false }];
+    window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', start: TODAY, validity: DEFAULT_VALIDITY, paid: false }];
   } else if (m.enrollments && m.enrollments.length) {
-    window._enrollRows = m.enrollments.map(e => ({
-      sport: e.sport, coachId: e.coachId,
-      classes: e.classes ?? '', price: e.price ?? '',
-      // Track if this enrollment has an associated paid invoice. If yes, the
-      // × delete button is replaced with a "Withdraw" action that creates a
-      // refund invoice + coach commission deduction (see withdrawSport()).
-      paid: isEnrollmentPaid(m.id, e.sport),
-      originalSport: e.sport,  // remember original sport for paid-row lookup if user edits
-    }));
+    window._enrollRows = m.enrollments.map(e => {
+      const sub = latestSubFor(m, e.sport);
+      return {
+        sport: e.sport, coachId: e.coachId,
+        classes: e.classes ?? '', price: e.price ?? '',
+        // Each sport carries its OWN start date + validity (from its subscription)
+        start: (sub && sub.start) || m.startDate || TODAY,
+        validity: (sub && sub.validity) || (sub && daysBetween(sub.start, sub.end)) || m.validity || DEFAULT_VALIDITY,
+        // Track if this enrollment has an associated paid invoice. If yes, the
+        // × delete button is replaced with a "Withdraw" action that creates a
+        // refund invoice + coach commission deduction (see withdrawSport()).
+        paid: isEnrollmentPaid(m.id, e.sport),
+        originalSport: e.sport,  // remember original sport for paid-row lookup if user edits
+      };
+    });
   } else if (m.subscriptions && m.subscriptions.length) {
     // Build from latest subscription per sport
     const bySport = new Map();
@@ -1596,18 +1678,25 @@ function showMemberForm(m) {
     window._enrollRows = [...bySport.values()].map(s => ({
       sport: s.activity, coachId: s.coachId,
       classes: s.totalClasses ?? '', price: s.amountPaid ?? '',
+      start: s.start || m.startDate || TODAY,
+      validity: s.validity || daysBetween(s.start, s.end) || m.validity || DEFAULT_VALIDITY,
       paid: isEnrollmentPaid(m.id, s.activity),
       originalSport: s.activity,
     }));
     if (!window._enrollRows.length) {
-      window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', paid: false }];
+      window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', start: m.startDate || TODAY, validity: m.validity || DEFAULT_VALIDITY, paid: false }];
     }
   } else {
-    window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', paid: false }];
+    window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', start: m.startDate || TODAY, validity: m.validity || DEFAULT_VALIDITY, paid: false }];
   }
   showModal({
     title: isNew ? 'Add Member' : 'Edit Member',
     body: `
+      <div style="margin-bottom:14px;padding:10px 12px;background:rgba(245,158,11,.08);border:1px dashed var(--accent-2);border-radius:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button type="button" class="btn ghost sm" id="id-scan-btn" style="color:var(--accent-2);border:1px solid var(--accent-2);white-space:nowrap">📷 Scan Qatar ID</button>
+        <input type="file" id="id-scan-file" accept="image/*" capture="environment" style="display:none" />
+        <span id="id-scan-status" class="text-mute" style="font-size:11px;flex:1;min-width:180px">Upload a photo of the residency permit to auto-fill name, QID, birthdate &amp; nationality. Always double-check what's read.</span>
+      </div>
       <div class="form-row">
         <div class="field"><label>Full name (English) <span style="color:var(--accent)">*</span></label><input id="f-name" value="${escapeHtml(m.name)}" placeholder="Required if Arabic name is empty" /></div>
         <div class="field"><label>Name (Arabic) <span class="text-mute" style="font-size:10px">(or English required)</span></label><input id="f-name-ar" value="${escapeHtml(m.nameArabic || '')}" dir="rtl" /></div>
@@ -1648,18 +1737,17 @@ function showMemberForm(m) {
         </select></div>
       </div>
       <div class="form-row">
-        <div class="field"><label>First registration date</label><input id="f-firstreg" type="date" value="${m.firstRegistration || ''}" /></div>
-        <div class="field"><label>Start / renewal date</label><input id="f-start" type="date" value="${m.startDate || m.joinDate || TODAY}" /></div>
-        <div class="field"><label>Validity</label><select id="f-validity">${VALIDITY_OPTIONS.map(v => `<option value="${v}" ${v === DEFAULT_VALIDITY ? 'selected' : ''}>${v} days</option>`).join('')}</select></div>
-        <div class="field"><label>Expiry date <span class="text-mute" style="font-size:10px;font-weight:400">(auto · override allowed)</span></label><input id="f-expiry" type="date" value="${m.expiryDate || ''}" /><div id="f-expiry-hint" class="text-mute" style="font-size:10px;margin-top:3px"></div></div>
+        <div class="field"><label>First registration date <span class="text-mute" style="font-size:10px;font-weight:400">(blank = earliest sport's start)</span></label><input id="f-firstreg" type="date" value="${m.firstRegistration || ''}" /></div>
+        <div class="field"><label>Membership expiry <span class="text-mute" style="font-size:10px;font-weight:400">(auto — latest sport end)</span></label><div id="f-expiry-readout" style="padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-dim);font-size:13px">—</div></div>
       </div>
       ${isNew ? `
       <div style="margin-top:6px;padding:12px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px">
         <div style="font-size:11px;color:var(--green);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:8px">💳 First payment (auto-creates invoice)</div>
         <div class="form-row">
           <div class="field"><label>Method</label><select id="f-method"><option value="cash">Cash</option><option value="card">Card</option></select></div>
-          <div class="field"><label>&nbsp;</label><div class="text-dim" style="font-size:11px;padding-top:8px">Invoice total is taken from the sport prices above. One invoice covering all enrolled sports.</div></div>
+          <div class="field"><label>Paid now (deposit) <span class="text-mute" style="font-size:10px">(blank = pay full)</span></label><input id="f-paidnow" type="number" min="0" step="0.01" placeholder="full amount" /><div id="f-paidnow-hint" class="text-mute" style="font-size:10px;margin-top:3px"></div></div>
         </div>
+        <div class="text-dim" style="font-size:11px">Invoice total is taken from the sport prices above (one invoice covering all enrolled sports). Enter a deposit to record a partial payment — the balance shows as due.</div>
       </div>
       ` : ''}
     `,
@@ -1815,10 +1903,24 @@ function showMemberForm(m) {
           price: parseFloat(r.price) || 0,
           // Summer Camp keeps its duration label for display in invoices + member detail
           durationLabel: r.sport === SUMMER_CAMP ? (r.durationLabel || null) : null,
+          // Each sport carries its OWN start date + validity (its own expiry)
+          start: r.start || null,
+          validity: r.sport === SUMMER_CAMP ? (parseInt(r.classes) || DEFAULT_VALIDITY) : (parseInt(r.validity) || DEFAULT_VALIDITY),
         }));
-        // Single validity for the whole transaction
-        const validity = parseInt($('#f-validity')?.value) || DEFAULT_VALIDITY;
+        // Block duplicate sports — a member can hold only one active enrollment per sport.
+        const dupSport = duplicateEnrollmentSport(enrollments);
+        if (dupSport) {
+          toast(`"${dupSport}" is enrolled more than once. A member can have only one active enrollment per sport — remove the extra row, or use Switch Sport to change a sport.`, 'error');
+          return;
+        }
+        // Derive member-level fields from the per-sport cards:
+        //  • member start  = earliest sport start
+        //  • first reg     = the entered value, else earliest sport start
+        //  • member expiry = latest sport end (start + validity), computed
         const primary = enrollments[0];
+        const validity = primary.validity || DEFAULT_VALIDITY;   // kept for back-compat / fallbacks
+        const md = deriveMemberDates(enrollments, $('#f-firstreg').value || null);
+        const minStart = md.startDate;
 
         const data = {
           id: m.id,
@@ -1833,11 +1935,11 @@ function showMemberForm(m) {
           level: $('#f-level').value || null,
           sport: primary.sport,
           coachId: primary.coachId,
-          firstRegistration: $('#f-firstreg').value || m.firstRegistration || null,
-          startDate: $('#f-start').value || null,
-          joinDate: $('#f-firstreg').value || $('#f-start').value || m.joinDate || TODAY,
-          expiryDate: $('#f-expiry').value || null,
-          validity,                           // <-- single transaction validity
+          firstRegistration: md.firstRegistration,
+          startDate: md.startDate,
+          joinDate: md.firstRegistration,
+          expiryDate: md.expiryDate,
+          validity,                           // <-- primary sport's validity (back-compat)
           status: $('#f-status').value,
           subscriptions: m.subscriptions || [],
           renewals: m.renewals || [],
@@ -1858,11 +1960,16 @@ function showMemberForm(m) {
             const monthKey = activityDate.slice(0, 7);
             const ref = nextInvoiceRef();
             const sportList = enrollments.map(e => e.sport).join(', ');
+            // Deposit / partial: "Paid now" defaults to the full total.
+            const paidRaw = $('#f-paidnow')?.value;
+            const paidNow = (paidRaw === '' || paidRaw == null) ? totalPay : Math.max(0, Math.min(parseFloat(paidRaw) || 0, totalPay));
             const newInv = {
               id: nextId(state.invoices),
               date: activityDate,
               description: `${data.name} — ${sportList} subscription`,
               amount: totalPay,
+              amountPaid: paidNow,
+              payments: paidNow > 0 ? [{ date: activityDate, month: monthKey, amount: paidNow, method }] : [],
               method,
               month: monthKey,
               ref,
@@ -1888,18 +1995,18 @@ function showMemberForm(m) {
             // One subscription record per enrolled sport. Most sports share
             // the transaction-level validity, but Summer Camp uses its own
             // duration (stored in e.classes as days).
-            const sharedEnd = addDays(activityDate, validity);
             enrollments.forEach((e, i) => {
               const isCamp = e.sport === SUMMER_CAMP;
-              const subValidity = isCamp ? (e.classes || validity) : validity;
-              const subEnd = isCamp ? addDays(activityDate, subValidity) : sharedEnd;
+              const eStart = enrollmentStartDate(e, data);   // per-sport start (defaults to member start)
+              const subValidity = isCamp ? (e.classes || DEFAULT_VALIDITY) : (e.validity || DEFAULT_VALIDITY);
+              const subEnd = addDays(eStart, subValidity);
               data.subscriptions.push({
-                month: ymToShort(monthKey) || monthKey,
+                month: ymToShort(eStart.slice(0, 7)) || eStart.slice(0, 7),
                 activity: e.sport,
                 coach: coachName(e.coachId),
                 coachId: e.coachId,
                 firstRegistration: data.firstRegistration || null,
-                start: activityDate,
+                start: eStart,
                 validity: subValidity,
                 end: subEnd,
                 status: 'active',
@@ -1924,7 +2031,7 @@ function showMemberForm(m) {
             save();
             closeModal();
             render();
-            toast(`Member added · ${enrollments.length} sport${enrollments.length !== 1 ? 's' : ''} · invoice ${ref}`);
+            toast(`Member added · ${enrollments.length} sport${enrollments.length !== 1 ? 's' : ''} · invoice ${ref}` + (invoiceBalance(newInv) > 0.001 ? ` · ${fmt(paidNow)} paid, ${fmt(invoiceBalance(newInv))} due` : ''));
             showNewMemberInvoiceModal(newInv.id, data.name);
             return;
           }
@@ -1944,13 +2051,13 @@ function showMemberForm(m) {
         const subs = (existing.subscriptions || []).slice();
         const newSubs = [];          // newly-added enrollments to invoice
         for (const e of enrollments) {
-          // Find any existing subscription matching this sport+coach
+          // Find this sport's existing subscription (by SPORT — one per sport).
+          // Changing the coach updates that sub instead of creating a duplicate.
           let matched = false;
           for (let i = subs.length - 1; i >= 0; i--) {
             const s = subs[i];
-            if (s.activity === e.sport && s.coachId === e.coachId) {
-              if (s.totalClasses !== e.classes) s.totalClasses = e.classes;
-              if (s.amountPaid !== e.price) s.amountPaid = e.price;
+            if (s.activity === e.sport) {
+              syncSubToEnrollment(s, e, existing, state.invoices);
               matched = true;
               break;
             }
@@ -1964,9 +2071,11 @@ function showMemberForm(m) {
 
         // Create one combined invoice for ALL newly-added sports (if any)
         if (newSubs.length > 0) {
-          const startDate = existing.startDate || TODAY;
+          // Each newly-added sport can carry its OWN start date (a member who
+          // adds a sport a week later). Defaults to the member's start date.
+          const startOf = (e) => enrollmentStartDate(e, existing);
+          const startDate = newSubs.map(startOf).sort()[0];   // earliest new-sport start (invoice date)
           const monthKey = startDate.slice(0, 7);
-          const sharedEnd = addDays(startDate, validity);
           const totalNew = newSubs.reduce((s, e) => s + e.price, 0);
           const ref = nextInvoiceRef();
           const sportList = newSubs.map(e => e.sport).join(', ');
@@ -1977,6 +2086,8 @@ function showMemberForm(m) {
             date: startDate,
             description: `${existing.name} — ${sportList} added`,
             amount: totalNew,
+            amountPaid: totalNew,
+            payments: [{ date: startDate, month: monthKey, amount: totalNew, method: 'cash' }],
             method: 'cash',
             month: monthKey,
             ref,
@@ -2001,16 +2112,17 @@ function showMemberForm(m) {
           // its own duration; others share the form's validity.
           newSubs.forEach((e, i) => {
             const isCamp = e.sport === SUMMER_CAMP;
-            const subValidity = isCamp ? (e.classes || validity) : validity;
-            const subEnd = isCamp ? addDays(startDate, subValidity) : sharedEnd;
+            const eStart = startOf(e);                          // this sport's own start date
+            const subValidity = isCamp ? (e.classes || DEFAULT_VALIDITY) : (e.validity || DEFAULT_VALIDITY);
+            const subEnd = addDays(eStart, subValidity);
             subs.push({
               _sid: 's' + Date.now() + '_add' + i,
-              month: ymToShort(monthKey) || monthKey,
+              month: ymToShort(eStart.slice(0, 7)) || eStart.slice(0, 7),
               activity: e.sport,
               coach: coachName(e.coachId),
               coachId: e.coachId,
               firstRegistration: existing.firstRegistration || null,
-              start: startDate,
+              start: eStart,
               validity: subValidity,
               end: subEnd,
               status: 'active',
@@ -2035,6 +2147,9 @@ function showMemberForm(m) {
         }
 
         data.subscriptions = subs;
+        // Member expiry = latest end across ALL sports (covers edited start/validity too)
+        const subEnds = subs.map(s => s.end).filter(Boolean).sort();
+        if (subEnds.length) data.expiryDate = subEnds[subEnds.length - 1];
         state.members[idx] = Object.assign({}, existing, data);
         audit('member.update', `member:${data.id}`,
           `Updated ${data.name || data.nameArabic}`,
@@ -2050,47 +2165,33 @@ function showMemberForm(m) {
   renderEnrollRows();
   const addBtn = document.getElementById('enroll-add');
   if (addBtn) addBtn.addEventListener('click', addEnrollRow);
-
-  // Auto-calculate expiry from start date + validity. The user can still
-  // override the expiry field manually (the manual value is treated as
-  // authoritative until they change start/validity to re-trigger calc).
-  let _expiryWasAutoSet = false;
-  window._recalcExpiry = function() {
-    const startEl = document.getElementById('f-start');
-    const valEl = document.getElementById('f-validity');
-    const expEl = document.getElementById('f-expiry');
-    const hintEl = document.getElementById('f-expiry-hint');
-    if (!startEl || !valEl || !expEl) return;
-    const start = startEl.value;
-    const validity = parseInt(valEl.value) || DEFAULT_VALIDITY;
-    if (!start) { if (hintEl) hintEl.textContent = ''; return; }
-    const auto = addDays(start, validity);
-    // Only auto-fill if the field is empty or was previously auto-set
-    if (!expEl.value || _expiryWasAutoSet) {
-      expEl.value = auto;
-      _expiryWasAutoSet = true;
-    }
-    if (hintEl) {
-      const sameAsAuto = expEl.value === auto;
-      hintEl.textContent = sameAsAuto
-        ? `Auto-calculated: ${fmtDate(start)} + ${validity} days`
-        : `Manual override · auto would be ${fmtDate(auto)} (+${validity}d)`;
-    }
-  };
-  document.getElementById('f-start')?.addEventListener('change', window._recalcExpiry);
-  document.getElementById('f-validity')?.addEventListener('change', window._recalcExpiry);
-  document.getElementById('f-expiry')?.addEventListener('input', () => { _expiryWasAutoSet = false; window._recalcExpiry(); });
-  window._recalcExpiry();
+  document.getElementById('f-paidnow')?.addEventListener('input', updatePaidNowHint);
+  // Scan-ID: lazy OCR (Tesseract.js, loaded from CDN on first use).
+  const scanBtn = document.getElementById('id-scan-btn');
+  const scanFile = document.getElementById('id-scan-file');
+  if (scanBtn && scanFile) {
+    scanBtn.addEventListener('click', () => scanFile.click());
+    scanFile.addEventListener('change', e => { const f = e.target.files && e.target.files[0]; if (f) scanIdCard(f); e.target.value = ''; });
+  }
+  // Membership expiry is derived per-sport now (each card = start + validity),
+  // shown live in #f-expiry-readout by renderEnrollRows(). No member-level
+  // start/validity/expiry inputs to reconcile anymore.
 }
 
 // Success modal after creating a new member with auto-invoice
 function showNewMemberInvoiceModal(invoiceId, customerName) {
+  const inv = state.invoices.find(i => i.id === invoiceId);
+  const bal = inv ? invoiceBalance(inv) : 0;
+  const payLine = inv ? (bal > 0.001
+    ? `<div style="font-size:14px;margin:8px 0 4px"><b style="color:var(--green)">${fmt(invoicePaid(inv))} QAR</b> paid · <b style="color:var(--accent-2)">${fmt(bal)} QAR due</b> <span class="text-mute">(total ${fmt(inv.amount)})</span></div>`
+    : `<div style="font-size:14px;margin:8px 0 4px"><b style="color:var(--green)">${fmt(inv.amount)} QAR</b> paid in full</div>`) : '';
   showModal({
     title: '✅ Member & Invoice Created',
     body: `
       <div style="text-align:center;padding:10px 0">
         <div style="font-size:42px;margin-bottom:10px">🎉</div>
         <div style="font-size:16px;font-weight:600;margin-bottom:6px">${escapeHtml(customerName)} added successfully</div>
+        ${payLine}
         <div class="text-dim" style="font-size:13px;margin-bottom:4px">A subscription invoice has been created automatically.</div>
         <div class="text-mute" style="font-size:12px">You can export it as a PDF (filename will be the customer's name) to share with the customer.</div>
       </div>
@@ -3137,8 +3238,13 @@ PAGES.invoices = (main) => {
         <td>${i.coach ? `<span class="text-dim">${escapeHtml(i.coach)}</span>` : '<span class="text-mute">—</span>'}</td>
         <td class="text-mute" style="font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(i.description)}</td>
         <td><span class="badge ${i.method === 'card' ? 'blue' : ''}">${i.method}</span></td>
-        <td class="text-right num font-bold">${fmt(i.amount)}</td>
+        <td class="text-right num font-bold">${fmt(i.amount)}${(() => {
+          const st = invoiceStatus(i);
+          if (st === 'Paid') return '';
+          return `<div style="font-size:10px;font-weight:700;color:${st === 'Unpaid' ? 'var(--red)' : 'var(--accent-2)'};margin-top:2px">${st} · ${fmt(invoiceBalance(i))} due</div>`;
+        })()}</td>
         <td class="text-right" style="white-space:nowrap">
+          ${invoiceStatus(i) !== 'Paid' ? `<button class="btn ghost sm" onclick="recordPaymentUI(${i.id})" title="Record a payment toward the balance" style="color:var(--green)">💵 Pay</button>` : ''}
           ${i.customerId ? `<button class="btn ghost sm" onclick="showInvoiceHistory(${i.customerId})" title="See all invoices for this customer">📜</button>` : ''}
           <button class="btn ghost sm" onclick="printInvoicePDF(${i.id})" title="Export invoice as PDF (filename = customer name)">⬇ Export</button>
           <button class="btn ghost sm" onclick="sendInvoiceWhatsApp(${i.id})" title="Send invoice as WhatsApp message" style="color:#25D366">💬</button>
@@ -3197,6 +3303,7 @@ PAGES.invoices = (main) => {
         <button class="btn ghost" id="quick-rental-inv" title="Log a court/room rental with auto-invoice">🏟 + Add Rental</button>
         <button class="btn ghost" id="generate-latest-inv" title="Pick a member and auto-create an invoice from their latest enrollment">⚡ Generate latest invoice</button>
         <button class="btn ghost" id="export-inv">📥 Export</button>
+        <button class="btn ghost" onclick="findDuplicateInvoices()" title="Find membership invoices that look like duplicates (same member, sport, month and amount)">🔍 Find duplicates</button>
         <button class="btn primary" id="add-inv">+ New Invoice</button>
       </div>
     </div>
@@ -3484,7 +3591,7 @@ function addInvoice() {
       </div>
       <div class="form-row">
         <div class="field"><label>Date</label><input id="f-date" type="date" value="${TODAY}" /></div>
-        <div class="field"><label>&nbsp;</label><div></div></div>
+        <div class="field"><label>Paid now (QAR) <span class="text-mute" style="font-size:10px;font-weight:400">(blank = full)</span></label><input id="f-paid" type="number" min="0" step="0.01" placeholder="full amount" /></div>
       </div>
       <div class="field"><label>Match member (optional)</label>${memberPickerHtml('f-cust', { placeholder: '— none —' })}</div>
     `;
@@ -3559,17 +3666,32 @@ function addInvoice() {
     const custMember = custId ? state.members.find(m => m.id === custId) : null;
     const category = $('#f-category').value;
     const mth = date.slice(0, 7);
+    const sport = $('#f-sport').value || null;
+    // Partial payment: "Paid now" defaults to the full amount.
+    const paidRaw = $('#f-paid')?.value;
+    const paidNow = (paidRaw === '' || paidRaw == null) ? amt : Math.max(0, Math.min(parseFloat(paidRaw) || 0, amt));
+    // Block accidental duplicates: same member + sport + month + amount.
+    if (category === 'Membership' && custId) {
+      const dup = findDuplicateInvoiceOf(custId, sport, mth, amt, null);
+      if (dup) {
+        if (!confirm(`⚠️ ${custMember ? custMember.name : 'This member'} already has a Membership invoice for ${sport || 'this activity'} in ${fmtMonth(mth)} of ${fmt(amt)} QAR (${dup.ref || ('INV' + dup.id)}).\n\nCreating another will count the fee twice and double the coach's commission. Create it anyway?`)) {
+          return;
+        }
+      }
+    }
     state.invoices.push({
       id: nextId(state.invoices),
       date,
       description: desc,
       amount: amt,
+      amountPaid: paidNow,
+      payments: paidNow > 0 ? [{ date, month: mth, amount: paidNow, method }] : [],
       method,
       month: mth,
       ref: nextInvoiceRef(),
       category,
       activityType: category === 'Membership' ? 'subscription' : 'other',
-      sport: $('#f-sport').value || null,
+      sport,
       coach: $('#f-coach').value || (custMember ? coachName(custMember.coachId) : null),
       coachId: custMember ? custMember.coachId : null,
       customerId: custId,
@@ -3578,7 +3700,7 @@ function addInvoice() {
     save();
     closeModal();
     render();
-    toast('Invoice added');
+    toast(paidNow < amt ? `Invoice added · ${fmt(paidNow)} paid, ${fmt(amt - paidNow)} balance` : 'Invoice added');
   }
 
   function completeUnifiedSale() {
@@ -3757,6 +3879,118 @@ function generateLatestInvoice(onDone) {
   }, 50);
 }
 
+// Lazy-load the OCR engine (only when the user actually scans an ID).
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    s.onload = () => window.Tesseract ? resolve(window.Tesseract) : reject(new Error('OCR engine failed to initialise'));
+    s.onerror = () => reject(new Error('Could not load the OCR engine — this feature needs an internet connection.'));
+    document.head.appendChild(s);
+  });
+}
+
+// Read a Qatar residency-permit photo and auto-fill the member form. Fills only
+// EMPTY fields (never overwrites something already typed) and reports what it
+// did so the admin can verify.
+async function scanIdCard(file) {
+  const statusEl = document.getElementById('id-scan-status');
+  const btn = document.getElementById('id-scan-btn');
+  const setStatus = (msg, color) => { if (statusEl) { statusEl.textContent = msg; statusEl.style.color = color || 'var(--text-mute)'; } };
+  if (btn) btn.disabled = true;
+  try {
+    setStatus('Loading OCR engine…');
+    const T = await loadTesseract();
+    setStatus('Reading the ID… this can take 10–30s');
+    const { data } = await T.recognize(file, 'eng+ara', {
+      logger: m => { if (m.status === 'recognizing text') setStatus(`Reading the ID… ${Math.round((m.progress || 0) * 100)}%`); },
+    });
+    const f = parseQatarId(data && data.text || '');
+    // Fill only empty fields
+    const fill = (id, val) => {
+      if (!val) return null;
+      const elx = document.getElementById(id);
+      if (!elx) return null;
+      if ((elx.value || '').trim()) return 'kept';   // user already entered something
+      elx.value = val;
+      return 'filled';
+    };
+    const filled = [];
+    const skipped = [];
+    const missed = [];
+    const apply = (id, val, label) => {
+      if (!val) { missed.push(label); return; }
+      const r = fill(id, val);
+      if (r === 'filled') filled.push(label);
+      else if (r === 'kept') skipped.push(label);
+    };
+    apply('f-name', f.nameEn, 'English name');
+    apply('f-name-ar', f.nameAr, 'Arabic name');
+    apply('f-qid', f.qid, 'QID');
+    apply('f-bdate', f.birthdate, 'birthdate');
+    apply('f-nationality', f.nationality, 'nationality');
+
+    if (filled.length) {
+      setStatus(`✓ Filled: ${filled.join(', ')}.${missed.length ? ' Couldn\'t read: ' + missed.join(', ') + '.' : ''}${skipped.length ? ' Kept your: ' + skipped.join(', ') + '.' : ''} Please verify.`, 'var(--green)');
+      toast(`Scanned ID · filled ${filled.length} field${filled.length === 1 ? '' : 's'} — please verify`, 'success');
+    } else {
+      setStatus(`Couldn't read the fields clearly${missed.length ? ' (' + missed.join(', ') + ')' : ''}. Try a sharper, well-lit photo, or enter manually.`, 'var(--accent-2)');
+      toast('Could not read the ID clearly — please enter manually', 'error');
+    }
+  } catch (err) {
+    setStatus((err && err.message) || 'Scan failed — please enter manually.', 'var(--red)');
+    toast((err && err.message) || 'Scan failed', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+window.recordPaymentUI = function(id) {
+  const inv = state.invoices.find(i => i.id === id);
+  if (!inv) return;
+  const bal = invoiceBalance(inv);
+  const cust = customerInfo(inv);
+  showModal({
+    title: '💵 Record payment',
+    body: `
+      <div style="margin-bottom:12px;font-size:13px">
+        ${cust.name ? `<div class="font-bold">${escapeHtml(cust.name)}</div>` : ''}
+        <div class="text-mute" style="font-size:12px">${inv.ref || '#' + inv.id} · ${escapeHtml(inv.sport || inv.description || '')}</div>
+        <div style="margin-top:8px;display:flex;gap:18px;flex-wrap:wrap">
+          <span class="text-mute">Total <b style="color:var(--text)">${fmt(inv.amount)}</b></span>
+          <span class="text-mute">Paid <b style="color:var(--green)">${fmt(invoicePaid(inv))}</b></span>
+          <span class="text-mute">Balance <b style="color:var(--accent-2)">${fmt(bal)}</b></span>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Payment amount (QAR)</label><input id="pay-amt" type="number" min="0" step="0.01" value="${bal.toFixed(2)}" /></div>
+        <div class="field"><label>Date</label><input id="pay-date" type="date" value="${TODAY}" /></div>
+        <div class="field"><label>Method</label><select id="pay-method"><option value="cash">Cash</option><option value="card">Card</option></select></div>
+      </div>
+      <div class="text-mute" style="font-size:11px;margin-top:4px">Counts as revenue in the month of the payment date.</div>
+    `,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      { label: '💵 Record payment', class: 'btn primary', onclick: () => {
+        const amt = parseFloat($('#pay-amt').value) || 0;
+        if (amt <= 0) { toast('Enter a payment amount', 'error'); return; }
+        let pay = amt;
+        if (amt > bal + 0.001) {
+          if (!confirm(`That's more than the ${fmt(bal)} balance — record only the ${fmt(bal)} balance?`)) return;
+          pay = bal;   // never collect more than is owed
+        }
+        recordInvoicePayment(inv, pay, { date: $('#pay-date').value || TODAY, method: $('#pay-method').value || 'cash' });
+        save();
+        closeModal();
+        render();
+        const nb = invoiceBalance(inv);
+        toast(nb > 0.001 ? `Payment recorded · ${fmt(nb)} balance remaining` : '✓ Paid in full');
+      }},
+    ],
+  });
+};
+
 window.editInvoiceQuick = function(id) {
   const inv = state.invoices.find(i => i.id === id);
   if (!inv) return;
@@ -3837,8 +4071,13 @@ window.editInvoiceQuick = function(id) {
       </div>
       <div class="form-row">
         <div class="field"><label>Method</label><select id="ef-method"><option value="cash" ${inv.method==='cash'?'selected':''}>Cash</option><option value="card" ${inv.method==='card'?'selected':''}>Card</option></select></div>
-        <div class="field"><label>Amount (QAR)</label><input id="ef-amt" type="number" step="0.01" value="${inv.amount}" /></div>
+        <div class="field"><label>Amount / total (QAR)</label><input id="ef-amt" type="number" step="0.01" value="${inv.amount}" oninput="document.getElementById('ef-balance').textContent=Math.max(0,(parseFloat(document.getElementById('ef-amt').value)||0)-(parseFloat(document.getElementById('ef-paid').value)||0)).toFixed(2)" /></div>
       </div>
+      <div class="form-row">
+        <div class="field"><label>Paid / collected (QAR) <span class="text-mute" style="font-size:10px">(correct a wrong entry)</span></label><input id="ef-paid" type="number" step="0.01" min="0" value="${invoicePaid(inv)}" oninput="document.getElementById('ef-balance').textContent=Math.max(0,(parseFloat(document.getElementById('ef-amt').value)||0)-(parseFloat(document.getElementById('ef-paid').value)||0)).toFixed(2)" /></div>
+        <div class="field"><label>Balance due (QAR)</label><div id="ef-balance" style="padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--accent-2);font-size:14px;font-weight:700">${invoiceBalance(inv).toFixed(2)}</div></div>
+      </div>
+      <div class="text-mute" style="font-size:11px;margin:2px 0 6px">When a member pays the rest <b>later</b>, use the <b style="color:var(--green)">💵 Pay</b> button on the invoice row — it dates the payment in the month received. Edit "Paid" here only to <b>fix a wrong amount</b>.</div>
       <div class="field"><label>Date</label><input id="ef-date" type="date" value="${inv.date}" /></div>
       ${stockPanel}
     `,
@@ -3856,13 +4095,24 @@ window.editInvoiceQuick = function(id) {
         inv.customerName = cm ? cm.name : null;
         if (cm && !inv.coachId) inv.coachId = cm.coachId;
         inv.method = $('#ef-method').value;
-        inv.amount = parseFloat($('#ef-amt').value);
+        inv.amount = parseFloat($('#ef-amt').value) || 0;
         inv.date = $('#ef-date').value;
         inv.month = inv.date.slice(0, 7);
+        // Correct the collected amount if it was edited (or if the total was
+        // lowered below what's collected). Rebuild the ledger as a single
+        // corrected entry on the invoice date — this is a fix, not a new
+        // payment (for a real later payment, use the 💵 Pay button instead).
+        let newPaid = parseFloat($('#ef-paid').value);
+        if (isNaN(newPaid)) newPaid = invoicePaid(inv);
+        newPaid = Math.max(0, Math.min(newPaid, inv.amount));   // can't collect more than the total
+        if (Math.abs(newPaid - invoicePaid(inv)) > 0.001) {
+          inv.amountPaid = newPaid;
+          inv.payments = newPaid > 0 ? [{ date: inv.date, month: inv.month, amount: newPaid, method: inv.method || 'cash' }] : [];
+        }
         save();
         closeModal();
         render();
-        toast('Invoice updated');
+        toast(invoiceBalance(inv) > 0.001 ? `Invoice updated · ${fmt(invoiceBalance(inv))} still due` : 'Invoice updated');
       }},
     ],
   });
@@ -3875,6 +4125,41 @@ window.deleteInvoice = function(id) {
   save();
   render();
   toast('Invoice deleted');
+};
+
+// Find likely-duplicate Membership invoices: more than one with the same member,
+// sport, month and amount. Switch-credit invoices are ignored (intentional).
+window.findDuplicateInvoices = function() {
+  const dups = detectDuplicateInvoices();
+  if (!dups.length) {
+    showModal({ title: '🔍 Find duplicate invoices',
+      body: '<p>No duplicate membership invoices found. 🎉</p><p class="text-mute" style="font-size:12px">Checks for more than one Membership invoice with the same member, sport, month and amount.</p>',
+      actions: [{ label: 'Close', class: 'btn ghost', onclick: closeModal }] });
+    return;
+  }
+  const extra = dups.reduce((s, g) => s + (g.length - 1), 0);
+  const body = `
+    <p class="text-mute" style="font-size:12px;margin-bottom:10px">${dups.length} group${dups.length === 1 ? '' : 's'} found — same member, sport, month and amount. That's <b>${extra}</b> extra invoice${extra === 1 ? '' : 's'} likely double-counting commission. The first in each group is kept; delete the others.</p>
+    ${dups.map(g => `
+      <div style="border:1px solid var(--border);border-radius:8px;margin-bottom:10px;overflow:hidden">
+        <div style="background:var(--surface-2);padding:8px 10px;font-weight:600;font-size:13px">${escapeHtml(g[0].memName)} · ${escapeHtml(g[0].sport)} · ${fmtMonth(g[0].inv.month || '')} · ${fmt(g[0].inv.amount || 0)} QAR <span class="text-mute" style="font-weight:400">(${g.length} copies)</span></div>
+        <table style="width:100%;font-size:13px"><tbody>
+          ${g.map((row, idx) => `<tr>
+            <td style="padding:6px 10px;border-top:1px solid var(--border)">${escapeHtml(row.inv.ref || ('INV' + row.inv.id))} · ${fmtDate(row.inv.date)}${idx === 0 ? ' <span class="badge">keep</span>' : ''}</td>
+            <td style="padding:6px 10px;border-top:1px solid var(--border);text-align:right">${idx === 0 ? '' : `<button class="btn ghost sm" onclick="deleteDuplicateInvoice(${row.inv.id})" title="Delete this duplicate">🗑 Delete</button>`}</td>
+          </tr>`).join('')}
+        </tbody></table>
+      </div>`).join('')}
+  `;
+  showModal({ title: '🔍 Duplicate invoices found', body, actions: [{ label: 'Close', class: 'btn ghost', onclick: closeModal }] });
+};
+
+window.deleteDuplicateInvoice = function(id) {
+  if (!confirm('Delete this duplicate invoice? This cannot be undone.')) return;
+  state.invoices = state.invoices.filter(i => i.id !== id);
+  save();
+  toast('Duplicate invoice deleted');
+  findDuplicateInvoices();   // refresh the list in place
 };
 
 // ─── Membership ID Card (printable / saveable as PDF) ────────────────
@@ -4394,7 +4679,7 @@ window.printInvoicePDF = function(id) {
       <div class="party-detail">
         Waab — Village Resort, Doha, Qatar<br>
         blackstarssportsclub@gmail.com<br>
-        Tel: +974 3044 0103
+        Tel: +974 3040 0103
       </div>
     </div>
     <div>
@@ -4471,6 +4756,15 @@ window.printInvoicePDF = function(id) {
         <span>Total</span>
         <span class="amount">${amountStr} QAR</span>
       </div>
+      ${invoiceBalance(inv) > 0.001 ? `
+      <div class="totals-row">
+        <span>Paid${inv.amountPaid > 0 ? '' : ' (deposit)'}</span>
+        <span>${Number(invoicePaid(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR</span>
+      </div>
+      <div class="totals-row grand" style="color:#b45309">
+        <span>Balance due</span>
+        <span class="amount">${Number(invoiceBalance(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR</span>
+      </div>` : ''}
     </div>
   </div>
 
@@ -4520,7 +4814,7 @@ window.printInvoicePDF = function(id) {
 
   <div class="footer">
     <div class="thanks">Thank you for choosing Black Stars Sports Club!</div>
-    <div>For any questions about this invoice, contact us at blackstarssportsclub@gmail.com · +974 3044 0103</div>
+    <div>For any questions about this invoice, contact us at blackstarssportsclub@gmail.com · +974 3040 0103</div>
     <div style="margin-top:10px;font-size:10px">This invoice was generated on ${new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })}</div>
   </div>
 
@@ -4607,6 +4901,10 @@ window.sendInvoiceWhatsApp = function(id) {
   }
   lines.push(``);
   lines.push(`*Total: ${fmt(inv.amount)} QAR*`);
+  if (invoiceBalance(inv) > 0.001) {
+    lines.push(`Paid: ${fmt(invoicePaid(inv))} QAR`);
+    lines.push(`*Balance due: ${fmt(invoiceBalance(inv))} QAR*`);
+  }
   if (inv.method) lines.push(`Payment: ${inv.method}`);
   lines.push(``);
   lines.push(`Thank you! 🙏`);
@@ -4934,6 +5232,12 @@ PAGES.salaries = (main) => {
     </div>
     <div class="card">
       <div class="filter-bar" style="flex-wrap:wrap;align-items:center;gap:10px">
+        <span style="font-size:12px;color:var(--text-mute)">Commission basis:</span>
+        <select id="sal-basis" class="btn ghost" title="How commission is calculated. 'By attendance' pays per class the member attends; the rest is pending.">
+          <option value="payment" ${(state.settings?.commissionBasis || 'payment') === 'payment' ? 'selected' : ''}>By payment (full fee in payment month)</option>
+          <option value="attendance" ${state.settings?.commissionBasis === 'attendance' ? 'selected' : ''}>By attendance (per class attended)</option>
+        </select>
+        <span style="opacity:.35">|</span>
         <select id="sal-month" class="btn ghost" ${filter.settleDate ? 'disabled style="opacity:.5"' : ''}>
           ${months.map(m => `<option value="${m}" ${filter.month === m ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
         </select>
@@ -4959,6 +5263,14 @@ PAGES.salaries = (main) => {
     </div>
   `;
   $('#sal-month').addEventListener('change', e => { filter.month = e.target.value; refresh(); });
+  const salBasis = $('#sal-basis');
+  if (salBasis) salBasis.addEventListener('change', e => {
+    if (!state.settings) state.settings = {};
+    state.settings.commissionBasis = e.target.value === 'attendance' ? 'attendance' : 'payment';
+    save();
+    refresh();
+    toast('Commission basis: ' + (state.settings.commissionBasis === 'attendance' ? 'by attendance ✅' : 'by payment'));
+  });
   const salDate = $('#sal-date');
   if (salDate) salDate.addEventListener('change', e => {
     filter.settleDate = e.target.value || null;
@@ -5245,6 +5557,7 @@ window.showRevenueDetail = function(coachId, monthKey) {
     // RULE: commission follows the invoice — member's current status is irrelevant.
     // We still look up the member NAME for display, but don't filter by status.
     const mem = inv.customerId ? state.members.find(x => x.id === inv.customerId) : null;
+    if (mem && mem.deleted) continue;   // archived member excluded from the report
     const lineItems = Array.isArray(inv.lineItems) && inv.lineItems.length
       ? inv.lineItems
       : [{ sport: inv.sport, coachId: inv.coachId, price: inv.amount || 0 }];
@@ -5352,6 +5665,7 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
     if ((inv.category || 'Membership') !== 'Membership') continue;
     // RULE: commission follows the invoice — member's current status is irrelevant.
     const mem = inv.customerId ? state.members.find(x => x.id === inv.customerId) : null;
+    if (mem && mem.deleted) continue;   // archived member excluded from the report
     const lineItems = Array.isArray(inv.lineItems) && inv.lineItems.length
       ? inv.lineItems
       : [{ sport: inv.sport, coachId: inv.coachId, price: inv.amount || 0 }];
@@ -5444,7 +5758,8 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
         </div>
         <div style="text-align:right;font-size:11px;color:#666">
           Generated ${fmtDate(TODAY)}<br>
-          Commission rate: <b>${pay.commissionRate}%</b>
+          Commission rate: <b>${pay.commissionRate}%</b><br>
+          Basis: <b>${pay.basis === 'attendance' ? 'by attendance' : 'by payment'}</b>
           ${pay.fixed > 0 ? '<br>Fixed monthly: <b>' + fmt(pay.fixed) + ' QAR</b>' : ''}
         </div>
       </div>
@@ -10788,12 +11103,14 @@ PAGES.reports = (main) => {
   // ── Aggregate everything for the chosen period ──
   function compute() {
     // Filter source data
-    const invs = state.invoices.filter(i => inPeriod(i.month));
+    // Revenue is cash-basis: include any invoice with a payment in the period,
+    // and count only the cash received within it.
+    const invs = state.invoices.filter(i => cashInPeriod(i, inPeriod) > 0 || inPeriod(i.month));
     const exps = state.expenses.filter(e => inPeriodDate(e.date) || inPeriod(e.month));
     const sals = state.salaries.filter(x => inPeriod(x.month));
     const newMembers = state.members.filter(m => inPeriodDate(m.firstRegistration)).length;
 
-    const revenue = invs.reduce((a, i) => a + (i.amount || 0), 0);
+    const revenue = state.invoices.reduce((a, i) => a + cashInPeriod(i, inPeriod), 0);
     const expensesTotal = exps.reduce((a, e) => a + (e.amount || 0), 0);
     const salariesTotal = sals.reduce((a, x) => a + (x.salary || x.total || x.amount || 0), 0);
     const profit = revenue - expensesTotal - salariesTotal;
@@ -10804,19 +11121,19 @@ PAGES.reports = (main) => {
     let prevRev = 0;
     if (period.type === 'month') {
       const idx = allMonths.indexOf(period.value);
-      if (idx > 0) prevRev = state.invoices.filter(i => i.month === allMonths[idx - 1]).reduce((a, i) => a + i.amount, 0);
+      if (idx > 0) prevRev = state.invoices.reduce((a, i) => a + cashInMonth(i, allMonths[idx - 1]), 0);
     } else if (period.type === 'year') {
       const yIdx = allYears.indexOf(period.value);
-      if (yIdx > 0) prevRev = state.invoices.filter(i => i.month && i.month.startsWith(allYears[yIdx - 1])).reduce((a, i) => a + i.amount, 0);
+      if (yIdx > 0) prevRev = state.invoices.reduce((a, i) => a + cashInPeriod(i, m => m && m.startsWith(allYears[yIdx - 1])), 0);
     }
 
-    // Revenue by category
+    // Revenue by category (cash collected in period)
     const revByCat = {};
-    invs.forEach(i => { const c = i.category || 'Membership'; revByCat[c] = (revByCat[c] || 0) + i.amount; });
+    state.invoices.forEach(i => { const c = i.category || 'Membership'; const v = cashInPeriod(i, inPeriod); if (v) revByCat[c] = (revByCat[c] || 0) + v; });
 
-    // Sport revenue (from invoices linked to a member's sport)
+    // Sport revenue (cash collected in period, from invoices linked to a sport)
     const sportRev = {};
-    invs.forEach(i => { if (i.sport) sportRev[i.sport] = (sportRev[i.sport] || 0) + i.amount; });
+    state.invoices.forEach(i => { if (i.sport) { const v = cashInPeriod(i, inPeriod); if (v) sportRev[i.sport] = (sportRev[i.sport] || 0) + v; } });
 
     // Expense by category
     const expByCat = {};
@@ -11182,7 +11499,7 @@ function pick(rec, ...names) {
 function importMembers(sheets) {
   const warnings = [];
   const allRows = [];
-  let skSummary = 0, skJunk = 0, skDropped = 0;
+  let skSummary = 0, skJunk = 0, skDropped = 0, dupSportMerged = 0;
   const coachesSeen = new Set();
 
   for (const sheetName of Object.keys(sheets)) {
@@ -11281,10 +11598,26 @@ function importMembers(sheets) {
     const primary = rows.find(r => r.status === 'Active') || rows[0];
     const enrollments = [];
     const subs = [];
+    const enrollBySport = new Map();   // one enrollment per sport (active / latest start wins)
     rows.forEach((r, i) => {
       const coachId = coachIdByName[r.coachName.toLowerCase()];
       if (r.activity && coachId) {
-        enrollments.push({ sport: r.activity, coachId, classes: r.totalClasses, price: r.paid });
+        const cand = {
+          sport: r.activity, coachId, classes: r.totalClasses, price: r.paid,
+          start: r.start || null,
+          validity: (r.start && r.expiry) ? daysBetween(r.start, r.expiry) : DEFAULT_VALIDITY,
+          _active: r.status === 'Active', _start: r.start || '',
+        };
+        const prev = enrollBySport.get(r.activity);
+        if (!prev) {
+          enrollBySport.set(r.activity, cand);
+        } else {
+          // Duplicate sport for this member — keep the Active one, else the later start.
+          const better = (cand._active && !prev._active) ||
+                         (cand._active === prev._active && cand._start > prev._start);
+          if (better) enrollBySport.set(r.activity, cand);
+          dupSportMerged++;
+        }
       }
       subs.push({
         month: 'may', activity: r.activity, coach: r.coachName, coachId,
@@ -11295,6 +11628,7 @@ function importMembers(sheets) {
         _sid: `s${mid}_${i}`,
       });
     });
+    for (const en of enrollBySport.values()) { delete en._active; delete en._start; enrollments.push(en); }
     const starts = rows.map(r => r.start).filter(Boolean);
     const expirys = rows.map(r => r.expiry).filter(Boolean);
     members.push({
@@ -11315,9 +11649,10 @@ function importMembers(sheets) {
     mid++;
   }
 
+  if (dupSportMerged > 0) warnings.push(`${dupSportMerged} duplicate sport row(s) merged — kept one enrollment per sport (active / latest start).`);
   return { coaches, members, warnings, summary: {
     rowsRead: allRows.length, skippedSummary: skSummary, skippedJunk: skJunk,
-    skippedDropped: skDropped, uniqueMembers: members.length,
+    skippedDropped: skDropped, uniqueMembers: members.length, duplicateSportsMerged: dupSportMerged,
     active: members.filter(m => m.status === 'Active').length,
     expired: members.filter(m => m.status === 'Expired').length,
   }};

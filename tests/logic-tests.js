@@ -347,6 +347,16 @@ ${seed}
     dailyAttendance:{ '2026-04':{'Boxing':{'5':'Y','12':'Y'}} } });
   state.invoices.push({ id:707, ref:'INVFRZ', date:'2026-04-01', month:'2026-04', amount:1200, category:'Membership', sport:'Boxing', coachId:12, customerId:75, lineItems:[{sport:'Boxing',coachId:12,price:1200}] });
   state.invoices.push({ id:708, ref:'INVEXP', date:'2026-04-01', month:'2026-04', amount:1200, category:'Membership', sport:'Boxing', coachId:13, customerId:76, lineItems:[{sport:'Boxing',coachId:13,price:1200}] });
+  // deleted/archived member must NOT count toward commission
+  state.coaches.push({ id:15, name:'CoachDel', rate:100, fixedSalary:0, active:'Y' });
+  state.members.push({ id:78, name:'DeletedMem', deleted:true, coachId:15, subscriptions:[{activity:'Boxing',coachId:15,totalClasses:6,amountPaid:500,start:'2026-06-01',end:'2026-07-01',invoiceNumber:'INVDEL'}], dailyAttendance:{} });
+  state.members.push({ id:79, name:'LiveMem', coachId:15, subscriptions:[{activity:'Boxing',coachId:15,totalClasses:6,amountPaid:500,start:'2026-06-01',end:'2026-07-01',invoiceNumber:'INVLIVE'}], dailyAttendance:{} });
+  state.invoices.push({ id:710, ref:'INVDEL',  date:'2026-06-01', month:'2026-06', amount:500, category:'Membership', sport:'Boxing', coachId:15, customerId:78, lineItems:[{sport:'Boxing',coachId:15,price:500}] });
+  state.invoices.push({ id:711, ref:'INVLIVE', date:'2026-06-01', month:'2026-06', amount:500, category:'Membership', sport:'Boxing', coachId:15, customerId:79, lineItems:[{sport:'Boxing',coachId:15,price:500}] });
+  // two identical invoices for the same member = a duplicate the finder must catch
+  state.members.push({ id:80, name:'DupMem', coachId:16, subscriptions:[], dailyAttendance:{} });
+  state.invoices.push({ id:713, ref:'DUP1', date:'2026-06-03', month:'2026-06', amount:450, category:'Membership', sport:'Boxing', coachId:16, customerId:80, lineItems:[{sport:'Boxing',coachId:16,price:450}] });
+  state.invoices.push({ id:714, ref:'DUP2', date:'2026-06-03', month:'2026-06', amount:450, category:'Membership', sport:'Boxing', coachId:16, customerId:80, lineItems:[{sport:'Boxing',coachId:16,price:450}] });
 
   const apr = computeMonthlyPay(7, '2026-04');
   const may = computeMonthlyPay(7, '2026-05');
@@ -362,8 +372,22 @@ ${seed}
   eq(p9.commissionPendingBase, 0, 'attendance: no pending for flat/camp lines');
   // ── Settlement "up to date" (partial month; lifetime-remaining pending) ──
   const s1 = computeMonthlyPay(7, null, '2026-05-10');
-  eq(Math.round(s1.commissionBase), 200, 'settlement: May counted only up to the 10th = 2 attended × 100');
-  eq(Math.round(s1.commissionPendingBase), 500, 'settlement: 5 classes still unattended as of 10 May → pending (stays with club)');
+  eq(Math.round(s1.commissionBase), 300, 'settlement cumulative: April(1) + May≤10th(2) = 3 attended × 100');
+  eq(Math.round(s1.commissionPendingBase), 500, 'settlement: 5 classes still unattended as of 10 May → pending');
+  // The reported "leaving / expiry" scenario: 6-class / 1000 MMA, 2 attended in
+  // June, membership ends 02 Jul. Settle to 01 Jul → 100 earned + 200 pending.
+  // Settle to 02 Jul (expiry) → full 300, nothing pending.
+  state.coaches.push({ id:14, name:'CoachJul', rate:30, fixedSalary:0, active:'Y' });
+  state.members.push({ id:77, name:'JulTest', phone:'+97455000077', expiryDate:'2026-07-02', status:'Active', coachId:14,
+    subscriptions:[{ activity:'MMA', coachId:14, totalClasses:6, amountPaid:1000, start:'2026-06-02', end:'2026-07-02', invoiceNumber:'INVJUL' }],
+    dailyAttendance:{ '2026-06':{'MMA':{'5':'Y','12':'Y'}} } });
+  state.invoices.push({ id:709, ref:'INVJUL', date:'2026-06-02', month:'2026-06', amount:1000, category:'Membership', sport:'MMA', coachId:14, customerId:77, lineItems:[{sport:'MMA',coachId:14,price:1000}] });
+  const j1 = computeMonthlyPay(14, null, '2026-07-01');
+  eq(Math.round(j1.commissionAmount), 100, 'settle 01 Jul: 2 of 6 attended in June = 100 (NOT 0)');
+  eq(Math.round(j1.commissionPending), 200, 'settle 01 Jul: 4 remaining classes pending = 200');
+  const j2 = computeMonthlyPay(14, null, '2026-07-02');
+  eq(Math.round(j2.commissionAmount), 300, 'settle 02 Jul (expiry): full commission = 300');
+  eq(j2.commissionPendingBase, 0, 'settle 02 Jul: nothing pending after expiry true-up');
   const sf = computeMonthlyPay(10, null, '2026-06-15');
   eq(sf.fixedFull, 3000, 'settlement: full monthly fixed kept for reference');
   eq(sf.fixed, 1500, 'settlement: fixed prorated 15/30 days = 1500');
@@ -377,6 +401,17 @@ ${seed}
   eq(ex.commissionPendingBase, 0, 'expired: nothing pending after the true-up');
   // restore default so we don't affect any later logic
   state.settings.commissionBasis = 'payment';
+  eq(Math.round(computeMonthlyPay(15, '2026-06').commissionBase), 500, 'deleted/archived member excluded from commission (payment): only the live member counts');
+  state.settings.commissionBasis = 'attendance';
+  eq(Math.round(computeMonthlyPay(15, '2026-06').commissionPendingBase), 500, 'deleted/archived member excluded (attendance): only live member contributes pending');
+  state.settings.commissionBasis = 'payment';
+  const dupGroups = detectDuplicateInvoices();
+  ok(dupGroups.some(g => g.length === 2 && g.every(r => r.inv.customerId === 80)), 'dup finder: flags the two identical invoices for member 80');
+  ok(!dupGroups.some(g => g.some(r => r.inv.id === 705) && g.some(r => r.inv.id === 706)), 'dup finder: same member but different amounts are NOT flagged');
+  ok(findDuplicateInvoiceOf(80, 'Boxing', '2026-06', 450, null), 'pre-save guard: detects an existing matching invoice');
+  ok(!findDuplicateInvoiceOf(80, 'Boxing', '2026-06', 999, null), 'pre-save guard: different amount is not a match');
+  ok(!findDuplicateInvoiceOf(80, 'MMA', '2026-06', 450, null), 'pre-save guard: different sport is not a match');
+  ok(!findDuplicateInvoiceOf(null, 'Boxing', '2026-06', 450, null), 'pre-save guard: walk-in (no member) is never blocked');
   // payment basis must honour the settlement date cap on invoice dates
   const pd1 = computeMonthlyPay(11, null, '2026-06-15');
   eq(Math.round(pd1.commissionBase), 1000, 'settlement(payment): 01-Jun invoice counts, 20-Jun excluded at 15-Jun cutoff');
@@ -384,6 +419,128 @@ ${seed}
   eq(Math.round(pd2.commissionBase), 1500, 'settlement(payment): both June invoices count at 25-Jun cutoff');
   // sanity: 2-arg calls unchanged by the new optional param
   eq(Math.round(computeMonthlyPay(11, '2026-06').commissionBase), 1500, 'monthly (no date) still sums the whole month');
+
+  // ── Enrollment scenarios: duplicate sports, mistake-delete, per-sport start ──
+  ok(duplicateEnrollmentSport([{ sport: 'Boxing' }, { sport: 'MMA' }, { sport: 'Boxing' }]) === 'Boxing', 'enroll: duplicate sport is detected (blocks add + edit)');
+  ok(duplicateEnrollmentSport([{ sport: 'Boxing' }, { sport: 'MMA' }]) === null, 'enroll: distinct sports are allowed');
+  eq(enrollmentStartDate({ start: '2026-07-10' }, { startDate: '2026-05-01' }), '2026-07-10', 'enroll: per-sport start date overrides the member start');
+  eq(enrollmentStartDate({}, { startDate: '2026-05-01' }), '2026-05-01', 'enroll: with no per-sport date it inherits the member start');
+  // mistake-delete: combined invoice keeps the other sport; single-sport invoice is removed
+  state.members.push({ id: 90, name: 'CombMem', enrollments: [{ sport: 'Boxing', coachId: 99 }, { sport: 'MMA', coachId: 99 }],
+    subscriptions: [{ activity: 'Boxing', end: '2026-08-01', invoiceNumber: 'C1' }, { activity: 'MMA', end: '2026-09-01', invoiceNumber: 'C1' }], expiryDate: '2026-09-01' });
+  state.invoices.push({ id: 900, ref: 'C1', date: '2026-06-01', month: '2026-06', amount: 800, category: 'Membership', customerId: 90, sport: 'Boxing, MMA', lineItems: [{ sport: 'Boxing', coachId: 99, price: 300 }, { sport: 'MMA', coachId: 99, price: 500 }] });
+  state.members.push({ id: 91, name: 'SoloMem', enrollments: [{ sport: 'Karate', coachId: 99 }], subscriptions: [{ activity: 'Karate', end: '2026-07-01', invoiceNumber: 'K1' }], expiryDate: '2026-07-01' });
+  state.invoices.push({ id: 901, ref: 'K1', date: '2026-06-01', month: '2026-06', amount: 400, category: 'Membership', customerId: 91, sport: 'Karate' });
+  const comb = state.members.find(x => x.id === 90);
+  removeEnrollmentData(comb, 'MMA');
+  eq(comb.enrollments.length, 1, 'mistake-delete: enrollment removed (combined invoice case)');
+  ok(comb.enrollments[0].sport === 'Boxing', 'mistake-delete: the other sport is kept');
+  eq(comb.subscriptions.length, 1, 'mistake-delete: matching subscription removed');
+  const inv900 = state.invoices.find(i => i.id === 900);
+  ok(inv900 && inv900.lineItems.length === 1 && Math.round(inv900.amount) === 300, 'mistake-delete: combined invoice kept, amount reduced to the remaining sport');
+  eq(comb.expiryDate, '2026-08-01', 'mistake-delete: member expiry recomputed to the remaining sport');
+  const solo = state.members.find(x => x.id === 91);
+  removeEnrollmentData(solo, 'Karate');
+  ok(!state.invoices.find(i => i.id === 901), 'mistake-delete: single-sport invoice fully removed');
+  eq(solo.enrollments.length, 0, 'mistake-delete: last enrollment removed cleanly');
+  ok(duplicateEnrollmentSport([{ sport: 'Summer Camp' }, { sport: 'Summer Camp' }]) === 'Summer Camp', 'enroll: duplicate Summer Camp also blocked');
+  ok(duplicateEnrollmentSport([{ sport: 'Summer Camp' }, { sport: 'Boxing' }]) === null, 'enroll: Summer Camp + another sport is allowed');
+  eq(enrollmentStartDate({}, null), TODAY, 'enroll: no member context → defaults to today');
+  // unpaid enrollment (no invoice) removal + other members must stay untouched
+  state.members.push({ id: 92, name: 'UnpaidMem', enrollments: [{ sport: 'Boxing', coachId: 99 }, { sport: 'Karate', coachId: 99 }], subscriptions: [{ activity: 'Boxing', end: '2026-08-01' }, { activity: 'Karate', end: '2026-09-01' }], expiryDate: '2026-09-01' });
+  state.members.push({ id: 93, name: 'OtherMem', enrollments: [{ sport: 'Boxing', coachId: 99 }], subscriptions: [{ activity: 'Boxing', end: '2026-08-01', invoiceNumber: 'O1' }] });
+  state.invoices.push({ id: 930, ref: 'O1', date: '2026-06-01', month: '2026-06', amount: 300, category: 'Membership', customerId: 93, sport: 'Boxing' });
+  const unpaid = state.members.find(x => x.id === 92);
+  removeEnrollmentData(unpaid, 'Boxing');
+  eq(unpaid.enrollments.length, 1, 'mistake-delete: unpaid enrollment (no invoice) removed fine');
+  ok(unpaid.subscriptions.length === 1 && unpaid.subscriptions[0].activity === 'Karate', 'mistake-delete: unpaid sub removed, the other kept');
+  ok(state.invoices.find(i => i.id === 930), "mistake-delete: another member's invoice is NOT touched");
+  removeEnrollmentData(unpaid, 'MMA');
+  eq(unpaid.enrollments.length, 1, 'mistake-delete: removing a sport the member does not have is a safe no-op');
+
+  // ── Per-sport start + validity → derived member dates ──
+  const dm = deriveMemberDates([
+    { sport: 'Boxing', start: '2026-05-01', validity: 30 },   // ends 2026-05-31
+    { sport: 'MMA',    start: '2026-06-04', validity: 60 },   // ends 2026-08-03 (latest)
+  ], null);
+  eq(dm.startDate, '2026-05-01', 'derive: member start = earliest sport start');
+  eq(dm.expiryDate, '2026-08-03', 'derive: member expiry = latest sport end (start + own validity)');
+  eq(dm.firstRegistration, '2026-05-01', 'derive: blank first-registration falls back to earliest sport start');
+  const dm2 = deriveMemberDates([{ sport: 'Karate', start: '2026-06-01', validity: 30 }], '2026-01-15');
+  eq(dm2.firstRegistration, '2026-01-15', 'derive: entered first-registration is kept');
+  eq(dm2.expiryDate, '2026-07-01', 'derive: single sport expiry = its start + its validity');
+  // each sport keeps an independent validity (not one shared number)
+  const dm3 = deriveMemberDates([
+    { sport: 'Boxing', start: '2026-06-01', validity: 30 },
+    { sport: 'MMA',    start: '2026-06-01', validity: 90 },
+  ], null);
+  eq(dm3.expiryDate, '2026-08-30', 'derive: differing per-sport validity respected (90d wins over 30d)');
+  eq(daysBetween('2026-05-01', '2026-07-15'), 75, 'daysBetween: counts whole days');
+  // legacy sub (has start/end, no stored validity) → inferred validity must rebuild the SAME end
+  const legStart = '2026-05-01', legEnd = '2026-07-15';
+  eq(addDays(legStart, daysBetween(legStart, legEnd)), legEnd, 'legacy: inferred validity rebuilds the original end (no date mangling on edit)');
+
+  // ── Coach change on an existing sport UPDATES the sub (no duplicate) + re-attributes the invoice line ──
+  const ccSub = { activity: 'Boxing', coachId: 7, coach: coachName(7), invoiceNumber: 'CC1', start: '2026-06-01', validity: 30, end: '2026-07-01', totalClasses: 8, amountPaid: 300 };
+  const ccInv = { id: 950, ref: 'CC1', category: 'Membership', coachId: 7, coach: coachName(7), lineItems: [{ sport: 'Boxing', coachId: 7, coach: coachName(7), price: 300 }] };
+  syncSubToEnrollment(ccSub, { sport: 'Boxing', coachId: 8, classes: 10, price: 300, start: '2026-06-01', validity: 30 }, { startDate: '2026-06-01' }, [ccInv]);
+  eq(ccSub.coachId, 8, 'coach-change: existing subscription is updated to the new coach (not duplicated)');
+  eq(ccSub.totalClasses, 10, 'coach-change: classes synced onto the existing sub');
+  eq(ccInv.lineItems[0].coachId, 8, 'coach-change: invoice line re-attributed to the new coach (commission follows)');
+  eq(ccInv.coachId, 8, 'coach-change: invoice top-level coach re-attributed');
+
+  // ── Backup round-trip preserves data + the new per-sport sub fields ──
+  const rt = JSON.parse(JSON.stringify({ activity: 'Boxing', start: '2026-06-01', validity: 45, end: '2026-07-16' }));
+  ok(rt.start === '2026-06-01' && rt.validity === 45 && rt.end === '2026-07-16', 'backup: per-sport start/validity/end survive a JSON round-trip');
+  const imp = JSON.parse(JSON.stringify({ appVersion: 'x', members: state.members, invoices: state.invoices }));
+  ok(imp.members.length === state.members.length && imp.invoices.length === state.invoices.length, 'backup: members + invoices survive export→restore');
+
+  // ── Partial payments (cash-basis revenue, full-fee commission) ──
+  const pinv = { id: 960, ref: 'P1', amount: 650, month: '2026-06', date: '2026-06-01', category: 'Membership', customerId: 96, amountPaid: 300, payments: [{ date: '2026-06-01', month: '2026-06', amount: 300, method: 'cash' }] };
+  eq(invoicePaid(pinv), 300, 'partial: collected so far = 300');
+  eq(invoiceBalance(pinv), 350, 'partial: balance = 650 − 300 = 350');
+  eq(invoiceStatus(pinv), 'Partial', 'partial: status is Partial');
+  eq(cashInMonth(pinv, '2026-06'), 300, 'partial: June revenue counts only the 300 collected (cash basis)');
+  recordInvoicePayment(pinv, 350, { date: '2026-07-05', method: 'cash' });   // settle the rest in July
+  eq(invoiceBalance(pinv), 0, 'partial: balance cleared after the 2nd payment');
+  eq(invoiceStatus(pinv), 'Paid', 'partial: status becomes Paid once settled');
+  eq(cashInMonth(pinv, '2026-06'), 300, 'partial: June still 300 (each payment lands in its own month)');
+  eq(cashInMonth(pinv, '2026-07'), 350, 'partial: the 350 settlement is revenue in July');
+  const linv = { id: 961, amount: 400, month: '2026-05' };   // legacy invoice (no amountPaid)
+  eq(invoicePaid(linv), 400, 'legacy: an invoice with no amountPaid is treated as fully paid');
+  eq(invoiceStatus(linv), 'Paid', 'legacy: status Paid (no false "unpaid")');
+  state.members.push({ id: 96, name: 'PartMem' });
+  state.invoices.push(pinv);
+  state.invoices.push({ id: 962, amount: 500, category: 'Membership', customerId: 96, amountPaid: 200 });
+  eq(Math.round(memberOutstanding(96)), 300, 'partial: member outstanding = sum of balances (0 + 300)');
+  // deposit taken at enrollment: part paid now, rest due
+  var depTotal = 1000, depPaid = Math.max(0, Math.min(300, depTotal));
+  var depInv = { id: 970, amount: depTotal, category: 'Membership', customerId: 97, amountPaid: depPaid, payments: [{ month: '2026-06', amount: depPaid }] };
+  eq(invoiceBalance(depInv), 700, 'deposit: 300 paid on a 1000 invoice leaves 700 due');
+  eq(invoiceStatus(depInv), 'Partial', 'deposit: status is Partial');
+  eq(cashInMonth(depInv, '2026-06'), 300, 'deposit: only the 300 deposit counts as revenue');
+  eq(Math.max(0, Math.min(1500, depTotal)), 1000, 'deposit: a deposit above the total is clamped to the total');
+  // correcting a wrongly-entered paid amount via Edit Invoice
+  var fixInv = { id: 980, amount: 2400, date: '2026-06-14', month: '2026-06', amountPaid: 2400, payments: [{ month: '2026-06', amount: 2400 }] };
+  fixInv.amountPaid = 1000;
+  fixInv.payments = [{ date: '2026-06-14', month: '2026-06', amount: 1000, method: 'cash' }];
+  eq(invoiceBalance(fixInv), 1400, 'edit-invoice: correcting paid to 1000 on a 2400 total leaves 1400 due');
+  eq(invoiceStatus(fixInv), 'Partial', 'edit-invoice: corrected invoice becomes Partial');
+  eq(cashInMonth(fixInv, '2026-06'), 1000, 'edit-invoice: revenue reflects the corrected 1000');
+
+  // ── Qatar ID OCR parsing (the field extraction, not the image->text step) ──
+  var NL = String.fromCharCode(10);
+  var idText = ['State Of Qatar','Residency Permit','ID.No: 32176000771','D.O.B: 28/10/2021','Expiry: 13/02/2027','Nationality: SYRIA','Occupation:','Name: ALEEN OSAMA ALAWAD','الإسم: الين اسامه العوض','الجنسية: سورية','Passport Number: N015239024','Passport Expiry: 31/01/2028','Serial No: 30432176000771'].join(NL);
+  var idp = parseQatarId(idText);
+  eq(idp.qid, '32176000771', 'QID: reads the 11-digit ID not the 14-digit serial');
+  eq(idp.birthdate, '2021-10-28', 'QID: birthdate from the D.O.B line not Expiry');
+  eq(idp.nameEn, 'Aleen Osama Alawad', 'QID: English name title-cased');
+  eq(idp.nameAr, 'الين اسامه العوض', 'QID: Arabic name read from the label line');
+  eq(idp.nationality, 'Syria', 'QID: nationality from the Nationality line');
+  var emptyId = parseQatarId('totally unrelated text with no id fields');
+  ok(emptyId.qid === null && emptyId.birthdate === null && emptyId.nameEn === null, 'QID: returns nulls when nothing matches');
+  var noLabel = parseQatarId(['32176000771','28/10/2021','13/02/2027'].join(NL));
+  eq(noLabel.birthdate, '2021-10-28', 'QID: with no label, picks the earliest past date as birthdate');
 
   // ── Phone search: ignore spaces + country code, match partials ──
   ok(phoneSearchMatches('66995549', '97466995549'),       'phone search: paste +974… finds national-only stored');
