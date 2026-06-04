@@ -1,23 +1,28 @@
 # Black Stars CRM
-Version 4.73.1 — Sidebar footer alignment fix (only change vs v121).
+Version 4.81.0 — Club logo applied as the application logo.
 
 ## What changed
-Just the one UI bug you circled: the sidebar footer actions were
-inconsistently aligned — "Quick search" sat left while "Quick backup",
-"User Guide" and "Sign out" were centred, so the column looked ragged.
+Your uploaded Black Stars image is now the app logo, replacing the old ★:
+- **Sidebar** brand mark (top-left).
+- **Login screen** logo.
+- **Browser tab favicon**.
 
-They are now a consistent left-aligned menu: each is an icon + label row
-(Sign out gained a 🚪 icon), and the ⌘K hint on Quick search stays pinned to
-the right edge.
+The image is embedded directly in app.js (base64), so the sidebar and login
+logos show even if a file gets missed when copying — and a copy of the image
+is also included as `logo.jpg` (used by the favicon).
 
-## What did NOT change
-- No collapse/expand. No hide button. No floating buttons.
-- The brand/header row is exactly as it was in v121 (logo + title + theme).
-- Everything else (all v121 features and fixes) is untouched.
+## Notes
+- The image is a detailed square graphic, so at the small sidebar/favicon size
+  it shows the whole collage scaled down. If you'd prefer a cleaner small icon
+  (e.g. just the central BLACK STARS star mark), send a square-cropped version
+  or say so and I'll crop it for you.
+- The Schedule PNG export still prints the "★ BLACK STARS" text header (drawn
+  on the canvas). I can swap that for the image too if you want.
 
-The fix is written with inline styles in app.js, so a cached styles.css
-cannot interfere with it.
+## Unchanged
+All v4.80.0 features stay intact.
 
 ## To load
-Replace the files in C:\Users\kshawky\Desktop\CRM\blackstars-localhost\ with
-these, refresh, and the footer (bottom of the sidebar) should read v4.73.1.
+Replace the files in C:\Users\kshawky\Desktop\CRM\blackstars-localhost\
+(include the new logo.jpg), refresh, confirm the footer reads v4.81.0, and the
+logo appears in the sidebar + tab.

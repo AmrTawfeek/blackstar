@@ -648,8 +648,10 @@ function downloadFile(filename, content, mime = 'text/plain') {
 
 // ─── MEMBERS ──────────────────────────────────────────────────
 PAGES.members = (main) => {
-  let filter = loadFilter('members', { search: '', status: 'all', sport: 'all', coach: 'all', nationality: 'all', incomplete: 'all' });
+  let filter = loadFilter('members', { search: '', status: 'all', sports: [], coach: 'all', nationality: 'all', incomplete: 'all' });
+  if (!Array.isArray(filter.sports)) filter.sports = filter.sport && filter.sport !== 'all' ? [filter.sport] : [];  // migrate old single-sport filter
   const pg = makePager(10);
+  const selected = new Set();   // member ids ticked for bulk actions (persists across pages)
 
   function applyFilter(f = filter) {
     return state.members.filter(m => {
@@ -659,14 +661,14 @@ PAGES.members = (main) => {
       if (!m.deleted && f.status === 'Archived') return false;
       if (f.search) {
         const q = f.search.toLowerCase();
-        const hay = [m.name, m.nameArabic, m.phone, m.qid, m.email, m.nationality].filter(Boolean).join(' ').toLowerCase();
+        const hay = [m.name, m.nameArabic, m.phone, m.phone2, m.qid, m.email, m.nationality].filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(q)) return false;
       }
       if (f.status !== 'all' && f.status !== 'Archived' && memberStatus(m) !== f.status) return false;
-      // Sport filter: check the legacy primary sport AND every enrollment row
-      if (f.sport !== 'all') {
+      // Sport filter (multi-select): keep if the member is in ANY selected sport
+      if (f.sports && f.sports.length) {
         const sports = new Set([m.sport, ...((m.enrollments||[]).map(e=>e.sport))].filter(Boolean));
-        if (!sports.has(f.sport)) return false;
+        if (!f.sports.some(sp => sports.has(sp))) return false;
       }
       // Coach filter: check the legacy primary coachId AND every enrollment row
       if (f.coach !== 'all') {
@@ -702,9 +704,9 @@ PAGES.members = (main) => {
     // "Filters hiding rows" banner — same helper as the Enrolled report. The
     // baseline is the default (unfiltered) view; we clamp so the Archived view
     // (a different set, not a subset) never shows a negative count.
-    const DEFAULT_F = { search: '', status: 'all', sport: 'all', coach: 'all', nationality: 'all', incomplete: 'all' };
+    const DEFAULT_F = { search: '', status: 'all', sports: [], coach: 'all', nationality: 'all', incomplete: 'all' };
     const baseline = applyFilter(DEFAULT_F).length;
-    const anyFilterActive = filter.search || filter.status !== 'all' || filter.sport !== 'all' ||
+    const anyFilterActive = filter.search || filter.status !== 'all' || (filter.sports && filter.sports.length) ||
       filter.coach !== 'all' || filter.nationality !== 'all' || filter.incomplete !== 'all';
     const hiddenByFilters = Math.max(0, baseline - allRows.length);
     const banner = $('#members-filter-banner');
@@ -721,8 +723,10 @@ PAGES.members = (main) => {
           filter = { ...DEFAULT_F };
           saveFilter('members', filter);
           pg.page = 1;
-          const reset = { 'search-input': '', 'filter-status': 'all', 'filter-sport': 'all', 'filter-coach': 'all', 'filter-nationality': 'all', 'filter-incomplete': 'all' };
+          const reset = { 'search-input': '', 'filter-status': 'all', 'filter-coach': 'all', 'filter-nationality': 'all', 'filter-incomplete': 'all' };
           Object.entries(reset).forEach(([id, v]) => { const el = $('#' + id); if (el) el.value = v; });
+          $$('.filter-sport-cb').forEach(cb => { cb.checked = false; });
+          const sl = $('#filter-sport-label'); if (sl) sl.textContent = 'All sports';
           refresh();
         });
       } else {
@@ -760,6 +764,7 @@ PAGES.members = (main) => {
 
       return `
       <tr style="cursor:pointer" data-id="${m.id}">
+        <td style="text-align:center" onclick="event.stopPropagation()"><input type="checkbox" class="member-cb" value="${m.id}" ${selected.has(m.id) ? 'checked' : ''} style="cursor:pointer"></td>
         <td>
           <div style="display:flex;align-items:center;gap:10px">
             <div class="avatar" style="width:32px;height:32px;font-size:11px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(m.name)}</div>
@@ -788,7 +793,7 @@ PAGES.members = (main) => {
           `}
         </td>
       </tr>`;
-    }).join('') : `<tr><td colspan="8" class="empty"><div class="empty-icon">👥</div>No members match your filters</td></tr>`;
+    }).join('') : `<tr><td colspan="9" class="empty"><div class="empty-icon">👥</div>No members match your filters</td></tr>`;
 
     $('#members-count').textContent = `${allRows.length} of ${state.members.length}`;
 
@@ -799,6 +804,37 @@ PAGES.members = (main) => {
     $$('#members-tbody tr[data-id]').forEach(tr => {
       tr.addEventListener('click', () => viewMember(parseInt(tr.dataset.id)));
     });
+
+    // ── Bulk selection wiring (tbody is rebuilt each refresh) ──
+    const updateBulkBar = () => {
+      const cnt = $('#members-bulk-count');
+      if (cnt) cnt.textContent = String(selected.size);
+      const bar = $('#members-bulkbar');
+      if (bar) bar.style.display = selected.size ? 'flex' : 'none';
+      const pageIds = rows.map(m => m.id);
+      const sa = $('#members-select-all');
+      if (sa) {
+        const onPage = pageIds.filter(id => selected.has(id)).length;
+        sa.checked = pageIds.length > 0 && onPage === pageIds.length;
+        sa.indeterminate = onPage > 0 && onPage < pageIds.length;
+      }
+    };
+    $$('#members-tbody .member-cb').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const id = parseInt(cb.value);
+        if (cb.checked) selected.add(id); else selected.delete(id);
+        updateBulkBar();
+      });
+    });
+    const selectAll = $('#members-select-all');
+    if (selectAll) {
+      selectAll.onchange = () => {
+        rows.forEach(m => { if (selectAll.checked) selected.add(m.id); else selected.delete(m.id); });
+        $$('#members-tbody .member-cb').forEach(cb => { cb.checked = selectAll.checked; });
+        updateBulkBar();
+      };
+    }
+    updateBulkBar();
   }
 
   main.innerHTML = `
@@ -846,6 +882,13 @@ PAGES.members = (main) => {
 
     <div class="card">
       <div id="members-filter-banner" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:8px"></div>
+      <div id="members-bulkbar" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px">
+        <span style="font-size:16px">☑️</span>
+        <div style="flex:1;font-size:13px;font-weight:600"><span id="members-bulk-count">0</span> selected</div>
+        <button class="btn ghost sm" id="members-bulk-export" title="Export the selected members to CSV">📥 Export selected</button>
+        <button class="btn ghost sm" id="members-bulk-archive" title="Archive (soft-delete) the selected members" style="color:var(--red)">🗑 Archive selected</button>
+        <button class="btn ghost sm" id="members-bulk-clear">Clear</button>
+      </div>
       <div class="filter-bar">
         <div class="search"><input id="search-input" type="text" placeholder="Search name, phone, QID, email..." value="${escapeHtml(filter.search || '')}" /></div>
         <select id="filter-status" class="btn ghost">
@@ -856,10 +899,15 @@ PAGES.members = (main) => {
           <option value="Expired" ${filter.status === 'Expired' ? 'selected' : ''}>Expired</option>
           <option value="Archived" ${filter.status === 'Archived' ? 'selected' : ''}>📦 Archived</option>
         </select>
-        <select id="filter-sport" class="btn ghost">
-          <option value="all" ${filter.sport === 'all' ? 'selected' : ''}>All sports</option>
-          ${SPORTS.map(s => `<option value="${s}" ${filter.sport === s ? 'selected' : ''}>${s}</option>`).join('')}
-        </select>
+        <div style="position:relative">
+          <button type="button" id="filter-sport-btn" class="btn ghost" style="min-width:140px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more sports">
+            <span id="filter-sport-label">${filter.sports && filter.sports.length ? (filter.sports.length === 1 ? escapeHtml(filter.sports[0]) : filter.sports.length + ' sports') : 'All sports'}</span>
+            <span style="opacity:.6">▾</span>
+          </button>
+          <div id="filter-sport-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            ${SPORTS.map(s => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-sport-cb" value="${escapeHtml(s)}" ${(filter.sports||[]).includes(s) ? 'checked' : ''} /> ${escapeHtml(s)}</label>`).join('')}
+          </div>
+        </div>
         <select id="filter-coach" class="btn ghost">
           <option value="all" ${filter.coach === 'all' ? 'selected' : ''}>All coaches</option>
           ${state.coaches.map(c => `<option value="${c.id}" ${String(filter.coach) === String(c.id) ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
@@ -883,6 +931,7 @@ PAGES.members = (main) => {
         <table>
           <thead>
             <tr>
+              <th style="width:36px;text-align:center"><input type="checkbox" id="members-select-all" title="Select/clear all on this page" style="cursor:pointer"></th>
               <th>Member</th>
               <th>Sport</th>
               <th>Coach</th>
@@ -905,13 +954,48 @@ PAGES.members = (main) => {
 
   $('#search-input').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#filter-status').addEventListener('change', e => { filter.status = e.target.value; pg.page = 1; refreshAndSave(); });
-  $('#filter-sport').addEventListener('change', e => { filter.sport = e.target.value; pg.page = 1; refreshAndSave(); });
+  // Multi-select sport filter
+  const fSportBtn = $('#filter-sport-btn');
+  const fSportMenu = $('#filter-sport-menu');
+  if (fSportBtn && fSportMenu) {
+    fSportBtn.addEventListener('click', e => { e.stopPropagation(); fSportMenu.style.display = fSportMenu.style.display === 'none' ? 'block' : 'none'; });
+    document.addEventListener('click', e => { if (!fSportBtn.contains(e.target) && !fSportMenu.contains(e.target)) fSportMenu.style.display = 'none'; });
+    $$('.filter-sport-cb').forEach(cb => cb.addEventListener('change', () => {
+      filter.sports = $$('.filter-sport-cb').filter(x => x.checked).map(x => x.value);
+      const n = filter.sports.length;
+      $('#filter-sport-label').textContent = n === 0 ? 'All sports' : (n === 1 ? filter.sports[0] : n + ' sports');
+      pg.page = 1;
+      refreshAndSave();
+    }));
+  }
   $('#filter-coach').addEventListener('change', e => { filter.coach = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#filter-nationality').addEventListener('change', e => { filter.nationality = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#filter-incomplete').addEventListener('change', e => { filter.incomplete = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#add-member').addEventListener('click', () => addMember());
-  $('#export-members').addEventListener('click', exportMembersCSV);
+  $('#export-members').addEventListener('click', () => exportMembersCSV(applyFilter()));
   $('#find-duplicates').addEventListener('click', showDuplicatesModal);
+
+  // Bulk action bar (static elements — wired once)
+  $('#members-bulk-clear').addEventListener('click', () => { selected.clear(); refresh(); });
+  $('#members-bulk-export').addEventListener('click', () => {
+    exportMembersCSV(state.members.filter(m => selected.has(m.id)));
+  });
+  $('#members-bulk-archive').addEventListener('click', () => {
+    const list = state.members.filter(m => selected.has(m.id) && !m.deleted);
+    if (!list.length) { toast('No active members selected to archive', 'error'); return; }
+    if (!confirm(`Archive ${list.length} member${list.length === 1 ? '' : 's'}?\n\nThis is a soft delete — no data is destroyed. They can be restored anytime from the Members page → status filter "Archived".`)) return;
+    const ts = new Date().toISOString();
+    list.forEach(m => {
+      m.deleted = true;
+      m.deletedAt = ts;
+      m.deletedReason = 'Bulk archive';
+      audit('member.archive', `member:${m.id}`, `Archived ${m.name} (bulk)`, { memberId: m.id, name: m.name, reason: 'Bulk archive' });
+    });
+    selected.clear();
+    save();
+    refresh();
+    toast(`📦 Archived ${list.length} member${list.length === 1 ? '' : 's'} · history preserved`);
+  });
 
   refresh();
 };
@@ -1077,7 +1161,7 @@ function viewMember(id) {
         </div>
       </div>
       <div class="row row-2 mb-3">
-        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Mobile</div><div>${phoneCell(m.phone, { stop: false })}</div></div>
+        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Mobile</div><div>${phoneCell(m.phone, { stop: false })}${m.phone2 ? `<div style="margin-top:2px">${phoneCell(m.phone2, { stop: false })} <span class="text-mute" style="font-size:10px">(2nd)</span></div>` : ''}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Email</div><div>${escapeHtml(m.email || '—')}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">QID</div><div class="font-mono">${escapeHtml(m.qid || '—')}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Birthdate</div><div>${m.birthdate ? `${fmtDate(m.birthdate)}${(() => {
@@ -1523,6 +1607,7 @@ function showMemberForm(m) {
       </div>
       <div class="form-row">
         ${phoneInputHtml('f-phone', m.phone, { label: 'Mobile number' })}
+        ${phoneInputHtml('f-phone2', m.phone2, { label: 'Second mobile (optional)', required: false })}
         <div class="field"><label>Email <span class="text-mute" style="font-size:10px">(optional)</span></label><input id="f-email" type="email" value="${escapeHtml(m.email || '')}" /></div>
       </div>
       <div class="form-row">
@@ -1579,6 +1664,13 @@ function showMemberForm(m) {
         const nameAr = $('#f-name-ar').value.trim();
         const phoneInput = readPhoneInput('f-phone');
         const phone = phoneInput.phone;
+        const phone2Input = readPhoneInput('f-phone2');
+        if (phone2Input.digits && !phone2Input.valid) {
+          toast('Second mobile looks invalid — ' + (phone2Input.error || 'too short') + '. Fix it or clear it.', 'error');
+          ($('#f-phone2-digits') || {}).focus?.();
+          return;
+        }
+        const phone2 = phone2Input.digits ? phone2Input.phone : null;
         const email = $('#f-email').value.trim();
         const birthdate = $('#f-bdate').value;
 
@@ -1726,6 +1818,7 @@ function showMemberForm(m) {
           name: nameEn,
           nameArabic: nameAr || null,
           phone,
+          phone2,
           email: email || null,
           qid: $('#f-qid').value.trim() || null,
           birthdate: birthdate || null,
@@ -2003,14 +2096,16 @@ function showNewMemberInvoiceModal(invoiceId, customerName) {
   });
 }
 
-function exportMembersCSV() {
-  const rows = [['ID','Name','Name (Arabic)','Sport','Coach','Phone','Email','QID','Birthdate','Level','Joined','Expiry','Status']];
-  for (const m of state.members) {
-    rows.push([m.id, m.name, m.nameArabic || '', m.sport, coachName(m.coachId), m.phone || '', m.email || '', m.qid || '', m.birthdate || '', m.level || '', m.joinDate, m.expiryDate || '', m.status]);
+function exportMembersCSV(list) {
+  const members = Array.isArray(list) ? list : state.members;
+  if (!members.length) { toast('No members to export', 'error'); return; }
+  const rows = [['ID','Name','Name (Arabic)','Sport','Coach','Phone','Phone 2','Email','QID','Birthdate','Level','Joined','Expiry','Status']];
+  for (const m of members) {
+    rows.push([m.id, m.name, m.nameArabic || '', m.sport, coachName(m.coachId), m.phone || '', m.phone2 || '', m.email || '', m.qid || '', m.birthdate || '', m.level || '', m.joinDate, m.expiryDate || '', m.status]);
   }
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
   downloadFile('members.csv', csv, 'text/csv');
-  toast('Members exported');
+  toast(`Exported ${members.length} member${members.length === 1 ? '' : 's'}`);
 }
 
 // ─── COACHES ──────────────────────────────────────────────────
@@ -2040,12 +2135,15 @@ window.viewCoach = function(id) {
         }
       }
     }
-    // Revenue from invoices linked to this coach (real cash)
+    // Revenue from invoices linked to this coach (real cash) — line-item aware
+    // so a merged invoice credits each coach for only their own line.
     let revenue = 0;
     for (const inv of state.invoices) {
-      if (inv.coachId !== id) continue;
       if (monthKey && inv.month !== monthKey) continue;
-      revenue += inv.amount || 0;
+      const lis = (Array.isArray(inv.lineItems) && inv.lineItems.length)
+        ? inv.lineItems
+        : [{ coachId: inv.coachId, price: inv.amount || 0 }];
+      for (const li of lis) if (li.coachId === id) revenue += li.price || 0;
     }
     return { students: students.size, revenue, subValue: revenue, attended, total, rate: total ? attended / total * 100 : 0 };
   }
@@ -2464,10 +2562,20 @@ PAGES.schedule = (main) => {
   function exportPng() {
     // Render the schedule into an SVG-style canvas drawing
     const cellW = 180, cellH = 90, timeW = 110, headerH = 60, brandH = 100;
+    const BLOCK_H = 40, GAP = 4;
     const cols = DAYS.length + 1;
     const rows = SLOTS.length;
     const W = timeW + DAYS.length * cellW;
-    const H = brandH + headerH + rows * cellH + 40;
+    // Variable row heights: a slot with more stacked classes gets a taller row
+    // so 2- and 3-class cells stay readable instead of being crammed together.
+    const rowHeights = SLOTS.map(slot => {
+      let maxN = 0;
+      DAYS.forEach(day => { maxN = Math.max(maxN, classesAt(day.key, slot.hour).filter(isFiltered).length); });
+      maxN = Math.min(maxN, 3);
+      return Math.max(cellH, maxN * BLOCK_H + (maxN + 1) * GAP);
+    });
+    const bodyH = rowHeights.reduce((a, b) => a + b, 0);
+    const H = brandH + headerH + bodyH + 40;
 
     const canvas = document.createElement('canvas');
     canvas.width = W * 2;   // 2x for retina-quality
@@ -2505,16 +2613,17 @@ PAGES.schedule = (main) => {
     });
     ctx.textAlign = 'left';
 
-    // Body rows
+    // Body rows (variable height per row)
+    let y = headerY + headerH;
     SLOTS.forEach((slot, rowIdx) => {
-      const y = headerY + headerH + rowIdx * cellH;
+      const rowH = rowHeights[rowIdx];
       // Time cell
       ctx.fillStyle = '#131826';
-      ctx.fillRect(0, y, timeW, cellH);
+      ctx.fillRect(0, y, timeW, rowH);
       ctx.fillStyle = '#e8eaf0';
       ctx.font = 'bold 13px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(slot.label, timeW / 2, y + cellH / 2 + 4);
+      ctx.fillText(slot.label, timeW / 2, y + rowH / 2 + 4);
 
       // Day cells
       DAYS.forEach((day, colIdx) => {
@@ -2522,35 +2631,43 @@ PAGES.schedule = (main) => {
         const cls = classesAt(day.key, slot.hour).filter(isFiltered);
         // Cell background
         ctx.fillStyle = colIdx % 2 === 0 ? '#0e131f' : '#0a0e1a';
-        ctx.fillRect(x, y, cellW, cellH);
+        ctx.fillRect(x, y, cellW, rowH);
         // Cell border
+        ctx.lineWidth = 1;
         ctx.strokeStyle = '#252b3d';
-        ctx.strokeRect(x, y, cellW, cellH);
+        ctx.strokeRect(x, y, cellW, rowH);
 
         if (cls.length) {
-          // Stack up to 2 classes in the cell
-          const blockH = cls.length === 1 ? cellH - 12 : (cellH - 14) / cls.length;
+          const n = Math.min(cls.length, 3);
+          const single = n === 1;
+          const blockH = (rowH - (n + 1) * GAP) / n;
           cls.slice(0, 3).forEach((c, ci) => {
-            const by = y + 6 + ci * (blockH + 2);
-            const bg = sportColor(c.sport);
-            ctx.fillStyle = bg;
-            ctx.fillRect(x + 6, by, cellW - 12, blockH);
-            ctx.fillStyle = 'white';
-            ctx.textAlign = 'center';
+            const by = y + GAP + ci * (blockH + GAP);
+            const bx = x + 6, bw = cellW - 12;
+            // Colored block
+            ctx.fillStyle = sportColor(c.sport);
+            ctx.fillRect(bx, by, bw, blockH);
+            // Dark outline so two same-coloured sports don't blend into one
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = 'rgba(0,0,0,0.40)';
+            ctx.strokeRect(bx, by, bw, blockH);
+            // Labels
+            const cx = x + cellW / 2, cy = by + blockH / 2;
             const coach = state.coaches.find(co => co.id === c.coachId);
             const txt = `${sportEmoji(c.sport)} ${c.sport.toUpperCase()}`;
-            ctx.font = `bold ${cls.length === 1 ? '14' : '11'}px sans-serif`;
-            ctx.fillText(txt, x + cellW / 2, by + blockH / 2 + (cls.length === 1 ? 0 : -3));
-            if (cls.length === 1 && coach) {
-              ctx.font = '11px sans-serif';
-              ctx.fillText(coach.name, x + cellW / 2, by + blockH / 2 + 18);
-            } else if (coach) {
-              ctx.font = '9px sans-serif';
-              ctx.fillText(coach.name, x + cellW / 2, by + blockH / 2 + 8);
+            ctx.fillStyle = 'white';
+            ctx.textAlign = 'center';
+            ctx.font = `bold ${single ? 15 : 12}px sans-serif`;
+            ctx.fillText(txt, cx, cy + (coach ? (single ? -2 : -4) : 4));
+            if (coach) {
+              ctx.font = `${single ? 12 : 9}px sans-serif`;
+              ctx.fillStyle = 'rgba(255,255,255,0.92)';
+              ctx.fillText(coach.name, cx, cy + (single ? 18 : 9));
             }
           });
         }
       });
+      y += rowH;
     });
 
     // Footer
@@ -2688,7 +2805,7 @@ PAGES.schedule = (main) => {
       body: `<p>This will remove all <b>${state.schedule.length}</b> scheduled classes. This action cannot be undone.</p>`,
       actions: [
         { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
-        { label: 'Yes, clear all', class: 'btn primary', onclick: () => {
+        { label: 'Yes, clear all', class: 'btn danger', onclick: () => {
           state.schedule = [];
           save(); closeModal(); refresh();
           toast('Schedule cleared');
@@ -2951,13 +3068,14 @@ window.toggleCoachActive = function(coachId) {
 PAGES.invoices = (main) => {
   let filter = { search: '', month: 'all', method: 'all', sport: 'all', coach: 'all', category: 'all' };
   const pg = makePager(10);
+  const selected = new Set();   // invoice ids ticked for merging
 
   function applyFilter() {
     return state.invoices.filter(i => {
       if (filter.search) {
         const q = filter.search.toLowerCase();
         const cust = customerInfo(i);   // live name + phone if linked
-        const hay = [i.description, cust.name, cust.phone, cust.qid, i.coach, i.sport, i.ref, i.category]
+        const hay = [i.description, cust.name, cust.nameArabic, cust.phone, cust.phone2, cust.qid, i.coach, i.sport, i.ref, i.category]
           .filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(q)) return false;
       }
@@ -3003,6 +3121,7 @@ PAGES.invoices = (main) => {
       const sportLabel = i.sport === 'Court Rental' ? '🏟 Court Rental' : i.sport;
       return `
       <tr>
+        <td style="text-align:center" onclick="event.stopPropagation()"><input type="checkbox" class="inv-cb" value="${i.id}" data-cust="${i.customerId || ''}" ${selected.has(i.id) ? 'checked' : ''} style="cursor:pointer"></td>
         <td class="font-mono" style="font-size:11px">${i.ref || `#${i.id}`}</td>
         <td class="text-dim" style="white-space:nowrap">${fmtDate(i.date)}</td>
         <td>${custCell}</td>
@@ -3020,10 +3139,41 @@ PAGES.invoices = (main) => {
           <button class="btn ghost sm" onclick="deleteInvoice(${i.id})" title="Delete">🗑</button>
         </td>
       </tr>`;
-    }).join('') : `<tr><td colspan="10" class="empty"><div class="empty-icon">📄</div>No invoices match</td></tr>`;
+    }).join('') : `<tr><td colspan="11" class="empty"><div class="empty-icon">📄</div>No invoices match</td></tr>`;
     $('#inv-count').textContent = `${allRows.length} invoices · ${fmtMoney(total)}`;
     $('#inv-pagination').innerHTML = paginationBar(pg, allRows.length, 'inv');
     bindPagination('inv', pg, allRows.length, refresh);
+
+    // ── Merge selection wiring (tbody rebuilt each refresh) ──
+    const updateMergeBar = () => {
+      const cnt = $('#inv-merge-count');
+      if (cnt) cnt.textContent = String(selected.size);
+      const bar = $('#inv-mergebar');
+      if (bar) bar.style.display = selected.size ? 'flex' : 'none';
+      const pageIds = rows.map(r => r.id);
+      const sa = $('#inv-select-all');
+      if (sa) {
+        const onPage = pageIds.filter(id => selected.has(id)).length;
+        sa.checked = pageIds.length > 0 && onPage === pageIds.length;
+        sa.indeterminate = onPage > 0 && onPage < pageIds.length;
+      }
+    };
+    $$('#inv-tbody .inv-cb').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const id = parseInt(cb.value);
+        if (cb.checked) selected.add(id); else selected.delete(id);
+        updateMergeBar();
+      });
+    });
+    const selAll = $('#inv-select-all');
+    if (selAll) {
+      selAll.onchange = () => {
+        rows.forEach(r => { if (selAll.checked) selected.add(r.id); else selected.delete(r.id); });
+        $$('#inv-tbody .inv-cb').forEach(cb => { cb.checked = selAll.checked; });
+        updateMergeBar();
+      };
+    }
+    updateMergeBar();
   }
 
   // Build unique sport + coach options from data
@@ -3068,10 +3218,17 @@ PAGES.invoices = (main) => {
           <option value="card">Card</option>
         </select>
       </div>
+      <div id="inv-mergebar" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px">
+        <span style="font-size:16px">🧾</span>
+        <div style="flex:1;font-size:13px;font-weight:600"><span id="inv-merge-count">0</span> invoices selected</div>
+        <button class="btn primary sm" id="inv-merge-go" title="Combine the selected invoices (same customer) into one">🔗 Merge into one invoice</button>
+        <button class="btn ghost sm" id="inv-merge-clear">Clear</button>
+      </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
+              <th style="width:34px;text-align:center"><input type="checkbox" id="inv-select-all" title="Select/clear all on this page" style="cursor:pointer"></th>
               <th>Ref</th>
               <th>Date</th>
               <th>Customer</th>
@@ -3097,6 +3254,92 @@ PAGES.invoices = (main) => {
   $('#inv-coach').addEventListener('change', e => { filter.coach = e.target.value; pg.page = 1; refresh(); });
   $('#inv-category').addEventListener('change', e => { filter.category = e.target.value; pg.page = 1; refresh(); });
   $('#add-inv').addEventListener('click', addInvoice);
+  $('#inv-merge-clear').addEventListener('click', () => { selected.clear(); refresh(); });
+  $('#inv-merge-go').addEventListener('click', () => mergeSelectedInvoices());
+
+  function mergeSelectedInvoices() {
+    const invs = state.invoices.filter(i => selected.has(i.id));
+    if (invs.length < 2) { toast('Tick at least 2 invoices to merge', 'error'); return; }
+    const custIds = [...new Set(invs.map(i => i.customerId || null))];
+    if (custIds.length !== 1 || custIds[0] == null) {
+      toast('Merge needs invoices that all belong to the same linked customer', 'error');
+      return;
+    }
+    const custId = custIds[0];
+    const cust = state.members.find(m => m.id === custId);
+    // Preserve each invoice as a line item (keeps per-sport coach for commission)
+    const lineItems = [];
+    for (const inv of invs) {
+      const existing = (Array.isArray(inv.lineItems) && inv.lineItems.length)
+        ? inv.lineItems
+        : [{ sport: inv.sport, coachId: inv.coachId, coach: inv.coach, price: inv.amount || 0, description: inv.description }];
+      existing.forEach(li => lineItems.push({
+        sport: li.sport || null,
+        coachId: li.coachId ?? null,
+        coach: li.coach || (li.coachId ? coachName(li.coachId) : null),
+        price: li.price || 0,
+        description: li.description || inv.description || '',
+      }));
+    }
+    const totalAmt = lineItems.reduce((s, li) => s + (li.price || 0), 0);
+    const months = [...new Set(invs.map(i => i.month))];
+    const dates = invs.map(i => i.date).sort();
+    const methods = [...new Set(invs.map(i => i.method))];
+    const cats = [...new Set(invs.map(i => i.category || 'Membership'))];
+    const coachIdsUniform = [...new Set(lineItems.map(li => li.coachId))];
+    const sportsUniform = [...new Set(lineItems.map(li => li.sport))];
+    const refs = invs.map(i => i.ref || `#${i.id}`);
+
+    const monthWarn = months.length > 1
+      ? `<div style="color:var(--red);font-size:12px;margin-top:8px">⚠️ These span different months (${months.join(', ')}). The merged invoice lands in ${dates[0].slice(0,7)}, which moves revenue between months.</div>` : '';
+    const catWarn = cats.length > 1
+      ? `<div style="color:var(--red);font-size:12px;margin-top:8px">⚠️ Mixed categories (${cats.join(', ')}); the merged invoice will be "${cats[0]}".</div>` : '';
+    const liHtml = lineItems.map(li => `<li>${escapeHtml(li.sport || '—')}${li.coach ? ' · ' + escapeHtml(li.coach) : ' · no coach'} — <b>${fmt(li.price)}</b></li>`).join('');
+
+    showModal({
+      title: '🔗 Merge invoices into one',
+      body: `
+        <div style="font-size:13px;line-height:1.6">
+          Combining <b>${invs.length} invoices</b> for <b>${escapeHtml(cust ? cust.name : 'this customer')}</b> into one invoice with these line items:
+          <ul style="margin:8px 0 0 18px">${liHtml}</ul>
+          <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">New total: <b style="color:var(--green)">${fmt(totalAmt)} QAR</b></div>
+          <div style="font-size:12px;color:var(--text-mute);margin-top:8px">✓ Each line keeps its own coach, so commission stays accurate — the MMA line still credits its coach and Summer Camp stays coach-less. The original ${invs.length} invoices (${refs.join(', ')}) are removed and replaced by one.</div>
+          ${monthWarn}${catWarn}
+        </div>`,
+      actions: [
+        { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+        { label: `Merge ${invs.length} → 1`, class: 'btn primary', onclick: () => {
+          const keepDate = dates[0];
+          const merged = {
+            id: nextId(state.invoices),
+            date: keepDate,
+            month: keepDate.slice(0, 7),
+            description: (cust ? cust.name : (invs[0].customerName || '')) + ' — ' + lineItems.map(li => li.sport || 'item').join(' + '),
+            amount: totalAmt,
+            method: methods.length === 1 ? methods[0] : invs[0].method,
+            ref: refs[0],
+            category: cats[0],
+            activityType: invs[0].activityType || (cats[0] === 'Membership' ? 'subscription' : 'other'),
+            sport: sportsUniform.length === 1 ? sportsUniform[0] : null,
+            coach: (coachIdsUniform.length === 1 && lineItems[0].coach) ? lineItems[0].coach : null,
+            coachId: coachIdsUniform.length === 1 ? coachIdsUniform[0] : null,
+            customerId: custId,
+            customerName: cust ? cust.name : (invs[0].customerName || null),
+            lineItems,
+            mergedFrom: refs,
+          };
+          state.invoices = state.invoices.filter(i => !selected.has(i.id));
+          state.invoices.push(merged);
+          audit('invoice.merge', `invoice:${merged.id}`, `Merged ${invs.length} invoices (${refs.join(', ')}) into ${merged.ref} · ${fmt(totalAmt)} QAR`, { customerId: custId, refs, total: totalAmt });
+          selected.clear();
+          save();
+          closeModal();
+          refresh();
+          toast(`🔗 Merged ${invs.length} invoices into one · ${fmt(totalAmt)} QAR`);
+        } },
+      ],
+    });
+  }
   $('#generate-latest-inv').addEventListener('click', () => generateLatestInvoice(refresh));
   $('#quick-rental-inv').addEventListener('click', () => addRental(refresh));
   $('#export-inv').addEventListener('click', () => {
@@ -5483,7 +5726,7 @@ PAGES.sales = (main) => {
         const q = filter.search.toLowerCase();
         const cust = customerInfo(s);
         const itemsText = (s.items || []).map(it => it.name).join(' ');
-        const hay = [cust.name, cust.phone, itemsText, s.notes].filter(Boolean).join(' ').toLowerCase();
+        const hay = [cust.name, cust.nameArabic, cust.phone, cust.phone2, cust.qid, itemsText, s.notes].filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(q)) return false;
       }
       if (filter.month !== 'all' && s.month !== filter.month) return false;
@@ -5701,7 +5944,13 @@ function renderSaleLines() {
           <div class="num font-bold text-right" style="padding:6px 4px;color:var(--green)">${fmt(line.qty * line.unitPrice)}</div>
           <button type="button" class="btn ghost sm" data-line-remove="${i}" style="color:var(--red);padding:4px;min-width:0;width:100%" title="Remove line">✕</button>
         </div>
-        ${overStock ? `<div style="font-size:10px;color:var(--red);padding:0 8px;margin-top:-2px">⚠️ Only ${inStock} in stock</div>` : ''}
+        ${line.productId ? (() => {
+          const p = products.find(x => x.id === line.productId) || {};
+          const threshold = p.lowStockThreshold || 3;
+          const color = (overStock || inStock === 0) ? 'var(--red)' : (inStock <= threshold ? 'var(--accent-2)' : 'var(--text-mute)');
+          const note = overStock ? ` — only ${inStock} available, reduce qty` : (inStock === 0 ? ' — out of stock' : (inStock <= threshold ? ' · low' : ''));
+          return `<div style="font-size:10px;color:${color};padding:0 8px;margin-top:-2px;font-weight:${overStock || inStock === 0 ? '600' : '400'}">📦 ${inStock} in stock${note}</div>`;
+        })() : ''}
       `;
     }).join('');
     // Wire line inputs
@@ -6744,6 +6993,8 @@ window.downloadBackup = function() {
     route: undefined,
   }, null, 2);
   downloadFile(`blackstars-backup-${TODAY}.json`, data, 'application/json');
+  try { localStorage.setItem('bs-last-backup', String(Date.now())); } catch (_) {}
+  if (window.__hideBackupReminder) window.__hideBackupReminder();
   toast(`✓ Backup saved · ${state.members.length} members · ${state.invoices.length} invoices`);
 };
 
@@ -6878,7 +7129,7 @@ PAGES.attendance = (main) => {
   const _defaultMonth = _availMonths.includes(_todayMonth) ? _todayMonth : latestDataMonth();
   // filter.days is an array of day-numbers; empty = all days
   const _defaultDays = _defaultMonth === _todayMonth ? [_now.getDate()] : [];
-  let filter = { month: _defaultMonth, coach: 'all', search: '', sports: [], memberId: null, days: _defaultDays };
+  let filter = { month: _defaultMonth, coach: 'all', search: '', sports: [], memberId: null, days: _defaultDays, att: 'all' };
 
   // Collect all sports a member is enrolled in (primary + enrollments + subs)
   function memberSports(m) {
@@ -6906,10 +7157,17 @@ PAGES.attendance = (main) => {
       if (!wanted.length) continue;
       if (filter.search) {
         const q = filter.search.toLowerCase();
-        const hay = [m.name, m.nameArabic, m.phone, m.qid].filter(Boolean).join(' ').toLowerCase();
+        const hay = [m.name, m.nameArabic, m.phone, m.phone2, m.qid].filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(q)) continue;
       }
       for (const sp of wanted) {
+        // Attended / Not-attended filter — evaluated over the selected day(s),
+        // or the whole grid month when no specific day is picked.
+        if (filter.att && filter.att !== 'all') {
+          const att = rowAttended(m, sp);
+          if (filter.att === 'attended' && !att) continue;
+          if (filter.att === 'notattended' && att) continue;
+        }
         const enr = (m.enrollments || []).find(e => e.sport === sp);
         rows.push({ m, sport: sp, coachId: enr?.coachId ?? m.coachId });
       }
@@ -6930,6 +7188,18 @@ PAGES.attendance = (main) => {
   // month (default May) since day columns are per-month.
   function gridMonth() {
     return filter.month === 'all' ? latestDataMonth() : filter.month;
+  }
+
+  // True if the member has at least one "present" (Y) mark for this sport within
+  // the current scope: the selected day(s) if any, otherwise the whole month.
+  function rowAttended(m, sport) {
+    const mo = gridMonth();
+    const data = m.dailyAttendance?.[mo]?.[sport] || {};
+    const total = daysInMonth(mo);
+    const days = (filter.days && filter.days.length)
+      ? filter.days.filter(d => d >= 1 && d <= total)
+      : Array.from({ length: total }, (_, i) => i + 1);
+    return days.some(d => data[String(d)] === 'Y');
   }
 
   function markCell(memberId, sport, day, current) {
@@ -7157,6 +7427,11 @@ PAGES.attendance = (main) => {
           <option value="all">All coaches</option>
           ${state.coaches.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
         </select>
+        <select id="att-status" class="btn ghost" title="Show only students who attended (have a present mark) or did not, within the selected day(s) / month">
+          <option value="all">All attendance</option>
+          <option value="attended">✓ Attended</option>
+          <option value="notattended">✗ Not attended</option>
+        </select>
         <div style="position:relative">
           <button type="button" id="att-sports-btn" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px">All sports <span style="opacity:.6">▾</span></button>
           <div id="att-sports-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;box-shadow:0 8px 24px rgba(0,0,0,.4)">
@@ -7205,6 +7480,7 @@ PAGES.attendance = (main) => {
     applyDays();
   });
   $('#att-coach').addEventListener('change', e => { filter.coach = e.target.value; refresh(); });
+  $('#att-status').addEventListener('change', e => { filter.att = e.target.value; refresh(); });
 
   // Day multi-select dropdown
   const dayBtn = $('#att-day-btn');
@@ -7522,7 +7798,7 @@ PAGES.history = (main) => {
   function memberFilter(m) {
     if (!state2.search) return true;
     const q = state2.search.toLowerCase();
-    return [m.name, m.nameArabic, m.phone, m.qid, m.email].filter(Boolean).join(' ').toLowerCase().includes(q);
+    return [m.name, m.nameArabic, m.phone, m.phone2, m.qid, m.email].filter(Boolean).join(' ').toLowerCase().includes(q);
   }
 
   // ─ Build subscription history rows (chronological) ─
@@ -8808,7 +9084,7 @@ PAGES.expiring = (main) => {
     if (filter.coach !== 'all' && m.coachId !== parseInt(filter.coach)) return false;
     if (filter.search) {
       const q = filter.search.toLowerCase();
-      const hay = [m.name, m.nameArabic, m.phone, m.qid].filter(Boolean).join(' ').toLowerCase();
+      const hay = [m.name, m.nameArabic, m.phone, m.phone2, m.qid].filter(Boolean).join(' ').toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -9895,7 +10171,7 @@ PAGES.enrolled = (main) => {
     return rows.filter(r => {
       if (filter.search) {
         const q = filter.search.toLowerCase();
-        const hay = [r.m.name, r.m.nameArabic, r.m.phone, r.m.qid].filter(Boolean).join(' ').toLowerCase();
+        const hay = [r.m.name, r.m.nameArabic, r.m.phone, r.m.phone2, r.m.qid].filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(q)) return false;
       }
       if (filter.sport !== 'all' && r.sport !== filter.sport) return false;
@@ -10587,7 +10863,10 @@ PAGES.reports = (main) => {
     const d = compute();
     const allRevCats = Object.entries(d.revByCat).sort((a, b) => b[1] - a[1]);
     const coachRows = state.coaches.map(c => {
-      const rev = d.invs.filter(i => i.coachId === c.id).reduce((a, i) => a + i.amount, 0);
+      const rev = d.invs.reduce((a, i) => {
+        const lis = (Array.isArray(i.lineItems) && i.lineItems.length) ? i.lineItems : [{ coachId: i.coachId, price: i.amount || 0 }];
+        return a + lis.filter(li => li.coachId === c.id).reduce((s, li) => s + (li.price || 0), 0);
+      }, 0);
       return { name: c.name, rev, comm: rev * (c.rate || 0) / 100, rate: c.rate || 0 };
     }).filter(c => c.rev > 0).sort((a, b) => b.rev - a.rev);
 
