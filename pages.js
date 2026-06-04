@@ -660,9 +660,16 @@ PAGES.members = (main) => {
       if (m.deleted && f.status !== 'Archived') return false;
       if (!m.deleted && f.status === 'Archived') return false;
       if (f.search) {
-        const q = f.search.toLowerCase();
+        const raw = f.search.trim();
+        const q = raw.toLowerCase();
         const hay = [m.name, m.nameArabic, m.phone, m.phone2, m.qid, m.email, m.nationality].filter(Boolean).join(' ').toLowerCase();
-        if (!hay.includes(q)) return false;
+        let hit = hay.includes(q);
+        if (!hit) {
+          // Phone-aware fallback: match by digits, ignoring spaces and +974.
+          const qDigits = raw.replace(/\D/g, '');
+          if (qDigits.length >= 4) hit = phoneSearchMatches(m.phone, qDigits) || phoneSearchMatches(m.phone2, qDigits);
+        }
+        if (!hit) return false;
       }
       if (f.status !== 'all' && f.status !== 'Archived' && memberStatus(m) !== f.status) return false;
       // Sport filter (multi-select): keep if the member is in ANY selected sport
@@ -2916,7 +2923,7 @@ PAGES.coaches = (main) => {
               <div class="avatar" style="width:32px;height:32px;font-size:11px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(c.name)}</div>
               <div>
                 <div class="font-bold" style="color:var(--blue)">${escapeHtml(c.name)}</div>
-                <div class="text-mute" style="font-size:10px">${c.sports.join(' · ')}</div>
+                <div class="text-mute" style="font-size:10px">${(c.sports || []).join(' · ')}</div>
               </div>
             </div>
           </td>
@@ -2977,7 +2984,7 @@ PAGES.coaches = (main) => {
             <div class="avatar" style="width:36px;height:36px;font-size:13px">${initials(c.name)}</div>
             <div style="flex:1">
               <div style="font-weight:700;font-size:14px">${escapeHtml(c.name)}</div>
-              <div class="text-mute" style="font-size:11px">${c.rate}% · ${c.sports[0]}</div>
+              <div class="text-mute" style="font-size:11px">${c.rate}% · ${(c.sports || [])[0] || '—'}</div>
             </div>
             <span class="badge ${isActive ? 'active' : 'expired'}" style="font-size:9px">${isActive ? 'Active' : 'Inactive'}</span>
           </div>
@@ -3674,6 +3681,18 @@ function generateLatestInvoice(onDone) {
         const primary = enrollments[0];
         const coach = state.coaches.find(c => c.id === primary.coachId);
         const mth = date.slice(0, 7);
+        // Guard: don't silently re-invoice the same member in the same month —
+        // a second Membership invoice would DOUBLE the coach's commission base.
+        const dupes = state.invoices.filter(inv =>
+          inv.customerId === m.id && inv.month === mth && (inv.category || 'Membership') === 'Membership');
+        if (dupes.length) {
+          const refs = dupes.map(i => i.ref || ('INV' + i.id)).join(', ');
+          if (!confirm(`⚠️ ${m.name} already has a membership invoice in ${fmtMonth(mth)} (${refs}).\n\n` +
+              `Creating another one will count their fee twice and double the coach's commission for ${fmtMonth(mth)}. ` +
+              `Create it anyway?`)) {
+            return;
+          }
+        }
         const newInv = {
           id: nextId(state.invoices),
           date,
@@ -4808,13 +4827,15 @@ window.deleteExpense = function(id) {
 //   { id, coachId, month, kind: 'advance'|'paid', amount?, paidDate?, note? }
 
 PAGES.salaries = (main) => {
-  let filter = { month: latestDataMonth() || currentMonth() };
+  let filter = { month: latestDataMonth() || currentMonth(), settleDate: null };
 
   function refresh() {
-    // Compute pay rows for every active coach/staff for the selected month
+    // Compute pay rows for every active coach/staff — either for the selected
+    // month, or (if a settlement date is set) up to and including that date.
+    const upto = filter.settleDate || null;
     const people = (state.coaches || [])
       .filter(c => isCoachActive(c))
-      .map(c => computeMonthlyPay(c.id, filter.month))
+      .map(c => upto ? computeMonthlyPay(c.id, null, upto) : computeMonthlyPay(c.id, filter.month))
       .filter(p => p) // skip any null
       // Sort: pending first, then by amount desc
       .sort((a, b) => {
@@ -4830,11 +4851,14 @@ PAGES.salaries = (main) => {
     $('#sal-tbody').innerHTML = people.length ? people.map(p => {
       const isStaff = p.role === 'staff';
       const breakdown = [];
-      if (p.fixed > 0) breakdown.push(`Fixed ${fmt(p.fixed)}`);
+      if (p.fixed > 0) breakdown.push(`Fixed ${fmt(p.fixed)}${p.uptoDate && p.fixedFull !== p.fixed ? ` (prorated from ${fmt(p.fixedFull)})` : ''}`);
       if (p.commissionRate > 0) {
         breakdown.push(`${p.commissionRate}% × ${fmt(p.commissionBase)} = ${fmt(p.commissionAmount)}`);
       }
       const breakdownStr = breakdown.join(' + ') || '—';
+      const pendingNote = (p.basis === 'attendance' && p.commissionPending > 0)
+        ? `<div style="color:var(--accent-2);margin-top:2px">⏳ ${fmt(p.commissionPending)} pending — paid as attended, or stays with the club if they leave</div>`
+        : '';
       const netNegative = p.net < 0;
       const grossNegative = p.gross < 0;
       const netColor = netNegative ? 'var(--red)' : 'var(--green)';
@@ -4843,9 +4867,9 @@ PAGES.salaries = (main) => {
         <tr>
           <td>
             <div class="font-bold">${escapeHtml(p.name)}${netNegative ? ' <span class="badge" style="background:rgba(242,96,96,.15);color:var(--red);font-size:9px;padding:1px 6px" title="Net pay is negative — admin should reconcile">⚠️ NEGATIVE</span>' : ''}</div>
-            <div class="text-mute" style="font-size:10px">${isStaff ? '👔 Staff' : '🥋 Coach'} · ${fmtMonth(p.month)}</div>
+            <div class="text-mute" style="font-size:10px">${isStaff ? '👔 Staff' : '🥋 Coach'} · ${p.uptoDate ? 'up to ' + fmtDate(p.uptoDate) : fmtMonth(p.month)}</div>
           </td>
-          <td class="text-mute" style="font-size:11px">${breakdownStr}</td>
+          <td class="text-mute" style="font-size:11px">${breakdownStr}${pendingNote}</td>
           <td class="text-right num font-bold" style="color:${grossColor}">${fmt(p.gross)}</td>
           <td class="text-right">
             <button class="btn ghost sm" onclick="recordAdvance(${p.coachId}, '${p.month}')" title="Record an advance">
@@ -4881,7 +4905,9 @@ PAGES.salaries = (main) => {
           <td colspan="2" class="text-mute" style="font-size:11px">${paidCount} of ${people.length} paid</td>
         </tr>` : '';
     }
-    $('#sal-count').textContent = `${people.length} active · ${fmtMoney(totalNet)} net payroll for ${fmtMonth(filter.month)} · ${paidCount} paid`;
+    $('#sal-count').textContent = filter.settleDate
+      ? `${people.length} active · ${fmtMoney(totalNet)} net · settlement up to ${fmtDate(filter.settleDate)} · ${paidCount} paid`
+      : `${people.length} active · ${fmtMoney(totalNet)} net payroll for ${fmtMonth(filter.month)} · ${paidCount} paid`;
   }
 
   // Generate the month list — include current and future so admin can pre-set
@@ -4907,10 +4933,13 @@ PAGES.salaries = (main) => {
       </div>
     </div>
     <div class="card">
-      <div class="filter-bar">
-        <select id="sal-month" class="btn ghost">
+      <div class="filter-bar" style="flex-wrap:wrap;align-items:center;gap:10px">
+        <select id="sal-month" class="btn ghost" ${filter.settleDate ? 'disabled style="opacity:.5"' : ''}>
           ${months.map(m => `<option value="${m}" ${filter.month === m ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
         </select>
+        <span style="font-size:12px;color:var(--text-mute)">or settle up to:</span>
+        <input type="date" id="sal-date" class="btn ghost" value="${filter.settleDate || ''}" title="Calculate pay up to this date — e.g. a coach's last working day. Clear it to go back to the whole month." />
+        <span id="sal-mode-note" style="font-size:11px;color:var(--accent-2);font-weight:600">${filter.settleDate ? '📅 Settlement — month up to ' + fmtDate(filter.settleDate) + ' only' : ''}</span>
       </div>
       <div class="table-wrap">
         <table>
@@ -4930,6 +4959,15 @@ PAGES.salaries = (main) => {
     </div>
   `;
   $('#sal-month').addEventListener('change', e => { filter.month = e.target.value; refresh(); });
+  const salDate = $('#sal-date');
+  if (salDate) salDate.addEventListener('change', e => {
+    filter.settleDate = e.target.value || null;
+    const sel = $('#sal-month');
+    if (sel) { sel.disabled = !!filter.settleDate; sel.style.opacity = filter.settleDate ? '.5' : ''; }
+    const note = $('#sal-mode-note');
+    if (note) note.textContent = filter.settleDate ? '📅 Settlement — month up to ' + fmtDate(filter.settleDate) + ' only' : '';
+    refresh();
+  });
   refresh();
 };
 
@@ -5199,7 +5237,7 @@ window.showRevenueDetail = function(coachId, monthKey) {
   const c = state.coaches.find(x => x.id === coachId);
   if (!c) return;
   // Gather every lineItem credited to this coach for the month
-  const lines = [];
+  let lines = [];
   for (const inv of state.invoices) {
     if (inv.month !== monthKey) continue;
     const cat = inv.category || 'Membership';
@@ -5224,6 +5262,19 @@ window.showRevenueDetail = function(coachId, monthKey) {
         invoiceDate: inv.date,
       });
     }
+  }
+
+  // Attendance basis: swap the invoice-derived rows for attendance-earned rows,
+  // and capture the pending (paid-but-not-yet-attended) breakdown.
+  const pay = computeMonthlyPay(coachId, monthKey);
+  let pendingLines = [];
+  if (pay && pay.basis === 'attendance' && pay.attendanceLines) {
+    lines = (pay.attendanceLines.lines || []).map(l => ({
+      memberName: l.memberName, sport: l.sport, price: l.amountBase,
+      isSwitch: l.kind === 'switch', kind: l.kind, classes: l.classes,
+      invoiceRef: '', invoiceDate: null,
+    }));
+    pendingLines = pay.attendanceLines.pendingLines || [];
   }
 
   showModal({
@@ -5258,6 +5309,29 @@ window.showRevenueDetail = function(coachId, monthKey) {
       <div style="margin-top:14px;padding:12px;background:var(--surface-2);border-radius:8px;font-size:13px">
         <div style="display:flex;justify-content:space-between;padding:2px 0"><span class="text-mute">${lines.length} line${lines.length === 1 ? '' : 's'} · Commission base</span><span style="font-family:monospace;font-weight:700">${fmt(lines.reduce((s, l) => s + l.price, 0))} QAR</span></div>
       </div>
+      ${pendingLines.length ? `
+        <div style="margin-top:14px">
+          <div style="font-weight:700;font-size:13px;margin-bottom:6px">⏳ Pending — paid but not yet attended</div>
+          <div class="text-mute" style="font-size:11px;margin-bottom:8px">These classes are already paid for. ${escapeHtml(c.name)} earns them as the member attends, or as a true-up when the membership ends — they'll show up in a future month's pay, on top of that month's commission.</div>
+          <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
+            <table style="width:100%;font-size:13px">
+              <thead style="background:var(--surface-2)"><tr>
+                <th style="text-align:left;padding:8px">Member</th><th style="text-align:left;padding:8px">Sport</th>
+                <th style="text-align:right;padding:8px">Classes left</th><th style="text-align:right;padding:8px">Pending (QAR)</th>
+              </tr></thead>
+              <tbody>
+                ${pendingLines.map(p => `<tr>
+                  <td style="padding:6px 8px;border-top:1px solid var(--border)">${escapeHtml(p.memberName)}</td>
+                  <td style="padding:6px 8px;border-top:1px solid var(--border)">${escapeHtml(p.sport || '—')}</td>
+                  <td style="padding:6px 8px;border-top:1px solid var(--border);text-align:right">${p.classes}${p.total ? ' / ' + p.total : ''}</td>
+                  <td style="padding:6px 8px;border-top:1px solid var(--border);text-align:right;font-family:monospace">${fmt(p.amountBase * pay.commissionRate / 100)}</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+          <div style="margin-top:8px;padding:10px 12px;background:rgba(245,158,11,.1);border-radius:8px;display:flex;justify-content:space-between;font-size:13px;font-weight:700"><span>Total pending for ${escapeHtml(c.name)}</span><span style="font-family:monospace">${fmt(pay.commissionPending)} QAR</span></div>
+        </div>
+      ` : ''}
     `,
     actions: [
       { label: 'Close', class: 'btn ghost', onclick: closeModal },
@@ -5272,7 +5346,7 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
   if (!c || !pay) return;
 
   // Re-gather lines (same logic as showRevenueDetail)
-  const lines = [];
+  let lines = [];
   for (const inv of state.invoices) {
     if (inv.month !== monthKey) continue;
     if ((inv.category || 'Membership') !== 'Membership') continue;
@@ -5285,6 +5359,12 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
       if (li.coachId !== coachId) continue;
       // Summer Camp generates no coach commission — skip
       if (li.sport === SUMMER_CAMP) continue;
+      // Link this invoice line to its subscription row (for period / attendance / status)
+      let sub = null;
+      if (mem) {
+        sub = (mem.subscriptions || []).find(s => s.invoiceNumber === inv.ref && s.activity === li.sport)
+           || (mem.subscriptions || []).find(s => s.activity === li.sport && s.coachId === li.coachId);
+      }
       lines.push({
         memberName: mem ? mem.name : (inv.customerName || '— deleted member —'),
         sport: li.sport,
@@ -5292,8 +5372,24 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
         isSwitch: !!inv.switchCredit,
         invoiceRef: inv.ref || `INV${inv.id}`,
         invoiceDate: inv.date,
+        start: sub?.start || null,
+        end: sub?.end || null,
+        attended: mem ? attendedClassesFor(mem, li.sport) : (sub?.attendedClasses || 0),
+        total: sub?.totalClasses || null,
+        status: mem ? memberStatus(mem) : '—',
       });
     }
+  }
+
+  // Attendance basis: use attendance-earned rows + capture pending breakdown.
+  let pendingLines = [];
+  if (pay && pay.basis === 'attendance' && pay.attendanceLines) {
+    lines = (pay.attendanceLines.lines || []).map(l => ({
+      memberName: l.memberName, sport: l.sport, price: l.amountBase,
+      isSwitch: l.kind === 'switch', invoiceRef: l.kind === 'trueup' ? 'expiry true-up' : (l.kind === 'attended' ? (l.classes + ' class' + (l.classes === 1 ? '' : 'es')) : ''),
+      invoiceDate: null, start: l.start, end: l.end, attended: l.attended, total: l.total, status: l.status,
+    }));
+    pendingLines = pay.attendanceLines.pendingLines || [];
   }
 
   // Group by sport for the summary
@@ -5361,7 +5457,10 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
             <th>#</th>
             <th>Member</th>
             <th>Sport</th>
-            <th>Invoice</th>
+            <th>Start</th>
+            <th>End</th>
+            <th>Classes</th>
+            <th>Status</th>
             <th style="text-align:right">Amount (QAR)</th>
           </tr>
         </thead>
@@ -5369,19 +5468,41 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
           ${lines.map((l, i) => `
             <tr>
               <td style="color:#999">${i + 1}</td>
-              <td>${escapeHtml(l.memberName)}${l.isSwitch ? '<span class="badge">SWITCH</span>' : ''}</td>
+              <td>${escapeHtml(l.memberName)}${l.isSwitch ? '<span class="badge">SWITCH</span>' : ''}<div style="color:#999;font-size:10px">${escapeHtml(l.invoiceRef || '')}${l.invoiceDate ? ' · ' + fmtDate(l.invoiceDate) : ''}</div></td>
               <td>${escapeHtml(l.sport || '—')}</td>
-              <td style="color:#999;font-size:11px">${escapeHtml(l.invoiceRef)} · ${fmtDate(l.invoiceDate)}</td>
+              <td style="font-size:11px">${l.start ? fmtDate(l.start) : '—'}</td>
+              <td style="font-size:11px">${l.end ? fmtDate(l.end) : '—'}</td>
+              <td style="font-size:11px">${l.attended != null ? l.attended : 0}${l.total ? ' / ' + l.total : ''}</td>
+              <td style="font-size:11px">${escapeHtml(l.status || '—')}</td>
               <td class="num ${l.price < 0 ? 'neg' : ''}">${fmt(l.price)}</td>
             </tr>
           `).join('')}
           <tr style="background:#f5f5f7;font-weight:700">
-            <td colspan="4">Subtotal · Commission base</td>
+            <td colspan="7">Subtotal · Commission base</td>
             <td class="num">${fmt(lines.reduce((s, l) => s + l.price, 0))}</td>
           </tr>
         </tbody>
       </table>
       ` : '<div style="padding:14px;background:#f5f5f7;border-radius:6px;color:#666;text-align:center">No commission-generating revenue this month.</div>'}
+
+      ${pendingLines.length ? `
+      <h2>⏳ Pending — paid but not yet attended</h2>
+      <div style="font-size:11px;color:#666;margin-bottom:6px">Already paid for. ${escapeHtml(c.name)} earns these as the member attends, or as a true-up when the membership ends — they appear in a future month's pay on top of that month's commission.</div>
+      <table>
+        <thead><tr><th>Member</th><th>Sport</th><th>Start</th><th>End</th><th>Classes left</th><th style="text-align:right">Pending (QAR)</th></tr></thead>
+        <tbody>
+          ${pendingLines.map(p => `<tr>
+            <td>${escapeHtml(p.memberName)}</td>
+            <td>${escapeHtml(p.sport || '—')}</td>
+            <td style="font-size:11px">${p.start ? fmtDate(p.start) : '—'}</td>
+            <td style="font-size:11px">${p.end ? fmtDate(p.end) : '—'}</td>
+            <td>${p.classes}${p.total ? ' / ' + p.total : ''}</td>
+            <td class="num">${fmt(p.amountBase * pay.commissionRate / 100)}</td>
+          </tr>`).join('')}
+          <tr style="background:#fef3c7;font-weight:700"><td colspan="5">Total pending</td><td class="num">${fmt(pay.commissionPending)}</td></tr>
+        </tbody>
+      </table>
+      ` : ''}
 
       <h2>Commission Calculation</h2>
       ${pay.fixed > 0 ? `<div class="row"><span>Fixed monthly salary</span><span style="font-family:monospace">${fmt(pay.fixed)} QAR</span></div>` : ''}
@@ -6695,6 +6816,16 @@ PAGES.settings = (main) => {
 
     <div class="card">
       <div class="card-header"><div><div class="card-title">Coach Commission Rates</div><div class="card-subtitle">Commission is calculated as this % of each coach's total paid amount (subscription value)</div></div></div>
+      <div style="background:var(--surface-2);border-radius:8px;padding:12px;margin-bottom:14px">
+        <label style="font-weight:600;font-size:13px;display:block;margin-bottom:6px">Commission basis</label>
+        <select id="pref-commbasis" style="min-width:300px">
+          <option value="payment" ${(cur.commissionBasis || 'payment') === 'payment' ? 'selected' : ''}>By payment — full fee counts in the month paid (current)</option>
+          <option value="attendance" ${cur.commissionBasis === 'attendance' ? 'selected' : ''}>By attendance — per class attended; the rest shows as pending</option>
+        </select>
+        <div class="text-mute" style="font-size:11px;margin-top:6px;line-height:1.5">
+          <b>By payment</b> is the original behaviour. <b>By attendance</b> pays each coach per class the member actually attends, in the month attended; paid-but-unattended classes appear as <b>pending</b> and pay out as they're attended or when the membership ends. Memberships with no class count and sport-switch credits stay on the payment basis. This changes how payroll is calculated from now on — it does <b>not</b> rewrite past payments. <b>Requires attendance to be marked each month.</b>
+        </div>
+      </div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Coach</th><th>Status</th><th style="width:160px">Commission rate (%)</th></tr></thead>
@@ -6870,9 +7001,14 @@ PAGES.settings = (main) => {
       const c = state.coaches.find(x => x.id === id);
       if (c && c.rate !== rate) { c.rate = rate; changed++; }
     });
+    if (!state.settings) state.settings = {};
+    const basisSel = $('#pref-commbasis');
+    const newBasis = basisSel && basisSel.value === 'attendance' ? 'attendance' : 'payment';
+    const basisChanged = state.settings.commissionBasis !== newBasis;
+    state.settings.commissionBasis = newBasis;
     save();
     render();
-    toast(changed ? `Updated commission for ${changed} coach${changed !== 1 ? 'es' : ''}` : 'No changes to save');
+    toast(changed || basisChanged ? `Saved${changed ? ` · ${changed} rate${changed !== 1 ? 's' : ''}` : ''}${basisChanged ? ` · basis: ${newBasis}` : ''}` : 'No changes to save');
   });
 
   // ── Expense categories management ─────────────────────────────
@@ -9962,7 +10098,7 @@ PAGES.attreport = (main) => {
             <div class="avatar" style="width:30px;height:30px;font-size:10px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(d.coach.name)}</div>
             <div>
               <div class="font-bold">${escapeHtml(d.coach.name)}</div>
-              <div class="text-mute" style="font-size:10px">${d.coach.sports.slice(0,2).join(' · ')}</div>
+              <div class="text-mute" style="font-size:10px">${(d.coach.sports || []).slice(0,2).join(' · ')}</div>
             </div>
           </div>
         </td>
