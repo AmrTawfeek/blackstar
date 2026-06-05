@@ -1224,6 +1224,34 @@ window.editMember = function(id) {
   if (m) showMemberForm({ ...m });
 };
 
+// Build the pre-filled stub for a duplicated member (pure → unit-testable).
+// Copies shared family/contact fields; blanks identity; carries no financials.
+function buildMemberDuplicateStub(src, newId) {
+  return {
+    id: newId,
+    name: '', nameArabic: '', qid: '', birthdate: '', level: '',
+    phone: src.phone || '',
+    phone2: src.phone2 || '',
+    email: src.email || '',
+    nationality: src.nationality || '',
+    joinDate: TODAY,
+    status: 'Active',
+    _duplicatedFrom: src.name || null,
+  };
+}
+
+// Duplicate a member's FAMILY/contact info into a fresh Add-Member form — handy
+// for siblings. Copies shared fields (phone, email, nationality, join date) but
+// blanks person-specific identity (name, QID, birthdate, level) and carries over
+// NO financial records (no enrollments, invoices, attendance, payments).
+window.duplicateMember = function(id) {
+  const src = state.members.find(x => x.id === id);
+  if (!src) return;
+  closeModal();
+  showMemberForm(buildMemberDuplicateStub(src, nextId(state.members)));
+  toast(`Copied contact info from ${src.name || 'member'} — enter the new name + sport`);
+};
+
 window.freezeMember = function(id) {
   const m = state.members.find(x => x.id === id);
   if (!m) return;
@@ -1690,8 +1718,9 @@ function showMemberForm(m) {
     window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', start: m.startDate || TODAY, validity: m.validity || DEFAULT_VALIDITY, paid: false }];
   }
   showModal({
-    title: isNew ? 'Add Member' : 'Edit Member',
+    title: isNew ? (m._duplicatedFrom ? `Add Member (copied from ${escapeHtml(m._duplicatedFrom)})` : 'Add Member') : 'Edit Member',
     body: `
+      ${m._duplicatedFrom ? `<div style="margin-bottom:12px;padding:9px 12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px;font-size:12px;color:var(--text-dim)">⧉ Contact info copied from <b>${escapeHtml(m._duplicatedFrom)}</b>. Enter this sibling's name, QID and sport — nothing financial was copied.</div>` : ''}
       <div style="margin-bottom:14px;padding:10px 12px;background:rgba(245,158,11,.08);border:1px dashed var(--accent-2);border-radius:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <button type="button" class="btn ghost sm" id="id-scan-btn" style="color:var(--accent-2);border:1px solid var(--accent-2);white-space:nowrap">📷 Scan Qatar ID</button>
         <input type="file" id="id-scan-file" accept="image/*" capture="environment" style="display:none" />
@@ -1755,7 +1784,10 @@ function showMemberForm(m) {
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
       { label: isNew ? 'Add' : 'Save', class: 'btn primary', onclick: () => {
         // ─── Validation ────────────────────────────────────────────
-        const nameEn = $('#f-name').value.trim();
+        let nameEn = $('#f-name').value.trim();
+        // Gently fix obviously-wrong casing (all-lowercase or ALL-UPPERCASE) to
+        // Title Case; leave intentional mixed-case (e.g. "McDonald") untouched.
+        if (nameEn && (nameEn === nameEn.toLowerCase() || nameEn === nameEn.toUpperCase())) nameEn = titleCaseName(nameEn);
         const nameAr = $('#f-name-ar').value.trim();
         const phoneInput = readPhoneInput('f-phone');
         const phone = phoneInput.phone;
@@ -1772,6 +1804,12 @@ function showMemberForm(m) {
         // 1. At least one name (English OR Arabic)
         if (!nameEn && !nameAr) {
           toast('Please enter a name (English or Arabic)', 'error');
+          ($('#f-name') || {}).focus?.();
+          return;
+        }
+        // 1b. At least a first AND last name (in English or Arabic)
+        if (!hasFirstAndLast(nameEn) && !hasFirstAndLast(nameAr)) {
+          toast('Please enter at least a first and last name', 'error');
           ($('#f-name') || {}).focus?.();
           return;
         }
@@ -1949,6 +1987,7 @@ function showMemberForm(m) {
 
         if (isNew) {
           state.members.push(data);
+          pushRecentMember(data.id);
           audit('member.create', `member:${data.id}`,
             `Added ${data.name || data.nameArabic}`,
             { memberId: data.id, name: data.name, nameArabic: data.nameArabic, phone: data.phone, sports: enrollments.map(e => e.sport) });
@@ -2151,6 +2190,7 @@ function showMemberForm(m) {
         const subEnds = subs.map(s => s.end).filter(Boolean).sort();
         if (subEnds.length) data.expiryDate = subEnds[subEnds.length - 1];
         state.members[idx] = Object.assign({}, existing, data);
+        pushRecentMember(data.id);
         audit('member.update', `member:${data.id}`,
           `Updated ${data.name || data.nameArabic}`,
           { memberId: data.id, name: data.name, nameArabic: data.nameArabic, phone: data.phone });
@@ -2198,6 +2238,7 @@ function showNewMemberInvoiceModal(invoiceId, customerName) {
     `,
     actions: [
       { label: 'Done', class: 'btn ghost', onclick: closeModal },
+      { label: '✏️ Edit member', class: 'btn ghost', onclick: () => { closeModal(); if (inv && inv.customerId) editMember(inv.customerId); } },
       { label: '💬 Send to WhatsApp', class: 'btn ghost', onclick: () => { closeModal(); sendInvoiceWhatsApp(invoiceId); } },
       { label: '⬇ Export Invoice PDF', class: 'btn primary', onclick: () => { closeModal(); printInvoicePDF(invoiceId); } },
     ],
@@ -2475,6 +2516,232 @@ window.editCoach = function(id, defaultRole) {
 // ═══════════════════════════════════════════════════════════════════
 // SCHEDULE — visual weekly class grid with drag-and-drop editing + PNG export
 // ═══════════════════════════════════════════════════════════════════
+PAGES.campschedule = (main) => {
+  if (!state.campSchedule || !state.campSchedule.days) state.campSchedule = defaultCampSchedule();
+  const cs = state.campSchedule;
+  const groups = CAMP_GROUPS;
+
+  const dayNum = (k) => CAMP_DAYS.indexOf(k) + 1;
+  const isAdmin = currentRole() === 'admin';
+  // Default the date to today if within the camp window, else the camp start.
+  let selDate = window.__campDate || ((TODAY >= cs.startDate && TODAY <= cs.endDate) ? TODAY : cs.startDate);
+  let selDay = campDayKeyForDate(selDate) || (window.__campDay && cs.days[window.__campDay] ? window.__campDay : 'sunday');
+  let selOff = !!window.__campDate && campDayKeyForDate(window.__campDate) === null;   // Fri/Sat date selected
+  window.__campDay = selDay; window.__campDate = selDate;
+  const firstDateForDay = (dayKey) => {
+    let d = cs.startDate;
+    for (let i = 0; i < 21 && d <= cs.endDate; i++) { if (campDayKeyForDate(d) === dayKey) return d; d = addDays(d, 1); }
+    return null;
+  };
+
+  function cellHtml(dayKey, rowIdx, g) {
+    const cell = ((cs.days[dayKey] || [])[rowIdx] || {})[g.key] || { activity: '', coach: '' };
+    const act = cell.activity || '';
+    return `<td class="camp-cell" data-cc="${dayKey}|${rowIdx}|${g.key}" ${isAdmin ? 'draggable="true"' : ''} title="${isAdmin ? 'Click to edit · drag to move' : 'Click to edit'}"
+      style="padding:14px;border:1px solid var(--border);cursor:pointer;vertical-align:middle;background:var(--surface)">
+      ${act
+        ? `<div style="font-weight:800;color:${g.color};font-size:14px;line-height:1.25">${campActivityIcon(act)} ${escapeHtml(act)}</div>${cell.coach ? `<div style="font-size:11px;color:var(--text-mute);margin-top:3px">(${escapeHtml(cell.coach)})</div>` : ''}`
+        : '<div style="color:var(--text-mute);font-size:12px">— tap to add —</div>'}
+    </td>`;
+  }
+
+  function buildGrid() {
+    if (selOff) {
+      return `<div style="padding:52px 20px;text-align:center">
+        <div style="font-size:46px">🌙</div>
+        <div style="font-size:21px;font-weight:800;margin-top:10px">Day Off</div>
+        <div class="text-mute" style="font-size:13px;margin-top:6px">${escapeHtml(fmtDate(window.__campDate))} — the camp runs <b>Sunday to Thursday</b>, so there are no classes on Friday or Saturday.</div>
+      </div>`;
+    }
+    let actIdx = -1;
+    const rows = CAMP_SLOTS.map(slot => {
+      const timeCell = `<td style="padding:10px 12px;border:1px solid var(--border);font-weight:700;font-size:12px;white-space:nowrap;background:var(--surface-2)">${slot.time}</td>`;
+      if (slot.type === 'break') {
+        return `<tr>${timeCell}<td colspan="3" style="padding:12px;border:1px solid var(--border);text-align:center;font-weight:800;letter-spacing:.5px;background:${slot.bg || 'var(--surface-2)'}">${escapeHtml(slot.label)}</td></tr>`;
+      }
+      actIdx++;
+      const ri = actIdx;
+      return `<tr>${timeCell}${groups.map(g => cellHtml(selDay, ri, g)).join('')}</tr>`;
+    }).join('');
+    return `<table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr>
+        <th style="padding:12px;border:1px solid var(--border);background:var(--surface-2);width:120px">TIME</th>
+        ${groups.map(g => `<th style="padding:12px;border:1px solid var(--border);background:${g.color};color:#fff;font-weight:800;letter-spacing:.4px">${escapeHtml(g.label.toUpperCase())}</th>`).join('')}
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>☀️ Summer Camp Schedule</h1>
+        <div class="subtitle">Black Stars Academy · Sun–Thu · ${escapeHtml(fmtDate(cs.startDate))} – ${escapeHtml(fmtDate(cs.endDate))}</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" id="camp-print" title="Print the selected day (or save as PDF from the print dialog)">🖨 Print</button>
+        <button class="btn ghost" id="camp-reset" title="Restore the original camp schedule for all five days">↺ Reset to default</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <label style="font-weight:600;font-size:13px">Day</label>
+      <select id="camp-day" class="btn ghost" style="font-weight:600">
+        ${CAMP_DAYS.map(k => `<option value="${k}" ${k === selDay ? 'selected' : ''}>${CAMP_DAY_LABELS[k]} · Day ${dayNum(k)}</option>`).join('')}
+      </select>
+      <span style="width:1px;height:22px;background:var(--border)"></span>
+      <label style="font-weight:600;font-size:13px">Date</label>
+      <input type="date" id="camp-date" class="btn ghost" value="${selDate}" min="${cs.startDate}" max="${cs.endDate}" style="font-weight:600" />
+      <button class="btn ghost" id="camp-today" title="Jump to today's date">📅 Today</button>
+      <span id="camp-datelabel" class="text-mute" style="font-size:12px"></span>
+      <span class="text-mute" style="font-size:12px;margin-left:auto">${isAdmin ? 'Click to edit · drag a class to move it.' : 'Click any class to edit it.'}</span>
+    </div>
+
+    <div class="card" id="camp-grid" style="overflow:auto">${buildGrid()}</div>
+  `;
+
+  function rerender() { const g = $('#camp-grid'); if (g) g.innerHTML = buildGrid(); wireCells(); }
+  function wireCells() {
+    $$('#camp-grid .camp-cell').forEach(td => {
+      td.addEventListener('click', () => {
+        const parts = (td.getAttribute('data-cc') || '').split('|');
+        editCampCell(parts[0], parseInt(parts[1]), parts[2]);
+      });
+      if (isAdmin) {
+        td.addEventListener('dragstart', e => { e.dataTransfer.setData('text/cc', td.getAttribute('data-cc') || ''); td.style.opacity = '.4'; });
+        td.addEventListener('dragend', () => { td.style.opacity = ''; });
+        td.addEventListener('dragover', e => e.preventDefault());
+        td.addEventListener('drop', e => {
+          e.preventDefault();
+          const from = e.dataTransfer.getData('text/cc');
+          const to = td.getAttribute('data-cc');
+          if (from && to && from !== to) swapCampCells(from, to);
+        });
+      }
+    });
+  }
+  function swapCampCells(fromCC, toCC) {
+    const f = fromCC.split('|'), t = toCC.split('|');
+    const fday = f[0], fr = parseInt(f[1]), fg = f[2];
+    const tday = t[0], tr = parseInt(t[1]), tg = t[2];
+    if (!cs.days[fday] || !cs.days[tday]) return;
+    if (!cs.days[fday][fr]) cs.days[fday][fr] = {};
+    if (!cs.days[tday][tr]) cs.days[tday][tr] = {};
+    const a = cs.days[fday][fr][fg] || { activity: '', coach: '' };
+    const b = cs.days[tday][tr][tg] || { activity: '', coach: '' };
+    cs.days[fday][fr][fg] = b;
+    cs.days[tday][tr][tg] = a;
+    save(); rerender(); toast('Class moved');
+  }
+  function editCampCell(dayKey, rowIdx, gkey) {
+    const g = groups.find(x => x.key === gkey);
+    if (!cs.days[dayKey][rowIdx]) cs.days[dayKey][rowIdx] = {};
+    const cell = cs.days[dayKey][rowIdx][gkey] || { activity: '', coach: '' };
+    const coachNames = (state.coaches || []).map(c => c.name).filter(Boolean);
+    const curCoach = cell.coach || '';
+    const coachOpts = ['<option value="">— none —</option>']
+      .concat(coachNames.map(n => `<option ${n === curCoach ? 'selected' : ''}>${escapeHtml(n)}</option>`));
+    if (curCoach && !coachNames.includes(curCoach)) coachOpts.splice(1, 0, `<option selected>${escapeHtml(curCoach)}</option>`);
+    showModal({
+      title: `Edit · ${CAMP_DAY_LABELS[dayKey]} · ${g ? g.label : gkey}`,
+      body: `
+        <div class="field"><label>Activity</label><input id="cc-act" value="${escapeHtml(cell.activity || '')}" placeholder="e.g. Karate" /></div>
+        <div class="field"><label>Coach (optional)</label><select id="cc-coach">${coachOpts.join('')}</select></div>
+      `,
+      actions: [
+        { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+        { label: 'Clear', class: 'btn ghost', onclick: () => { cs.days[dayKey][rowIdx][gkey] = { activity: '', coach: '' }; save(); closeModal(); rerender(); } },
+        { label: 'Save', class: 'btn primary', onclick: () => {
+            cs.days[dayKey][rowIdx][gkey] = { activity: ($('#cc-act').value || '').trim(), coach: ($('#cc-coach').value || '').trim() };
+            save(); closeModal(); rerender(); toast('Class updated');
+          } },
+      ],
+    });
+  }
+
+  function updateDateLabel() {
+    const el = $('#camp-datelabel'); if (!el) return;
+    const d = window.__campDate;
+    const k = d ? campDayKeyForDate(d) : null;
+    if (!d) { el.textContent = ''; return; }
+    el.textContent = k ? `→ ${CAMP_DAY_LABELS[k]} · Day ${dayNum(k)}` : `→ ${fmtDate(d)} is an off day (Fri/Sat)`;
+    el.style.color = k ? 'var(--text-mute)' : 'var(--accent)';
+  }
+
+  function buildPrintHtml(dayKey, dateLabel) {
+    const head = groups.map(g => `<th style="padding:10px;border:1px solid #ccc;background:${g.color};color:#fff;font-weight:800;letter-spacing:.4px">${escapeHtml(g.label.toUpperCase())}</th>`).join('');
+    let ai = -1;
+    const rows = CAMP_SLOTS.map(slot => {
+      const time = `<td style="padding:8px 10px;border:1px solid #ccc;font-weight:700;font-size:12px;white-space:nowrap;background:#f4f4f6">${slot.time}</td>`;
+      if (slot.type === 'break') {
+        const bg = (slot.label || '').includes('Breakfast') ? '#fdf0c8' : (slot.label || '').includes('Prayer') ? '#dff3e1' : '#eceef0';
+        return `<tr>${time}<td colspan="3" style="padding:10px;border:1px solid #ccc;text-align:center;font-weight:800;letter-spacing:.5px;background:${bg}">${escapeHtml(slot.label)}</td></tr>`;
+      }
+      ai++; const ri = ai;
+      const cells = groups.map(g => {
+        const cell = ((cs.days[dayKey] || [])[ri] || {})[g.key] || { activity: '', coach: '' };
+        return `<td style="padding:12px;border:1px solid #ccc;background:#fff;vertical-align:middle">${cell.activity ? `<div style="font-weight:800;color:${g.color};font-size:14px">${campActivityIcon(cell.activity)} ${escapeHtml(cell.activity)}</div>${cell.coach ? `<div style="font-size:11px;color:#777;margin-top:2px">(${escapeHtml(cell.coach)})</div>` : ''}` : ''}</td>`;
+      }).join('');
+      return `<tr>${time}${cells}</tr>`;
+    }).join('');
+    return `<div style="text-align:center;margin-bottom:14px">
+        <div style="font-size:22px;font-weight:900;color:#f26060">★ BLACK STARS ACADEMY</div>
+        <div style="font-size:16px;font-weight:800;margin-top:2px">SUMMER CAMP SCHEDULE</div>
+        <div style="font-size:13px;color:#444;margin-top:4px">${escapeHtml(dateLabel)}</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;font-family:Arial,sans-serif">
+        <thead><tr><th style="padding:10px;border:1px solid #ccc;background:#f4f4f6;width:110px">TIME</th>${head}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+  function printCamp() {
+    const dateLabel = `${CAMP_DAY_LABELS[selDay]} · Day ${dayNum(selDay)}${window.__campDate ? ' · ' + fmtDate(window.__campDate) : ''} · Camp ${fmtDate(cs.startDate)} – ${fmtDate(cs.endDate)}`;
+    const w = window.open('', '_blank');
+    if (!w) { toast('Allow pop-ups to print', 'error'); return; }
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Summer Camp — ${escapeHtml(CAMP_DAY_LABELS[selDay])}</title><style>@page{size:landscape;margin:12mm}body{font-family:Arial,sans-serif;padding:10px;color:#111}</style></head><body onload="window.print()">${buildPrintHtml(selDay, dateLabel)}</body></html>`);
+    w.document.close();
+  }
+
+  const daySel = $('#camp-day');
+  if (daySel) daySel.addEventListener('change', e => {
+    selOff = false;
+    selDay = e.target.value; window.__campDay = selDay;
+    const d = firstDateForDay(selDay);
+    if (d) { window.__campDate = d; const di = $('#camp-date'); if (di) di.value = d; }
+    updateDateLabel(); rerender();
+  });
+  const dateInp = $('#camp-date');
+  if (dateInp) dateInp.addEventListener('change', e => {
+    const v = e.target.value; if (!v) return;
+    window.__campDate = v;
+    const k = campDayKeyForDate(v);
+    selOff = !k;
+    if (k) { selDay = k; window.__campDay = k; const ds = $('#camp-day'); if (ds) ds.value = k; }
+    rerender(); updateDateLabel();
+  });
+  const todayBtn = $('#camp-today');
+  if (todayBtn) todayBtn.addEventListener('click', () => {
+    const di = $('#camp-date'); if (di) di.value = TODAY;
+    window.__campDate = TODAY;
+    const k = campDayKeyForDate(TODAY);
+    selOff = !k;
+    if (k) { selDay = k; window.__campDay = k; const ds = $('#camp-day'); if (ds) ds.value = k; }
+    rerender(); updateDateLabel();
+    if (!k) toast('Today is an off day (Fri/Sat) — Day Off', 'info');
+  });
+  const printBtn = $('#camp-print');
+  if (printBtn) printBtn.addEventListener('click', printCamp);
+
+  const resetBtn = $('#camp-reset');
+  if (resetBtn) resetBtn.addEventListener('click', () => {
+    if (!confirm('Reset the Summer Camp schedule for all five days back to the original?')) return;
+    state.campSchedule = defaultCampSchedule();
+    save(); toast('Summer Camp schedule reset'); navigate('campschedule');
+  });
+  wireCells();
+  updateDateLabel();
+};
+
 PAGES.schedule = (main) => {
   const DAYS = [
     { key: 'sat', label: 'SATURDAY' },
@@ -2521,6 +2788,45 @@ PAGES.schedule = (main) => {
     return true;
   }
 
+  // Hover popover: show a class's top-10 most active members.
+  function schHoverPop() {
+    let p = document.getElementById('sch-hover-pop');
+    if (!p) {
+      p = document.createElement('div');
+      p.id = 'sch-hover-pop';
+      p.style.cssText = 'position:fixed;z-index:9999;width:240px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.45);padding:11px 13px;font-size:12px;pointer-events:none;display:none';
+      document.body.appendChild(p);
+    }
+    return p;
+  }
+  function showSchHover(block) {
+    const sport = block.getAttribute('data-sport');
+    if (!sport) return;
+    const cidRaw = block.getAttribute('data-coachid');
+    const coachId = cidRaw === '' || cidRaw == null ? null : parseInt(cidRaw);
+    const top = topActiveMembersForClass(sport, coachId, 10);
+    const coach = state.coaches.find(c => c.id === coachId);
+    const pop = schHoverPop();
+    pop.innerHTML =
+      `<div style="font-weight:700;margin-bottom:2px">${sportEmoji(sport)} ${escapeHtml(sport)}${coach ? ' · ' + escapeHtml(coach.name) : ''}</div>` +
+      `<div style="color:var(--text-mute);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:7px">Top ${top.length || 0} most active</div>` +
+      (top.length
+        ? top.map((m, i) => `<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${i + 1}. ${escapeHtml(m.name)}</span><span style="font-family:monospace;color:var(--text-dim);flex-shrink:0">${m.attended}</span></div>`).join('')
+        : '<div style="color:var(--text-mute)">No enrolled members yet</div>');
+    pop.style.display = 'block';
+    const r = block.getBoundingClientRect();
+    const pw = pop.offsetWidth, ph = pop.offsetHeight;
+    let left = r.right + 8, top2 = r.top;
+    if (left + pw > window.innerWidth - 8) left = Math.max(8, r.left - pw - 8);
+    if (top2 + ph > window.innerHeight - 8) top2 = Math.max(8, window.innerHeight - ph - 8);
+    pop.style.left = left + 'px';
+    pop.style.top = top2 + 'px';
+  }
+  function hideSchHover() {
+    const p = document.getElementById('sch-hover-pop');
+    if (p) p.style.display = 'none';
+  }
+
   function refresh() {
     // Build the grid
     let grid = '';
@@ -2540,7 +2846,7 @@ PAGES.schedule = (main) => {
         const items = cls.map(c => {
           const dimmed = !isFiltered(c);
           const coach = state.coaches.find(x => x.id === c.coachId);
-          return `<div class="sch-class" data-id="${c.id}" style="background:${sportColor(c.sport)};color:white;padding:6px 8px;border-radius:6px;font-size:11px;font-weight:600;margin:2px 0;display:flex;align-items:center;justify-content:space-between;gap:4px;cursor:pointer;opacity:${dimmed ? '0.18' : '1'};transition:opacity .15s">
+          return `<div class="sch-class" data-id="${c.id}" data-sport="${escapeHtml(c.sport)}" data-coachid="${c.coachId != null ? c.coachId : ''}" style="background:${sportColor(c.sport)};color:white;padding:6px 8px;border-radius:6px;font-size:11px;font-weight:600;margin:2px 0;display:flex;align-items:center;justify-content:space-between;gap:4px;cursor:pointer;opacity:${dimmed ? '0.18' : '1'};transition:opacity .15s">
             <div style="flex:1;min-width:0;overflow:hidden">
               <div style="display:flex;align-items:center;gap:4px"><span>${sportEmoji(c.sport)}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(c.sport)}</span></div>
               <div style="font-size:9px;font-weight:500;opacity:.95;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(coach ? coach.name : 'No coach')}</div>
@@ -2587,6 +2893,8 @@ PAGES.schedule = (main) => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
         const id = parseInt(btn.dataset.id);
+        const cls = state.schedule.find(c => c.id === id);
+        if (!confirm(`Remove this class${cls && cls.sport ? ' (' + cls.sport + ')' : ''} from the schedule?`)) return;
         state.schedule = state.schedule.filter(c => c.id !== id);
         save(); refresh();
       });
@@ -2600,6 +2908,8 @@ PAGES.schedule = (main) => {
         block.classList.add('dragging');
       });
       block.addEventListener('dragend', () => block.classList.remove('dragging'));
+      block.addEventListener('mouseenter', () => showSchHover(block));
+      block.addEventListener('mouseleave', hideSchHover);
       // Click on the body (not the × button) → change coach
       block.addEventListener('click', e => {
         if (e.target.classList.contains('sch-del')) return;
@@ -2641,6 +2951,7 @@ PAGES.schedule = (main) => {
       `,
       actions: [
         ...(existing ? [{ label: 'Remove class', class: 'btn ghost', onclick: () => {
+          if (!confirm('Remove this class from the schedule?')) return;
           state.schedule = state.schedule.filter(c => c.id !== existing.id);
           save(); closeModal(); refresh();
           toast('Class removed');
@@ -2679,7 +2990,6 @@ PAGES.schedule = (main) => {
     const rowHeights = SLOTS.map(slot => {
       let maxN = 0;
       DAYS.forEach(day => { maxN = Math.max(maxN, classesAt(day.key, slot.hour).filter(isFiltered).length); });
-      maxN = Math.min(maxN, 3);
       return Math.max(cellH, maxN * BLOCK_H + (maxN + 1) * GAP);
     });
     const bodyH = rowHeights.reduce((a, b) => a + b, 0);
@@ -2746,10 +3056,10 @@ PAGES.schedule = (main) => {
         ctx.strokeRect(x, y, cellW, rowH);
 
         if (cls.length) {
-          const n = Math.min(cls.length, 3);
+          const n = cls.length;
           const single = n === 1;
           const blockH = (rowH - (n + 1) * GAP) / n;
-          cls.slice(0, 3).forEach((c, ci) => {
+          cls.forEach((c, ci) => {
             const by = y + GAP + ci * (blockH + GAP);
             const bx = x + 6, bw = cellW - 12;
             // Colored block
@@ -3946,6 +4256,24 @@ async function scanIdCard(file) {
   }
 }
 
+// One-click cleanup: Title-case all member English names (anas madni → Anas Madni).
+window.fixNameCapitalization = function() {
+  const changes = [];
+  for (const m of state.members) {
+    if (!m.name) continue;
+    const fixed = titleCaseName(m.name);
+    if (fixed !== m.name) changes.push({ m, fixed });
+  }
+  if (!changes.length) { toast('All member names already look fine — nothing to change'); return; }
+  const samples = changes.slice(0, 6).map(c => `• ${c.m.name} → ${c.fixed}`).join('\n');
+  if (!confirm(`Fix capitalisation on ${changes.length} member name${changes.length === 1 ? '' : 's'}?\n\n${samples}${changes.length > 6 ? '\n…and ' + (changes.length - 6) + ' more' : ''}\n\nThis updates the saved English names. Back up first if unsure.`)) return;
+  changes.forEach(c => { c.m.name = c.fixed; });
+  if (typeof audit === 'function') audit('members.fix_names', 'members', `Title-cased ${changes.length} member name(s)`, { count: changes.length });
+  save();
+  render();
+  toast(`Fixed ${changes.length} name${changes.length === 1 ? '' : 's'}`);
+};
+
 window.recordPaymentUI = function(id) {
   const inv = state.invoices.find(i => i.id === id);
   if (!inv) return;
@@ -4774,7 +5102,12 @@ window.printInvoicePDF = function(id) {
 
   <div class="payment-info">
     <div>
-      <span class="payment-status">✓ Paid</span>
+      ${(() => {
+        const st = invoiceStatus(inv);
+        if (st === 'Paid') return `<span class="payment-status">✓ Paid</span>`;
+        if (st === 'Unpaid') return `<span class="payment-status" style="background:#fee2e2;color:#991b1b">● Unpaid — ${Number(invoiceBalance(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR due</span>`;
+        return `<span class="payment-status" style="background:#fef3c7;color:#92400e">◐ Partially paid — ${Number(invoiceBalance(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR due</span>`;
+      })()}
     </div>
     <div class="payment-method">
       Payment method: <strong>${escapeHtml(inv.method || 'Cash')}</strong>
@@ -5338,6 +5671,7 @@ window.recordAdvance = function(coachId, monthKey) {
 
 window.deleteAdvance = function(id) {
   const adv = (state.salaries || []).find(s => s.id === id);
+  if (!confirm(`Delete this advance${adv && adv.amount ? ' of ' + fmt(adv.amount) + ' QAR' : ''}? This cannot be undone.`)) return;
   state.salaries = (state.salaries || []).filter(s => s.id !== id);
   if (adv) {
     const c = state.coaches.find(x => x.id === adv.coachId);
@@ -5603,6 +5937,7 @@ window.showRevenueDetail = function(coachId, monthKey) {
               <th style="text-align:left;padding:8px">Member</th>
               <th style="text-align:left;padding:8px">Sport</th>
               <th style="text-align:right;padding:8px">Amount (QAR)</th>
+              <th style="text-align:right;padding:8px">Commission (${pay.commissionRate}%)</th>
             </tr>
           </thead>
           <tbody>
@@ -5614,13 +5949,15 @@ window.showRevenueDetail = function(coachId, monthKey) {
                 </td>
                 <td style="padding:6px 8px;border-top:1px solid var(--border)">${escapeHtml(l.sport || '—')}</td>
                 <td style="padding:6px 8px;border-top:1px solid var(--border);text-align:right;font-family:monospace;color:${l.price < 0 ? 'var(--red)' : 'var(--text)'}">${fmt(l.price)}</td>
+                <td style="padding:6px 8px;border-top:1px solid var(--border);text-align:right;font-family:monospace;font-weight:600;color:${l.price < 0 ? 'var(--red)' : 'var(--text)'}">${fmt(l.price * pay.commissionRate / 100)}</td>
               </tr>
-            `).join('') : '<tr><td colspan="3" style="padding:18px;text-align:center;color:var(--text-mute)">No commission-generating revenue this month</td></tr>'}
+            `).join('') : '<tr><td colspan="4" style="padding:18px;text-align:center;color:var(--text-mute)">No commission-generating revenue this month</td></tr>'}
           </tbody>
         </table>
       </div>
       <div style="margin-top:14px;padding:12px;background:var(--surface-2);border-radius:8px;font-size:13px">
         <div style="display:flex;justify-content:space-between;padding:2px 0"><span class="text-mute">${lines.length} line${lines.length === 1 ? '' : 's'} · Commission base</span><span style="font-family:monospace;font-weight:700">${fmt(lines.reduce((s, l) => s + l.price, 0))} QAR</span></div>
+        <div style="display:flex;justify-content:space-between;padding:2px 0"><span class="text-mute">Commission @ ${pay.commissionRate}%</span><span style="font-family:monospace;font-weight:700;color:var(--green)">${fmt(lines.reduce((s, l) => s + l.price, 0) * pay.commissionRate / 100)} QAR</span></div>
       </div>
       ${pendingLines.length ? `
         <div style="margin-top:14px">
@@ -5777,6 +6114,7 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
             <th>Classes</th>
             <th>Status</th>
             <th style="text-align:right">Amount (QAR)</th>
+            <th style="text-align:right">Commission (${pay.commissionRate}%)</th>
           </tr>
         </thead>
         <tbody>
@@ -5790,11 +6128,13 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
               <td style="font-size:11px">${l.attended != null ? l.attended : 0}${l.total ? ' / ' + l.total : ''}</td>
               <td style="font-size:11px">${escapeHtml(l.status || '—')}</td>
               <td class="num ${l.price < 0 ? 'neg' : ''}">${fmt(l.price)}</td>
+              <td class="num ${l.price < 0 ? 'neg' : ''}" style="font-weight:700">${fmt(l.price * pay.commissionRate / 100)}</td>
             </tr>
           `).join('')}
           <tr style="background:#f5f5f7;font-weight:700">
             <td colspan="7">Subtotal · Commission base</td>
             <td class="num">${fmt(lines.reduce((s, l) => s + l.price, 0))}</td>
+            <td class="num">${fmt(lines.reduce((s, l) => s + l.price, 0) * pay.commissionRate / 100)}</td>
           </tr>
         </tbody>
       </table>
@@ -7238,12 +7578,27 @@ PAGES.settings = (main) => {
     </div>
 
     <div class="card">
+      <div class="card-header"><div><div class="card-title">👥 Roles — preview</div><div class="card-subtitle">See the app the way each role would. This previews which screens each role gets.</div></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <label style="font-weight:600;font-size:13px;margin-right:4px">View as</label>
+        <button class="btn ${currentRole() === 'admin' ? 'primary' : 'ghost'}" onclick="setPreviewRole('admin')">🛡 Admin (full)</button>
+        <button class="btn ${currentRole() === 'coach' ? 'primary' : 'ghost'}" onclick="setPreviewRole('coach')">🥋 Coach</button>
+        <button class="btn ${currentRole() === 'student' ? 'primary' : 'ghost'}" onclick="setPreviewRole('student')">🎓 Student</button>
+      </div>
+      <div class="text-mute mt-3" style="font-size:12px;line-height:1.6">
+        <b>Admin</b> sees everything · <b>Coach</b> sees Dashboard, Schedule, Summer Camp, Attendance, Members, Trials, Salaries · <b>Student</b> sees Dashboard, Schedule, Summer Camp, Expiring. While previewing, an <b>Exit</b> button (top-left) returns you to Admin.<br>
+        ⚠️ This is a <b>view preview</b>, not a login or access lock — anyone using this browser can switch back to Admin. True per-role access control will come with online sign-in (Firebase Auth).
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-header"><div><div class="card-title">Data Management</div><div class="card-subtitle">Backup, restore, reset</div></div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn ghost" id="backup-btn">💾 Backup all data (JSON)</button>
         <button class="btn ghost" id="restore-btn">📂 Restore from backup</button>
         <button class="btn danger" id="reset-btn">🗑 Clear all data (start empty)</button>
         <button class="btn ghost" id="demo-btn" title="Replace your current data with the bundled demo data (207 sample members). For exploring features.">🧪 Load demo data</button>
+        <button class="btn ghost" id="fixnames-btn" title="Correct member English names to Title Case (anas madni → Anas Madni)">Aa Fix name capitalisation</button>
         <input type="file" id="restore-file" accept=".json" style="display:none" />
       </div>
       <div class="text-mute mt-3" style="font-size:12px">
@@ -7450,6 +7805,7 @@ window.downloadBackup = function() {
 };
 
   $('#backup-btn').addEventListener('click', () => window.downloadBackup());
+  $('#fixnames-btn')?.addEventListener('click', () => window.fixNameCapitalization());
 
   $('#restore-btn').addEventListener('click', () => $('#restore-file').click());
   $('#restore-file').addEventListener('change', async e => {
@@ -8300,6 +8656,7 @@ PAGES.history = (main) => {
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             <button class="btn ghost sm" onclick="editMember(${m.id})" title="Edit member">✏️ Edit</button>
+            <button class="btn ghost sm" onclick="duplicateMember(${m.id})" title="Create a new member copying this one's contact info (for siblings)">⧉ Duplicate</button>
             <button class="btn ghost sm" onclick="freezeMember(${m.id})" title="Freeze membership (pause and shift expiry)">❄️ Freeze</button>
             <button class="btn ghost sm" onclick="switchSport(${m.id})" title="Switch this member to a different sport/coach">🔄 Switch Sport</button>
             <button class="btn ghost sm" onclick="printIdCard(${m.id})" title="Print membership ID card">🪪 ID Card</button>
@@ -8932,21 +9289,18 @@ window.switchSport = function(memberId) {
 
         const attendedA = countAttendedUpTo(from.sport, switchDate);
         const totalClasses = parseInt(from.classes) || 0;
-        const price = parseFloat(from.price) || 0;
+        // Base the reconciliation on what coach A was ACTUALLY credited for this
+        // sport (the amount shown in the revenue report), NOT the nominal
+        // enrollment price — so a switch never claws back more than was paid.
+        const creditedBase = coachBaseForSport(m, from.sport, from.coachId);
+        const price = creditedBase > 0 ? creditedBase : (parseFloat(from.price) || 0);
         let aShare = 0, bShare = 0;
         if (skipReconciliation) {
           // No commission to split when Summer Camp is on either side
           aShare = 0; bShare = 0;
-        } else if (attendedA === 0) {
-          // Nobody earns — old coach didn't deliver any class, but the new
-          // coach hasn't either at switch time. Both shares stay 0.
-          aShare = 0; bShare = 0;
-        } else if (totalClasses > 0) {
-          aShare = Math.round((attendedA / totalClasses) * price * 100) / 100;
-          bShare = Math.round((price - aShare) * 100) / 100;
         } else {
-          // No planned class count → treat as full to NEW coach (degenerate)
-          aShare = 0; bShare = price;
+          const split = computeSwitchSplit(price, attendedA, totalClasses);
+          aShare = split.aShare; bShare = split.bShare;
         }
         const switchMonth = switchDate.slice(0, 7);
 
@@ -9575,9 +9929,10 @@ PAGES.expiring = (main) => {
         <td><span style="color:${color};font-weight:700">${label}</span></td>
         <td class="text-right" style="white-space:nowrap">
           ${phone
-            ? `<a class="btn primary sm" href="${reminderHref}" target="_blank" onclick="event.stopPropagation()" title="Send bilingual reminder via WhatsApp">💬 Remind</a>`
+            ? `<a class="btn primary sm" href="${reminderHref}" target="_blank" onclick="event.stopPropagation();markReminded(${m.id})" title="Send bilingual reminder via WhatsApp">💬 Remind</a>`
             : `<span class="text-mute" style="font-size:11px">No phone</span>`}
           <button class="btn ghost sm" onclick="event.stopPropagation();addRenewal(${m.id})" title="Record renewal">🔄 Renew</button>
+          <div id="rem-label-${m.id}" class="text-mute" style="font-size:10px;margin-top:4px;${m.lastRemindedAt ? '' : 'display:none'}">${m.lastRemindedAt ? '✓ Reminded ' + escapeHtml(fmtDateTime(m.lastRemindedAt)) : ''}</div>
         </td>
       </tr>
     `;
@@ -9854,14 +10209,16 @@ Waab, Doha`;
     upcoming.forEach(x => bucketOf.set(x.m.id, { kind: 'expiring', days: x.days }));
 
     let opened = 0, blocked = 0;
+    const nowIso = new Date().toISOString();
     for (const m of members) {
       const info = bucketOf.get(m.id) || { kind: 'expiring', days: 0 };
       const msg = buildReminderMessage(m, info.kind, info.days);
       const ph = m.phone.replace(/[^\d]/g, '');
       const url = `https://wa.me/${ph}?text=${encodeURIComponent(msg)}`;
       const w = window.open(url, '_blank');
-      if (w) opened++; else blocked++;
+      if (w) { opened++; m.lastRemindedAt = nowIso; } else blocked++;
     }
+    if (opened) save();
     if (blocked) {
       toast(`Opened ${opened} · ${blocked} blocked by browser. Allow popups to open the rest.`, 'error');
     } else {
@@ -10075,11 +10432,11 @@ function showTrialForm(t) {
     title: isNew ? 'Add Trial' : 'Edit Trial',
     body: `
       <div class="form-row">
-        <div class="field"><label>Name (English)</label><input id="t-name" value="${escapeHtml(t.name || '')}" /></div>
+        <div class="field"><label>Name (English) <span style="color:var(--accent)">*</span></label><input id="t-name" value="${escapeHtml(t.name || '')}" placeholder="First and last name" /></div>
         <div class="field"><label>Name (Arabic)</label><input id="t-name-ar" dir="rtl" value="${escapeHtml(t.nameArabic || '')}" /></div>
       </div>
       <div class="form-row">
-        ${phoneInputHtml('t-phone', t.phone, { label: 'Mobile' })}
+        ${phoneInputHtml('t-phone', t.phone, { label: 'Mobile *' })}
         <div class="field"><label>Email (optional)</label><input id="t-email" type="email" value="${escapeHtml(t.email || '')}" /></div>
       </div>
       <div class="form-row">
@@ -10117,6 +10474,11 @@ function showTrialForm(t) {
         const nameAr = $('#t-name-ar').value.trim();
         if (!name && !nameAr) {
           toast('Name required (English or Arabic)', 'error');
+          $('#t-name')?.focus();
+          return;
+        }
+        if (!hasFirstAndLast(name) && !hasFirstAndLast(nameAr)) {
+          toast('Please enter at least a first and last name', 'error');
           $('#t-name')?.focus();
           return;
         }
@@ -10175,6 +10537,25 @@ window.deleteTrial = function(id) {
   toast('Trial deleted');
 };
 
+// Switch the role-preview. Pure view layer (no security) until online sign-in exists.
+window.setPreviewRole = function(role) {
+  const r = (role === 'coach' || role === 'student') ? role : 'admin';
+  state.session = { role: r };
+  save();
+  navigate(roleHome(r));
+  toast(r === 'admin' ? 'Admin — full access' : 'Previewing as ' + (ROLE_LABELS[r] || r));
+};
+
+// Stamp when a member was last reminded (on clicking 💬 Remind) and show it inline.
+window.markReminded = function(id) {
+  const m = state.members.find(x => x.id === id);
+  if (!m) return;
+  m.lastRemindedAt = new Date().toISOString();
+  save();
+  const lbl = document.getElementById('rem-label-' + id);
+  if (lbl) { lbl.textContent = '✓ Reminded ' + fmtDateTime(m.lastRemindedAt); lbl.style.display = ''; }
+};
+
 window.convertTrialToMember = function(id) {
   const t = (state.trials || []).find(x => x.id === id);
   if (!t) return;
@@ -10207,6 +10588,16 @@ window.convertTrialToMember = function(id) {
     actions: [
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
       { label: '→ Create Member + Subscription', class: 'btn primary', onclick: () => {
+        // Don't create a duplicate: same mobile + same name = an existing member.
+        const existing = findDuplicateMember(t.phone, t.name, t.nameArabic, null);
+        if (existing) {
+          const note = existing.deleted ? ' (currently archived)' : '';
+          if (confirm(`"${existing.name || existing.nameArabic}" already exists with mobile ${existing.phone}${note}.\n\nThis trial looks like the same person — converting again would duplicate them.\n\nOK = open their profile (add the new sport there)\nCancel = go back`)) {
+            closeModal();
+            if (typeof viewMember === 'function') viewMember(existing.id);
+          }
+          return;
+        }
         const sport = $('#cv-sport').value;
         const coachId = parseInt($('#cv-coach').value);
         const classes = parseInt($('#cv-classes').value) || 0;
@@ -12216,15 +12607,10 @@ function buildMembersWorkbook() {
   return { sheets };
 }
 
-function buildAttendanceWorkbook() {
-  // Single sheet for the current month, in the NEW color-coded format:
+function buildAttendanceSheetForMonth(curMonth) {
+  // One sheet for a month, in the color-coded format:
   //   A=Coach, B=Member Name En, C=Member Name Ar, D=Mobile, E=Activity, F..=DAY 1..N
-  // Day cells are emitted with green (Y), red (N), or blank.
-  // Headers get yellow fill to match the live template style.
-  const curMonth = currentMonth();
   const dayCount = daysInMonth(curMonth);
-  // Header row — first day labelled "DAY 1", rest are just day numbers
-  // (matching the live template's appearance).
   const header = [
     { v: 'Coach',          s: 'yellow' },
     { v: 'Member Name En', s: 'yellow' },
@@ -12232,18 +12618,18 @@ function buildAttendanceWorkbook() {
     { v: 'Mobile',         s: 'yellow' },
     { v: 'Activity',       s: 'yellow' },
   ];
-  for (let d = 1; d <= dayCount; d++) {
-    header.push({ v: d === 1 ? 'DAY 1' : d, s: 'yellow' });
-  }
+  for (let d = 1; d <= dayCount; d++) header.push({ v: d === 1 ? 'DAY 1' : d, s: 'yellow' });
   const rows = [header];
 
   for (const m of state.members) {
-    const sportsWithMarks = new Set();
     const monthData = m.dailyAttendance?.[curMonth] || {};
-    for (const sp of Object.keys(monthData)) sportsWithMarks.add(sp);
+    const sportsWithMarks = new Set(Object.keys(monthData));
     const allSports = new Set([...sportsWithMarks, ...(m.enrollments || []).map(e => e.sport)].filter(Boolean));
     if (!allSports.size && m.sport) allSports.add(m.sport);
     for (const sport of allSports) {
+      // Only emit a row in this month's sheet if there are marks for the sport
+      // this month (keeps each month's tab to who actually attended that month).
+      if (!sportsWithMarks.has(sport)) continue;
       const enrollment = (m.enrollments || []).find(e => e.sport === sport);
       const sub = (m.subscriptions || []).find(s => s.activity === sport);
       const coach = state.coaches.find(c => c.id === (enrollment?.coachId || sub?.coachId || m.coachId));
@@ -12255,7 +12641,6 @@ function buildAttendanceWorkbook() {
         m.phone || null,
         (sport || '').toLowerCase(),
       ];
-      // Day columns: write fill color instead of letter so admin sees green/red
       for (let d = 1; d <= dayCount; d++) {
         const mark = marks[String(d)];
         if (mark === 'Y') row.push({ v: null, s: 'green' });
@@ -12267,8 +12652,26 @@ function buildAttendanceWorkbook() {
   }
   const [yy, mm] = curMonth.split('-');
   const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const sheetName = `${monthNames[parseInt(mm)-1]}-${yy}`;
-  return { sheets: [{ name: sheetName, rows }] };
+  return { name: `${monthNames[parseInt(mm)-1]}-${yy}`, rows };
+}
+
+// Every month that has attendance marks, sorted oldest→newest (one tab each).
+function attendanceMonthsWithData() {
+  const months = new Set();
+  for (const m of state.members) {
+    for (const mk of Object.keys(m.dailyAttendance || {})) {
+      const mo = m.dailyAttendance[mk];
+      // count the month only if at least one sport has at least one mark
+      if (mo && typeof mo === 'object' && Object.values(mo).some(sp => sp && Object.keys(sp).length)) months.add(mk);
+    }
+  }
+  return [...months].sort();
+}
+
+function buildAttendanceWorkbook() {
+  const months = attendanceMonthsWithData();
+  if (!months.length) return { sheets: [buildAttendanceSheetForMonth(currentMonth())] };
+  return { sheets: months.map(buildAttendanceSheetForMonth) };
 }
 
 function buildExpensesWorkbook() {
@@ -12344,7 +12747,7 @@ PAGES.dataexport = (main) => {
 
     <div class="row" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
       ${exportCard('members', '👥 Members', 'Multi-sheet, one tab per coach. ' + state.members.length + ' members, ' + state.coaches.length + ' coaches.')}
-      ${exportCard('attendance', '✓ Attendance', fmtMonth(currentMonth()) + ' day-by-day Y/N grid. ' + state.members.filter(m => m.dailyAttendance && Object.keys(m.dailyAttendance).length).length + ' members with marks.')}
+      ${exportCard('attendance', '✓ Attendance', 'All months · one tab each · day-by-day Y/N grid. ' + (attendanceMonthsWithData().length || 1) + ' month tab(s), ' + state.members.filter(m => m.dailyAttendance && Object.keys(m.dailyAttendance).length).length + ' members with marks.')}
       ${exportCard('expenses', '💸 Expenses', fmtMonth(currentMonth()) + ' expense ledger. ' + (state.expenses || []).filter(e => e.month === currentMonth()).length + ' items.')}
       ${exportCard('sales', '🛒 Sales', fmtMonth(currentMonth()) + ' product sales. ' + (state.sales || []).filter(s => !s.month || s.month === currentMonth()).length + ' records.')}
     </div>

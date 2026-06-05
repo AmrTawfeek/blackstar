@@ -1,5 +1,5 @@
 # Black Stars CRM
-Version 4.98.0 — Edit Invoice can correct the paid/due amount; club phone fixed.
+Version 5.4.0 — Summer Camp: Day Off for Fri/Sat, coach dropdown, activity icons, admin drag-and-drop.
 
 ## 1. Salaries — settle up to a date (NEW)
 On Salaries & Commissions, next to the month dropdown there's now an
@@ -37,7 +37,7 @@ modes. Run: node tests/logic-tests.js and node tests/render-tests.js.
 
 ## To load
 Replace files in C:\Users\kshawky\Desktop\CRM\blackstars-localhost\, refresh,
-confirm footer reads v4.98.0.
+confirm footer reads v5.4.0.
 
 ## 4.85.0 note — frozen vs expired (attendance basis)
 - Member still ACTIVE → coach paid per class attended; rest pending.
@@ -212,3 +212,139 @@ Two distinct flows, now both covered:
 - Also fixed: the club's own phone on the invoice now reads +974 3040 0103.
 - Tests: 195 assertions (incl. correcting paid 2400→1000 leaving 1400 due, Partial
   status, and corrected revenue).
+
+
+## 4.99.0 note — recall the member you just worked on
+There's a **🕐 Recent** row at the top of the Members page (click a name to open it).
+It used to fill only when you *viewed* a member, so one you just *added* didn't show.
+Now adding or editing a member also drops it into 🕐 Recent, and the
+"Member created" popup has an **✏️ Edit member** button to jump straight back in.
+Tests: 199 assertions (incl. recent-list dedupe, cap, newest-first, and dropping
+ids that no longer exist).
+
+
+## 4.99.1 note — name capitalization
+- Settings → Data Management → **Aa Fix name capitalisation** Title-cases every
+  member's English name in one click (anas madni → Anas Madni, ANAS MADNI → Anas
+  Madni). It previews a sample + count and asks to confirm before changing.
+- Going forward, saving a member gently fixes an obviously-wrong name (all-lowercase
+  or ALL-UPPERCASE) to Title Case, while leaving intentional mixed-case like
+  "McDonald" alone.
+- Handles hyphens and apostrophes (al-awad → Al-Awad, o'brien → O'Brien).
+- Tests: 206 assertions.
+
+
+## 4.99.2 note — sport-switch deduction + commission column
+- **Switch deduction fixed.** A sport/coach switch used to deduct based on the
+  nominal enrollment price, so it could claw back MORE than the member actually
+  paid the coach (e.g. −542 against a 375 line). It now bases the split on what
+  the coach was ACTUALLY credited for that sport, and deducts only the unearned
+  part = credited − (attended/planned × credited). The deduction can never exceed
+  what was credited. If 0 classes were attended, the whole amount transfers to the
+  new coach (instead of vanishing).
+- **Commission column** added to the Revenue Detail report (on-screen + PDF):
+  each line now shows its commission value (amount × rate) plus a commission total.
+- Tests: 215 assertions (incl. 375@1/12 → −343.75, cap ≤ credited, 0-attended,
+  all-attended, partial-payment base, and credited-base excluding switch credits).
+- NOTE: existing switch records are NOT recalculated. To correct an old switch made
+  before this fix, delete that switch and redo it.
+
+
+## 4.99.3 note — schedule export dropped the 4th class
+The schedule PNG export hard-capped each time-slot cell at 3 classes, so a cell with
+4+ stacked classes (e.g. Sunday 5–6PM) lost the extras in the exported image even
+though the app showed them. The export now renders every class in a cell and grows
+the row height to fit them, matching the on-screen schedule.
+NOTE: this is canvas-rendered, so it's verified by logic + needs a quick visual
+check in the browser after re-exporting.
+
+
+## 5.0.0 — Summer Camp Schedule page
+New left-nav page **☀️ Summer Camp** (under Main). Shows the camp timetable for a
+selected day via a **Sunday–Thursday dropdown** (Day 1–5), covering **14 Jun – 27 Aug 2026**.
+Three groups — Kids Stars (4-7), Boys Stars (7-12), Girls Stars (7-12) — across the
+day's time slots, with the Breakfast & Break, Prayer Break, and Dismissal rows.
+All five days are seeded from the published plan (Karate, Swimming, Art, Taekwondo,
+Kids Kickboxing, Combat Sports, Gymnastics, Zumba/Jennifer, Ninja Training/Jennifer,
+Fitness/Aya, etc.). **Click any class to edit** its activity or coach; **Reset to
+default** restores the original. Built on-brand in the app's style (not the cartoon
+poster art). Tests: 226 assertions; 25/25 pages render (new page included).
+
+
+## 5.0.1 note — Duplicate member (for siblings)
+The member profile now has a **⧉ Duplicate** button next to Edit. It opens a fresh
+Add-Member form pre-filled with the shared family/contact info — phone, second phone,
+email, nationality, join date — while leaving the person-specific fields blank (name,
+Arabic name, QID, birthdate, level). It copies NO financial data: no enrollments,
+invoices, attendance, payments or switches. The form header shows "copied from <name>"
+so it's clear it's a new member. Tests: 236 assertions.
+
+
+## 5.1.0 note — schedule hover: top 10 active members
+On the Schedule grid, hovering a class now shows a popover listing the **top 10 most
+active members** for that class — ranked by attended classes in that sport. It narrows
+to the class's coach when that sport has members with them (otherwise shows everyone in
+the sport), excludes archived members, and shows each member's attended count.
+NOTE: the popover is hover/positioned in the browser, so it's verified by logic +
+needs a quick visual check after loading. Tests: 243 assertions.
+
+
+## 5.1.1 note
+- **Attendance export = all months.** The Data Export → Attendance file now writes
+  one tab per month (Mar-2026, Apr-2026, …), oldest→newest, instead of just the
+  current month. Each tab lists the members with marks that month, with the same
+  green/red Y/N grid and import-compatible columns.
+- **Removed the Enrolled Members page** from the nav (it duplicated the Members list).
+  The Members page already covers it via search + sport/coach/status filters. (The
+  page code is left in place unused, so it's trivial to restore if ever needed.)
+- Tests: 250 assertions.
+
+
+## 5.1.2 note — convert-trial duplicate check + mandatory fields
+- **Convert checks for an existing member first.** Converting a trial now looks for a
+  member with the SAME mobile + SAME name. If found, it warns and offers to open that
+  member's profile instead of creating a duplicate. Same phone with a DIFFERENT name
+  (siblings) is allowed through.
+- **Mobile is mandatory** (already enforced) and **name now needs a first AND last
+  name** (2+ words, English or Arabic) — on both the Add/Edit Member form and the
+  Add/Edit Trial form. The trial form's Name and Mobile are marked with *.
+- Tests: 258 assertions.
+
+
+## 5.2.0 note — Summer Camp: print, date picker, duration
+- **Printable.** A 🖨 Print button opens a clean, theme-independent printout of the
+  selected day (Save-as-PDF works from the print dialog). Header shows the day + date.
+- **Date picker + 📅 Today.** Pick a calendar date (14–28 Jun) and the grid jumps to
+  that weekday; the day dropdown stays in sync (and vice-versa). Today jumps to the
+  current date; off days (Fri/Sat) are flagged.
+- **Editable** as before — click any class to change its activity/coach.
+- **Duration corrected to 14 Jun – 28 Jun 2026** (existing data with the old end date
+  is auto-updated on load, keeping your edits).
+- Tests: 265 assertions (incl. 14 Jun→Sunday, Fri/Sat→off day, new end date).
+
+
+## 5.3.0 note — roles + reminders
+- **Roles (preview).** Settings → "Roles — preview" lets you view the app as Admin,
+  Coach, or Student. The sidebar shows only that role's screens (Admin = all; Coach =
+  Dashboard/Schedule/Summer Camp/Attendance/Members/Trials/Salaries; Student =
+  Dashboard/Schedule/Summer Camp/Expiring), and navigation is guarded to the role's
+  screens. A "Previewing as …" banner with **Exit** returns to Admin.
+  IMPORTANT: this is a UI **preview**, not a security login — anyone on the browser can
+  switch back to Admin. Real per-role access control needs online sign-in (Firebase Auth).
+- **Reminder timestamp.** Clicking 💬 Remind (single or bulk) now stamps the member and
+  shows "✓ Reminded <date · time>" so you can see when they were last contacted.
+- **Multi-sport reminders.** If a member has more than one sport, the WhatsApp reminder
+  now lists them all (e.g. "Karate & Boxing"), in both the Arabic and English sections.
+- Tests: 279 assertions.
+
+
+## 5.4.0 note — Summer Camp polish
+- **Day Off.** Picking a Friday/Saturday date (or Today on those days) now shows a clear
+  "🌙 Day Off" panel instead of a schedule (camp runs Sun–Thu).
+- **Coach dropdown.** Editing a class now picks the coach from a dropdown of your Team
+  (keeps any existing custom name if it's not in the list).
+- **Activity icons.** Each class shows an emoji (🏊 Swimming, 🥋 Karate, 🥊 Kickboxing/
+  Combat, 🤸 Gymnastics, 🥷 Ninja, 💃 Zumba, 🎨 Art…) on screen and in the printout.
+- **Drag-and-drop (admin).** Admins can drag a class from one cell to another to move/
+  swap it; coach/student previews can't (view only). Saves automatically.
+- Tests: 289 assertions.

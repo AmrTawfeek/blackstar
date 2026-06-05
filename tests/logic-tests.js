@@ -45,6 +45,7 @@ const ctx = {
   setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
   requestAnimationFrame: () => 0,
   localStorage: localStorageStub,
+  sessionStorage: (() => { const m = {}; return { getItem:k=>k in m?m[k]:null, setItem:(k,v)=>{m[k]=String(v);}, removeItem:k=>{delete m[k];}, clear:()=>{for(const k in m)delete m[k];} }; })(),
   navigator: { userAgent: 'node', clipboard: { writeText: () => Promise.resolve() } },
   location: { href: 'file:///index.html', reload(){} },
   document: documentStub,
@@ -527,6 +528,163 @@ ${seed}
   eq(invoiceBalance(fixInv), 1400, 'edit-invoice: correcting paid to 1000 on a 2400 total leaves 1400 due');
   eq(invoiceStatus(fixInv), 'Partial', 'edit-invoice: corrected invoice becomes Partial');
   eq(cashInMonth(fixInv, '2026-06'), 1000, 'edit-invoice: revenue reflects the corrected 1000');
+
+  // ── Recently-edited members (recall) ──
+  pushRecentMember(5); pushRecentMember(6); pushRecentMember(5);   // 5 re-touched → moves to front
+  var rec1 = JSON.parse(sessionStorage.getItem('bs-recent-members') || '[]');
+  eq(rec1.join(','), '5,6', 'recent: dedupes and puts the most-recent first');
+  for (var ri = 0; ri < 8; ri++) pushRecentMember(100 + ri);
+  var rec2 = JSON.parse(sessionStorage.getItem('bs-recent-members') || '[]');
+  eq(rec2.length, 5, 'recent: capped at 5 entries');
+  eq(rec2[0], 107, 'recent: newest is first');
+  sessionStorage.setItem('bs-recent-members', JSON.stringify([99999999]));
+  eq(getRecentMembers().length, 0, 'recent: getRecentMembers drops ids no longer in members');
+
+  // ── Name Title-casing ──
+  eq(titleCaseName('anas madni'), 'Anas Madni', 'titlecase: all-lowercase → Title Case');
+  eq(titleCaseName('ANAS MADNI'), 'Anas Madni', 'titlecase: ALL-UPPER → Title Case');
+  eq(titleCaseName('  anas   madni  '), 'Anas Madni', 'titlecase: trims + collapses spaces');
+  eq(titleCaseName("al-awad o'brien"), "Al-Awad O'Brien", 'titlecase: capitalises after hyphen + apostrophe');
+  // gentle on-save rule: only fix all-lower / all-upper, leave intentional mixed-case alone
+  var gentle = (n) => (n && (n === n.toLowerCase() || n === n.toUpperCase())) ? titleCaseName(n) : n;
+  eq(gentle('anas madni'), 'Anas Madni', 'titlecase(save): fixes all-lowercase');
+  eq(gentle('McDonald'), 'McDonald', 'titlecase(save): leaves intentional mixed-case untouched');
+  eq(gentle('Anas Madni'), 'Anas Madni', 'titlecase(save): already-correct left as-is');
+
+  // ── Sport-switch reconciliation: deduct only the UNEARNED part of what was paid ──
+  // Member paid 375, attended 1 of 12 → coach A keeps 1/12, the rest (343.75) transfers.
+  var sp1 = computeSwitchSplit(375, 1, 12);
+  eq(sp1.aShare, 31.25, 'switch: coach A keeps the attended share (1/12 of 375)');
+  eq(sp1.deductionA, -343.75, 'switch: A is deducted only the unearned part (375 − 31.25), never more than paid');
+  eq(sp1.bShare, 343.75, 'switch: the unearned part transfers to coach B');
+  // never claws back more than the credited base
+  ok(Math.abs(computeSwitchSplit(375, 1, 12).deductionA) <= 375, 'switch: deduction never exceeds what coach A was credited');
+  // attended none → whole credited base transfers to B (A delivered nothing)
+  var sp0 = computeSwitchSplit(375, 0, 12);
+  eq(sp0.deductionA, -375, 'switch: 0 attended → full base deducted from A');
+  eq(sp0.bShare, 375, 'switch: 0 attended → full base transfers to B (not lost)');
+  // attended all → nothing to transfer
+  eq(computeSwitchSplit(375, 12, 12).deductionA, 0, 'switch: all attended → no deduction');
+  // partial payment: base is what was actually credited, so a 300-of-600 case caps at 300
+  eq(computeSwitchSplit(300, 1, 12).deductionA, -275, 'switch: based on the credited 300, not the nominal price');
+  // coachBaseForSport sums real membership invoices (excludes switch credits + negatives)
+  state.members.push({ id: 88, name: 'SwMem' });
+  state.invoices.push({ id: 880, customerId: 88, category: 'Membership', amount: 375, sport: 'Kick Boxing', coachId: 3 });
+  state.invoices.push({ id: 881, customerId: 88, category: 'Membership', amount: -200, switchCredit: true, sport: 'Kick Boxing', coachId: 3 });
+  eq(coachBaseForSport(state.members.find(x => x.id === 88), 'Kick Boxing', 3), 375, 'switch: credited base ignores switch-credit + negative invoices');
+
+  // ── Summer Camp schedule seed ──
+  var camp = defaultCampSchedule();
+  eq(camp.startDate, '2026-06-14', 'camp: starts 14 Jun 2026');
+  eq(camp.endDate, '2026-06-28', 'camp: ends 28 Jun 2026');
+  eq(Object.keys(camp.days).join(','), 'sunday,monday,tuesday,wednesday,thursday', 'camp: Sun–Thu only');
+  eq(camp.days.sunday.length, 4, 'camp: 4 activity rows per day');
+  eq(camp.days.sunday[2].kids.activity, 'Ninja Training', 'camp: Sun 10:30 kids = Ninja Training');
+  eq(camp.days.sunday[2].kids.coach, 'Jennifer', 'camp: Ninja Training coach = Jennifer');
+  eq(camp.days.monday[3].girls.activity, 'Fitness', 'camp: Mon 12:00 girls = Fitness');
+  eq(camp.days.monday[3].girls.coach, 'Aya', 'camp: Mon Fitness coach = Aya');
+  eq(camp.days.thursday[0].boys.activity, 'Combat Sports (Kickboxing & Muay Thai)', 'camp: Thu 8:00 boys = Combat Sports');
+  ok(CAMP_SLOTS.filter(s => s.type === 'activities').length === 4, 'camp: 4 activity time slots');
+  ok(CAMP_SLOTS.filter(s => s.type === 'break').length === 3, 'camp: 3 break rows (breakfast/prayer/dismissal)');
+  eq(defaultCampSchedule().endDate, '2026-06-28', 'camp: duration now ends 28 Jun 2026');
+  eq(campDayKeyForDate('2026-06-14'), 'sunday', 'camp: 14 Jun 2026 → Sunday (Day 1)');
+  eq(campDayKeyForDate('2026-06-15'), 'monday', 'camp: 15 Jun 2026 → Monday');
+  eq(campDayKeyForDate('2026-06-18'), 'thursday', 'camp: 18 Jun 2026 → Thursday');
+  eq(campDayKeyForDate('2026-06-19'), null, 'camp: 19 Jun 2026 (Fri) → off day');
+  eq(campDayKeyForDate('2026-06-20'), null, 'camp: 20 Jun 2026 (Sat) → off day');
+  eq(campDayKeyForDate('2026-06-28'), 'sunday', 'camp: 28 Jun 2026 → Sunday');
+  eq(campActivityIcon('Swimming'), '🏊', 'icon: swimming');
+  eq(campActivityIcon('Karate'), '🥋', 'icon: karate');
+  eq(campActivityIcon('Kids Kickboxing'), '🥊', 'icon: kickboxing');
+  eq(campActivityIcon('Combat Sports (Kickboxing & Muay Thai)'), '🥊', 'icon: combat sports');
+  eq(campActivityIcon('Gymnastics'), '🤸', 'icon: gymnastics');
+  eq(campActivityIcon('Ninja Training'), '🥷', 'icon: ninja');
+  eq(campActivityIcon('Zumba'), '💃', 'icon: zumba');
+  eq(campActivityIcon('Art'), '🎨', 'icon: art');
+  eq(campActivityIcon('Something Else'), '⭐', 'icon: fallback star');
+  eq(campActivityIcon(''), '', 'icon: empty stays empty');
+
+  // ── Roles (preview) ──
+  ok(roleCanAccess('admin', 'settings'), 'role: admin sees everything');
+  ok(!roleCanAccess('coach', 'settings'), 'role: coach cannot open Settings');
+  ok(roleCanAccess('coach', 'attendance'), 'role: coach sees Attendance');
+  ok(!roleCanAccess('coach', 'invoices'), 'role: coach cannot open Invoices');
+  ok(roleCanAccess('student', 'schedule'), 'role: student sees Schedule');
+  ok(!roleCanAccess('student', 'salaries'), 'role: student cannot open Salaries');
+  eq(roleHome('coach'), 'dashboard', 'role: coach home = dashboard');
+
+  // ── Multi-sport reminder message ──
+  var rsMem = { name: 'Multi', enrollments: [{ sport: 'Karate' }, { sport: 'Boxing' }, { sport: 'Summer Camp' }] };
+  eq(memberRenewalSports(rsMem).join(','), 'Karate,Boxing', 'reminder: distinct sports, excludes Summer Camp');
+  eq(joinSports(['Karate'], '&'), 'Karate', 'reminder: single sport');
+  eq(joinSports(['Karate', 'Boxing'], '&'), 'Karate & Boxing', 'reminder: two sports joined with &');
+  eq(joinSports(['A', 'B', 'C'], '&'), 'A, B & C', 'reminder: 3 sports listed');
+  var rmsg = buildReminderMessage({ name: 'Multi', enrollments: [{ sport: 'Karate' }, { sport: 'Boxing' }], expiryDate: '2026-06-30' }, 'expiring', 3);
+  ok(rmsg.indexOf('Karate & Boxing') >= 0, 'reminder: message body lists all sports');
+
+  // ── Last-reminded timestamp formatting ──
+  ok(/2026/.test(fmtDateTime('2026-06-04T15:12:00')), 'fmtDateTime: includes the date');
+  eq(fmtDateTime(''), '', 'fmtDateTime: blank for empty');
+
+  // ── Duplicate member (siblings): copy contact, blank identity, no financials ──
+  var dupSrc = { id: 7, name: 'Ahmed Ali', nameArabic: 'احمد', qid: '288', birthdate: '2015-01-01',
+    level: 'Intermediate', phone: '+97455500011', phone2: '+97455500022', email: 'family@x.com',
+    nationality: 'Qatar', enrollments: [{ sport: 'Karate' }], dailyAttendance: { '2026-06': {} } };
+  var dupStub = buildMemberDuplicateStub(dupSrc, 99);
+  eq(dupStub.phone, '+97455500011', 'duplicate: copies shared phone');
+  eq(dupStub.email, 'family@x.com', 'duplicate: copies shared email');
+  eq(dupStub.nationality, 'Qatar', 'duplicate: copies nationality');
+  eq(dupStub.name, '', 'duplicate: blanks the name');
+  eq(dupStub.qid, '', 'duplicate: blanks the QID');
+  eq(dupStub.birthdate, '', 'duplicate: blanks the birthdate');
+  eq(dupStub._duplicatedFrom, 'Ahmed Ali', 'duplicate: remembers the source name for the banner');
+  ok(dupStub.enrollments === undefined, 'duplicate: copies NO enrollments');
+  ok(dupStub.dailyAttendance === undefined, 'duplicate: copies NO attendance');
+  ok(dupStub.id === 99, 'duplicate: gets a fresh id (treated as new member)');
+
+  // ── Schedule hover: top active members for a class ──
+  state.members.push(
+    { id: 201, name: 'Zed Active', enrollments: [{ sport: 'TestSport', coachId: 9 }], subscriptions: [{ activity: 'TestSport', coachId: 9, attendedClasses: 8 }] },
+    { id: 202, name: 'Amy Active', enrollments: [{ sport: 'TestSport', coachId: 9 }], subscriptions: [{ activity: 'TestSport', coachId: 9, attendedClasses: 12 }] },
+    { id: 203, name: 'Other Coach', enrollments: [{ sport: 'TestSport', coachId: 5 }], subscriptions: [{ activity: 'TestSport', coachId: 5, attendedClasses: 99 }] },
+    { id: 204, name: 'Gone', deleted: true, enrollments: [{ sport: 'TestSport', coachId: 9 }], subscriptions: [{ activity: 'TestSport', coachId: 9, attendedClasses: 100 }] }
+  );
+  var topC = topActiveMembersForClass('TestSport', 9, 10);
+  eq(topC.length, 2, 'hover: only coach-9 members in TestSport (archived excluded)');
+  eq(topC[0].name, 'Amy Active', 'hover: most-attended first');
+  eq(topC[0].attended, 12, 'hover: shows attended count');
+  eq(topC[1].name, 'Zed Active', 'hover: second by attendance');
+  ok(!topC.some(m => m.name === 'Gone'), 'hover: excludes archived members');
+  ok(!topC.some(m => m.name === 'Other Coach'), 'hover: narrows to the class coach when present');
+  // no-coach fallback: all in the sport
+  eq(topActiveMembersForClass('TestSport', null, 10).length, 3, 'hover: coach=null → all active in sport');
+
+  // ── Attendance export: one tab per month, all months ──
+  state.members.push({ id: 301, name: 'AttA', enrollments: [{ sport: 'Karate', coachId: 1 }],
+    dailyAttendance: { '2026-03': { 'Karate': { '1': 'Y', '3': 'Y' } }, '2026-04': { 'Karate': { '2': 'Y' } } } });
+  var aMonths = attendanceMonthsWithData();
+  ok(aMonths.indexOf('2026-03') >= 0 && aMonths.indexOf('2026-04') >= 0, 'att-export: collects every month with marks');
+  ok(aMonths.indexOf('2026-03') < aMonths.indexOf('2026-04'), 'att-export: months sorted oldest→newest');
+  var attWb = buildAttendanceWorkbook();
+  ok(attWb.sheets.length >= 2, 'att-export: one sheet per month');
+  var marSheet = attWb.sheets.find(s => s.name === 'Mar-2026');
+  ok(!!marSheet, 'att-export: a tab named Mar-2026 exists');
+  ok(marSheet && marSheet.rows.length >= 2, 'att-export: Mar tab has header + member row');
+  eq(marSheet.rows[0][0].v, 'Coach', 'att-export: header first column = Coach');
+  ok(!!attWb.sheets.find(s => s.name === 'Apr-2026'), 'att-export: Apr-2026 tab too');
+
+  // ── First + last name requirement ──
+  ok(hasFirstAndLast('Anas Madni'), 'name: two words passes');
+  ok(!hasFirstAndLast('Anas'), 'name: single word rejected');
+  ok(!hasFirstAndLast(''), 'name: empty rejected');
+  ok(!hasFirstAndLast('   '), 'name: whitespace-only rejected');
+  ok(hasFirstAndLast('  Anas   Madni  '), 'name: extra spaces still counts as two words');
+  ok(hasFirstAndLast('احمد علي'), 'name: Arabic two words passes');
+
+  // ── Convert trial: detect an existing member (same phone + same name) ──
+  state.members.push({ id: 401, name: 'Kamal Alawadi', nameArabic: 'كمال', phone: '+97455009211' });
+  ok(!!findDuplicateMember('+97455009211', 'Kamal Alawadi', null, null), 'convert: same phone + same name = existing member');
+  ok(!findDuplicateMember('+97455009211', 'Ilyne Alawady', null, null), 'convert: same phone + different name = NOT a duplicate (sibling)');
 
   // ── Qatar ID OCR parsing (the field extraction, not the image->text step) ──
   var NL = String.fromCharCode(10);

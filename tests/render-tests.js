@@ -3,7 +3,7 @@
 const vm = require('vm');
 const fs = require('fs');
 const path = require('path');
-const DIR = require('path').join(__dirname, '..');
+const DIR = '/home/claude/v121fix/blackstars-localhost';
 const appSrc = fs.readFileSync(path.join(DIR, 'app.js'), 'utf8');
 const pagesSrc = fs.readFileSync(path.join(DIR, 'pages.js'), 'utf8');
 
@@ -50,12 +50,12 @@ const ctx = {
 ctx.window=ctx; ctx.globalThis=ctx; ctx.self=ctx; ctx.window.addEventListener=()=>{};
 vm.createContext(ctx);
 
-const seed = fs.readFileSync(require('path').join(__dirname,'seed.js'),'utf8');
+const seed = fs.readFileSync('/home/claude/seed-block.js','utf8');
 
 const epilogue = `
 ${seed}
 ;(function renderAll(){
-  const routes = ['dashboard','members','invoices','attendance','schedule','expenses','salaries','products','sales','sports','audit','settings','history','expiring','trials','attreport','enrolled','renewals','coachperf','reports','dataimport','dataexport','rentals','coaches'];
+  const routes = ['dashboard','members','invoices','attendance','schedule','campschedule','expenses','salaries','products','sales','sports','audit','settings','history','expiring','trials','attreport','enrolled','renewals','coachperf','reports','dataimport','dataexport','rentals','coaches'];
   let okN=0, badN=0; const bad=[];
   for (const r of routes) {
     const fn = (typeof PAGES!=='undefined') && PAGES[r];
