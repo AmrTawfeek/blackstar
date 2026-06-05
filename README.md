@@ -37,7 +37,7 @@ modes. Run: node tests/logic-tests.js and node tests/render-tests.js.
 
 ## To load
 Replace files in C:\Users\kshawky\Desktop\CRM\blackstars-localhost\, refresh,
-confirm footer reads v5.4.0.
+confirm footer reads v5.10.0.
 
 ## 4.85.0 note — frozen vs expired (attendance basis)
 - Member still ACTIVE → coach paid per class attended; rest pending.
@@ -348,3 +348,94 @@ needs a quick visual check after loading. Tests: 243 assertions.
 - **Drag-and-drop (admin).** Admins can drag a class from one cell to another to move/
   swap it; coach/student previews can't (view only). Saves automatically.
 - Tests: 289 assertions.
+
+
+## 5.5.0 note — Permanently delete archived members
+- New **🗑 Delete forever** button appears only on **archived** members (you must
+  archive first — active members can't be hard-deleted by accident).
+- Opens a dialog showing any linked financial records and an irreversibility warning,
+  with a backup tip. You choose the scope:
+  - **Member only (keep records)** — erases the person but keeps their invoices/sales
+    as history (they keep the stored customer name).
+  - **🗑 Delete everything** — also purges that member's invoices, sales, and rentals.
+- Each choice asks a final confirmation, then writes an audit entry (`member.purge`).
+- Unlike Archive, this **cannot be undone** — back up first (Settings → Backup).
+- Tests: 295 assertions.
+
+
+## 5.6.0 note — Arabic schedule export
+- The Schedule page now has a **📸 PNG (عربي)** button next to the English export.
+- The Arabic poster is fully right-to-left: TIME column on the right, days run
+  Saturday → Thursday from right to left, with Arabic day names, sport names
+  (السباحة، الكاراتيه، الكيك بوكسينغ، الملاكمة، الجمباز، كرة القدم…), Arabic month
+  (يونيو 2026) and footer.
+- Coach names use each coach's Arabic name (`nameArabic`) when one is set, otherwise
+  the English name is kept.
+- Reusable helpers added for future full-app Arabic: sportNameAR, dayNameAR,
+  monthNameAR, timeLabelAR.
+- Tests: 306 assertions.
+
+
+## 5.7.0 note — Members table: columns, Arabic-name column, export choice
+- **Export choice.** The Members **📥 Export CSV** button now asks whether to export the
+  **Filtered (current view)** set or **All members** — both write the full CSV (incl. Arabic name).
+- **Column chooser.** New **🧩 Columns** button lets you show/hide extra columns:
+  Arabic Name, QID, Nationality, Email, Phone 2, Joined, Level, Birthdate, Outstanding.
+  Your choice is saved. Member / Sport / Coach / Attendance / Last Renewal / Expiry /
+  Status are always shown.
+- **Arabic name is now its own column** (on by default). The Member cell now shows just
+  the English name + mobile; the Arabic name moved into its dedicated column.
+- **Add-sibling shortcut.** Each member row has a ⧉ button that copies the member's phone
+  and family details into a new Add-Member form (the "brothers / siblings" duplicate — it
+  was already on the profile; now it's one click from the list too).
+- Tests: 306 assertions.
+
+
+## 5.8.0 note — Members table: click-to-sort + per-column filters
+- **Sort by any column.** Click a column header to sort by it; click again to reverse.
+  An arrow shows the active column/direction (▲/▼), and ⇅ marks sortable columns.
+  Sorts by name, Arabic name, sport, coach, attendance %, last renewal, expiry, status,
+  and any optional column you've enabled (QID, nationality, joined, outstanding…).
+- **Per-column quick filter.** Each text/identity column header has a small filter box —
+  type to narrow the table on just that column (e.g. coach = "Anis", sport = "MMA").
+  Column filters combine with each other and with the existing search/dropdown filters.
+- Both work alongside the column chooser; non-text columns (Attendance, Last Renewal,
+  Expiry) are sortable but don't show a filter box.
+- Tests: 306 assertions.
+
+
+## 5.9.0 note — Members table: smart column filters + fuzzy name search
+- **Smart filter controls per column.** Enumerable columns now filter with a **dropdown**
+  (Sport, Coach, Nationality, Level, Status) and date columns with a **date picker**
+  (Expiry, Last Renewal, Joined, Birthdate) instead of free text.
+- **Fuzzy name search.** The Member and Arabic Name filters are typo-tolerant — searching
+  "mohamed" finds "Mohammed", "khalid" finds "Khaled", etc. The Member box also still
+  matches phone/email.
+- **Every column is show/hide now.** The 🧩 Columns chooser lists all columns (Sport,
+  Coach, Attendance, Last Renewal, Expiry, Status included); only the **English name**
+  (Member) is always shown. "Reset to default" restores the standard set.
+- Column visibility is saved (settings.memberColsV2). Sorting works on every visible column.
+- Tests: 316 assertions.
+
+
+## 5.9.1 note — Removed per-column filters; search box is now fuzzy
+- Removed the per-column header filter row (it duplicated the existing top filter bar:
+  status / sports / coaches / nationalities / data-quality).
+- The main **search box** is now typo-tolerant for names — "mohamed" finds "Mohammed",
+  "khalid" finds "Khaled" — on top of its existing substring + phone matching.
+- Kept: click-a-column-header **sorting** (arrows) and the 🧩 **Columns** show/hide chooser.
+- Tests: 316 assertions.
+
+
+## 5.10.0 note — Add Sibling copies everything; trimmed row actions
+- **Add Sibling (⧉)** now copies **all** of a member's profile + plan details (name,
+  Arabic name, QID, birthdate, level, phone/phone 2, email, nationality, address, notes,
+  sport/coach and every enrollment with its classes/price). The new record gets a fresh
+  id and opens in the Add-Member form pre-filled — just update the name/QID and save.
+- It deliberately does **not** copy attendance, subscriptions, expiry, payments, freezes,
+  switches or archive flags, so the sibling starts as a fresh unpaid registration
+  (saving creates their own invoice — no double-counted revenue).
+- Removed the row **👁 View** icon (click the row to open the card) and the **📜 History**
+  icon (history lives inside the member card). Row actions are now: 🔄 renew · 🔀 switch ·
+  ⧉ sibling · ✏️ edit · 🗑 archive.
+- Tests: 330 assertions.

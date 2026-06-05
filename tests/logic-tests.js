@@ -603,6 +603,78 @@ ${seed}
   eq(campActivityIcon('Art'), '🎨', 'icon: art');
   eq(campActivityIcon('Something Else'), '⭐', 'icon: fallback star');
   eq(campActivityIcon(''), '', 'icon: empty stays empty');
+  // Arabic localization helpers
+  eq(sportNameAR('Swimming'), 'السباحة', 'AR: swimming');
+  eq(sportNameAR('Kick Boxing'), 'الكيك بوكسينغ', 'AR: kick boxing');
+  eq(sportNameAR('Summer Camp'), 'المعسكر الصيفي', 'AR: summer camp');
+  eq(sportNameAR('Unknown Sport'), 'Unknown Sport', 'AR: unknown sport falls back');
+  eq(dayNameAR('sat'), 'السبت', 'AR: Saturday (key)');
+  eq(dayNameAR('THURSDAY'), 'الخميس', 'AR: Thursday (label, case-insensitive)');
+  eq(dayNameAR('fri'), 'الجمعة', 'AR: Friday');
+  eq(monthNameAR(new Date(2026, 5, 1)), 'يونيو 2026', 'AR: June 2026');
+  eq(monthNameAR(new Date(2026, 0, 15)), 'يناير 2026', 'AR: January 2026');
+  eq(timeLabelAR('3PM - 4PM'), '3 - 4 م', 'AR: PM time label');
+  eq(timeLabelAR('11AM - 12PM'), '11 ص - 12 م', 'AR: mixed AM/PM label');
+  // fuzzy matching for name column filter
+  ok(fuzzyMatch('Mohammed Ali', 'mohamed'), 'fuzzy: Mohammed~mohamed (typo)');
+  ok(fuzzyMatch('Khaled', 'khalid'), 'fuzzy: Khaled~khalid');
+  ok(fuzzyMatch('anas madani', 'anas'), 'fuzzy: substring word');
+  ok(fuzzyMatch('anas madani', 'madanee'), 'fuzzy: madani~madanee');
+  ok(fuzzyMatch('Ahmed', 'ahmed'), 'fuzzy: exact');
+  ok(!fuzzyMatch('Ahmed', 'xqz'), 'fuzzy: no match');
+  ok(!fuzzyMatch('', 'ali'), 'fuzzy: empty text no match');
+  ok(fuzzyMatch('Ali', ''), 'fuzzy: empty query matches');
+  eq(levenshtein('kitten', 'sitting'), 3, 'levenshtein: kitten/sitting = 3');
+  eq(levenshtein('abc', 'abc'), 0, 'levenshtein: identical = 0');
+  // Add Sibling: full-copy stub keeps profile + plan, drops financial/status history
+  (function(){
+    var src = { id: 5001, name: 'Ali Hassan', nameArabic: 'علي حسن', qid: '28912345678',
+      birthdate: '2015-03-01', level: 'Beginner', phone: '+97455500011', phone2: '+97455500012',
+      email: 'ali@x.com', nationality: 'Qatar', address: 'Doha', notes: 'allergic to nuts',
+      joinDate: '2026-01-01', sport: 'Karate', coachId: 3,
+      enrollments: [{ sport:'Karate', coachId:3, classes:8, price:350 }],
+      subscriptions: [{ activity:'Karate', totalClasses:8, attendedClasses:5 }],
+      expiryDate: '2026-07-01', status: 'Active', deleted: true, lastRemindedAt: '2026-05-01' };
+    var dup = buildMemberDuplicateStub(src, 9999);
+    eq(dup.id, 9999, 'sibling: gets new id');
+    eq(dup.name, 'Ali Hassan', 'sibling: copies English name');
+    eq(dup.nameArabic, 'علي حسن', 'sibling: copies Arabic name');
+    eq(dup.qid, '28912345678', 'sibling: copies QID');
+    eq(dup.phone, '+97455500011', 'sibling: copies phone');
+    eq(dup.notes, 'allergic to nuts', 'sibling: copies notes');
+    eq(dup.enrollments.length, 1, 'sibling: copies enrollments (plan)');
+    eq(dup.enrollments[0].price, 350, 'sibling: enrollment price copied');
+    eq(dup._duplicatedFrom, 'Ali Hassan', 'sibling: records source name');
+    ok(!dup.subscriptions, 'sibling: drops subscriptions (no fake attendance)');
+    ok(!dup.expiryDate, 'sibling: drops expiry (starts unpaid)');
+    ok(!dup.deleted, 'sibling: not archived');
+    ok(!dup.lastRemindedAt, 'sibling: drops reminder timestamp');
+    eq(dup.status, 'Active', 'sibling: status Active');
+    // mutating the copy must not touch the source (deep clone)
+    dup.enrollments[0].price = 999;
+    eq(src.enrollments[0].price, 350, 'sibling: deep clone — source untouched');
+  })();
+  // permanent delete: member only vs everything
+  (function(){
+    var saveOrig = state, msave = [], minv = [], msal = [], mren = [];
+    state.members = [{id:9001,name:'Purge Me',deleted:true},{id:9002,name:'Keep Me'}];
+    state.invoices = [{id:'i1',customerId:9001},{id:'i2',customerId:9002}];
+    state.sales = [{id:'s1',customerId:9001}];
+    state.rentals = [{id:'r1',memberId:9001}];
+    // simulate "member only" purge (alsoRecords=false)
+    var keepId = 9001;
+    state.members = state.members.filter(function(x){return x.id!==keepId;});
+    ok(!state.members.find(function(x){return x.id===9001;}),'purge: member removed');
+    ok(state.invoices.find(function(i){return i.customerId===9001;}),'purge member-only: invoice kept');
+    // simulate "everything" purge
+    state.invoices = state.invoices.filter(function(i){return i.customerId!==9001;});
+    state.sales = state.sales.filter(function(s){return s.customerId!==9001;});
+    state.rentals = state.rentals.filter(function(r){return r.memberId!==9001;});
+    ok(!state.invoices.find(function(i){return i.customerId===9001;}),'purge all: invoice removed');
+    ok(state.invoices.find(function(i){return i.customerId===9002;}),'purge: other member invoice untouched');
+    ok(!state.sales.length,'purge all: sale removed');
+    ok(!state.rentals.length,'purge all: rental removed');
+  })();
 
   // ── Roles (preview) ──
   ok(roleCanAccess('admin', 'settings'), 'role: admin sees everything');
@@ -626,21 +698,20 @@ ${seed}
   ok(/2026/.test(fmtDateTime('2026-06-04T15:12:00')), 'fmtDateTime: includes the date');
   eq(fmtDateTime(''), '', 'fmtDateTime: blank for empty');
 
-  // ── Duplicate member (siblings): copy contact, blank identity, no financials ──
+  // ── Add Sibling: copy ALL profile + plan; drop attendance/financial history ──
   var dupSrc = { id: 7, name: 'Ahmed Ali', nameArabic: 'احمد', qid: '288', birthdate: '2015-01-01',
     level: 'Intermediate', phone: '+97455500011', phone2: '+97455500022', email: 'family@x.com',
     nationality: 'Qatar', enrollments: [{ sport: 'Karate' }], dailyAttendance: { '2026-06': {} } };
   var dupStub = buildMemberDuplicateStub(dupSrc, 99);
-  eq(dupStub.phone, '+97455500011', 'duplicate: copies shared phone');
-  eq(dupStub.email, 'family@x.com', 'duplicate: copies shared email');
-  eq(dupStub.nationality, 'Qatar', 'duplicate: copies nationality');
-  eq(dupStub.name, '', 'duplicate: blanks the name');
-  eq(dupStub.qid, '', 'duplicate: blanks the QID');
-  eq(dupStub.birthdate, '', 'duplicate: blanks the birthdate');
-  eq(dupStub._duplicatedFrom, 'Ahmed Ali', 'duplicate: remembers the source name for the banner');
-  ok(dupStub.enrollments === undefined, 'duplicate: copies NO enrollments');
-  ok(dupStub.dailyAttendance === undefined, 'duplicate: copies NO attendance');
-  ok(dupStub.id === 99, 'duplicate: gets a fresh id (treated as new member)');
+  eq(dupStub.phone, '+97455500011', 'sibling: copies shared phone');
+  eq(dupStub.email, 'family@x.com', 'sibling: copies shared email');
+  eq(dupStub.nationality, 'Qatar', 'sibling: copies nationality');
+  eq(dupStub.name, 'Ahmed Ali', 'sibling: copies the name (user edits it)');
+  eq(dupStub.qid, '288', 'sibling: copies the QID (user edits it)');
+  eq(dupStub.birthdate, '2015-01-01', 'sibling: copies the birthdate');
+  eq(dupStub._duplicatedFrom, 'Ahmed Ali', 'sibling: remembers the source name for the banner');
+  ok(Array.isArray(dupStub.enrollments) && dupStub.enrollments.length === 1, 'sibling: copies enrollments (plan)');
+  ok(dupStub.id === 99, 'sibling: gets a fresh id (treated as new member)');
 
   // ── Schedule hover: top active members for a class ──
   state.members.push(

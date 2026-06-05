@@ -653,6 +653,151 @@ PAGES.members = (main) => {
   const pg = makePager(10);
   const selected = new Set();   // member ids ticked for bulk actions (persists across pages)
 
+  const dash = '<span class="text-mute">—</span>';
+  let sort = { key: null, dir: 1 };   // active header sort (1=asc, -1=desc)
+
+  // Attendance percentage for sorting (−1 = no data, sorts to the bottom on asc).
+  function attPctVal(m) {
+    const mr = (m.subscriptions || []).filter(s => s.totalClasses).slice(-1)[0];
+    if (!mr) return -1;
+    const live = liveAttendanceCount(m, mr.activity);
+    const att = live.total > 0 ? live.y : (mr.attendedClasses || 0);
+    return mr.totalClasses ? att / mr.totalClasses : -1;
+  }
+  function attCellHtml(m) {
+    const mr = (m.subscriptions || []).filter(s => s.totalClasses).slice(-1)[0];
+    if (!mr) return dash;
+    const live = liveAttendanceCount(m, mr.activity);
+    const att = live.total > 0 ? live.y : (mr.attendedClasses || 0);
+    const pct = mr.totalClasses ? Math.round(att / mr.totalClasses * 100) : null;
+    const color = pct == null ? 'var(--text-mute)' : pct >= 75 ? 'var(--green)' : pct >= 40 ? 'var(--accent-2)' : 'var(--red)';
+    return `<span class="num" style="color:${color};font-weight:600">${att}/${mr.totalClasses}</span>`;
+  }
+  function expiryCellHtml(m) {
+    if (!m.expiryDate) return dash;
+    const d = daysUntil(m.expiryDate);
+    const soon = state.settings?.expiringSoonDays || 3;
+    const color = d == null ? 'inherit' : d < 0 ? 'var(--red)' : d <= soon ? 'var(--accent-2)' : 'inherit';
+    const suffix = d == null ? '' : d < 0 ? ` <span style="font-size:10px;color:var(--red)">(${Math.abs(d)}d ago)</span>`
+      : d <= soon ? ` <span style="font-size:10px;color:var(--accent-2);font-weight:600">⚠ ${d}d</span>` : '';
+    return `<span style="color:${color}">${fmtDate(m.expiryDate)}</span>${suffix}`;
+  }
+  const distinct = (vals) => Array.from(new Set(vals.filter(v => v != null && String(v).trim() !== ''))).sort();
+
+  // ── ONE source of truth for every members-table column ──
+  // always:true → can't be hidden (English name). def → visible by default.
+  // filter: 'fuzzy' | 'text' | 'select' | 'date' | null. opts() supplies <select> values.
+  function allColumns() {
+    return [
+      { key: 'name', label: 'Member', always: true, def: true, filter: 'fuzzy',
+        sortVal: m => (m.name || '').toLowerCase(),
+        getVal: m => m.name || '',
+        cell: m => `<div style="display:flex;align-items:center;gap:10px">
+            <div class="avatar" style="width:32px;height:32px;font-size:11px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(m.name)}</div>
+            <div><div style="font-weight:600">${escapeHtml(m.name)}</div>
+            <div class="text-mute" style="font-size:11px">${isRealPhone(m.phone) ? phoneCell(m.phone) : (m.email ? escapeHtml(m.email) : '')}</div></div>
+          </div>` },
+      { key: 'arabicName', label: 'Arabic Name', def: true, filter: 'fuzzy',
+        sortVal: m => (m.nameArabic || ''), getVal: m => m.nameArabic || '',
+        cell: m => m.nameArabic ? `<span dir="rtl">${escapeHtml(m.nameArabic)}</span>` : dash },
+      { key: 'qid', label: 'QID', def: false, filter: 'text',
+        sortVal: m => (m.qid || ''), getVal: m => m.qid || '',
+        cell: m => m.qid ? escapeHtml(m.qid) : dash },
+      { key: 'nationality', label: 'Nationality', def: false, filter: 'select',
+        opts: () => distinct(state.members.map(x => x.nationality)),
+        sortVal: m => (m.nationality || '').toLowerCase(), getVal: m => m.nationality || '',
+        cell: m => m.nationality ? escapeHtml(m.nationality) : dash },
+      { key: 'email', label: 'Email', def: false, filter: 'text',
+        sortVal: m => (m.email || '').toLowerCase(), getVal: m => m.email || '',
+        cell: m => m.email ? escapeHtml(m.email) : dash },
+      { key: 'phone2', label: 'Phone 2', def: false, filter: 'text',
+        sortVal: m => (m.phone2 || ''), getVal: m => m.phone2 || '',
+        cell: m => isRealPhone(m.phone2) ? phoneCell(m.phone2) : dash },
+      { key: 'joinDate', label: 'Joined', def: false, filter: 'date',
+        sortVal: m => (m.joinDate || ''), getVal: m => m.joinDate || '',
+        cell: m => m.joinDate ? fmtDate(m.joinDate) : dash },
+      { key: 'level', label: 'Level', def: false, filter: 'select',
+        opts: () => distinct(state.members.map(x => x.level)),
+        sortVal: m => (m.level || '').toLowerCase(), getVal: m => m.level || '',
+        cell: m => m.level ? escapeHtml(m.level) : dash },
+      { key: 'birthdate', label: 'Birthdate', def: false, filter: 'date',
+        sortVal: m => (m.birthdate || ''), getVal: m => m.birthdate || '',
+        cell: m => m.birthdate ? fmtDate(m.birthdate) : dash },
+      { key: 'outstanding', label: 'Outstanding', def: false, filter: null, num: true,
+        sortVal: m => (typeof memberOutstanding === 'function' ? memberOutstanding(m.id) : 0),
+        getVal: m => '',
+        cell: m => { const o = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0; return o > 0 ? `<span style="color:var(--red);font-weight:600">${fmt(o)}</span>` : dash; } },
+      { key: 'sport', label: 'Sport', def: true, filter: 'select',
+        opts: () => (typeof SPORTS !== 'undefined' && SPORTS.length) ? SPORTS.slice() : distinct(state.members.map(x => x.sport)),
+        sortVal: m => (m.sport || '').toLowerCase(),
+        getVal: m => [m.sport, ...((m.enrollments || []).map(e => e.sport))].filter(Boolean).join(' '),
+        cell: m => `${escapeHtml(m.sport)}${(m.enrollments && m.enrollments.length > 1) ? ` <span class="badge blue" style="font-size:9px;padding:1px 5px" title="${m.enrollments.map(e => escapeHtml(e.sport)).join(', ')}">+${m.enrollments.length - 1}</span>` : ''}` },
+      { key: 'coach', label: 'Coach', def: true, filter: 'select',
+        opts: () => distinct(state.coaches.map(c => c.name)),
+        sortVal: m => (coachName(m.coachId) || '').toLowerCase(),
+        getVal: m => coachName(m.coachId) || '',
+        cell: m => m.sport === SUMMER_CAMP && (!m.enrollments || m.enrollments.every(e => e.sport === SUMMER_CAMP)) ? '<span class="text-mute" style="font-style:italic">—</span>' : escapeHtml(coachName(m.coachId)) },
+      { key: 'attendance', label: 'Attendance', def: true, filter: null, num: true,
+        sortVal: m => attPctVal(m), getVal: m => '', cell: m => attCellHtml(m) },
+      { key: 'lastRenewal', label: 'Last Renewal', def: true, filter: 'date',
+        sortVal: m => (lastRenewalDate(m) || ''), getVal: m => lastRenewalDate(m) || '',
+        cell: m => { const lr = lastRenewalDate(m); return lr ? fmtDate(lr) : dash; } },
+      { key: 'expiry', label: 'Expiry', def: true, filter: 'date',
+        sortVal: m => (m.expiryDate || ''), getVal: m => m.expiryDate || '',
+        cell: m => expiryCellHtml(m) },
+      { key: 'status', label: 'Status', def: true, filter: 'select',
+        opts: () => ['Active', 'Expired', 'Frozen', 'Completed'],
+        sortVal: m => memberStatus(m).toLowerCase(), getVal: m => memberStatus(m),
+        cell: m => `<span class="badge ${m.deleted ? 'pending' : memberStatus(m).toLowerCase()}">${m.deleted ? '📦 Archived' : memberStatus(m)}</span>` },
+    ];
+  }
+  function isColVisible(c) {
+    if (c.always) return true;
+    const saved = state.settings && Array.isArray(state.settings.memberColsV2) ? state.settings.memberColsV2 : null;
+    return saved ? saved.includes(c.key) : c.def;
+  }
+  function visibleColumns() { return allColumns().filter(isColVisible); }
+
+  window.openMemberColumns = function() {
+    const cols = allColumns();
+    showModal({
+      title: '🧩 Table columns',
+      body: `<div style="font-size:13px;line-height:1.6">
+        <p class="text-mute">Tick the columns to show. Only <b>Member</b> (English name + mobile) is always shown.</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px">
+          ${cols.map(c => `<label style="display:flex;align-items:center;gap:8px;cursor:${c.always ? 'not-allowed' : 'pointer'};opacity:${c.always ? '.6' : '1'}">
+            <input type="checkbox" class="mcol-cb" value="${c.key}" ${isColVisible(c) ? 'checked' : ''} ${c.always ? 'disabled checked' : ''}> ${escapeHtml(c.label)}${c.always ? ' <span class="text-mute" style="font-size:10px">(always)</span>' : ''}
+          </label>`).join('')}
+        </div>
+      </div>`,
+      actions: [
+        { label: 'Reset to default', class: 'btn ghost', onclick: () => { if (state.settings) delete state.settings.memberColsV2; save(); closeModal(); render(); } },
+        { label: 'Close', class: 'btn ghost', onclick: closeModal },
+        { label: 'Apply', class: 'btn primary', onclick: () => {
+            const chosen = $$('.mcol-cb').filter(cb => cb.checked && !cb.disabled).map(cb => cb.value);
+            if (!state.settings) state.settings = {};
+            state.settings.memberColsV2 = chosen; save(); closeModal(); render();
+          } },
+      ],
+    });
+  };
+  window.exportMembersChoice = function() {
+    const filtered = applyFilter();
+    const allActive = state.members.filter(m => !m.deleted);
+    showModal({
+      title: '📥 Export members',
+      body: `<div style="font-size:13px;line-height:1.7">
+        <p>Which members would you like to export to CSV?</p>
+        <p class="text-mute">The CSV always includes the full detail set (name, Arabic name, sport, coach, phone, phone 2, email, QID, birthdate, level, joined, expiry, status).</p>
+      </div>`,
+      actions: [
+        { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+        { label: `Filtered (${filtered.length})`, class: 'btn ghost', onclick: () => { closeModal(); exportMembersCSV(filtered); } },
+        { label: `All members (${allActive.length})`, class: 'btn primary', onclick: () => { closeModal(); exportMembersCSV(allActive); } },
+      ],
+    });
+  };
+
   function applyFilter(f = filter) {
     return state.members.filter(m => {
       // Archived (soft-deleted) members are hidden unless explicitly requested
@@ -669,6 +814,8 @@ PAGES.members = (main) => {
           const qDigits = raw.replace(/\D/g, '');
           if (qDigits.length >= 4) hit = phoneSearchMatches(m.phone, qDigits) || phoneSearchMatches(m.phone2, qDigits);
         }
+        // Fuzzy (typo-tolerant) fallback on the names, e.g. "mohamed" → "Mohammed".
+        if (!hit && q.length >= 3 && !/\d/.test(q)) hit = fuzzyMatch(m.name, q) || fuzzyMatch(m.nameArabic, q);
         if (!hit) return false;
       }
       if (f.status !== 'all' && f.status !== 'Archived' && memberStatus(m) !== f.status) return false;
@@ -705,7 +852,17 @@ PAGES.members = (main) => {
   }
 
   function refresh() {
-    const allRows = applyFilter();
+    let allRows = applyFilter();
+    const cols = visibleColumns();
+    // Header sort
+    if (sort.key) {
+      const d = cols.find(x => x.key === sort.key);
+      if (d) allRows = allRows.slice().sort((a, b) => {
+        let va = d.sortVal(a), vb = d.sortVal(b);
+        if (d.num) { va = +va || 0; vb = +vb || 0; return (va - vb) * sort.dir; }
+        return String(va).localeCompare(String(vb)) * sort.dir;
+      });
+    }
     const rows = paginate(allRows, pg);
 
     // "Filters hiding rows" banner — same helper as the Enrolled report. The
@@ -742,65 +899,24 @@ PAGES.members = (main) => {
       }
     }
     $('#members-tbody').innerHTML = rows.length ? rows.map(m => {
-      // Latest attendance — prefer live grid count over static field
-      const mostRecent = (m.subscriptions || []).filter(s => s.totalClasses).slice(-1)[0];
-      const attCell = mostRecent ? (() => {
-        const liveSp = liveAttendanceCount(m, mostRecent.activity);
-        const att = liveSp.total > 0 ? liveSp.y : (mostRecent.attendedClasses || 0);
-        const pct = mostRecent.totalClasses ? Math.round(att / mostRecent.totalClasses * 100) : null;
-        const color = pct == null ? 'var(--text-mute)' : pct >= 75 ? 'var(--green)' : pct >= 40 ? 'var(--accent-2)' : 'var(--red)';
-        return `<span class="num" style="color:${color};font-weight:600">${att}/${mostRecent.totalClasses}</span>`;
-      })() : '<span class="text-mute">—</span>';
-
-      // Last renewal = most recent start date across subscriptions + renewals
-      const lastRenewal = lastRenewalDate(m);
-      const daysToExpiry = daysUntil(m.expiryDate);
-      const expiryCell = m.expiryDate
-        ? (() => {
-            const color = daysToExpiry == null ? 'inherit'
-              : daysToExpiry < 0 ? 'var(--red)'
-              : daysToExpiry <= (state.settings?.expiringSoonDays || 3) ? 'var(--accent-2)'
-              : 'inherit';
-            const suffix = daysToExpiry == null ? ''
-              : daysToExpiry < 0 ? ` <span style="font-size:10px;color:var(--red)">(${Math.abs(daysToExpiry)}d ago)</span>`
-              : daysToExpiry <= (state.settings?.expiringSoonDays || 3) ? ` <span style="font-size:10px;color:var(--accent-2);font-weight:600">⚠ ${daysToExpiry}d</span>`
-              : '';
-            return `<span style="color:${color}">${fmtDate(m.expiryDate)}</span>${suffix}`;
-          })()
-        : '<span class="text-mute">—</span>';
-
       return `
       <tr style="cursor:pointer" data-id="${m.id}">
         <td style="text-align:center" onclick="event.stopPropagation()"><input type="checkbox" class="member-cb" value="${m.id}" ${selected.has(m.id) ? 'checked' : ''} style="cursor:pointer"></td>
-        <td>
-          <div style="display:flex;align-items:center;gap:10px">
-            <div class="avatar" style="width:32px;height:32px;font-size:11px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(m.name)}</div>
-            <div>
-              <div style="font-weight:600">${escapeHtml(m.name)}${m.nameArabic ? ` · <span style="color:var(--text-dim);font-weight:normal" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}</div>
-              <div class="text-mute" style="font-size:11px">${isRealPhone(m.phone) ? phoneCell(m.phone) : (m.email ? escapeHtml(m.email) : '')}</div>
-            </div>
-          </div>
-        </td>
-        <td>${escapeHtml(m.sport)}${(m.enrollments && m.enrollments.length > 1) ? ` <span class="badge blue" style="font-size:9px;padding:1px 5px" title="${m.enrollments.map(e => escapeHtml(e.sport)).join(', ')}">+${m.enrollments.length - 1}</span>` : ''}</td>
-        <td>${m.sport === SUMMER_CAMP && (!m.enrollments || m.enrollments.every(e => e.sport === SUMMER_CAMP)) ? '<span class="text-mute" style="font-style:italic">—</span>' : escapeHtml(coachName(m.coachId))}</td>
-        <td>${attCell}</td>
-        <td>${lastRenewal ? fmtDate(lastRenewal) : '<span class="text-mute">—</span>'}</td>
-        <td>${expiryCell}</td>
-        <td><span class="badge ${m.deleted ? 'pending' : memberStatus(m).toLowerCase()}">${m.deleted ? '📦 Archived' : memberStatus(m)}</span></td>
+        ${cols.map(c => `<td>${c.cell(m)}</td>`).join('')}
         <td class="text-right" style="white-space:nowrap">
           ${m.deleted ? `
             <button class="btn primary sm" onclick="event.stopPropagation();restoreMember(${m.id})" title="Restore this archived member">↩ Restore</button>
+            <button class="btn ghost sm" onclick="event.stopPropagation();permanentlyDeleteMember(${m.id})" title="Permanently delete — cannot be undone" style="color:var(--red)">🗑 Delete forever</button>
           ` : `
-            <button class="btn ghost sm" onclick="event.stopPropagation();viewMember(${m.id})" title="View member details">👁</button>
             <button class="btn ghost sm" onclick="event.stopPropagation();addRenewal(${m.id})" title="Record renewal">🔄</button>
             <button class="btn ghost sm" onclick="event.stopPropagation();switchSport(${m.id})" title="Switch sport / change coach">🔀</button>
-            <button class="btn ghost sm" onclick="event.stopPropagation();openMemberHistory(${m.id})" title="View full history">📜</button>
+            <button class="btn ghost sm" onclick="event.stopPropagation();duplicateMember(${m.id})" title="Add sibling — copy ALL details to a new member">⧉</button>
             <button class="btn ghost sm" onclick="event.stopPropagation();editMember(${m.id})">✏️</button>
             <button class="btn ghost sm" onclick="event.stopPropagation();deleteMember(${m.id})" title="Archive (soft delete)">🗑</button>
           `}
         </td>
       </tr>`;
-    }).join('') : `<tr><td colspan="9" class="empty"><div class="empty-icon">👥</div>No members match your filters</td></tr>`;
+    }).join('') : `<tr><td colspan="${cols.length + 2}" class="empty"><div class="empty-icon">👥</div>No members match your filters</td></tr>`;
 
     $('#members-count').textContent = `${allRows.length} of ${state.members.length}`;
 
@@ -842,6 +958,13 @@ PAGES.members = (main) => {
       };
     }
     updateBulkBar();
+
+    // Reflect the active sort on the column arrows (header is static across refreshes)
+    $$('.sort-ind').forEach(s => {
+      const k = s.getAttribute('data-k');
+      if (sort.key === k) { s.textContent = sort.dir > 0 ? '▲' : '▼'; s.style.opacity = '1'; }
+      else { s.textContent = '⇅'; s.style.opacity = '.35'; }
+    });
   }
 
   main.innerHTML = `
@@ -864,6 +987,7 @@ PAGES.members = (main) => {
       </div>
       <div class="topbar-actions">
         <button class="btn ghost" id="find-duplicates" title="Scan all members for duplicate phone numbers">🔍 Find Duplicates</button>
+        <button class="btn ghost" id="member-columns" title="Show / hide table columns">🧩 Columns</button>
         <button class="btn ghost" id="export-members">📥 Export CSV</button>
         <button class="btn primary" id="add-member">+ Add Member</button>
       </div>
@@ -939,13 +1063,10 @@ PAGES.members = (main) => {
           <thead>
             <tr>
               <th style="width:36px;text-align:center"><input type="checkbox" id="members-select-all" title="Select/clear all on this page" style="cursor:pointer"></th>
-              <th>Member</th>
-              <th>Sport</th>
-              <th>Coach</th>
-              <th>Attendance</th>
-              <th>Last Renewal</th>
-              <th>Expiry</th>
-              <th>Status</th>
+              ${visibleColumns().map(c => `
+                <th data-sortkey="${c.key}" style="cursor:pointer;user-select:none" title="Sort by ${escapeHtml(c.label)}">
+                  <div style="display:flex;align-items:center;gap:4px;white-space:nowrap">${escapeHtml(c.label)} <span class="sort-ind" data-k="${c.key}" style="opacity:.35;font-size:10px">⇅</span></div>
+                </th>`).join('')}
               <th class="text-right">Actions</th>
             </tr>
           </thead>
@@ -979,8 +1100,18 @@ PAGES.members = (main) => {
   $('#filter-nationality').addEventListener('change', e => { filter.nationality = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#filter-incomplete').addEventListener('change', e => { filter.incomplete = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#add-member').addEventListener('click', () => addMember());
-  $('#export-members').addEventListener('click', () => exportMembersCSV(applyFilter()));
+  $('#export-members').addEventListener('click', () => exportMembersChoice());
+  const colBtn = $('#member-columns'); if (colBtn) colBtn.addEventListener('click', () => openMemberColumns());
   $('#find-duplicates').addEventListener('click', showDuplicatesModal);
+
+  // ── Header sort (click a column) ──
+  $$('thead th[data-sortkey]').forEach(th => {
+    th.addEventListener('click', () => {
+      const k = th.getAttribute('data-sortkey');
+      if (sort.key === k) sort.dir = -sort.dir; else { sort.key = k; sort.dir = 1; }
+      pg.page = 1; refresh();
+    });
+  });
 
   // Bulk action bar (static elements — wired once)
   $('#members-bulk-clear').addEventListener('click', () => { selected.clear(); refresh(); });
@@ -1055,7 +1186,8 @@ function showDuplicatesModal() {
           <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap">
             <button class="btn ghost sm" onclick="closeModal();viewMember(${m.id})" title="Open profile">👁 View</button>
             ${m.deleted
-              ? `<button class="btn ghost sm" onclick="closeModal();restoreMember(${m.id})" title="Restore archived" style="color:var(--green)">↩ Restore</button>`
+              ? `<button class="btn ghost sm" onclick="closeModal();restoreMember(${m.id})" title="Restore archived" style="color:var(--green)">↩ Restore</button>
+                 <button class="btn ghost sm" onclick="closeModal();permanentlyDeleteMember(${m.id})" title="Permanently delete — cannot be undone" style="color:var(--red)">🗑 Delete forever</button>`
               : `<button class="btn ghost sm" onclick="closeModal();deleteMember(${m.id})" title="Archive (soft delete)" style="color:var(--red)">📦 Archive</button>`}
           </td>
         </tr>
@@ -1224,32 +1356,36 @@ window.editMember = function(id) {
   if (m) showMemberForm({ ...m });
 };
 
-// Build the pre-filled stub for a duplicated member (pure → unit-testable).
-// Copies shared family/contact fields; blanks identity; carries no financials.
+// Build the pre-filled stub for an "Add Sibling" duplicate (pure → unit-testable).
+// Copies ALL of the member's profile + plan details (name, IDs, contact, nationality,
+// level, sport/coach + every enrollment, etc.). Deliberately drops the transactional /
+// status history so the sibling starts fresh and isn't shown as already paid: no
+// subscriptions, attendance, expiry, renewals, switches, payments, freezes, or archive
+// flags. (Invoices live in state.invoices keyed by customerId, so they never copy.)
 function buildMemberDuplicateStub(src, newId) {
-  return {
-    id: newId,
-    name: '', nameArabic: '', qid: '', birthdate: '', level: '',
-    phone: src.phone || '',
-    phone2: src.phone2 || '',
-    email: src.email || '',
-    nationality: src.nationality || '',
-    joinDate: TODAY,
-    status: 'Active',
-    _duplicatedFrom: src.name || null,
-  };
+  const clone = JSON.parse(JSON.stringify(src));
+  const EXCLUDE = [
+    'id', 'subscriptions', 'attendance', 'attendanceGrid', 'expiryDate', 'startDate',
+    'validity', 'renewals', 'sportSwitches', 'payments', 'paymentHistory',
+    'currentFreezeUntil', 'freeze', 'freezes', 'freezeHistory', 'deleted', 'deletedAt',
+    'deletedReason', 'lastRemindedAt', 'createdAt', 'updatedAt', 'recentAt',
+  ];
+  EXCLUDE.forEach(k => { delete clone[k]; });
+  clone.id = newId;
+  clone.status = 'Active';
+  clone._duplicatedFrom = src.name || null;
+  return clone;
 }
 
-// Duplicate a member's FAMILY/contact info into a fresh Add-Member form — handy
-// for siblings. Copies shared fields (phone, email, nationality, join date) but
-// blanks person-specific identity (name, QID, birthdate, level) and carries over
-// NO financial records (no enrollments, invoices, attendance, payments).
+// Add a sibling: copy ALL of a member's details into a fresh Add-Member form. The
+// new record gets a new id and starts unpaid (no financial/attendance history), so
+// saving registers the sibling as their own new member.
 window.duplicateMember = function(id) {
   const src = state.members.find(x => x.id === id);
   if (!src) return;
   closeModal();
   showMemberForm(buildMemberDuplicateStub(src, nextId(state.members)));
-  toast(`Copied contact info from ${src.name || 'member'} — enter the new name + sport`);
+  toast(`Copied all details from ${src.name || 'member'} — update the name/QID, then save to register the sibling`);
 };
 
 window.freezeMember = function(id) {
@@ -1419,7 +1555,42 @@ window.restoreMember = function(id) {
   toast(`Restored ${m.name}`);
 };
 
-// ─── Multi-sport enrollment rows (used by member form) ──────────────
+// Hard-delete an ARCHIVED member. Irreversible (unlike restore). Lets the user
+// choose whether to also purge linked invoices/sales/rentals, with a final confirm.
+window.permanentlyDeleteMember = function(id) {
+  const m = state.members.find(x => x.id === id);
+  if (!m) return;
+  if (!m.deleted) { toast('Archive the member first, then you can permanently delete.', 'error'); return; }
+  const invs = (state.invoices || []).filter(i => i.customerId === id).length;
+  const sales = (state.sales || []).filter(s => s.customerId === id).length;
+  const rentals = (state.rentals || []).filter(r => r.memberId === id).length;
+  const purge = (alsoRecords) => {
+    state.members = state.members.filter(x => x.id !== id);
+    if (alsoRecords) {
+      state.invoices = (state.invoices || []).filter(i => i.customerId !== id);
+      state.sales = (state.sales || []).filter(s => s.customerId !== id);
+      state.rentals = (state.rentals || []).filter(r => r.memberId !== id);
+    }
+    audit('member.purge', `member:${id}`, `Permanently deleted ${m.name}${alsoRecords ? ' + linked records' : ' (records kept)'}`,
+      { memberId: id, name: m.name, alsoRecords, invoices: invs, sales, rentals });
+    save(); closeModal(); render();
+    toast(`Permanently deleted ${m.name}`);
+  };
+  const linkedBits = [invs ? `${invs} invoice${invs > 1 ? 's' : ''}` : '', sales ? `${sales} sale${sales > 1 ? 's' : ''}` : '', rentals ? `${rentals} rental${rentals > 1 ? 's' : ''}` : ''].filter(Boolean);
+  showModal({
+    title: `⚠️ Permanently delete "${escapeHtml(m.name)}"?`,
+    body: `<div style="font-size:13px;line-height:1.65">
+      <p><b>This cannot be undone.</b> Unlike Archive, the member will be erased and can't be restored.</p>
+      <p>${linkedBits.length ? `Linked financial records: <b>${linkedBits.join(', ')}</b>.` : 'No linked invoices, sales, or rentals.'}</p>
+      <p class="text-mute">💾 Tip: back up your data first (Settings → Backup). Choose what to remove:</p>
+    </div>`,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      ...(linkedBits.length ? [{ label: 'Member only (keep records)', class: 'btn ghost', onclick: () => { if (confirm(`Permanently delete "${m.name}" but KEEP their ${linkedBits.join(', ')} as history?`)) purge(false); } }] : []),
+      { label: linkedBits.length ? '🗑 Delete everything' : '🗑 Delete forever', class: 'btn danger', onclick: () => { if (confirm(`Last chance — permanently erase "${m.name}"${linkedBits.length ? ' AND all their ' + linkedBits.join(', ') : ''}? This CANNOT be undone.`)) purge(true); } },
+    ],
+  });
+};
 // Each row: { sport, coachId, classes, price }. Lets a member register into
 // several sports at once, e.g. Karate 6/350 + Kick-Boxing 4/300 + Swimming 6/450.
 window._enrollRows = [];
@@ -1679,7 +1850,17 @@ function showMemberForm(m) {
     return found;
   }
   if (isNew) {
-    window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', start: TODAY, validity: DEFAULT_VALIDITY, paid: false }];
+    if (m._duplicatedFrom && m.enrollments && m.enrollments.length) {
+      // Sibling copy: pre-fill the same sports/coaches/classes/prices, but as a
+      // fresh unpaid registration starting today (no carried-over payments).
+      window._enrollRows = m.enrollments.map(e => ({
+        sport: e.sport, coachId: e.coachId,
+        classes: e.classes ?? '', price: e.price ?? '',
+        start: TODAY, validity: DEFAULT_VALIDITY, paid: false,
+      }));
+    } else {
+      window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', start: TODAY, validity: DEFAULT_VALIDITY, paid: false }];
+    }
   } else if (m.enrollments && m.enrollments.length) {
     window._enrollRows = m.enrollments.map(e => {
       const sub = latestSubFor(m, e.sport);
@@ -1718,9 +1899,9 @@ function showMemberForm(m) {
     window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', start: m.startDate || TODAY, validity: m.validity || DEFAULT_VALIDITY, paid: false }];
   }
   showModal({
-    title: isNew ? (m._duplicatedFrom ? `Add Member (copied from ${escapeHtml(m._duplicatedFrom)})` : 'Add Member') : 'Edit Member',
+    title: isNew ? (m._duplicatedFrom ? `Add Sibling (copied from ${escapeHtml(m._duplicatedFrom)})` : 'Add Member') : 'Edit Member',
     body: `
-      ${m._duplicatedFrom ? `<div style="margin-bottom:12px;padding:9px 12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px;font-size:12px;color:var(--text-dim)">⧉ Contact info copied from <b>${escapeHtml(m._duplicatedFrom)}</b>. Enter this sibling's name, QID and sport — nothing financial was copied.</div>` : ''}
+      ${m._duplicatedFrom ? `<div style="margin-bottom:12px;padding:9px 12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px;font-size:12px;color:var(--text-dim)">⧉ All details copied from <b>${escapeHtml(m._duplicatedFrom)}</b>. Update this sibling's <b>name</b>, <b>QID</b> and <b>birthdate</b>. Nothing financial or attendance was copied — saving registers them fresh.</div>` : ''}
       <div style="margin-bottom:14px;padding:10px 12px;background:rgba(245,158,11,.08);border:1px dashed var(--accent-2);border-radius:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <button type="button" class="btn ghost sm" id="id-scan-btn" style="color:var(--accent-2);border:1px solid var(--accent-2);white-space:nowrap">📷 Scan Qatar ID</button>
         <input type="file" id="id-scan-file" accept="image/*" capture="environment" style="display:none" />
@@ -2978,7 +3159,8 @@ PAGES.schedule = (main) => {
   // Builds a self-contained HTML snapshot and uses html2canvas-style technique
   // via a hidden iframe + canvas. Since we can't load external libs, we use
   // a pure-JS approach: serialize to SVG → render to canvas → toBlob → download.
-  function exportPng() {
+  function exportPng(lang) {
+    const ar = lang === 'ar';
     // Render the schedule into an SVG-style canvas drawing
     const cellW = 180, cellH = 90, timeW = 110, headerH = 60, brandH = 100;
     const BLOCK_H = 40, GAP = 4;
@@ -2995,26 +3177,46 @@ PAGES.schedule = (main) => {
     const bodyH = rowHeights.reduce((a, b) => a + b, 0);
     const H = brandH + headerH + bodyH + 40;
 
+    // RTL coordinate helpers: in Arabic the TIME column sits on the right and the
+    // days fill leftward (Saturday rightmost → Thursday leftmost).
+    const timeX = ar ? (W - timeW) : 0;
+    const dayX = (i) => ar ? (W - timeW - (i + 1) * cellW) : (timeW + i * cellW);
+
     const canvas = document.createElement('canvas');
     canvas.width = W * 2;   // 2x for retina-quality
     canvas.height = H * 2;
     const ctx = canvas.getContext('2d');
     ctx.scale(2, 2);
+    try { ctx.direction = ar ? 'rtl' : 'ltr'; } catch (e) {}
 
     // Brand header
     ctx.fillStyle = '#0a0e1a';
     ctx.fillRect(0, 0, W, brandH);
-    ctx.fillStyle = '#f26060';
-    ctx.font = 'bold 32px sans-serif';
-    ctx.fillText('★ BLACK STARS', 24, 50);
-    ctx.fillStyle = '#9ba6b6';
-    ctx.font = '14px sans-serif';
-    ctx.fillText('Sports Club · Class Schedule', 24, 75);
-    ctx.fillStyle = '#5b8def';
-    ctx.font = 'bold 28px sans-serif';
-    ctx.textAlign = 'right';
-    const monthName = new Date().toLocaleString('en', { month: 'long', year: 'numeric' }).toUpperCase();
-    ctx.fillText(monthName, W - 24, 60);
+    const monthName = ar ? monthNameAR(new Date()) : new Date().toLocaleString('en', { month: 'long', year: 'numeric' }).toUpperCase();
+    if (ar) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#f26060';
+      ctx.font = 'bold 32px sans-serif';
+      ctx.fillText('★ بلاك ستارز', W - 24, 50);
+      ctx.fillStyle = '#9ba6b6';
+      ctx.font = '15px sans-serif';
+      ctx.fillText('نادٍ رياضي · جدول الحصص', W - 24, 78);
+      ctx.fillStyle = '#5b8def';
+      ctx.font = 'bold 28px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(monthName, 24, 60);
+    } else {
+      ctx.fillStyle = '#f26060';
+      ctx.font = 'bold 32px sans-serif';
+      ctx.fillText('★ BLACK STARS', 24, 50);
+      ctx.fillStyle = '#9ba6b6';
+      ctx.font = '14px sans-serif';
+      ctx.fillText('Sports Club · Class Schedule', 24, 75);
+      ctx.fillStyle = '#5b8def';
+      ctx.font = 'bold 28px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(monthName, W - 24, 60);
+    }
     ctx.textAlign = 'left';
 
     // Column headers
@@ -3023,11 +3225,11 @@ PAGES.schedule = (main) => {
     ctx.fillRect(0, headerY, W, headerH);
     ctx.fillStyle = '#e8eaf0';
     ctx.font = 'bold 14px sans-serif';
-    ctx.fillText('TIME', 30, headerY + 38);
+    ctx.textAlign = 'center';
+    ctx.fillText(ar ? 'الوقت' : 'TIME', timeX + timeW / 2, headerY + 38);
     DAYS.forEach((d, i) => {
-      const x = timeW + i * cellW + cellW / 2;
-      ctx.textAlign = 'center';
-      ctx.fillText(d.label, x, headerY + 38);
+      const x = dayX(i) + cellW / 2;
+      ctx.fillText(ar ? dayNameAR(d.key) : d.label, x, headerY + 38);
     });
     ctx.textAlign = 'left';
 
@@ -3037,15 +3239,15 @@ PAGES.schedule = (main) => {
       const rowH = rowHeights[rowIdx];
       // Time cell
       ctx.fillStyle = '#131826';
-      ctx.fillRect(0, y, timeW, rowH);
+      ctx.fillRect(timeX, y, timeW, rowH);
       ctx.fillStyle = '#e8eaf0';
       ctx.font = 'bold 13px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(slot.label, timeW / 2, y + rowH / 2 + 4);
+      ctx.fillText(ar ? timeLabelAR(slot.label) : slot.label, timeX + timeW / 2, y + rowH / 2 + 4);
 
       // Day cells
       DAYS.forEach((day, colIdx) => {
-        const x = timeW + colIdx * cellW;
+        const x = dayX(colIdx);
         const cls = classesAt(day.key, slot.hour).filter(isFiltered);
         // Cell background
         ctx.fillStyle = colIdx % 2 === 0 ? '#0e131f' : '#0a0e1a';
@@ -3072,7 +3274,8 @@ PAGES.schedule = (main) => {
             // Labels
             const cx = x + cellW / 2, cy = by + blockH / 2;
             const coach = state.coaches.find(co => co.id === c.coachId);
-            const txt = `${sportEmoji(c.sport)} ${c.sport.toUpperCase()}`;
+            const sportTxt = ar ? sportNameAR(c.sport) : c.sport.toUpperCase();
+            const txt = `${sportEmoji(c.sport)} ${sportTxt}`;
             ctx.fillStyle = 'white';
             ctx.textAlign = 'center';
             ctx.font = `bold ${single ? 15 : 12}px sans-serif`;
@@ -3080,7 +3283,8 @@ PAGES.schedule = (main) => {
             if (coach) {
               ctx.font = `${single ? 12 : 9}px sans-serif`;
               ctx.fillStyle = 'rgba(255,255,255,0.92)';
-              ctx.fillText(coach.name, cx, cy + (single ? 18 : 9));
+              const cn = (ar && coach.nameArabic) ? coach.nameArabic : coach.name;
+              ctx.fillText(cn, cx, cy + (single ? 18 : 9));
             }
           });
         }
@@ -3091,20 +3295,27 @@ PAGES.schedule = (main) => {
     // Footer
     ctx.fillStyle = '#5a627a';
     ctx.font = '11px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText('Generated ' + new Date().toLocaleDateString(), 24, H - 16);
-    ctx.textAlign = 'right';
-    ctx.fillText('Waab · Village Resort · Doha · Qatar', W - 24, H - 16);
+    if (ar) {
+      ctx.textAlign = 'right';
+      ctx.fillText('تم الإنشاء ' + new Date().toLocaleDateString('ar-EG'), W - 24, H - 16);
+      ctx.textAlign = 'left';
+      ctx.fillText('الوعب · فيلِج ريزورت · الدوحة · قطر', 24, H - 16);
+    } else {
+      ctx.textAlign = 'left';
+      ctx.fillText('Generated ' + new Date().toLocaleDateString(), 24, H - 16);
+      ctx.textAlign = 'right';
+      ctx.fillText('Waab · Village Resort · Doha · Qatar', W - 24, H - 16);
+    }
 
     canvas.toBlob(blob => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      const fname = `BlackStars-Schedule-${monthName.replace(/\s/g,'-')}.png`;
+      const fname = `BlackStars-Schedule-${ar ? 'AR-' : ''}${monthName.replace(/\s/g,'-')}.png`;
       a.download = fname;
       a.click();
       URL.revokeObjectURL(url);
-      toast('📸 Schedule PNG saved');
+      toast(ar ? '📸 تم حفظ الجدول (عربي)' : '📸 Schedule PNG saved');
     });
   }
 
@@ -3165,6 +3376,7 @@ PAGES.schedule = (main) => {
       <div class="topbar-actions">
         <button class="btn ghost" id="sch-clear" title="Remove all scheduled classes">🗑 Clear all</button>
         <button class="btn primary" id="sch-png">📸 Export PNG</button>
+        <button class="btn ghost" id="sch-png-ar" title="تصدير الجدول بالعربية">📸 PNG (عربي)</button>
       </div>
     </div>
 
@@ -3213,7 +3425,8 @@ PAGES.schedule = (main) => {
   $('#sch-filter-sport').addEventListener('change', e => { filter.sport = e.target.value; refresh(); });
 
   // Export PNG
-  $('#sch-png').addEventListener('click', exportPng);
+  $('#sch-png').addEventListener('click', () => exportPng('en'));
+  const pngAr = $('#sch-png-ar'); if (pngAr) pngAr.addEventListener('click', () => exportPng('ar'));
 
   // Clear all
   $('#sch-clear').addEventListener('click', () => {
