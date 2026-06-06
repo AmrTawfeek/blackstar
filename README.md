@@ -37,7 +37,7 @@ modes. Run: node tests/logic-tests.js and node tests/render-tests.js.
 
 ## To load
 Replace files in C:\Users\kshawky\Desktop\CRM\blackstars-localhost\, refresh,
-confirm footer reads v5.10.0.
+confirm footer reads v5.18.0.
 
 ## 4.85.0 note — frozen vs expired (attendance basis)
 - Member still ACTIVE → coach paid per class attended; rest pending.
@@ -439,3 +439,106 @@ needs a quick visual check after loading. Tests: 243 assertions.
   icon (history lives inside the member card). Row actions are now: 🔄 renew · 🔀 switch ·
   ⧉ sibling · ✏️ edit · 🗑 archive.
 - Tests: 330 assertions.
+
+
+## 5.11.0 note — Membership expiry is now editable (still auto by default)
+- The member form's **Membership expiry** is now an editable date input instead of a
+  read-only readout. By default it auto-fills with the latest sport end and keeps tracking
+  it live as you change start/validity/sports.
+- If you type your own date it becomes a **manual override** — the auto-recompute stops
+  touching it, and a "✎ Manual override · ↻ reset to auto" hint appears. Click **↻ reset
+  to auto** to go back to the computed value.
+- Editing an existing member whose stored expiry already differs from the auto value opens
+  in manual mode (so a previous override is preserved and still editable).
+- On save, the expiry you see is the expiry that's stored (clear it to fall back to auto).
+- Tests: 333 assertions.
+
+
+## 5.12.0 note — Withdraw: grace-period refund + Withdrawn status
+- The withdraw/refund flow (↩ Withdraw on a paid sport) now factors in a **grace period**
+  as well as attendance:
+  - Member keeps the value of classes attended (perClass × attended).
+  - The unused portion is refundable. **Within the grace window** (default 7 days from the
+    sport's start) the full unused amount is refunded; **after grace** a configurable admin
+    fee (default 20% of the unused) is deducted.
+  - The modal shows the breakdown live (days since start, within/after grace, used, unused,
+    fee) and lets you tweak the grace days, fee %, and final refund per withdrawal.
+  - Defaults come from settings.refundGraceDays / settings.refundFeePct if set.
+- New **Withdrawn** member status: when the last sport is withdrawn the member is marked
+  **Withdrawn** (badge + status filter + member-form status option). Re-enrolling/editing
+  can set them back to Active.
+- Tests: 348 assertions.
+
+
+## 5.13.0 note — Withdrawn polish + refund policy settings (autonomous batch)
+Follow-ups that close the loop on the new Withdrawn/refund feature:
+- **Re-activation fixed.** Renewing a withdrawn member (🔄) now clears the Withdrawn flag
+  (Withdrawn was terminal and would otherwise stick forever). Editing a withdrawn member and
+  giving them an enrollment also flips them back to Active automatically.
+- **Withdrawn members excluded from renewal noise.** They no longer appear in the dashboard
+  expiry alerts, "renewing this week", or the Expiring page (they're not renewing).
+- **Members subtitle** now shows a "↩ N withdrawn" count when any exist.
+- **Refund policy in Settings.** Preferences now has "Refund grace period (days)" and
+  "Admin fee after grace (%)" — these set the defaults used by the ↩ Withdraw refund
+  calculator (still overridable per withdrawal).
+- Tests: 349 assertions; 25/25 pages render.
+
+
+## 5.14.0 note — Products: original (cost) value + sell value totals
+- Products now have two values: **Original value / cost** (what you paid) and **Sell price**.
+  Both are in the New/Edit Product form.
+- The table shows **Cost**, **Sell price**, **Stock**, and a per-row **Stock value** (stock × sell).
+- Header + KPI cards now show **two totals**:
+  - **Sell value** = Σ stock × sell price (the catalog's retail value).
+  - **Inventory cost (original)** = Σ stock × cost (the amount paid for current stock —
+    "amount supposed to pay"), with the **margin** (sell − cost) shown when costs are set.
+- Existing products start with no cost (shows "—"); fill it in via Edit and the cost total
+  populates. Tests: 352 assertions.
+
+
+## 5.15.0 note — Salaries: exclude specific students from a coach's commission
+- Each commission-earning coach row on the Salaries page has a new **👥** button.
+- It opens a checklist of every member who contributes commission to that coach. **Untick**
+  a member to exclude them from this coach's salary (e.g. a comped member or the coach's
+  own child); tick to include. "Select all" / "Exclude all" shortcuts included.
+- Exclusions are per-coach and persistent (settings.salaryExclusions), and apply to both
+  commission bases (payment and attendance). The 👥 button shows the count of exclusions.
+- Excluding a member only changes that coach's commission — the member keeps their
+  membership, invoices and attendance untouched.
+- Tests: 362 assertions (incl. an end-to-end check that excluding a member lowers the
+  coach's commission base).
+
+
+## 5.16.0 note — Expiring: "Recently expired" win-back view (configurable)
+- The Expiring page has a new **🔴 Recently expired (≤Nd)** button (with a live count) and a
+  matching option in the status filter. It shows members who expired **within the last N days**
+  — the win-back window — instead of all 79 ever-expired.
+- **N is configurable** in Settings → Preferences → "Recently-expired window (days)" (default 15,
+  saved as settings.recentlyExpiredDays).
+- Reuses the existing filters/bulk-reminder tools, so you can WhatsApp the recent lapses in one go.
+- Tests: 367 assertions.
+
+
+## 5.17.0 note — Paid enrollment price is now editable (invoice stays in sync)
+- The Price field on a PAID sport enrollment is no longer locked — you can correct it.
+- On save, changing a paid price **reconciles the linked invoice**: the line item price and
+  invoice total update, so REVENUE and COACH COMMISSION follow the new figure (no silent
+  desync, which is why it was locked before). An audit entry (`invoice.price_edit`) records
+  the old → new price.
+- If the invoice was paid in full, it stays paid in full at the corrected amount (treated as
+  fixing the recorded price). If it was partially paid, the amount changes and the balance
+  due updates accordingly (payments untouched).
+- For an actual refund still use ↩ Withdraw; to remove a mistaken enrollment use 🗑.
+- Tests: 375 assertions (incl. full-paid and partial-paid reconcile cases).
+
+
+## 5.18.0 note — Attendance page: 4 fixes
+1. **Phone search** now ignores spaces and the country code — typing `66400661` matches
+   `+974 6640 0661` / `+97466400661`. Name search also tolerates typos (fuzzy).
+2. **"Attended" filter** now narrows the day columns to the attended days only (and
+   "Not attended" to absent days). Totals/rate still reflect the full selected scope.
+3. **"All months"** now shows a whole-year summary: one column per month with the present
+   (Y) count for each student/sport, plus a year Total — instead of just the latest month.
+4. **Export PDF / CSV** now follow the on-screen filters: filtered rows, the selected /
+   attended day columns, and the all-months summary when "All months" is chosen.
+- Tests: 384 assertions.

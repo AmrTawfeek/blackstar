@@ -136,6 +136,7 @@ PAGES.dashboard = (main) => {
   const expiredList = [], expiringList = [], finishedList = [], lowStockList = [];
   for (const m of state.members) {
     if (m.deleted) continue;  // archived members don't trigger alerts
+    if (memberStatus(m) === 'Withdrawn') continue;  // withdrawn members don't need renewal alerts
     // expiry-based
     if (m.expiryDate) {
       const d = daysUntil(m.expiryDate);
@@ -178,7 +179,7 @@ PAGES.dashboard = (main) => {
 
   // ─── Renewing this week (next 7 days) ───────────────────────────
   const renewingThisWeek = state.members
-    .filter(m => !m.deleted && m.expiryDate && memberStatus(m) !== 'Frozen')
+    .filter(m => !m.deleted && m.expiryDate && memberStatus(m) !== 'Frozen' && memberStatus(m) !== 'Withdrawn')
     .map(m => ({ m, days: daysUntil(m.expiryDate) }))
     .filter(x => x.days != null && x.days >= 0 && x.days <= 7);
 
@@ -746,7 +747,7 @@ PAGES.members = (main) => {
         sortVal: m => (m.expiryDate || ''), getVal: m => m.expiryDate || '',
         cell: m => expiryCellHtml(m) },
       { key: 'status', label: 'Status', def: true, filter: 'select',
-        opts: () => ['Active', 'Expired', 'Frozen', 'Completed'],
+        opts: () => ['Active', 'Expired', 'Frozen', 'Completed', 'Withdrawn'],
         sortVal: m => memberStatus(m).toLowerCase(), getVal: m => memberStatus(m),
         cell: m => `<span class="badge ${m.deleted ? 'pending' : memberStatus(m).toLowerCase()}">${m.deleted ? '📦 Archived' : memberStatus(m)}</span>` },
     ];
@@ -976,12 +977,14 @@ PAGES.members = (main) => {
           const e = state.members.filter(m => memberStatus(m) === 'Expired').length;
           const f = state.members.filter(m => memberStatus(m) === 'Frozen').length;
           const c = state.members.filter(m => memberStatus(m) === 'Completed').length;
+          const w = state.members.filter(m => memberStatus(m) === 'Withdrawn').length;
           const parts = [
             `<span style="color:var(--green)">${a} active</span>`,
             `<span style="color:var(--red)">${e} expired</span>`,
           ];
           if (f) parts.push(`<span style="color:var(--blue)">❄️ ${f} frozen</span>`);
           if (c) parts.push(`<span style="color:var(--purple)">${c} completed</span>`);
+          if (w) parts.push(`<span style="color:var(--accent-2)">↩ ${w} withdrawn</span>`);
           return parts.join(' · ');
         })()}</div>
       </div>
@@ -1028,6 +1031,7 @@ PAGES.members = (main) => {
           <option value="Completed" ${filter.status === 'Completed' ? 'selected' : ''}>Completed</option>
           <option value="Frozen" ${filter.status === 'Frozen' ? 'selected' : ''}>❄️ Frozen</option>
           <option value="Expired" ${filter.status === 'Expired' ? 'selected' : ''}>Expired</option>
+          <option value="Withdrawn" ${filter.status === 'Withdrawn' ? 'selected' : ''}>↩ Withdrawn</option>
           <option value="Archived" ${filter.status === 'Archived' ? 'selected' : ''}>📦 Archived</option>
         </select>
         <div style="position:relative">
@@ -1670,15 +1674,25 @@ function enrollRowHtml(row, idx) {
         <div class="field" style="margin:0"><label style="font-size:10px">Sport <span style="color:var(--accent)">*</span></label><select data-en="sport" data-i="${idx}" ${row.paid ? 'disabled title="Already paid — use Switch Sport instead to change"' : ''}>${sportOpts}</select></div>
         ${coachField}
         ${classesField}
-        <div class="field" style="margin:0"><label style="font-size:10px">Price (QAR) <span style="color:var(--accent)">*</span></label><input data-en="price" data-i="${idx}" type="number" min="0" step="0.01" value="${row.price ?? ''}" placeholder="350" style="${priceStyle}" ${row.paid ? 'readonly title="Already paid — cannot edit price directly"' : ''} /></div>
+        <div class="field" style="margin:0"><label style="font-size:10px">Price (QAR) <span style="color:var(--accent)">*</span></label><input data-en="price" data-i="${idx}" type="number" min="0" step="0.01" value="${row.price ?? ''}" placeholder="350" style="${priceStyle}" ${row.paid ? 'title="Editing this updates the linked invoice (revenue + commission)"' : ''} /></div>
         ${buttonCell}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
         <div class="field" style="margin:0"><label style="font-size:10px">📅 Start date <span style="color:var(--accent)">*</span></label><input data-en="start" data-i="${idx}" type="date" value="${row.start || ''}" /></div>
         ${validityField}
       </div>
-      ${expiryHint ? `<div style="font-size:10px;color:var(--blue);margin-top:7px;padding-left:2px">${expiryHint}</div>` : ''}${isCamp ? `<div style="font-size:10px;color:var(--blue);margin-top:5px;padding-left:2px">🌞 Summer Camp · revenue goes to club, no coach commission</div>` : ''}${row.paid ? `<div style="font-size:10px;color:var(--text-mute);margin-top:5px;padding-left:2px">🔒 Paid — editing start/validity adjusts this sport's window. Use <b style="color:var(--accent-2)">↩ Withdraw</b> for a refund, <b style="color:var(--red)">🗑</b> to delete a mistake, or <b style="color:var(--blue)">Switch Sport</b> from the member profile.</div>` : ''}
+      ${expiryHint ? `<div style="font-size:10px;color:var(--blue);margin-top:7px;padding-left:2px">${expiryHint}</div>` : ''}${isCamp ? `<div style="font-size:10px;color:var(--blue);margin-top:5px;padding-left:2px">🌞 Summer Camp · revenue goes to club, no coach commission</div>` : ''}${row.paid ? `<div style="font-size:10px;color:var(--text-mute);margin-top:5px;padding-left:2px">🔒 Paid — editing the <b>price</b> adjusts the linked invoice (revenue + commission update too); editing start/validity adjusts this sport's window. For a refund use <b style="color:var(--accent-2)">↩ Withdraw</b>, <b style="color:var(--red)">🗑</b> to delete a mistake, or <b style="color:var(--blue)">Switch Sport</b> from the member profile.</div>` : ''}
     </div>`;
+}
+
+// Auto membership expiry = latest end across all enrolled sports (start + validity;
+// Summer Camp uses its day count). Returns 'YYYY-MM-DD' or '' if not computable.
+function autoExpiryFromRows() {
+  const ends = (window._enrollRows || []).map(r => {
+    const days = r.sport === SUMMER_CAMP ? (parseInt(r.classes) || 0) : (parseInt(r.validity) || 0);
+    return (r.start && days > 0) ? addDays(r.start, days) : null;
+  }).filter(Boolean).sort();
+  return ends.length ? ends[ends.length - 1] : '';
 }
 
 function renderEnrollRows() {
@@ -1691,14 +1705,18 @@ function renderEnrollRows() {
     const cls = window._enrollRows.reduce((s, r) => s + (parseInt(r.classes) || 0), 0);
     totalEl.textContent = `${window._enrollRows.length} sport${window._enrollRows.length !== 1 ? 's' : ''} · ${cls} classes/days · ${fmt(total)} QAR`;
   }
-  // Overall membership expiry = latest end across all sports (start + validity)
-  const readout = document.getElementById('f-expiry-readout');
-  if (readout) {
-    const ends = window._enrollRows.map(r => {
-      const days = r.sport === SUMMER_CAMP ? (parseInt(r.classes) || 0) : (parseInt(r.validity) || 0);
-      return (r.start && days > 0) ? addDays(r.start, days) : null;
-    }).filter(Boolean).sort();
-    readout.textContent = ends.length ? fmtDate(ends[ends.length - 1]) : '—';
+  // Membership expiry — editable date input. Auto-fills with the latest sport end
+  // and tracks it live, UNLESS the user has manually overridden the value.
+  const auto = autoExpiryFromRows();
+  const expInp = document.getElementById('f-expiry');
+  if (expInp && !window._expiryManual && auto) expInp.value = auto;
+  const expHint = document.getElementById('f-expiry-hint');
+  if (expHint) {
+    expHint.innerHTML = window._expiryManual
+      ? '✎ Manual override · <a id="f-expiry-auto" style="color:var(--blue);cursor:pointer">↻ reset to auto</a>'
+      : (auto ? `Auto from latest sport end: <b>${fmtDate(auto)}</b>` : 'Add a sport to compute the expiry.');
+    const autoLink = document.getElementById('f-expiry-auto');
+    if (autoLink) autoLink.onclick = () => { window._expiryManual = false; renderEnrollRows(); };
   }
   updatePaidNowHint();
   // Wire inputs
@@ -1898,6 +1916,12 @@ function showMemberForm(m) {
   } else {
     window._enrollRows = [{ sport: m.sport || SPORTS[0], coachId: m.coachId || state.coaches[0]?.id, classes: '', price: '', start: m.startDate || TODAY, validity: m.validity || DEFAULT_VALIDITY, paid: false }];
   }
+  // Membership expiry: default to auto (latest sport end). If the member already
+  // has a stored expiry that differs from the auto value, treat it as a manual
+  // override so editing the member preserves it (still editable / resettable).
+  const _autoExp = autoExpiryFromRows();
+  window._expiryManual = !!(m.expiryDate && _autoExp && m.expiryDate !== _autoExp);
+  const _expInit = (window._expiryManual ? m.expiryDate : (_autoExp || m.expiryDate)) || '';
   showModal({
     title: isNew ? (m._duplicatedFrom ? `Add Sibling (copied from ${escapeHtml(m._duplicatedFrom)})` : 'Add Member') : 'Edit Member',
     body: `
@@ -1944,11 +1968,12 @@ function showMemberForm(m) {
         <div class="field"><label>Status</label><select id="f-status">
           <option ${m.status==='Active'?'selected':''}>Active</option>
           <option ${m.status==='Expired'?'selected':''}>Expired</option>
+          <option ${m.status==='Withdrawn'?'selected':''}>Withdrawn</option>
         </select></div>
       </div>
       <div class="form-row">
         <div class="field"><label>First registration date <span class="text-mute" style="font-size:10px;font-weight:400">(blank = earliest sport's start)</span></label><input id="f-firstreg" type="date" value="${m.firstRegistration || ''}" /></div>
-        <div class="field"><label>Membership expiry <span class="text-mute" style="font-size:10px;font-weight:400">(auto — latest sport end)</span></label><div id="f-expiry-readout" style="padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-dim);font-size:13px">—</div></div>
+        <div class="field"><label>Membership expiry <span class="text-mute" style="font-size:10px;font-weight:400">(auto — latest sport end · editable)</span></label><input id="f-expiry" type="date" value="${_expInit}" onchange="window._expiryManual=true;renderEnrollRows()" /><div id="f-expiry-hint" class="text-mute" style="font-size:10px;margin-top:4px"></div></div>
       </div>
       ${isNew ? `
       <div style="margin-top:6px;padding:12px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px">
@@ -2157,9 +2182,9 @@ function showMemberForm(m) {
           firstRegistration: md.firstRegistration,
           startDate: md.startDate,
           joinDate: md.firstRegistration,
-          expiryDate: md.expiryDate,
+          expiryDate: ($('#f-expiry') && $('#f-expiry').value) ? $('#f-expiry').value : md.expiryDate,
           validity,                           // <-- primary sport's validity (back-compat)
-          status: $('#f-status').value,
+          status: ($('#f-status').value === 'Withdrawn' && enrollments.length) ? 'Active' : $('#f-status').value,
           subscriptions: m.subscriptions || [],
           renewals: m.renewals || [],
           months: m.months || [],
@@ -5732,6 +5757,7 @@ PAGES.salaries = (main) => {
             </button>
             <button class="btn ghost sm" onclick="showPayslip(${p.coachId}, '${p.month}')" title="Pay slip (PDF summary)">📄</button>
             <button class="btn ghost sm" onclick="showRevenueDetail(${p.coachId}, '${p.month}')" title="Revenue detail report (every member + sport)">📊</button>
+            ${p.commissionRate > 0 ? `<button class="btn ghost sm" onclick="manageCoachStudents(${p.coachId})" title="Include / exclude students from this coach's commission">👥${salaryExclusionSet(p.coachId).size ? `<span style="color:var(--accent-2);font-weight:700"> ${salaryExclusionSet(p.coachId).size}</span>` : ''}</button>` : ''}
           </td>
         </tr>
       `;
@@ -5880,6 +5906,57 @@ window.recordAdvance = function(coachId, monthKey) {
       }},
     ],
   });
+};
+
+// Include / exclude individual students from a coach's commission.
+window.manageCoachStudents = function(coachId) {
+  const c = state.coaches.find(x => x.id === coachId);
+  if (!c) return;
+  const students = coachStudents(coachId);
+  const excluded = salaryExclusionSet(coachId);
+  if (!students.length) {
+    showModal({
+      title: `👥 ${escapeHtml(c.name)} — students`,
+      body: `<div class="text-mute" style="font-size:13px">No members currently contribute commission to this coach.</div>`,
+      actions: [{ label: 'Close', class: 'btn primary', onclick: closeModal }],
+    });
+    return;
+  }
+  showModal({
+    title: `👥 ${escapeHtml(c.name)} — commission students`,
+    body: `<div style="font-size:13px;line-height:1.6">
+        <p class="text-mute">Untick a member to <b>exclude</b> them from this coach's commission (e.g. a comped member or the coach's own child). Excluded members still keep their membership — only this coach's salary changes.</p>
+        <div style="display:flex;gap:8px;margin:8px 0">
+          <button class="btn ghost sm" id="mcs-all" type="button">Select all</button>
+          <button class="btn ghost sm" id="mcs-none" type="button">Exclude all</button>
+        </div>
+        <div style="max-height:340px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px">
+          ${students.map(s => `<label style="display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;border-bottom:1px solid var(--border)">
+            <input type="checkbox" class="mcs-cb" value="${s.id}" ${excluded.has(s.id) ? '' : 'checked'}>
+            <span style="flex:1">${escapeHtml(s.name)}${s.deleted ? ' <span class="text-mute">(archived)</span>' : ''}</span>
+            <span class="text-mute" style="font-size:11px">${s.sports.map(escapeHtml).join(', ')}</span>
+          </label>`).join('')}
+        </div>
+      </div>`,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      { label: 'Save', class: 'btn primary', onclick: () => {
+          const excludedIds = $$('.mcs-cb').filter(cb => !cb.checked).map(cb => parseInt(cb.value));
+          if (!state.settings) state.settings = {};
+          if (!state.settings.salaryExclusions) state.settings.salaryExclusions = {};
+          if (excludedIds.length) state.settings.salaryExclusions[coachId] = excludedIds;
+          else delete state.settings.salaryExclusions[coachId];
+          audit('salary.exclusions', `coach:${coachId}`, `Updated commission exclusions for ${c.name} (${excludedIds.length} excluded)`, { coachId, excluded: excludedIds });
+          save(); closeModal(); render();
+          toast(excludedIds.length ? `${excludedIds.length} member${excludedIds.length === 1 ? '' : 's'} excluded from ${c.name}'s commission` : `No members excluded from ${c.name}'s commission`);
+        } },
+    ],
+  });
+  setTimeout(() => {
+    const all = document.getElementById('mcs-all'), none = document.getElementById('mcs-none');
+    if (all) all.onclick = () => $$('.mcs-cb').forEach(cb => cb.checked = true);
+    if (none) none.onclick = () => $$('.mcs-cb').forEach(cb => cb.checked = false);
+  }, 0);
 };
 
 window.deleteAdvance = function(id) {
@@ -6486,8 +6563,10 @@ PAGES.products = (main) => {
         <tr>
           <td><div class="font-bold">${escapeHtml(p.name)}</div>${p.sku ? `<div class="text-mute" style="font-size:11px">SKU: ${escapeHtml(p.sku)}</div>` : ''}</td>
           <td><span class="badge">${escapeHtml(p.category || '—')}</span></td>
+          <td class="text-right num">${p.cost ? fmt(p.cost) : '<span class="text-mute">—</span>'}</td>
           <td class="text-right num font-bold">${fmt(p.price || 0)}</td>
           <td class="text-right" style="color:${stockColor};font-weight:700">${stock}</td>
+          <td class="text-right num">${fmt(stock * (p.price || 0))}</td>
           <td><span class="badge" style="background:${stockColor==='var(--red)'?'rgba(239,68,68,.15)':stockColor==='var(--accent-2)'?'rgba(242,163,60,.15)':'rgba(16,185,129,.15)'};color:${stockColor};font-size:10px">${stockLabel}</span></td>
           <td class="text-right" style="white-space:nowrap">
             <button class="btn ghost sm" onclick="restockProduct(${p.id})" title="Restock (add inventory)">➕ Restock</button>
@@ -6495,13 +6574,14 @@ PAGES.products = (main) => {
             <button class="btn ghost sm" onclick="deleteProduct(${p.id})" title="Delete">🗑</button>
           </td>
         </tr>`;
-    }).join('') : `<tr><td colspan="6" class="empty"><div class="empty-icon">📦</div>No products match</td></tr>`;
+    }).join('') : `<tr><td colspan="8" class="empty"><div class="empty-icon">📦</div>No products match</td></tr>`;
     $('#prod-count').textContent = `${all.length} product${all.length===1?'':'s'}`;
     renderPagination('prod-pagination', pg, all.length, refresh);
   }
 
   const cats = [...new Set((state.products || []).map(p => p.category).filter(Boolean))].sort();
   const totalValue = (state.products || []).reduce((s,p) => s + productCurrentStock(p.id) * (p.price || 0), 0);
+  const totalCost = (state.products || []).reduce((s,p) => s + productCurrentStock(p.id) * (p.cost || 0), 0);
   const lowCount = (state.products || []).filter(p => {
     const st = productCurrentStock(p.id);
     return st > 0 && st <= (p.lowStockThreshold || 3);
@@ -6512,18 +6592,23 @@ PAGES.products = (main) => {
     <div class="topbar">
       <div>
         <h1>📦 Products</h1>
-        <div class="subtitle"><span id="prod-count">Loading...</span> · ${fmt(totalValue)} QAR inventory value</div>
+        <div class="subtitle"><span id="prod-count">Loading...</span> · ${fmt(totalValue)} QAR sell value · ${fmt(totalCost)} QAR cost value</div>
       </div>
       <div class="topbar-actions">
         <button class="btn primary" id="prod-add">+ New Product</button>
       </div>
     </div>
 
-    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+    <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
       <div class="kpi green">
         <div class="kpi-label">📦 Products in catalog</div>
         <div class="kpi-value">${(state.products || []).length}</div>
-        <div class="kpi-sub">${fmt(totalValue)} QAR stock value</div>
+        <div class="kpi-sub">${fmt(totalValue)} QAR sell value</div>
+      </div>
+      <div class="kpi blue">
+        <div class="kpi-label">💰 Inventory cost (original)</div>
+        <div class="kpi-value">${fmt(totalCost)}</div>
+        <div class="kpi-sub">amount paid for stock${totalCost > 0 ? ` · margin ${fmt(totalValue - totalCost)} QAR` : ''}</div>
       </div>
       <div class="kpi orange">
         <div class="kpi-label">⚠️ Low stock</div>
@@ -6553,7 +6638,7 @@ PAGES.products = (main) => {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Product</th><th>Category</th><th class="text-right">Price</th><th class="text-right">Stock</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Product</th><th>Category</th><th class="text-right">Cost</th><th class="text-right">Sell price</th><th class="text-right">Stock</th><th class="text-right">Stock value</th><th>Status</th><th></th></tr></thead>
           <tbody id="prod-tbody"></tbody>
         </table>
       </div>
@@ -6582,7 +6667,10 @@ function productFormHtml(p) {
         <input id="p-cat" type="text" value="${escapeHtml(p.category || '')}" list="prod-cat-list" placeholder="Apparel / Equipment / Swimming Gear / ..." />
         <datalist id="prod-cat-list">${cats.map(c => `<option value="${escapeHtml(c)}">`).join('')}</datalist>
       </div>
-      <div class="field"><label>Unit price (QAR) *</label><input id="p-price" type="number" min="0" step="0.01" value="${p.price ?? ''}" /></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Original value / cost (QAR) <span class="text-mute" style="font-size:10px;font-weight:400">(what you paid)</span></label><input id="p-cost" type="number" min="0" step="0.01" value="${p.cost ?? ''}" placeholder="0" /></div>
+      <div class="field"><label>Sell price (QAR) *</label><input id="p-price" type="number" min="0" step="0.01" value="${p.price ?? ''}" /></div>
     </div>
     <div class="form-row">
       <div class="field"><label>Stock quantity</label><input id="p-stock" type="number" min="0" step="1" value="${p.stock ?? 0}" /></div>
@@ -6619,11 +6707,13 @@ function saveProduct(existingId) {
   const name = $('#p-name').value.trim();
   if (!name) { toast('Name required', 'error'); return; }
   const price = parseFloat($('#p-price').value) || 0;
-  if (price <= 0) { toast('Price must be > 0', 'error'); return; }
+  if (price <= 0) { toast('Sell price must be > 0', 'error'); return; }
+  const cost = parseFloat($('#p-cost').value) || 0;
   const data = {
     name,
     sku: $('#p-sku').value.trim() || null,
     category: $('#p-cat').value.trim() || 'Other',
+    cost,
     price,
     stock: parseInt($('#p-stock').value) || 0,
     lowStockThreshold: parseInt($('#p-lowst').value) || 3,
@@ -7664,6 +7754,11 @@ PAGES.settings = (main) => {
           <div class="text-mute" style="font-size:11px;margin-top:4px">Members are flagged as "expiring soon" this many days before their expiry date.</div>
         </div>
         <div class="field">
+          <label>Recently-expired window (days)</label>
+          <input id="pref-recentexp" type="number" min="1" max="90" value="${cur.recentlyExpiredDays || 15}" />
+          <div class="text-mute" style="font-size:11px;margin-top:4px">The Expiring page's "Recently expired" button shows members who expired within this many days (win-back window).</div>
+        </div>
+        <div class="field">
           <label>Low stock threshold (units)</label>
           <input id="pref-lowstock" type="number" min="0" max="100" value="${cur.lowStockThreshold ?? 3}" />
           <div class="text-mute" style="font-size:11px;margin-top:4px">Inventory items at or below this count are flagged LOW.</div>
@@ -7677,6 +7772,18 @@ PAGES.settings = (main) => {
             <option value="warn" ${cur.qidDuplicateMode === 'warn' ? 'selected' : ''}>Warn only — allow saving after confirmation</option>
           </select>
           <div class="text-mute" style="font-size:11px;margin-top:4px">A national ID belongs to one person. "Block" reopens the existing record; "Warn" lets you save anyway after a confirmation. (Mobile + Name duplicates are always blocked.)</div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label>Refund grace period (days)</label>
+          <input id="pref-refundgrace" type="number" min="0" max="90" value="${cur.refundGraceDays ?? 7}" />
+          <div class="text-mute" style="font-size:11px;margin-top:4px">Within this many days of a sport's start, a withdrawal refunds the full unused amount (no admin fee).</div>
+        </div>
+        <div class="field">
+          <label>Admin fee after grace (%)</label>
+          <input id="pref-refundfee" type="number" min="0" max="100" value="${cur.refundFeePct ?? 20}" />
+          <div class="text-mute" style="font-size:11px;margin-top:4px">After the grace period, this % of the unused amount is kept as an admin fee on withdrawals. (You can still override the refund per withdrawal.)</div>
         </div>
       </div>
       <div style="margin-top:12px"><button class="btn primary" id="save-prefs">💾 Save preferences</button></div>
@@ -7858,9 +7965,15 @@ PAGES.settings = (main) => {
     const lowStock = parseInt($('#pref-lowstock').value);
     if (isNaN(days) || days < 1) { toast('Days must be ≥ 1', 'error'); return; }
     state.settings.expiringSoonDays = days;
+    const recentExp = parseInt($('#pref-recentexp')?.value);
+    if (!isNaN(recentExp) && recentExp >= 1) state.settings.recentlyExpiredDays = recentExp;
     state.settings.lowStockThreshold = isNaN(lowStock) ? 3 : lowStock;
     const qidMode = $('#pref-qidmode')?.value;
     if (qidMode === 'block' || qidMode === 'warn') state.settings.qidDuplicateMode = qidMode;
+    const grace = parseInt($('#pref-refundgrace')?.value);
+    const fee = parseFloat($('#pref-refundfee')?.value);
+    if (!isNaN(grace) && grace >= 0) state.settings.refundGraceDays = grace;
+    if (!isNaN(fee) && fee >= 0 && fee <= 100) state.settings.refundFeePct = fee;
     save();
     toast(`Preferences saved (alert ${days} days before expiry)`);
   });
@@ -8176,9 +8289,16 @@ PAGES.attendance = (main) => {
       const wanted = filter.sports.length ? sports.filter(s => filter.sports.includes(s)) : sports;
       if (!wanted.length) continue;
       if (filter.search) {
-        const q = filter.search.toLowerCase();
+        const raw = filter.search.trim();
+        const q = raw.toLowerCase();
         const hay = [m.name, m.nameArabic, m.phone, m.phone2, m.qid].filter(Boolean).join(' ').toLowerCase();
-        if (!hay.includes(q)) continue;
+        let hit = hay.includes(q);
+        if (!hit) {
+          const qDigits = raw.replace(/\D/g, '');   // match phone ignoring spaces / +974
+          if (qDigits.length >= 4) hit = phoneSearchMatches(m.phone, qDigits) || phoneSearchMatches(m.phone2, qDigits);
+        }
+        if (!hit && q.length >= 3 && !/\d/.test(q)) hit = fuzzyMatch(m.name, q) || fuzzyMatch(m.nameArabic, q);
+        if (!hit) continue;
       }
       for (const sp of wanted) {
         // Attended / Not-attended filter — evaluated over the selected day(s),
@@ -8212,7 +8332,12 @@ PAGES.attendance = (main) => {
 
   // True if the member has at least one "present" (Y) mark for this sport within
   // the current scope: the selected day(s) if any, otherwise the whole month.
+  // In "All months" mode, looks across every month.
   function rowAttended(m, sport) {
+    if (filter.month === 'all') {
+      const da = m.dailyAttendance || {};
+      return Object.keys(da).some(mo => Object.values(da[mo]?.[sport] || {}).some(v => v === 'Y'));
+    }
     const mo = gridMonth();
     const data = m.dailyAttendance?.[mo]?.[sport] || {};
     const total = daysInMonth(mo);
@@ -8220,6 +8345,29 @@ PAGES.attendance = (main) => {
       ? filter.days.filter(d => d >= 1 && d <= total)
       : Array.from({ length: total }, (_, i) => i + 1);
     return days.some(d => data[String(d)] === 'Y');
+  }
+
+  // Months that actually have any attendance marks (for the "All months" summary).
+  function monthsWithData() {
+    const set = new Set();
+    for (const m of state.members) {
+      if (m.deleted) continue;
+      for (const mo of Object.keys(m.dailyAttendance || {})) {
+        const sp = m.dailyAttendance[mo];
+        if (sp && Object.values(sp).some(d => d && Object.keys(d).length)) set.add(mo);
+      }
+    }
+    return [...set].sort();
+  }
+
+  // Narrow day columns to attended / not-attended days when that filter is set
+  // (so "Attended" shows only the days people actually attended).
+  function visibleDays(rows, baseDays, mo) {
+    if (filter.att === 'attended')
+      return baseDays.filter(d => rows.some(r => (r.m.dailyAttendance?.[mo]?.[r.sport] || {})[String(d)] === 'Y'));
+    if (filter.att === 'notattended')
+      return baseDays.filter(d => rows.some(r => (r.m.dailyAttendance?.[mo]?.[r.sport] || {})[String(d)] === 'N'));
+    return baseDays;
   }
 
   function markCell(memberId, sport, day, current) {
@@ -8248,24 +8396,61 @@ PAGES.attendance = (main) => {
     const gMonth = gridMonth();
     window._attCurrentMonth = gMonth;
     const rows = getRows();
+
+    // ── "All months" summary: one column per month, Y counts + year total ──
+    if (filter.month === 'all') {
+      const months = monthsWithData();
+      const monthHeaders = months.map(mo => `<th class="att-day-h" style="min-width:62px;width:62px">${fmtMonth(mo)}</th>`).join('');
+      const body = rows.map(({ m, sport, coachId }) => {
+        let grandY = 0;
+        const cells = months.map(mo => {
+          const dd = m.dailyAttendance?.[mo]?.[sport] || {};
+          let y = 0; for (const k in dd) if (dd[k] === 'Y') y++;
+          grandY += y;
+          return `<td class="att-total" style="text-align:center">${y ? `<span style="color:var(--green);font-weight:600">${y}</span>` : '<span class="text-mute">·</span>'}</td>`;
+        }).join('');
+        const status = memberStatus(m);
+        const isExpired = status === 'Expired';
+        const statusBadge = isExpired ? '<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(242,96,96,.15);color:var(--red);margin-left:4px">EXPIRED</span>' : '';
+        const sportEsc = sport.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        return `<tr style="${isExpired ? 'background:rgba(120,120,140,.06)' : ''}">
+            <td class="att-name-cell" title="${escapeHtml(m.name)} · ${escapeHtml(sport)}">
+              <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.name)}${statusBadge}</div>
+              <div class="text-mute" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}</div>
+            </td>
+            ${cells}
+            <td class="att-total"><span style="color:var(--green);font-weight:700">${grandY}</span></td>
+            <td class="att-export-cell" style="text-align:center"><button class="btn ghost sm" onclick="window._attPdf(${m.id}, null, '${sportEsc}')" title="Export ${escapeHtml(m.name)} attendance">⬇ PDF</button></td>
+          </tr>`;
+      }).join('');
+      $('#att-table-wrap').innerHTML = `
+        <table class="att-table">
+          <thead><tr><th class="att-name-h">Student</th>${monthHeaders}<th class="att-total-h">Total Y</th><th class="text-right">Export</th></tr></thead>
+          <tbody>${body || `<tr><td colspan="${months.length + 3}" class="empty">No attendance recorded yet.</td></tr>`}</tbody>
+        </table>`;
+      const distinctMembers = new Set(rows.map(r => r.m.id)).size;
+      $('#att-count').textContent = `${rows.length} attendance row${rows.length === 1 ? '' : 's'} · ${distinctMembers} student${distinctMembers === 1 ? '' : 's'} · all months (${months.length}) — present (Y) per month`;
+      return;
+    }
+
     const totalDays = daysInMonth(gMonth);
     // Day filter: when specific days are chosen (filter.days non-empty), show
     // only those columns (highlighted). Empty array = all days.
     const selectedDays = (filter.days || []).filter(d => d >= 1 && d <= totalDays);
     const isFiltered = selectedDays.length > 0;
-    const dayList = isFiltered ? [...selectedDays].sort((a, b) => a - b) : Array.from({length: totalDays}, (_, i) => i + 1);
+    const baseDays = isFiltered ? [...selectedDays].sort((a, b) => a - b) : Array.from({length: totalDays}, (_, i) => i + 1);
+    // Attended/Not-attended filter narrows the visible day columns too.
+    const dayList = visibleDays(rows, baseDays, gMonth);
+    const attNarrowed = dayList.length !== baseDays.length;
     const dayHeaders = dayList.map(d => `<th class="att-day-h${isFiltered ? ' att-day-active' : ''}">${d}</th>`).join('');
 
     // One row per (member, sport) — multi-sport members get multiple rows
     const body = rows.map(({ m, sport, coachId }) => {
       const dayData = m.dailyAttendance?.[gMonth]?.[sport] || {};
       let y = 0, n = 0;
-      const cells = dayList.map(d => {
-        const mark = dayData[String(d)];
-        if (mark === 'Y') y++;
-        if (mark === 'N') n++;
-        return cellRender(m.id, sport, d, mark);
-      }).join('');
+      // Totals reflect the full selected scope (baseDays), not just shown columns.
+      baseDays.forEach(d => { const mk = dayData[String(d)]; if (mk === 'Y') y++; if (mk === 'N') n++; });
+      const cells = dayList.map(d => cellRender(m.id, sport, d, dayData[String(d)])).join('');
       const total = y + n;
       const rate = total ? Math.round(y/total*100) : 0;
       const sportEsc = sport.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
@@ -8290,8 +8475,6 @@ PAGES.attendance = (main) => {
         </tr>`;
     }).join('');
 
-    const days = totalDays;
-
     $('#att-table-wrap').innerHTML = `
       <table class="att-table">
         <thead>
@@ -8303,15 +8486,17 @@ PAGES.attendance = (main) => {
             <th class="text-right">Export</th>
           </tr>
         </thead>
-        <tbody>${body || `<tr><td colspan="${dayList.length+4}" class="empty">No members yet. Add members on the Members page.</td></tr>`}</tbody>
+        <tbody>${body || `<tr><td colspan="${dayList.length+4}" class="empty">No members match the current filters.</td></tr>`}</tbody>
       </table>
     `;
     let dayNote;
-    if (isFiltered) {
+    if (attNarrowed) {
+      dayNote = `${filter.att === 'attended' ? 'attended' : 'absent'} days only · ${dayList.length} day${dayList.length === 1 ? '' : 's'} of ${fmtMonth(gMonth)}`;
+    } else if (isFiltered) {
       if (selectedDays.length === 1) dayNote = `showing day ${selectedDays[0]} of ${fmtMonth(gMonth)} only`;
       else dayNote = `showing ${selectedDays.length} days of ${fmtMonth(gMonth)} (${selectedDays.slice(0,5).join(', ')}${selectedDays.length>5?'…':''})`;
     } else {
-      dayNote = filter.month === 'all' ? `showing all members · grid = ${fmtMonth(gMonth)}` : 'click any cell to toggle Y → N → empty';
+      dayNote = 'click any cell to toggle Y → N → empty';
     }
     const distinctMembers = new Set(rows.map(r => r.m.id)).size;
     const rowText = `${rows.length} attendance row${rows.length === 1 ? '' : 's'} · ${distinctMembers} student${distinctMembers === 1 ? '' : 's'}`;
@@ -8602,20 +8787,79 @@ PAGES.attendance = (main) => {
     toast(`${rs.length} rows marked present on ${dayLabel}`);
   });
 
+  // All-months summary PDF: one column per month with present (Y) counts + year total.
+  function exportAttendanceMonthsPdf(rows) {
+    const months = monthsWithData();
+    if (!months.length) { toast('No attendance recorded yet', 'error'); return; }
+    const monthHeads = months.map(mo => `<th style="border:1px solid #e5e5ea;padding:4px 2px;font-size:8.5px;color:#777">${fmtMonth(mo)}</th>`).join('');
+    let grandY = 0;
+    const bodyRows = rows.map(({ m, sport, coachId }) => {
+      let rowY = 0;
+      const cells = months.map(mo => {
+        const dd = m.dailyAttendance?.[mo]?.[sport] || {};
+        let y = 0; for (const k in dd) if (dd[k] === 'Y') y++;
+        rowY += y;
+        return `<td style="border:1px solid #eee;text-align:center;font-size:9px;background:${y ? '#d1fae5' : '#fff'};color:${y ? '#065f46' : '#ccc'};font-weight:600">${y || '·'}</td>`;
+      }).join('');
+      grandY += rowY;
+      return `<tr>
+        <td style="border:1px solid #e5e5ea;padding:4px 6px;font-size:9px;font-weight:600"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(m.name)}</div><div style="font-size:7.5px;color:#999;font-weight:400">${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}</div></td>
+        ${cells}
+        <td style="border:1px solid #e5e5ea;text-align:center;font-size:9px;font-weight:700;color:#059669">${rowY}</td>
+      </tr>`;
+    }).join('');
+    const coachLabel = filter.coach !== 'all' ? coachName(parseInt(filter.coach)) : 'All coaches';
+    const sportLabel = filter.sports.length ? filter.sports.join(', ') : 'All sports';
+    const distinctMembers = new Set(rows.map(r => r.m.id)).size;
+    const win = window.open('', '_blank');
+    win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>attendance_all_months</title>
+    <style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      @page{size:A4 landscape;margin:8mm}
+      body{font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:14px}
+      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f26060;padding-bottom:10px;margin-bottom:12px}
+      .brand{font-size:18px;font-weight:800}.brand span{color:#f26060}
+      .sub{color:#777;font-size:11px;margin-top:2px}
+      .meta{font-size:11px;color:#555;margin-bottom:10px}.meta b{color:#1a1a1a}
+      table{border-collapse:collapse;width:100%}
+      thead th{background:#fafafa;text-align:center}
+      .foot{margin-top:14px;font-size:9px;color:#aaa;text-align:center;border-top:1px solid #eee;padding-top:6px}
+    </style></head><body>
+      <div class="head">
+        <div><div class="brand">Black <span>Stars</span> Sports Club</div><div class="sub">Waab, Doha · Attendance Report — all months</div></div>
+        <div style="text-align:right;font-size:11px;color:#777">Generated<br><b>${fmtDate(TODAY)}</b></div>
+      </div>
+      <div class="meta">All months (${months.length}) · ${escapeHtml(coachLabel)} · ${escapeHtml(sportLabel)} · <b>${distinctMembers}</b> student${distinctMembers===1?'':'s'} · <b>${rows.length}</b> row${rows.length===1?'':'s'} · <b>${grandY}</b> present total</div>
+      <table>
+        <thead><tr><th style="border:1px solid #e5e5ea;padding:4px 6px;font-size:9px;color:#777;text-align:left">Student · Sport</th>${monthHeads}<th style="border:1px solid #e5e5ea;font-size:9px;color:#777">Total Y</th></tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+      <div class="foot">Black Stars CRM · cell = present (Y) days that month</div>
+      <script>window.onload=()=>window.print();<\/script>
+    </body></html>`);
+    win.document.close();
+    toast(`PDF · all months · ${rows.length} rows`);
+  }
+
   $('#att-export-pdf').addEventListener('click', () => {
-    const gM = gridMonth();
-    const days = daysInMonth(gM);
     const rows = getRows();
     if (!rows.length) { toast('No students to export', 'error'); return; }
+    if (filter.month === 'all') { exportAttendanceMonthsPdf(rows); return; }
+    const gM = gridMonth();
+    const totalDays = daysInMonth(gM);
+    const selDays = (filter.days || []).filter(d => d >= 1 && d <= totalDays);
+    const baseDays = selDays.length ? selDays.slice().sort((a, b) => a - b) : Array.from({length: totalDays}, (_, i) => i + 1);
+    const dayCols = visibleDays(rows, baseDays, gM);   // attended/absent narrowing
+    const days = dayCols.length;
 
-    const dayHeads = Array.from({length:days},(_,i) => `<th style="border:1px solid #e5e5ea;padding:3px 1px;font-size:8px;color:#777">${i+1}</th>`).join('');
+    const dayHeads = dayCols.map(d => `<th style="border:1px solid #e5e5ea;padding:3px 1px;font-size:8px;color:#777">${d}</th>`).join('');
     let grandY = 0, grandSlots = 0;
     const bodyRows = rows.map(({ m, sport, coachId }) => {
       const dd = m.dailyAttendance?.[gM]?.[sport] || {};
-      let y=0,n=0;
-      const cells = Array.from({length:days},(_,i) => {
-        const v = dd[String(i+1)];
-        if (v === 'Y') y++; if (v === 'N') n++;
+      let y = 0, n = 0;
+      baseDays.forEach(d => { const v = dd[String(d)]; if (v === 'Y') y++; if (v === 'N') n++; });   // totals over full scope
+      const cells = dayCols.map(d => {
+        const v = dd[String(d)];
         const bg = v==='Y'?'#d1fae5':v==='N'?'#fee2e2':'#fff';
         const col = v==='Y'?'#065f46':v==='N'?'#991b1b':'#ccc';
         return `<td style="border:1px solid #eee;text-align:center;font-size:8px;background:${bg};color:${col};font-weight:600">${v||'·'}</td>`;
@@ -8633,6 +8877,7 @@ PAGES.attendance = (main) => {
 
     const coachLabel = filter.coach !== 'all' ? coachName(parseInt(filter.coach)) : 'All coaches';
     const sportLabel = filter.sports.length ? filter.sports.join(', ') : 'All sports';
+    const attLabel = filter.att === 'attended' ? ' · attended days only' : filter.att === 'notattended' ? ' · absent days only' : '';
     const overallRate = grandSlots ? Math.round(grandY/grandSlots*100) : 0;
     const distinctMembers = new Set(rows.map(r => r.m.id)).size;
 
@@ -8667,7 +8912,7 @@ PAGES.attendance = (main) => {
         <div><div class="brand">Black <span>Stars</span> Sports Club</div><div class="sub">Waab, Doha · Attendance Report</div></div>
         <div style="text-align:right;font-size:11px;color:#777">Generated<br><b>${fmtDate(TODAY)}</b></div>
       </div>
-      <div class="meta"><b>${fmtMonth(gM)}</b> · ${escapeHtml(coachLabel)} · ${escapeHtml(sportLabel)} · <b>${distinctMembers}</b> student${distinctMembers===1?'':'s'} · <b>${rows.length}</b> row${rows.length===1?'':'s'} · overall <b>${overallRate}%</b></div>
+      <div class="meta"><b>${fmtMonth(gM)}</b>${attLabel} · ${escapeHtml(coachLabel)} · ${escapeHtml(sportLabel)} · <b>${distinctMembers}</b> student${distinctMembers===1?'':'s'} · <b>${rows.length}</b> row${rows.length===1?'':'s'} · overall <b>${overallRate}%</b></div>
       <table>
         ${colgroup}
         <thead><tr><th style="border:1px solid #e5e5ea;padding:4px 6px;font-size:9px;color:#777;text-align:left">Student · Sport</th>${dayHeads}<th style="border:1px solid #e5e5ea;font-size:9px;color:#777">Y/Tot</th><th style="border:1px solid #e5e5ea;font-size:9px;color:#777">Rate</th></tr></thead>
@@ -8681,22 +8926,40 @@ PAGES.attendance = (main) => {
   });
 
   $('#att-export').addEventListener('click', () => {
+    const rows = getRows();
+    if (filter.month === 'all') {
+      // All-months summary: one column per month (present Y count) + year total.
+      const months = monthsWithData();
+      const csvRows = [['Student','Sport','Coach',...months.map(fmtMonth),'Total Y']];
+      for (const { m, sport, coachId } of rows) {
+        let grand = 0;
+        const cells = months.map(mo => {
+          const dd = m.dailyAttendance?.[mo]?.[sport] || {};
+          let y = 0; for (const k in dd) if (dd[k] === 'Y') y++;
+          grand += y; return y;
+        });
+        csvRows.push([m.name, sport, sport === SUMMER_CAMP ? '' : coachName(coachId), ...cells, grand]);
+      }
+      const csv = csvRows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+      downloadFile('attendance-all-months.csv', csv, 'text/csv');
+      toast('Attendance CSV exported · all months');
+      return;
+    }
     const gM = gridMonth();
-    const days = daysInMonth(gM);
-    const csvRows = [['Student','Sport','Coach',...Array.from({length:days},(_,i)=>String(i+1)),'Total Y','Total N','Rate']];
-    for (const { m, sport, coachId } of getRows()) {
+    const totalDays = daysInMonth(gM);
+    const selDays = (filter.days || []).filter(d => d >= 1 && d <= totalDays);
+    const baseDays = selDays.length ? selDays.slice().sort((a, b) => a - b) : Array.from({length: totalDays}, (_, i) => i + 1);
+    const dayCols = visibleDays(rows, baseDays, gM);
+    const csvRows = [['Student','Sport','Coach',...dayCols.map(String),'Total Y','Total N','Rate']];
+    for (const { m, sport, coachId } of rows) {
       const dd = m.dailyAttendance?.[gM]?.[sport] || {};
-      let y=0,n=0;
-      const cells = Array.from({length:days},(_,i) => {
-        const v = dd[String(i+1)] || '';
-        if (v === 'Y') y++;
-        if (v === 'N') n++;
-        return v;
-      });
+      let y = 0, n = 0;
+      baseDays.forEach(d => { const v = dd[String(d)]; if (v === 'Y') y++; if (v === 'N') n++; });
+      const cells = dayCols.map(d => dd[String(d)] || '');
       csvRows.push([m.name, sport, sport === SUMMER_CAMP ? '' : coachName(coachId), ...cells, y, n, y+n ? Math.round(y/(y+n)*100)+'%' : '']);
     }
     const csv = csvRows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
-    downloadFile(`attendance-${gridMonth()}.csv`, csv, 'text/csv');
+    downloadFile(`attendance-${gM}.csv`, csv, 'text/csv');
     toast('Attendance CSV exported');
   });
 
@@ -9230,9 +9493,34 @@ window.withdrawSport = function(memberId, sport) {
   }
 
   const isCamp = sport === SUMMER_CAMP;
-  const attendedRatio = totalClasses > 0 ? Math.min(attended / totalClasses, 1) : 0;
-  const usedAmount = Math.round(price * attendedRatio * 100) / 100;
-  const refundAmount = Math.round((price - usedAmount) * 100) / 100;
+  // This sport's start date (from its latest subscription, else member start).
+  let sportStart = null;
+  for (const s of (m.subscriptions || [])) if (s.activity === sport && s.start) sportStart = s.start;
+  sportStart = sportStart || enrollment.start || m.startDate || null;
+
+  const graceDefault = (state.settings && state.settings.refundGraceDays != null) ? state.settings.refundGraceDays : 7;
+  const feeDefault = (state.settings && state.settings.refundFeePct != null) ? state.settings.refundFeePct : 20;
+  const calc = computeWithdrawRefund({ price, totalClasses, attended, startDate: sportStart, refundDate: TODAY, graceDays: graceDefault, feePct: feeDefault });
+  const usedAmount = calc.used;
+  const refundAmount = calc.refund;
+  const graceLine = (d, withinGrace) => d == null
+    ? '<span class="text-mute">start date unknown — treated as within grace</span>'
+    : `${d} day${d === 1 ? '' : 's'} since start · ${withinGrace ? '<b style="color:var(--green)">within grace</b>' : '<b style="color:var(--accent-2)">after grace</b>'}`;
+
+  // Live recompute when grace days / fee % / refund date change.
+  window._recalcWithdraw = function() {
+    const g = document.getElementById('wd-grace');
+    const f = document.getElementById('wd-fee');
+    const dt = document.getElementById('wd-date');
+    const c = computeWithdrawRefund({ price, totalClasses, attended, startDate: sportStart, refundDate: (dt && dt.value) || TODAY, graceDays: g ? g.value : graceDefault, feePct: f ? f.value : feeDefault });
+    const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+    set('wd-since', graceLine(c.daysSinceStart, c.withinGrace));
+    set('wd-used', `${fmt(c.used)} QAR`);
+    set('wd-unused', `${fmt(c.unused)} QAR`);
+    set('wd-fee-line', c.withinGrace ? 'No admin fee (within grace period)' : `Admin fee (${c.feePct}% of unused): −${fmt(c.fee)} QAR`);
+    const rf = document.getElementById('wd-refund');
+    if (rf && !rf.dataset.touched) rf.value = c.refund;
+  };
 
   // Show the withdrawal confirmation modal
   showModal({
@@ -9241,10 +9529,10 @@ window.withdrawSport = function(memberId, sport) {
       <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px">
         <div style="font-weight:700;margin-bottom:6px;color:var(--accent-2)">⚠ This will:</div>
         <ul style="margin:0;padding-left:18px;line-height:1.7">
-          <li>Issue a refund of <b>${fmt(refundAmount)} QAR</b> to the member</li>
-          <li>Remove ${sport} from their enrollments</li>
+          <li>Issue the refund below to the member</li>
+          <li>Remove ${sport} from their enrollments${(m.enrollments || []).length <= 1 ? ' and mark the member <b>Withdrawn</b>' : ''}</li>
           ${!isCamp && enrollment.coachId
-            ? `<li>Deduct <b>${fmt(refundAmount)} QAR</b> from <b>${escapeHtml(coachName(enrollment.coachId))}</b>'s commission base in ${fmtMonth(currentMonth())}</li>`
+            ? `<li>Deduct the refunded amount from <b>${escapeHtml(coachName(enrollment.coachId))}</b>'s commission base in ${fmtMonth(currentMonth())}</li>`
             : isCamp
               ? `<li>No coach commission impact (Summer Camp revenue belongs to club)</li>`
               : `<li>No coach assigned — no commission impact</li>`}
@@ -9261,26 +9549,38 @@ window.withdrawSport = function(memberId, sport) {
           <label>Classes attended</label>
           <div style="padding:10px;background:var(--surface-2);border-radius:8px">
             <b>${attended} / ${totalClasses}</b>
-            <span class="text-mute" style="font-size:11px"> · ${Math.round(attendedRatio * 100)}% used</span>
+            <span class="text-mute" style="font-size:11px"> · ${calc.total > 0 ? Math.round(calc.attended / calc.total * 100) : 0}% used</span>
           </div>
         </div>
       </div>
 
+      <div style="background:var(--surface-2);border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px;line-height:1.8">
+        <div>📅 <span id="wd-since">${graceLine(calc.daysSinceStart, calc.withinGrace)}</span></div>
+        <div>Used (kept by club): <b id="wd-used">${fmt(calc.used)} QAR</b></div>
+        <div>Unused (refundable): <b id="wd-unused">${fmt(calc.unused)} QAR</b></div>
+        <div id="wd-fee-line" style="color:var(--text-mute)">${calc.withinGrace ? 'No admin fee (within grace period)' : `Admin fee (${calc.feePct}% of unused): −${fmt(calc.fee)} QAR`}</div>
+      </div>
+
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
         <div class="field" style="margin:0">
-          <label>Used (kept by club)</label>
-          <div style="padding:10px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px;color:var(--green);font-weight:700">${fmt(usedAmount)} QAR</div>
+          <label>Grace period (days)</label>
+          <input id="wd-grace" type="number" min="0" step="1" value="${graceDefault}" oninput="window._recalcWithdraw()" />
         </div>
         <div class="field" style="margin:0">
-          <label>Refund to member <span style="color:var(--accent)">*</span></label>
-          <input id="wd-refund" type="number" min="0" max="${price}" step="0.01" value="${refundAmount}" style="font-size:18px;font-weight:700;color:var(--accent-2)" />
-          <div class="text-mute" style="font-size:10px;margin-top:3px">Auto-calculated; adjust if needed</div>
+          <label>Admin fee after grace (%)</label>
+          <input id="wd-fee" type="number" min="0" max="100" step="1" value="${feeDefault}" oninput="window._recalcWithdraw()" />
         </div>
       </div>
 
       <div class="field">
+        <label>Refund to member <span style="color:var(--accent)">*</span></label>
+        <input id="wd-refund" type="number" min="0" max="${price}" step="0.01" value="${refundAmount}" oninput="this.dataset.touched=1" style="font-size:18px;font-weight:700;color:var(--accent-2)" />
+        <div class="text-mute" style="font-size:10px;margin-top:3px">Auto-calculated from grace + attendance; adjust if needed</div>
+      </div>
+
+      <div class="field">
         <label>Refund date</label>
-        <input id="wd-date" type="date" value="${TODAY}" />
+        <input id="wd-date" type="date" value="${TODAY}" oninput="window._recalcWithdraw()" />
       </div>
 
       <div class="field">
@@ -9365,6 +9665,8 @@ window.withdrawSport = function(memberId, sport) {
           .filter(s => s.activity !== sport && s.end)
           .map(s => s.end);
         m.expiryDate = remainingEnds.length ? remainingEnds.sort().pop() : null;
+        // No sports left → member has fully withdrawn: mark Withdrawn + clear expiry.
+        if (!(m.enrollments || []).length) { m.status = 'Withdrawn'; m.expiryDate = null; }
         // If this was the legacy primary sport, switch to any remaining one
         if (m.sport === sport) {
           const nextEnr = (m.enrollments || [])[0];
@@ -9883,6 +10185,8 @@ window.addRenewal = function(memberId) {
         m.startDate = start;
         if (end && (!m.expiryDate || end > m.expiryDate)) m.expiryDate = end;
         if ($('#rn-status').value === 'active') m.status = 'Active';
+        // Renewing re-activates a withdrawn member (Withdrawn is terminal otherwise).
+        if (m.status === 'Withdrawn') m.status = ($('#rn-status').value === 'active' ? 'Active' : 'Expired');
 
         audit('subscription.renew', `member:${m.id}`,
           `Renewed ${renewedSport} for ${m.name || m.nameArabic}`,
@@ -10076,6 +10380,7 @@ PAGES.expiring = (main) => {
     if (!m.expiryDate) continue;
     // Skip frozen members — their expiry was shifted, they aren't really expiring
     if (memberStatus(m) === 'Frozen') continue;
+    if (memberStatus(m) === 'Withdrawn') continue;  // withdrawn members aren't renewing
     const d = daysUntil(m.expiryDate);
     if (d == null) continue;
     if (d < 0) expired.push({ m, days: d });
@@ -10087,6 +10392,10 @@ PAGES.expiring = (main) => {
   expiringSoon.sort((a, b) => a.days - b.days);
   upcoming.sort((a, b) => a.days - b.days);
 
+  // "Recently expired" = expired within the last N days (win-back window), N configurable.
+  const recentDays = state.settings?.recentlyExpiredDays || 15;
+  const recentCount = expired.filter(x => x.days >= -recentDays).length;
+
   // Sports + coaches present in the expiring lists, for the dropdowns
   const allEntries = [...expired, ...expiringSoon, ...upcoming];
   const sportsInList = [...new Set(allEntries.flatMap(({m}) =>
@@ -10094,7 +10403,9 @@ PAGES.expiring = (main) => {
   ))].sort();
   const coachesInList = [...new Set(allEntries.map(({m}) => m.coachId).filter(Boolean))];
 
-  function matchFilter({ m }) {
+  function matchFilter({ m, days }) {
+    // "Recently expired" bucket: only expired within the last N days.
+    if (filter.bucket === 'recent' && !(days < 0 && days >= -recentDays)) return false;
     if (filter.sport !== 'all') {
       const ms = new Set([m.sport, ...((m.enrollments||[]).map(e=>e.sport)), ...((m.subscriptions||[]).map(s=>s.activity))].filter(Boolean));
       if (!ms.has(filter.sport)) return false;
@@ -10195,6 +10506,7 @@ PAGES.expiring = (main) => {
         <div class="subtitle">Members needing renewal · alert window: ${threshold} days <a href="#" onclick="event.preventDefault();navigate('settings')" style="color:var(--blue)">(change)</a></div>
       </div>
       <div class="topbar-actions">
+        <button class="btn ghost" title="Show members who expired within the last ${recentDays} days (set in Settings)" onclick="document.getElementById('exp-bucket').value='recent';document.getElementById('exp-bucket').dispatchEvent(new Event('change'))">🔴 Recently expired (≤${recentDays}d) · ${recentCount}</button>
         <button class="btn ghost" id="export-expiring">📥 Export CSV</button>
       </div>
     </div>
@@ -10231,6 +10543,7 @@ PAGES.expiring = (main) => {
         <select id="exp-bucket" class="btn ghost">
           <option value="all">All statuses</option>
           <option value="soon">⏰ Expiring in ≤ ${threshold} days</option>
+          <option value="recent">🔴 Recently expired (≤ ${recentDays} days)</option>
           <option value="expired">⛔ Already expired</option>
           <option value="upcoming">📅 Expiring in ≤ 30 days</option>
         </select>
@@ -10267,6 +10580,9 @@ PAGES.expiring = (main) => {
     const eFiltered = expired.filter(matchFilter);
     const uFiltered = upcoming.filter(matchFilter);
     const parts = [];
+    if (filter.bucket === 'recent') {
+      parts.push(section(`Recently expired — within ${recentDays} days`, 'var(--red)', '🔴', eFiltered, 'expired'));
+    }
     if (filter.bucket === 'all' || filter.bucket === 'soon')
       parts.push(section('Expiring within ' + threshold + ' days — call ASAP', 'var(--accent-2)', '⏰', sFiltered, 'soon'));
     if (filter.bucket === 'all' || filter.bucket === 'expired')

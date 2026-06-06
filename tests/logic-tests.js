@@ -654,6 +654,133 @@ ${seed}
     dup.enrollments[0].price = 999;
     eq(src.enrollments[0].price, 350, 'sibling: deep clone — source untouched');
   })();
+  // auto membership expiry = latest sport end across enrollment rows
+  window._enrollRows = [{ sport: 'Boxing', start: '2026-01-01', validity: 30 }, { sport: 'Karate', start: '2026-01-01', validity: 60 }];
+  eq(autoExpiryFromRows(), addDays('2026-01-01', 60), 'expiry auto: latest end across sports');
+  window._enrollRows = [{ sport: 'X', start: '', validity: 30 }];
+  eq(autoExpiryFromRows(), '', 'expiry auto: empty when no start');
+  window._enrollRows = [];
+  eq(autoExpiryFromRows(), '', 'expiry auto: empty when no rows');
+  // withdrawal refund: grace period + attendance
+  var wd1 = computeWithdrawRefund({ price: 400, totalClasses: 8, attended: 2, startDate: '2026-01-01', refundDate: '2026-01-03', graceDays: 7, feePct: 20 });
+  eq(wd1.perClass, 50, 'refund: per-class rate = price/total');
+  eq(wd1.used, 100, 'refund: used = attended × perClass');
+  eq(wd1.unused, 300, 'refund: unused = price − used');
+  ok(wd1.withinGrace, 'refund: within grace (2 ≤ 7 days)');
+  eq(wd1.fee, 0, 'refund: no admin fee within grace');
+  eq(wd1.refund, 300, 'refund: within grace = full unused');
+  var wd2 = computeWithdrawRefund({ price: 400, totalClasses: 8, attended: 2, startDate: '2026-01-01', refundDate: '2026-02-15', graceDays: 7, feePct: 20 });
+  ok(!wd2.withinGrace, 'refund: after grace (45 > 7 days)');
+  eq(wd2.fee, 60, 'refund: 20% admin fee on unused after grace');
+  eq(wd2.refund, 240, 'refund: after grace = unused − fee');
+  eq(computeWithdrawRefund({ price: 400, totalClasses: 8, attended: 0, startDate: '2026-01-01', refundDate: '2026-01-01', graceDays: 7, feePct: 20 }).refund, 400, 'refund: zero attendance within grace = full');
+  eq(computeWithdrawRefund({ price: 400, totalClasses: 8, attended: 8, startDate: '2026-01-01', refundDate: '2026-02-15', graceDays: 7, feePct: 20 }).refund, 0, 'refund: fully attended = nothing back');
+  var wd5 = computeWithdrawRefund({ price: 400, totalClasses: 8, attended: 2, startDate: null, refundDate: '2026-02-15', graceDays: 7, feePct: 20 });
+  ok(wd5.withinGrace, 'refund: unknown start treated as within grace');
+  eq(wd5.refund, 300, 'refund: unknown start = full unused (no fee)');
+  eq(memberStatus({ status: 'Withdrawn', expiryDate: '2020-01-01' }), 'Withdrawn', 'status: Withdrawn overrides expired');
+  eq(memberStatus({ status: 'Active', expiryDate: '2099-01-01' }), 'Active', 'status: normal active unaffected');
+  eq(memberStatus({ status: 'Withdrawn', expiryDate: '2099-01-01' }), 'Withdrawn', 'status: Withdrawn holds even with future expiry (excluded from expiring/renewals)');
+  // products: inventory sell value vs original/cost value
+  (function(){
+    var sp = state.products, ss = state.sales;
+    state.products = [{ id: 8801, stock: 10, cost: 30, price: 75 }, { id: 8802, stock: 2, cost: 50, price: 120 }];
+    state.sales = [];
+    var sell = state.products.reduce((s, p) => s + productCurrentStock(p.id) * (p.price || 0), 0);
+    var cost = state.products.reduce((s, p) => s + productCurrentStock(p.id) * (p.cost || 0), 0);
+    eq(sell, 990, 'products: total sell value = Σ stock×price');
+    eq(cost, 400, 'products: total cost value = Σ stock×cost');
+    eq(sell - cost, 590, 'products: margin = sell − cost');
+    state.products = sp; state.sales = ss;
+  })();
+  // per-coach salary exclusions
+  (function(){
+    var so = state.settings;
+    state.settings = { salaryExclusions: { 3: [101, 102] } };
+    ok(isExcludedFromCoachSalary(3, 101), 'exclusion: member 101 excluded from coach 3');
+    ok(!isExcludedFromCoachSalary(3, 999), 'exclusion: member 999 not excluded');
+    ok(!isExcludedFromCoachSalary(4, 101), 'exclusion: only applies to the named coach');
+    ok(!isExcludedFromCoachSalary(3, null), 'exclusion: null member id safe');
+    eq(salaryExclusionSet(3).size, 2, 'exclusion: set size');
+    eq(salaryExclusionSet(7).size, 0, 'exclusion: no exclusions for other coach');
+    state.settings = so;
+  })();
+  // integration: excluding a member removes their fee from the coach's commission base
+  (function(){
+    var sc = state.coaches, sm = state.members, si = state.invoices, ss = state.salaries, sset = state.settings;
+    state.coaches = [{ id: 33, name: 'Coach X', rate: 10, fixedSalary: 0, role: 'coach' }];
+    state.members = [{ id: 1101, name: 'Stu A' }, { id: 1102, name: 'Stu B' }];
+    state.invoices = [
+      { ref: 'I1', category: 'Membership', customerId: 1101, month: '2026-06', date: '2026-06-01', lineItems: [{ sport: 'Karate', coachId: 33, price: 400 }] },
+      { ref: 'I2', category: 'Membership', customerId: 1102, month: '2026-06', date: '2026-06-02', lineItems: [{ sport: 'Karate', coachId: 33, price: 300 }] },
+    ];
+    state.salaries = [];
+    state.settings = { commissionBasis: 'payment' };
+    eq(computeMonthlyPay(33, '2026-06').commissionBase, 700, 'exclusion: base before excluding = 400+300');
+    state.settings.salaryExclusions = { 33: [1101] };
+    eq(computeMonthlyPay(33, '2026-06').commissionBase, 300, 'exclusion: base after excluding Stu A = 300');
+    eq(computeMonthlyPay(33, '2026-06').commissionAmount, 30, 'exclusion: commission = 10% × 300');
+    eq(coachStudents(33).length, 2, 'coachStudents: lists both contributing members');
+    state.coaches = sc; state.members = sm; state.invoices = si; state.salaries = ss; state.settings = sset;
+  })();
+  // recently-expired window: expired within last N days (d<0 && d>=-N)
+  (function(){
+    var recentDays = 15;
+    var inWindow = d => d < 0 && d >= -recentDays;
+    ok(inWindow(-1), 'recent: expired 1 day ago is in window');
+    ok(inWindow(-15), 'recent: expired exactly 15 days ago is in window');
+    ok(!inWindow(-16), 'recent: expired 16 days ago is out of window');
+    ok(!inWindow(0), 'recent: expiring today (not expired) not in window');
+    ok(!inWindow(5), 'recent: future expiry not in window');
+  })();
+  // editing a paid enrollment's price reconciles the linked invoice (revenue + commission)
+  (function(){
+    var inv = { id: 1, ref: 'INV-X', category: 'Membership', amount: 1200, amountPaid: 1200,
+      payments: [{ date: '2026-06-01', month: '2026-06', amount: 1200, method: 'cash' }],
+      lineItems: [{ sport: 'Gymnastic', coachId: 5, price: 1200 }] };
+    var invoices = [inv];
+    var sub = { activity: 'Gymnastic', coachId: 5, invoiceNumber: 'INV-X', amountPaid: 1200, totalClasses: 12, start: '2026-06-06', validity: 30 };
+    syncSubToEnrollment(sub, { sport: 'Gymnastic', coachId: 5, price: 1000, classes: 12, validity: 30, start: '2026-06-06' }, { id: 9, name: 'Test' }, invoices);
+    eq(inv.amount, 1000, 'price edit: invoice amount updated 1200→1000');
+    eq(inv.lineItems[0].price, 1000, 'price edit: line item price updated');
+    eq(invoicePaid(inv), 1000, 'price edit: paid-in-full follows to new amount');
+    eq(invoiceBalance(inv), 0, 'price edit: no balance left (was paid in full)');
+    eq(sub.amountPaid, 1000, 'price edit: subscription amountPaid updated');
+    // partial-payment invoice: amount changes, payments untouched → balance reflects it
+    var inv2 = { id: 2, ref: 'INV-Y', category: 'Membership', amount: 1200, amountPaid: 500,
+      payments: [{ date: '2026-06-01', month: '2026-06', amount: 500, method: 'cash' }],
+      lineItems: [{ sport: 'Karate', coachId: 5, price: 1200 }] };
+    syncSubToEnrollment({ activity: 'Karate', coachId: 5, invoiceNumber: 'INV-Y' }, { sport: 'Karate', coachId: 5, price: 800 }, { id: 9, name: 'T' }, [inv2]);
+    eq(inv2.amount, 800, 'price edit (partial): amount updated');
+    eq(invoicePaid(inv2), 500, 'price edit (partial): payments untouched');
+    eq(invoiceBalance(inv2), 300, 'price edit (partial): balance now 800−500');
+  })();
+  // attendance fixes (v181): phone search, attended-day narrowing, all-months
+  (function(){
+    // 1) phone search tolerates spaces + country code
+    ok(phoneSearchMatches('+974 6640 0661', '66400661'), 'att search: spaced phone matches bare digits');
+    ok(phoneSearchMatches('+97466400661', '66400661'), 'att search: country-code phone matches bare digits');
+    ok(phoneSearchMatches('66400661', '66400661'), 'att search: plain phone matches');
+    ok(!phoneSearchMatches('+97455551234', '66400661'), 'att search: different number does not match');
+    // 2) attended-day narrowing (replica of visibleDays)
+    var dataA = { '7': 'Y', '8': 'Y', '12': 'Y', '16': 'Y', '5': 'N' };
+    var rowsA = [{ m: { dailyAttendance: { '2026-05': { Gymnastic: dataA } } }, sport: 'Gymnastic' }];
+    var base = Array.from({ length: 31 }, (_, i) => i + 1);
+    var vis = (rows, baseDays, mo, att) => att === 'attended'
+      ? baseDays.filter(d => rows.some(r => (r.m.dailyAttendance?.[mo]?.[r.sport] || {})[String(d)] === 'Y'))
+      : att === 'notattended'
+      ? baseDays.filter(d => rows.some(r => (r.m.dailyAttendance?.[mo]?.[r.sport] || {})[String(d)] === 'N'))
+      : baseDays;
+    eq(JSON.stringify(vis(rowsA, base, '2026-05', 'attended')), JSON.stringify([7, 8, 12, 16]), 'att narrow: attended days only');
+    eq(JSON.stringify(vis(rowsA, base, '2026-05', 'notattended')), JSON.stringify([5]), 'att narrow: absent days only');
+    eq(vis(rowsA, base, '2026-05', 'all').length, 31, 'att narrow: all shows full month');
+    // 3) all-months: monthsWithData + cross-month attended
+    var mem = { dailyAttendance: { '2026-04': { Gymnastic: { '3': 'Y' } }, '2026-05': { Gymnastic: { '7': 'Y', '8': 'Y' } } } };
+    var monthsOf = m => Object.keys(m.dailyAttendance || {}).filter(mo => Object.values(m.dailyAttendance[mo]).some(d => Object.keys(d).length)).sort();
+    eq(JSON.stringify(monthsOf(mem)), JSON.stringify(['2026-04', '2026-05']), 'all-months: months with data');
+    var yearY = (m, sp) => Object.keys(m.dailyAttendance || {}).reduce((s, mo) => s + Object.values(m.dailyAttendance[mo]?.[sp] || {}).filter(v => v === 'Y').length, 0);
+    eq(yearY(mem, 'Gymnastic'), 3, 'all-months: total Y across the year = 1+2');
+  })();
   // permanent delete: member only vs everything
   (function(){
     var saveOrig = state, msave = [], minv = [], msal = [], mren = [];
