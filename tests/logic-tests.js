@@ -781,6 +781,35 @@ ${seed}
     var yearY = (m, sp) => Object.keys(m.dailyAttendance || {}).reduce((s, mo) => s + Object.values(m.dailyAttendance[mo]?.[sp] || {}).filter(v => v === 'Y').length, 0);
     eq(yearY(mem, 'Gymnastic'), 3, 'all-months: total Y across the year = 1+2');
   })();
+  // full backup round-trip: serialize whole state, strip meta on restore, keep session
+  (function(){
+    var json = JSON.stringify({ appVersion: APP_VERSION, schemaVersion: SCHEMA_VERSION, exported: new Date().toISOString(), ...state, user: undefined, route: undefined });
+    var parsed = JSON.parse(json);
+    ok(Array.isArray(parsed.members), 'backup: members serialize');
+    ok(Array.isArray(parsed.invoices), 'backup: invoices serialize');
+    eq(parsed.members.length, state.members.length, 'backup: member count preserved');
+    ok(!('user' in parsed), 'backup: transient user key excluded');
+    ok(!('route' in parsed), 'backup: transient route key excluded');
+    var incoming = { ...parsed };
+    delete incoming.appVersion; delete incoming.schemaVersion; delete incoming.exported; delete incoming.user; delete incoming.route;
+    var target = { user: { role: 'admin' }, route: 'settings', members: [], invoices: [] };
+    Object.assign(target, incoming);
+    eq(target.members.length, state.members.length, 'restore: members applied');
+    eq(target.user.role, 'admin', 'restore: live session preserved');
+    eq(target.route, 'settings', 'restore: current route preserved');
+    ok(!('appVersion' in incoming), 'restore: backup meta key stripped before merge');
+  })();
+  // cloud-storage detection helper is safe when Storage is absent / present
+  (function(){
+    var saved = window.Storage;
+    window.Storage = undefined;
+    ok(isCloudStorage() === false, 'isCloudStorage: false when Storage missing');
+    window.Storage = { isCloud: () => true };
+    ok(isCloudStorage() === true, 'isCloudStorage: true when backend reports cloud');
+    window.Storage = { isCloud: () => false };
+    ok(isCloudStorage() === false, 'isCloudStorage: false when backend reports local');
+    window.Storage = saved;
+  })();
   // permanent delete: member only vs everything
   (function(){
     var saveOrig = state, msave = [], minv = [], msal = [], mren = [];

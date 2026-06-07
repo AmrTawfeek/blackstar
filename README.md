@@ -37,7 +37,7 @@ modes. Run: node tests/logic-tests.js and node tests/render-tests.js.
 
 ## To load
 Replace files in C:\Users\kshawky\Desktop\CRM\blackstars-localhost\, refresh,
-confirm footer reads v5.18.0.
+confirm footer reads v5.21.0.
 
 ## 4.85.0 note — frozen vs expired (attendance basis)
 - Member still ACTIVE → coach paid per class attended; rest pending.
@@ -542,3 +542,39 @@ Follow-ups that close the loop on the new Withdrawn/refund feature:
 4. **Export PDF / CSV** now follow the on-screen filters: filtered rows, the selected /
    attended day columns, and the all-months summary when "All months" is chosen.
 - Tests: 384 assertions.
+
+
+## 5.19.0 note — Attendance: confirm before changing a mark · removed "Mark all present"
+- Clicking an EMPTY cell still marks present (Y) in one tap (fast roll-call). But clicking a
+  cell that already has a mark — Y→N, or N→clear — now pops a **confirmation dialog** showing
+  the member, day, and the from → to change, so a stray tap can't silently flip a record.
+- The **"✓ Mark all present (today)"** button has been **removed** from the Attendance page
+  (and its references removed from the in-app guide).
+- Tests: 384 assertions · 25/25 pages render.
+
+
+## 5.20.0 note — Full backup / restore (daily backup) made clearer & safer
+- This already existed in **Settings → Data Management**, but is now clearer:
+  - **💾 Backup all data (1 JSON file)** exports the ENTIRE database — members, invoices,
+    payments, attendance, products, expenses, salaries, settings, audit log — into one
+    `blackstars-backup-YYYY-MM-DD.json`. Use it for daily backups.
+  - **📂 Restore from backup** loads that file back after a crash, replacing all data.
+- Restore is now safer: it shows the backup's date + contents before applying, **auto-downloads
+  a safety copy of the current data first** (so a wrong restore is reversible), strips backup
+  meta keys, and preserves the live session/route. An audit entry records each restore.
+- Tests: 393 assertions (incl. a backup→restore round-trip).
+
+
+## 5.21.0 note — Cloud-aware messaging (Firebase)
+- Confirmed: when firebase-config.js has valid keys (this install), the app loads from and
+  saves to Firebase Firestore on every change and syncs across devices; localStorage is only
+  an offline cache/safety-net, not the source of truth.
+- Fixed misleading "data lives only in this browser" copy. When cloud storage is active the
+  app now says data is stored in the cloud and syncs across devices, on: the backup reminder,
+  the dashboard backup note, the welcome/empty-state note, and Settings → Data Management.
+- The **backup reminder** is now gentler in cloud mode (nudges every 30 days, snoozes 14) and
+  reframed as an optional extra offline copy rather than "your data is at risk".
+- Settings → Storage Stats now shows the active **Storage backend** (☁️ Firebase vs 💾 browser)
+  and labels the local version as a cache in cloud mode. Hard-Reset note clarifies it only
+  clears the local cache when cloud is active.
+- Tests: 396 assertions.

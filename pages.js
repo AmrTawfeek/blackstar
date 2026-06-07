@@ -224,7 +224,9 @@ PAGES.dashboard = (main) => {
               <button class="btn ghost" onclick="(() => { if(confirm('Load 207 demo members and sample data to explore the app? You can clear it later.')) { loadDemoData(); render(); toast('Demo data loaded'); } })()">🧪 Just load demo data to try it out</button>
             </div>
             <div class="text-mute" style="font-size:11px;margin-top:12px">
-              💡 Once you start using the app, your data stays in this browser. When you receive a newer version of the app, your data is preserved automatically — no manual restore needed unless you want to revert.
+              💡 ${isCloudStorage()
+                ? 'Your data is stored in the cloud (Firebase) and syncs across every device you sign in on — nothing is tied to this one browser.'
+                : 'Once you start using the app, your data stays in this browser. When you receive a newer version of the app, your data is preserved automatically — no manual restore needed unless you want to revert.'}
             </div>
           </div>
         </div>
@@ -451,7 +453,9 @@ PAGES.dashboard = (main) => {
       <div style="flex:1">
         <div style="font-weight:600;font-size:13px">Backup before updates</div>
         <div class="text-mute" style="font-size:11px;margin-top:2px">
-          Running <b>v${APP_VERSION}</b>. When you receive a new version of this app, ALWAYS export a backup first, then import it after replacing files. Your data lives in this browser only.
+          Running <b>v${APP_VERSION}</b>. ${isCloudStorage()
+            ? 'Your data is stored in the cloud (Firebase) and syncs across devices — a JSON export is just an extra offline copy you can keep for safety.'
+            : 'When you receive a new version of this app, ALWAYS export a backup first, then import it after replacing files. Your data lives in this browser only.'}
         </div>
       </div>
       <button class="btn primary sm" id="dash-backup-now">💾 Backup now</button>
@@ -7884,7 +7888,8 @@ PAGES.settings = (main) => {
       <table style="width:100%">
         <tbody>
           <tr><td style="padding:4px 0">App version (code)</td><td class="text-right" style="font-family:monospace;font-size:12px">${SEED_VERSION}</td></tr>
-          <tr><td style="padding:4px 0">Data version (localStorage)</td><td class="text-right" style="font-family:monospace;font-size:12px;color:${localStorage.getItem(LS_VERSION_KEY)===SEED_VERSION?'var(--green)':'var(--accent-2)'}">${localStorage.getItem(LS_VERSION_KEY) || '(none — using seed)'}</td></tr>
+          <tr><td style="padding:4px 0">Storage backend</td><td class="text-right font-bold" style="font-size:12px">${isCloudStorage() ? '☁️ Firebase (cloud, syncs across devices)' : '💾 This browser (localStorage)'}</td></tr>
+          <tr><td style="padding:4px 0">Data version (${isCloudStorage() ? 'local cache' : 'localStorage'})</td><td class="text-right" style="font-family:monospace;font-size:12px;color:${localStorage.getItem(LS_VERSION_KEY)===SEED_VERSION?'var(--green)':'var(--accent-2)'}">${localStorage.getItem(LS_VERSION_KEY) || '(none — using seed)'}</td></tr>
           <tr><td style="padding:4px 0">Coaches loaded</td><td class="text-right font-bold">${state.coaches.length} ${state.coaches.length===7?'✓':'⚠️ expected 7'}</td></tr>
           <tr><td style="padding:4px 0">Members loaded</td><td class="text-right font-bold">${state.members.length}</td></tr>
         </tbody>
@@ -7893,7 +7898,7 @@ PAGES.settings = (main) => {
         <button class="btn danger" id="hard-reset-btn">🔥 Hard Reset (wipe localStorage + reload)</button>
       </div>
       <div class="text-mute" style="font-size:11px;margin-top:8px">
-        Last-resort recovery. Clears your browser's saved data for this app and reloads with an empty database. Use only if the app is misbehaving badly. <b>Make a backup first!</b>
+        Last-resort recovery. Clears this browser's local cache and reloads with an empty database. Use only if the app is misbehaving badly. <b>Make a backup first!</b>${isCloudStorage() ? ' <b>Note:</b> because cloud storage is active, this only clears the local cache — your cloud data will sync back on reload. To truly empty the database, use “🗑 Clear all data” above (which also clears the cloud copy).' : ''}
       </div>
     </div>
 
@@ -7912,9 +7917,9 @@ PAGES.settings = (main) => {
     </div>
 
     <div class="card">
-      <div class="card-header"><div><div class="card-title">Data Management</div><div class="card-subtitle">Backup, restore, reset</div></div></div>
+      <div class="card-header"><div><div class="card-title">Data Management</div><div class="card-subtitle">Full backup &amp; restore · daily backups</div></div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn ghost" id="backup-btn">💾 Backup all data (JSON)</button>
+        <button class="btn primary" id="backup-btn">💾 Backup all data (1 JSON file)</button>
         <button class="btn ghost" id="restore-btn">📂 Restore from backup</button>
         <button class="btn danger" id="reset-btn">🗑 Clear all data (start empty)</button>
         <button class="btn ghost" id="demo-btn" title="Replace your current data with the bundled demo data (207 sample members). For exploring features.">🧪 Load demo data</button>
@@ -7922,7 +7927,9 @@ PAGES.settings = (main) => {
         <input type="file" id="restore-file" accept=".json" style="display:none" />
       </div>
       <div class="text-mute mt-3" style="font-size:12px">
-        Data is stored in your browser's localStorage. Use <b>Backup</b> to save a JSON file before any major update. Use <b>Clear all</b> to start fresh (you'll re-import your Excel sheets from Data Import). <b>Load demo data</b> is only for trying out features — it will overwrite your real data.
+        ${isCloudStorage()
+          ? `<b>☁️ Cloud storage is active.</b> Your data is stored in Firebase and syncs across every device you sign in on — it is <b>not</b> tied to this browser. <b>Backup all data</b> still lets you save a single <code>blackstars-backup-${TODAY}.json</code> file as an independent offline copy (handy if the cloud copy is ever changed by mistake). <b>Restore from backup</b> loads such a file back in and replaces the current data (it auto-saves a safety copy first).`
+          : `<b>Backup all data</b> saves your <b>entire</b> database — every member, invoice, payment, attendance record, product, expense, salary and setting — into a single <code>blackstars-backup-${TODAY}.json</code> file. Do this <b>daily</b> and keep the file safe; if the app ever crashes or data is lost, use <b>Restore from backup</b> to load that file and you're back exactly where you were. Restore replaces all current data, but it auto-downloads a safety copy of what's there first, so it's reversible.`}
       </div>
     </div>
 
@@ -8140,14 +8147,47 @@ window.downloadBackup = function() {
     try {
       const text = await file.text();
       const data = JSON.parse(text);
-      if (!data.members || !data.invoices) throw new Error('Invalid backup file');
-      if (!confirm('Replace all current data with this backup?')) return;
-      Object.assign(state, data);
-      save();
-      render();
-      toast('Backup restored');
+      if (!Array.isArray(data.members) || !Array.isArray(data.invoices)) throw new Error('This file is not a Black Stars backup');
+      const exportedOn = data.exported ? new Date(data.exported).toLocaleString() : 'unknown date';
+      const summary = `${(data.members || []).length} members · ${(data.invoices || []).length} invoices · ${(data.coaches || []).length} coaches · ${(data.products || []).length} products`;
+      const cur = `${state.members.length} members · ${state.invoices.length} invoices`;
+      showModal({
+        title: '📂 Restore from backup?',
+        body: `<div style="font-size:13px;line-height:1.7">
+            <p>This will <b style="color:var(--red)">replace ALL current data</b> with the contents of this backup file. This cannot be undone.</p>
+            <div style="margin:10px 0;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-soft)">
+              <div><b>Backup file:</b> ${escapeHtml(file.name)}</div>
+              <div><b>Created:</b> ${escapeHtml(exportedOn)}${data.appVersion ? ` · app v${escapeHtml(String(data.appVersion))}` : ''}</div>
+              <div><b>Contains:</b> ${summary}</div>
+            </div>
+            <p class="text-mute">Current data right now: ${cur}.</p>
+            <p style="color:var(--green)">✓ A safety copy of your <b>current</b> data will be downloaded first, so you can undo this if needed.</p>
+          </div>`,
+        actions: [
+          { label: 'Cancel', class: 'btn ghost', onclick: () => { closeModal(); e.target.value = ''; } },
+          { label: 'Download safety copy & restore', class: 'btn primary', onclick: () => {
+              closeModal();
+              // 1) safety copy of CURRENT data, clearly named, before we overwrite.
+              try {
+                const safety = JSON.stringify({ appVersion: APP_VERSION, schemaVersion: SCHEMA_VERSION, exported: new Date().toISOString(), ...state, user: undefined, route: undefined }, null, 2);
+                downloadFile(`blackstars-PRE-RESTORE-${TODAY}.json`, safety, 'application/json');
+              } catch (_) {}
+              // 2) clean replace — drop backup meta keys, keep the live session/route.
+              const incoming = { ...data };
+              delete incoming.appVersion; delete incoming.schemaVersion; delete incoming.exported;
+              delete incoming.user; delete incoming.route;
+              Object.assign(state, incoming);
+              if (typeof audit === 'function') audit('data.restore', 'backup', `Restored backup (${summary})`, { file: file.name, exported: data.exported });
+              save();
+              render();
+              toast(`✓ Restored · ${state.members.length} members · ${state.invoices.length} invoices`);
+              e.target.value = '';
+            } },
+        ],
+      });
     } catch (err) {
       toast('Restore failed: ' + err.message, 'error');
+      e.target.value = '';
     }
   });
 
@@ -8370,9 +8410,8 @@ PAGES.attendance = (main) => {
     return baseDays;
   }
 
-  function markCell(memberId, sport, day, current) {
+  function applyMark(memberId, sport, day, next) {
     const mo = gridMonth();
-    const next = current === 'Y' ? 'N' : current === 'N' ? null : 'Y';
     const m = state.members.find(x => x.id === memberId);
     if (!m) return;
     if (!m.dailyAttendance) m.dailyAttendance = {};
@@ -8382,6 +8421,32 @@ PAGES.attendance = (main) => {
     else m.dailyAttendance[mo][sport][String(day)] = next;
     save();
     refresh();
+  }
+  function markCell(memberId, sport, day, current) {
+    const next = current === 'Y' ? 'N' : current === 'N' ? null : 'Y';
+    // First mark (empty → present) stays one-click for fast roll-call.
+    // Changing an EXISTING mark (Y→N, or clearing) asks to confirm, so a stray
+    // tap can't silently flip someone's record.
+    if (current === 'Y' || current === 'N') {
+      const m = state.members.find(x => x.id === memberId);
+      const name = m ? m.name : 'this member';
+      const fromLabel = current === 'Y' ? 'Present (Y)' : 'Absent (N)';
+      const toLabel = next === 'Y' ? 'Present (Y)' : next === 'N' ? 'Absent (N)' : 'cleared (blank)';
+      const badge = (txt, kind) => `<span class="badge" style="background:${kind==='Y'?'rgba(16,185,129,.15)':kind==='N'?'rgba(242,96,96,.15)':'rgba(120,120,140,.15)'};color:${kind==='Y'?'var(--green)':kind==='N'?'var(--red)':'var(--text-mute)'}">${txt}</span>`;
+      showModal({
+        title: 'Change attendance?',
+        body: `<div style="font-size:13px;line-height:1.7">
+            <p>Change <b>${escapeHtml(name)}</b> · ${escapeHtml(sport)} on <b>day ${day}</b> of ${fmtMonth(gridMonth())}?</p>
+            <p style="margin-top:8px">${badge(fromLabel, current)} <span style="opacity:.6">→</span> ${badge(toLabel, next)}</p>
+          </div>`,
+        actions: [
+          { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+          { label: 'Change it', class: 'btn primary', onclick: () => { closeModal(); applyMark(memberId, sport, day, next); } },
+        ],
+      });
+      return;
+    }
+    applyMark(memberId, sport, day, next);
   }
   window._attMark = markCell;
 
@@ -8599,7 +8664,6 @@ PAGES.attendance = (main) => {
         <button class="btn ghost" id="att-import">📂 Import CSV</button>
         <button class="btn ghost" id="att-export">📥 Export CSV</button>
         <button class="btn ghost" id="att-export-pdf">📄 Export PDF</button>
-        <button class="btn primary" id="att-mark-all">✓ Mark all present (today)</button>
       </div>
     </div>
 
@@ -8764,28 +8828,6 @@ PAGES.attendance = (main) => {
       refresh();
     }));
   }
-
-  $('#att-mark-all').addEventListener('click', () => {
-    const today = new Date();
-    const monthStr = gridMonth();
-    const todayMonth = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
-    // Use selected days if any, else today (if month matches) or day 1
-    const daysToMark = (filter.days && filter.days.length)
-      ? [...filter.days]
-      : [todayMonth === monthStr ? today.getDate() : 1];
-    const rs = getRows();
-    const dayLabel = daysToMark.length === 1 ? `day ${daysToMark[0]}` : `${daysToMark.length} days (${daysToMark.slice(0,3).join(', ')}${daysToMark.length>3?'…':''})`;
-    if (!confirm(`Mark all ${rs.length} visible rows as PRESENT on ${dayLabel} of ${fmtMonth(monthStr)}?`)) return;
-    for (const { m, sport } of rs) {
-      if (!m.dailyAttendance) m.dailyAttendance = {};
-      if (!m.dailyAttendance[monthStr]) m.dailyAttendance[monthStr] = {};
-      if (!m.dailyAttendance[monthStr][sport]) m.dailyAttendance[monthStr][sport] = {};
-      for (const d of daysToMark) m.dailyAttendance[monthStr][sport][String(d)] = 'Y';
-    }
-    save();
-    refresh();
-    toast(`${rs.length} rows marked present on ${dayLabel}`);
-  });
 
   // All-months summary PDF: one column per month with present (Y) counts + year total.
   function exportAttendanceMonthsPdf(rows) {
