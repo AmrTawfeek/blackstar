@@ -37,7 +37,7 @@ modes. Run: node tests/logic-tests.js and node tests/render-tests.js.
 
 ## To load
 Replace files in C:\Users\kshawky\Desktop\CRM\blackstars-localhost\, refresh,
-confirm footer reads v5.21.0.
+confirm footer reads v5.22.0.
 
 ## 4.85.0 note — frozen vs expired (attendance basis)
 - Member still ACTIVE → coach paid per class attended; rest pending.
@@ -578,3 +578,19 @@ Follow-ups that close the loop on the new Withdrawn/refund feature:
   and labels the local version as a cache in cloud mode. Hard-Reset note clarifies it only
   clears the local cache when cloud is active.
 - Tests: 396 assertions.
+
+
+## 5.22.0 note — Anti data-loss guard (cloud overwrite protection)
+- Root cause of "lost data after deploy": cloud saves are a FULL-document overwrite
+  (merge:false). If the app ever held empty/partial state — a failed cloud read after a
+  deploy, or a device that hadn't synced — the next save overwrote the whole cloud document
+  with that empty set, wiping data for every device.
+- New guard in storage.js: the app now REFUSES to write an empty dataset over data it knows
+  exists. It tracks the last-confirmed record count on load/save, and if a save would replace
+  known records with zero, it blocks the write and shows a red banner: "Your data was
+  protected … please reload to resync." Genuine "Clear all data" and Restore set an explicit
+  override so they still work.
+- Also protects the failed-load case: if the cloud read errors (so we can't trust our view),
+  empty writes are blocked regardless, until you reload.
+- Tests: 401 assertions (incl. the guard: blocks empty-over-good, allows non-empty, honors
+  explicit clear/restore, protects after a failed load, lets a fresh install start empty).

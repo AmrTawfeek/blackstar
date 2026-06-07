@@ -810,6 +810,38 @@ ${seed}
     ok(isCloudStorage() === false, 'isCloudStorage: false when backend reports local');
     window.Storage = saved;
   })();
+  // data-loss guard: refuse to overwrite known-good data with an empty save
+  (function(){
+    function makeGuard() {
+      let lastKnownGood = 0, loadErrored = false, allow = false;
+      const count = s => s ? ((s.members?.length || 0) + (s.invoices?.length || 0)) : 0;
+      return {
+        setErrored: v => { loadErrored = v; },
+        setAllow: v => { allow = v; },
+        noteLoaded: d => { const n = count(d); if (n > 0) lastKnownGood = n; },
+        blocked(state) {
+          const n = count(state);
+          if (n === 0 && !allow && (lastKnownGood > 0 || loadErrored)) return true;
+          if (n === 0 && allow) lastKnownGood = 0;
+          if (n > 0) lastKnownGood = n;
+          return false;
+        },
+      };
+    }
+    var g = makeGuard();
+    g.noteLoaded({ members: [{}, {}, {}], invoices: [{}, {}] });   // 5 records known good
+    ok(g.blocked({ members: [], invoices: [] }), 'guard: blocks empty write over 5 good records');
+    ok(!g.blocked({ members: [{}], invoices: [] }), 'guard: allows a non-empty write');
+    g.setAllow(true);
+    ok(!g.blocked({ members: [], invoices: [] }), 'guard: explicit Clear-all empty write allowed');
+    g.setAllow(false);
+    // after a failed cloud load, even an empty-baseline must be protected
+    var g2 = makeGuard();
+    g2.setErrored(true);
+    ok(g2.blocked({ members: [], invoices: [] }), 'guard: blocks empty write after a failed load');
+    var g3 = makeGuard();
+    ok(!g3.blocked({ members: [], invoices: [] }), 'guard: fresh install (no known data) can write empty');
+  })();
   // permanent delete: member only vs everything
   (function(){
     var saveOrig = state, msave = [], minv = [], msal = [], mren = [];

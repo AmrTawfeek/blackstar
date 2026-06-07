@@ -28,19 +28,47 @@
   let pendingState = null;
   let lastUser = null;   // {email, uid, isAdmin}
 
+  // ─── Data-loss guard ──────────────────────────────────────────────────────
+  // The cloud save is a FULL-document overwrite (merge:false). If the app ever
+  // holds empty/partial state (a failed cloud read, a fresh deploy, a device
+  // that hasn't synced) and then saves, it would wipe everyone's data. So we
+  // refuse to write an EMPTY dataset over a known-populated one. `lastKnownGood`
+  // is the count of records we last confirmed exist; `loadErrored` means we
+  // could not trust the cloud read, so we treat the cloud as "might have data".
+  let lastKnownGood = 0;
+  let loadErrored = false;
+  const recordCount = s => s ? ((s.members?.length || 0) + (s.invoices?.length || 0)) : 0;
+  function blockEmptyWrite(state) {
+    const n = recordCount(state);
+    const force = (typeof window !== 'undefined' && window.__allowEmptySave);
+    if (n === 0 && !force && (lastKnownGood > 0 || loadErrored)) {
+      console.error(`[Storage] BLOCKED empty write — refusing to overwrite ${lastKnownGood || 'existing'} records with 0. (Use "Clear all data" if this is intentional.)`);
+      try { if (typeof window !== 'undefined' && typeof window.__onCloudWriteBlocked === 'function') window.__onCloudWriteBlocked(lastKnownGood); } catch (_) {}
+      return true;
+    }
+    if (n === 0 && force) lastKnownGood = 0;   // accepted reset = new empty baseline
+    if (n > 0) lastKnownGood = n;
+    return false;
+  }
+  // Exposed for the app layer / diagnostics.
+  function noteLoaded(data) { const n = recordCount(data); if (n > 0) lastKnownGood = n; }
+
   // ─── localStorage backend ─────────────────────────────────────────────────
   const localBackend = {
     name: 'local',
     async load() {
       try {
         const raw = localStorage.getItem(LS_KEY);
-        return raw ? JSON.parse(raw) : null;
+        const data = raw ? JSON.parse(raw) : null;
+        noteLoaded(data);
+        return data;
       } catch (e) {
         console.warn('[Storage:local] load failed:', e);
         return null;
       }
     },
     save(state) {
+      if (blockEmptyWrite(state)) return;   // guard: never wipe good data with empty
       try {
         const persistable = { ...state };
         delete persistable.user;
@@ -122,16 +150,22 @@
           const snap = await docRef().get({ source: 'default' });
           if (!snap.exists) {
             // First time — return null so the app shows empty state / welcome
+            loadErrored = false;
             return null;
           }
-          return snap.data();
+          loadErrored = false;
+          const data = snap.data();
+          noteLoaded(data);
+          return data;
         } catch (e) {
           console.warn('[Storage:firebase] load failed, falling back to local cache:', e);
+          loadErrored = true;   // we could NOT trust the cloud → block empty overwrites
           // Try local backup
           return await localBackend.load();
         }
       },
       save(state) {
+        if (blockEmptyWrite(state)) return;   // guard: never wipe good cloud data with empty
         const persistable = { ...state, _updatedAt: Date.now() };
         delete persistable.user;
         delete persistable.route;

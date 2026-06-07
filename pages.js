@@ -8178,7 +8178,9 @@ window.downloadBackup = function() {
               delete incoming.user; delete incoming.route;
               Object.assign(state, incoming);
               if (typeof audit === 'function') audit('data.restore', 'backup', `Restored backup (${summary})`, { file: file.name, exported: data.exported });
+              window.__allowEmptySave = true;   // explicit restore — honor even if the backup is small
               save();
+              window.__allowEmptySave = false;
               render();
               toast(`✓ Restored · ${state.members.length} members · ${state.invoices.length} invoices`);
               e.target.value = '';
