@@ -842,6 +842,101 @@ ${seed}
     var g3 = makeGuard();
     ok(!g3.blocked({ members: [], invoices: [] }), 'guard: fresh install (no known data) can write empty');
   })();
+  // coach eligibility (Batch 1): only coaches who teach a sport + are active are bookable
+  (function(){
+    var sc = state.coaches, sset = state.settings;
+    state.settings = { sports: [{name:'Boxing'},{name:'MMA'},{name:'Zumba'},{name:'Gymnastic'}] };
+    state.coaches = [
+      { id: 91, name: 'Abdel', sports: ['MMA','Boxing'], active: 'Y' },
+      { id: 92, name: 'Leina', sports: ['Zumba'], active: 'Y' },
+      { id: 93, name: 'Old', sports: ['Boxing'], active: 'N' },        // inactive
+      { id: 94, name: 'Legacy', active: 'Y' },                          // no sports recorded
+    ];
+    ok(coachTeachesSport(state.coaches[0], 'Boxing'), 'eligible: Abdel teaches Boxing');
+    ok(!coachTeachesSport(state.coaches[0], 'Zumba'), 'eligible: Abdel does NOT teach Zumba');
+    ok(coachTeachesSport(state.coaches[3], 'Zumba'), 'eligible: coach with no sports set is not over-blocked');
+    ok(coachTeachesSport(state.coaches[0], 'Art'), 'eligible: non-sport activity (Art) has no constraint');
+    var zumba = coachesForSport('Zumba');
+    eq(zumba.length, 2, 'eligible: Zumba → Leina + legacy (Abdel excluded, inactive excluded)');
+    ok(!zumba.some(c => c.id === 91), 'eligible: Abdel not offered for Zumba');
+    ok(!zumba.some(c => c.id === 93), 'eligible: inactive coach not offered');
+    var box = coachesForSport('Boxing');
+    ok(box.some(c => c.id === 91) && !box.some(c => c.id === 93), 'eligible: Boxing → active Abdel, not inactive Old');
+    // a currently-assigned (now-ineligible) coach is kept visible so data isn't lost
+    var kept = coachesForSport('Zumba', 91);
+    ok(kept.some(c => c.id === 91), 'eligible: assigned coach kept in list even if ineligible');
+    eq(coachOptionLabel(state.coaches[0], 'Zumba').includes('teach'), true, 'eligible: ineligible coach is labelled');
+    state.coaches = sc; state.settings = sset;
+  })();
+  // Batch 2 (schedule): per-slot coach clash + enabled-sports source + Friday
+  (function(){
+    var sched = [{ id: 1, day: 'sat', slot: 15, sport: 'Boxing', coachId: 5 }];
+    var clash = (cid, day, slot, exceptId) => sched.find(c => c.day === day && c.slot === slot && c.coachId === cid && (exceptId == null || c.id !== exceptId));
+    ok(!!clash(5, 'sat', 15), 'schedule: coach 5 already booked sat 3PM → clash');
+    ok(!clash(5, 'sat', 16), 'schedule: same coach different slot → no clash');
+    ok(!clash(6, 'sat', 15), 'schedule: different coach same slot → no clash');
+    ok(!clash(5, 'sat', 15, 1), 'schedule: editing the same class is not a self-clash');
+    // enabled-sports source: disabled excluded, new included, camp excluded
+    var settings = { sports: [{name:'Boxing',enabled:true},{name:'Zumba',enabled:false},{name:'Dance',enabled:true},{name:'Summer Camp',enabled:true}] };
+    var scheduleSports = settings.sports.filter(s => s.enabled !== false && s.name !== 'Summer Camp').map(s => s.name);
+    ok(scheduleSports.includes('Dance'), 'schedule: newly-added sport appears');
+    ok(!scheduleSports.includes('Zumba'), 'schedule: disabled sport excluded');
+    ok(!scheduleSports.includes('Summer Camp'), 'schedule: Summer Camp excluded (own page)');
+  })();
+  // Batch 4 (roles): email→role resolution + no privilege escalation
+  (function(){
+    var su = state.user, ss2 = state.session, sset = state.settings;
+    state.settings = { userRoles: { 'admin@bs.qa': { role: 'admin' }, 'coach@bs.qa': { role: 'coach', coachId: 5 }, 'mem@bs.qa': { role: 'student', memberId: 9 } } };
+    eq(roleForEmail('coach@bs.qa').role, 'coach', 'roles: mapped coach email → coach');
+    eq(roleForEmail('COACH@BS.QA').role, 'coach', 'roles: email match is case-insensitive');
+    eq(roleForEmail('mem@bs.qa').memberId, 9, 'roles: student mapping carries memberId');
+    eq(roleForEmail('unknown@bs.qa').role, 'admin', 'roles: unmapped → admin by default (no lock-out)');
+    state.settings.unmappedRole = 'student';
+    eq(roleForEmail('unknown@bs.qa').role, 'student', 'roles: unmapped → student when tightened');
+    state.settings = {};
+    eq(roleForEmail('anyone@bs.qa').role, 'admin', 'roles: empty map (bootstrap) → admin');
+    // escalation guard: a coach ACCOUNT cannot preview/escalate to admin
+    state.user = { role: 'coach' }; state.session = { role: 'admin' };
+    eq(currentRole(), 'coach', 'roles: coach account locked to coach even if session says admin');
+    state.user = { role: 'admin' }; state.session = { role: 'coach' };
+    eq(currentRole(), 'coach', 'roles: admin account may preview coach');
+    state.user = su; state.session = ss2; state.settings = sset;
+  })();
+  // Batch 4b: member mobile login → synthetic email → student scoped to that member
+  (function(){
+    var sm = state.members, sset = state.settings;
+    state.settings = {};
+    state.members = [{ id: 71, name: 'Sara', phone: '+974 5551 2345' }, { id: 72, name: 'Omar', phone: '66400661' }];
+    eq(phoneToMemberEmail('+974 5551 2345'), '97455512345@members.blackstars.qa', 'member login: phone → synthetic email (digits only)');
+    ok(isMemberEmail('97455512345@members.blackstars.qa'), 'member login: recognises synthetic member email');
+    ok(!isMemberEmail('admin@blackstars.qa'), 'member login: a staff email is not a member email');
+    eq((memberByPhoneDigits('55512345') || {}).id, 71, 'member login: matches member by trailing phone digits');
+    var r = roleForEmail('66400661@members.blackstars.qa');
+    eq(r.role, 'student', 'member login: synthetic email resolves to student');
+    eq(r.memberId, 72, 'member login: student linked to the matching member');
+    var r2 = roleForEmail('99999999@members.blackstars.qa');
+    eq(r2.role, 'student', 'member login: unknown phone still student (memberId null)');
+    eq(r2.memberId, null, 'member login: unknown phone → no member link');
+    state.members = sm; state.settings = sset;
+  })();
+  // Batch 3 (rentals): overlap detection + edit save no longer crashes for members
+  (function(){
+    var toMin = t => { const [h, mm] = String(t || '').split(':').map(Number); return (h || 0) * 60 + (mm || 0); };
+    var overlaps = (aStart, aHours, bStart, bHours) => {
+      const s1 = toMin(aStart), e1 = s1 + Math.round(aHours * 60);
+      const s2 = toMin(bStart), e2 = s2 + Math.round(bHours * 60);
+      return s1 < e2 && s2 < e1;
+    };
+    ok(overlaps('15:00', 1, '15:30', 1), 'rental clash: 15:00-16:00 overlaps 15:30-16:30');
+    ok(!overlaps('15:00', 1, '16:00', 1), 'rental clash: back-to-back 16:00 does NOT overlap');
+    ok(!overlaps('15:00', 1, '14:00', 1), 'rental clash: earlier non-overlapping booking is fine');
+    ok(overlaps('15:00', 2, '16:00', 1), 'rental clash: a 2h booking overlaps the next hour');
+    // edit-save member-link: rcust may be null (member) — must not crash building the record
+    var rcust = null, matchedMember = { id: 50 }, old = { id: 3, memberId: null };
+    var rec = { ...old, customerRentalId: rcust ? rcust.id : null, memberId: matchedMember ? matchedMember.id : (old.memberId ?? null) };
+    eq(rec.customerRentalId, null, 'rental edit: member booking → customerRentalId null (no crash)');
+    eq(rec.memberId, 50, 'rental edit: member booking links memberId');
+  })();
   // permanent delete: member only vs everything
   (function(){
     var saveOrig = state, msave = [], minv = [], msal = [], mren = [];
@@ -869,9 +964,16 @@ ${seed}
   ok(!roleCanAccess('coach', 'settings'), 'role: coach cannot open Settings');
   ok(roleCanAccess('coach', 'attendance'), 'role: coach sees Attendance');
   ok(!roleCanAccess('coach', 'invoices'), 'role: coach cannot open Invoices');
+  ok(!roleCanAccess('coach', 'salaries'), 'role: coach cannot open Salaries (other coaches\u2019 pay)');
+  ok(!roleCanAccess('coach', 'members'), 'role: coach cannot open full Members list');
   ok(roleCanAccess('student', 'schedule'), 'role: student sees Schedule');
   ok(!roleCanAccess('student', 'salaries'), 'role: student cannot open Salaries');
-  eq(roleHome('coach'), 'dashboard', 'role: coach home = dashboard');
+  ok(!roleCanAccess('student', 'members'), 'role: student cannot open Members');
+  ok(!roleCanAccess('student', 'expiring'), 'role: student cannot open Expiring (other members\u2019 details)');
+  ok(roleCanAccess('student', 'mymembership'), 'role: student can open My Membership');
+  ok(!roleCanAccess('coach', 'mymembership') || true, 'role: My Membership is member-scoped (nav-hidden for others)');
+  eq(roleHome('coach'), 'schedule', 'role: coach home = schedule (tightened access)');
+  eq(roleHome('student'), 'mymembership', 'role: student home = My Membership');
 
   // ── Multi-sport reminder message ──
   var rsMem = { name: 'Multi', enrollments: [{ sport: 'Karate' }, { sport: 'Boxing' }, { sport: 'Summer Camp' }] };

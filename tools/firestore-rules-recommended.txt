@@ -1,0 +1,51 @@
+RECOMMENDED FIRESTORE SECURITY RULES — Black Stars CRM
+=======================================================
+
+Paste these in Firebase Console → Firestore Database → Rules → Publish.
+
+The app stores everything in a single document: clubs/blackstars.
+
+These rules:
+  • require sign-in for any access (no anonymous reads of your club data);
+  • let any signed-in STAFF account (real email) read AND write;
+  • let MEMBER accounts (logins on the members.blackstars.qa domain) only READ —
+    so a member can see their own info via the app but can never change club data.
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  rules_version = '2';
+  service cloud.firestore {
+    match /databases/{database}/documents {
+
+      // Is the request from a signed-in member login (mobile-number account)?
+      function isMember() {
+        return request.auth != null
+          && request.auth.token.email != null
+          && request.auth.token.email.matches('.*@members[.]blackstars[.]qa$');
+      }
+      function isStaff() {
+        return request.auth != null && !isMember();
+      }
+
+      match /clubs/{clubId} {
+        allow read:  if request.auth != null;   // staff + members can read
+        allow write: if isStaff();               // only staff can write
+      }
+
+      // Lock everything else down by default.
+      match /{document=**} {
+        allow read, write: if false;
+      }
+    }
+  }
+  └──────────────────────────────────────────────────────────────────────────┘
+
+NOTES
+-----
+• "Staff" here means any signed-in account whose email is NOT on the
+  members.blackstars.qa domain — i.e. your admin and coach logins.
+• If you DON'T want members reading the whole club document yet (it contains all
+  members), change the read line to `allow read: if isStaff();` until a
+  member-scoped data model is built. With the current single-document design,
+  member read access is all-or-nothing — tell me if you want a stricter split.
+• Members changing their PASSWORD does not touch Firestore — Firebase Auth
+  handles that — so read-only rules don't block the password change.

@@ -1612,7 +1612,7 @@ function enrollRowHtml(row, idx) {
   //  • if the assigned coach is inactive/archived, still show it (selected)
   //  • if no valid coach is assigned (unset or deleted), show a "— Select
   //    coach —" placeholder so the mandatory field is explicit, never blank.
-  const selList = activeCoaches();
+  const selList = coachesForSport(row.sport, row.coachId);
   const assignedCoach = (row.coachId != null && row.coachId !== '')
     ? state.coaches.find(c => String(c.id) === String(row.coachId))
     : null;
@@ -1621,7 +1621,7 @@ function enrollRowHtml(row, idx) {
   }
   const coachOpts =
     `<option value="" ${assignedCoach ? '' : 'selected'}>— Select coach —</option>` +
-    selList.map(c => `<option value="${c.id}" ${assignedCoach && c.id === assignedCoach.id ? 'selected' : ''}>${escapeHtml(c.name)}${isCoachActive(c) ? '' : ' (inactive)'}</option>`).join('');
+    selList.map(c => `<option value="${c.id}" ${assignedCoach && c.id === assignedCoach.id ? 'selected' : ''}>${coachOptionLabel(c, row.sport)}</option>`).join('');
   // Visual warning: highlight Classes/Price fields if they're empty or zero
   const classesNum = parseInt(row.classes) || 0;
   const priceNum = parseFloat(row.price) || 0;
@@ -1736,6 +1736,12 @@ function renderEnrollRows() {
         const wasCamp = row.sport === SUMMER_CAMP;
         const isNowCamp = val === SUMMER_CAMP;
         row.sport = val;
+        // If the currently-picked coach doesn't teach the new sport, clear it so
+        // the admin must re-pick from the (now correctly filtered) coach list.
+        if (!isNowCamp && row.coachId) {
+          const cc = state.coaches.find(c => String(c.id) === String(row.coachId));
+          if (cc && !coachTeachesSport(cc, val)) row.coachId = null;
+        }
         // Switching to/from Summer Camp resets duration-related fields
         if (wasCamp && !isNowCamp) {
           row.durationLabel = null;
@@ -2847,7 +2853,8 @@ PAGES.campschedule = (main) => {
     const g = groups.find(x => x.key === gkey);
     if (!cs.days[dayKey][rowIdx]) cs.days[dayKey][rowIdx] = {};
     const cell = cs.days[dayKey][rowIdx][gkey] || { activity: '', coach: '' };
-    const coachNames = (state.coaches || []).map(c => c.name).filter(Boolean);
+    // Only coaches who teach this activity (when it's a real sport) and are active.
+    const coachNames = coachesForSport(cell.activity || '', null).map(c => c.name).filter(Boolean);
     const curCoach = cell.coach || '';
     const coachOpts = ['<option value="">— none —</option>']
       .concat(coachNames.map(n => `<option ${n === curCoach ? 'selected' : ''}>${escapeHtml(n)}</option>`));
@@ -2960,6 +2967,7 @@ PAGES.schedule = (main) => {
     { key: 'tue', label: 'TUESDAY' },
     { key: 'wed', label: 'WEDNESDAY' },
     { key: 'thu', label: 'THURSDAY' },
+    { key: 'fri', label: 'FRIDAY' },
   ];
   // 1-hour time slots from 3PM to 8PM
   const SLOTS = [
@@ -3056,11 +3064,14 @@ PAGES.schedule = (main) => {
         const items = cls.map(c => {
           const dimmed = !isFiltered(c);
           const coach = state.coaches.find(x => x.id === c.coachId);
-          return `<div class="sch-class" data-id="${c.id}" data-sport="${escapeHtml(c.sport)}" data-coachid="${c.coachId != null ? c.coachId : ''}" style="background:${sportColor(c.sport)};color:white;padding:6px 8px;border-radius:6px;font-size:11px;font-weight:600;margin:2px 0;display:flex;align-items:center;justify-content:space-between;gap:4px;cursor:pointer;opacity:${dimmed ? '0.18' : '1'};transition:opacity .15s">
+          const warn = (coach && !isCoachActive(coach))
+            ? `<span title="${escapeHtml(coach.name)} is now inactive — reassign or remove this class" style="flex-shrink:0">⚠️</span>` : '';
+          return `<div class="sch-class" data-id="${c.id}" data-sport="${escapeHtml(c.sport)}" data-coachid="${c.coachId != null ? c.coachId : ''}" style="background:${sportColor(c.sport)};color:white;padding:6px 8px;border-radius:6px;font-size:11px;font-weight:600;margin:2px 0;display:flex;align-items:center;justify-content:space-between;gap:4px;cursor:pointer;opacity:${dimmed ? '0.18' : '1'};transition:opacity .15s;${coach && !isCoachActive(coach) ? 'outline:2px solid #facc15;outline-offset:-2px' : ''}">
             <div style="flex:1;min-width:0;overflow:hidden">
               <div style="display:flex;align-items:center;gap:4px"><span>${sportEmoji(c.sport)}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(c.sport)}</span></div>
-              <div style="font-size:9px;font-weight:500;opacity:.95;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(coach ? coach.name : 'No coach')}</div>
+              <div style="font-size:9px;font-weight:500;opacity:.95;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(coach ? coach.name : 'No coach')}${coach && !isCoachActive(coach) ? ' · inactive' : ''}</div>
             </div>
+            ${warn}
             <button class="sch-del" data-id="${c.id}" title="Remove" style="background:rgba(0,0,0,.25);border:none;color:white;width:18px;height:18px;border-radius:50%;cursor:pointer;font-size:11px;flex-shrink:0;padding:0;display:flex;align-items:center;justify-content:center">×</button>
           </div>`;
         }).join('');
@@ -3141,9 +3152,11 @@ PAGES.schedule = (main) => {
   function pickCoachAndAdd(sport, day, slot, existing) {
     const slotLabel = (SLOTS.find(s => s.hour === slot) || {}).label || `${slot}:00`;
     const dayLabel = (DAYS.find(d => d.key === day) || {}).label || day;
-    const opts = state.coaches.map(c =>
-      `<option value="${c.id}" ${existing && existing.coachId === c.id ? 'selected' : ''}>${escapeHtml(c.name)}${isCoachActive(c) ? '' : ' (inactive)'}</option>`
+    const eligible = coachesForSport(sport, existing && existing.coachId);
+    const opts = eligible.map(c =>
+      `<option value="${c.id}" ${existing && existing.coachId === c.id ? 'selected' : ''}>${coachOptionLabel(c, sport)}</option>`
     ).join('');
+    const noneNote = eligible.length ? '' : `<div class="text-mute" style="font-size:11px;margin-top:6px">No active coach teaches ${escapeHtml(sport)}. Add the sport to a coach in the Team page, or activate a coach.</div>`;
     showModal({
       title: existing ? `Edit Class — ${escapeHtml(sport)}` : `Add Class — ${escapeHtml(sport)}`,
       body: `
@@ -3157,6 +3170,7 @@ PAGES.schedule = (main) => {
         <div class="field">
           <label>Coach</label>
           <select id="sch-coach" style="width:100%">${opts}</select>
+          ${noneNote}
         </div>
       `,
       actions: [
@@ -3169,6 +3183,14 @@ PAGES.schedule = (main) => {
         { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
         { label: existing ? 'Save' : 'Add Class', class: 'btn primary', onclick: () => {
           const coachId = parseInt($('#sch-coach').value);
+          // A coach can't teach two classes in the same time slot on the same day.
+          const clash = (state.schedule || []).find(c =>
+            c.day === day && c.slot === slot && c.coachId === coachId &&
+            (!existing || c.id !== existing.id));
+          if (coachId && clash) {
+            toast(`${coachName(coachId)} already has ${clash.sport} in this slot — one class per coach per time slot.`, 'error');
+            return;
+          }
           if (existing) {
             existing.coachId = coachId;
           } else {
@@ -3349,10 +3371,17 @@ PAGES.schedule = (main) => {
   }
 
   // ─── Render the page ───────────────────────────────────────────────
+  // Sports offered in the schedule come from the ENABLED sports in Settings, so
+  // newly-added sports show up and disabled sports can't be booked. Summer Camp
+  // has its own page, so it's excluded here. Falls back to the themed list.
+  const scheduleSports = (state.settings && Array.isArray(state.settings.sports) && state.settings.sports.length)
+    ? state.settings.sports.filter(s => s.enabled !== false && s.name !== SUMMER_CAMP)
+        .slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map(s => s.name)
+    : Object.keys(SPORT_THEME);
   const coachOpts = state.coaches.map(c => `<option value="${c.id}">${escapeHtml(c.name)}${isCoachActive(c) ? '' : ' (inactive)'}</option>`).join('');
-  const sportOpts = Object.keys(SPORT_THEME).map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+  const sportOpts = scheduleSports.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
   // Sport palette (draggable tiles) — static, built once per page render
-  const sportTiles = Object.keys(SPORT_THEME).map(sport => `
+  const sportTiles = scheduleSports.map(sport => `
     <div class="sport-tile" draggable="true" data-sport="${escapeHtml(sport)}"
          style="background:${sportColor(sport)};color:white;padding:8px 14px;border-radius:8px;font-weight:700;font-size:12px;cursor:grab;user-select:none;display:inline-flex;align-items:center;gap:6px;box-shadow:0 2px 6px rgba(0,0,0,.15)">
       <span style="font-size:16px">${sportEmoji(sport)}</span> ${escapeHtml(sport)}
@@ -3361,7 +3390,7 @@ PAGES.schedule = (main) => {
 
   main.innerHTML = `
     <style>
-      .sch-row { display: grid; grid-template-columns: 110px repeat(6, 1fr); }
+      .sch-row { display: grid; grid-template-columns: 110px repeat(${DAYS.length}, 1fr); }
       .sch-time-h, .sch-day-h, .sch-time-cell {
         background: var(--surface-2);
         color: var(--text);
@@ -7911,8 +7940,24 @@ PAGES.settings = (main) => {
         <button class="btn ${currentRole() === 'student' ? 'primary' : 'ghost'}" onclick="setPreviewRole('student')">🎓 Student</button>
       </div>
       <div class="text-mute mt-3" style="font-size:12px;line-height:1.6">
-        <b>Admin</b> sees everything · <b>Coach</b> sees Dashboard, Schedule, Summer Camp, Attendance, Members, Trials, Salaries · <b>Student</b> sees Dashboard, Schedule, Summer Camp, Expiring. While previewing, an <b>Exit</b> button (top-left) returns you to Admin.<br>
-        ⚠️ This is a <b>view preview</b>, not a login or access lock — anyone using this browser can switch back to Admin. True per-role access control will come with online sign-in (Firebase Auth).
+        <b>Admin</b> sees everything · <b>Coach</b> sees Schedule, Summer Camp, Attendance, Trials · <b>Student</b> sees Schedule &amp; Summer Camp only. While previewing, an <b>Exit</b> button (top-left) returns you to Admin.<br>
+        ℹ️ This is a quick <b>view preview</b> for admins. Real per-account access is set in <b>Users &amp; Roles</b> below and enforced at sign-in.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">🔐 Users &amp; Roles</div><div class="card-subtitle">Map each login email to a role. Enforced when that account signs in (cloud).</div></div></div>
+      <div id="user-roles-list">${userRolesListHtml()}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">
+        <button class="btn primary sm" onclick="editUserRole()">＋ Add user mapping</button>
+        <label style="font-size:12px;margin-left:8px">Unmapped accounts default to:</label>
+        <select id="unmapped-role" onchange="setUnmappedRole(this.value)" style="padding:4px 8px">
+          <option value="admin" ${(state.settings?.unmappedRole || 'admin') === 'admin' ? 'selected' : ''}>Admin (safe default — no lock-out)</option>
+          <option value="student" ${(state.settings?.unmappedRole) === 'student' ? 'selected' : ''}>Student (least privilege)</option>
+        </select>
+      </div>
+      <div class="text-mute mt-3" style="font-size:12px;line-height:1.6">
+        ☁️ You create the actual accounts &amp; passwords in <b>Firebase Console → Authentication → Add user</b>. Here you only set what role each email gets. A <b>Coach</b> mapping is linked to a coach record; a <b>Student</b> mapping to a member record. Keep at least one <b>Admin</b> mapped (e.g. your own email) before switching unmapped accounts to Student.
       </div>
     </div>
 
@@ -10053,11 +10098,25 @@ window.switchSport = function(memberId) {
     const elPrev = $('#sw-preview');
     if (elPrev) elPrev.innerHTML = body;
   }
+  function rebuildSwCoaches() {
+    const sportSel = $('#sw-sport'), coachSel = $('#sw-coach');
+    if (!sportSel || !coachSel) return;
+    const sport = sportSel.value;
+    if (sport === SUMMER_CAMP) { coachSel.innerHTML = '<option value="">— none (camp) —</option>'; return; }
+    const prev = parseInt(coachSel.value) || null;
+    const list = coachesForSport(sport, prev);
+    coachSel.innerHTML = list.length
+      ? list.map(co => `<option value="${co.id}" ${co.id === prev ? 'selected' : ''}>${coachOptionLabel(co, sport)}</option>`).join('')
+      : '<option value="">— no active coach teaches this sport —</option>';
+  }
   setTimeout(() => {
-    ['#sw-from','#sw-coach','#sw-date','#sw-sport'].forEach(id => {
+    const sp = $('#sw-sport');
+    if (sp) sp.addEventListener('change', () => { rebuildSwCoaches(); updatePreview(); });
+    ['#sw-from','#sw-coach','#sw-date'].forEach(id => {
       const elx = $(id);
       if (elx) elx.addEventListener('change', updatePreview);
     });
+    rebuildSwCoaches();   // filter coaches to the default new sport on open
     updatePreview();
   }, 50);
 };
@@ -11111,7 +11170,168 @@ window.deleteTrial = function(id) {
 };
 
 // Switch the role-preview. Pure view layer (no security) until online sign-in exists.
+// ─── My Membership (member self-service, read-only, own data only) ──
+PAGES.mymembership = (main) => {
+  const meId = state.user && state.user.memberId;
+  const m = (state.members || []).find(x => x.id === meId);
+  if (!m) {
+    main.innerHTML = `<div class="topbar"><div><h1>My Membership</h1></div></div>
+      <div class="card"><p style="font-size:14px">We couldn't find a membership linked to this login. Please contact the club so they can link your account.</p></div>`;
+    return;
+  }
+  const status = memberStatus(m);
+  const statusColor = status === 'Active' ? 'var(--green)' : status === 'Frozen' ? 'var(--blue)' : status === 'Withdrawn' ? 'var(--text-mute)' : 'var(--red)';
+  const dLeft = m.expiryDate ? daysUntil(m.expiryDate) : null;
+  const enrolled = (m.enrollments && m.enrollments.length) ? m.enrollments
+    : (m.subscriptions || []).map(s => ({ sport: s.activity, coachId: s.coachId, classes: s.totalClasses || 0, price: s.amountPaid || 0 }));
+  const outstanding = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0;
+  const mo = TODAY.slice(0, 7);
+  const sportsHtml = enrolled.length ? enrolled.map(e => {
+    const dd = m.dailyAttendance?.[mo]?.[e.sport] || {};
+    let y = 0; for (const k in dd) if (dd[k] === 'Y') y++;
+    return `<tr style="border-top:1px solid var(--border)">
+      <td style="padding:8px">${escapeHtml(e.sport)}</td>
+      <td style="padding:8px">${e.sport === SUMMER_CAMP ? '—' : escapeHtml(coachName(e.coachId))}</td>
+      <td style="padding:8px;text-align:center">${e.classes || 0}</td>
+      <td style="padding:8px;text-align:center">${y} this month</td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="4" style="padding:10px" class="text-mute">No active sports on record.</td></tr>`;
+
+  main.innerHTML = `
+    <div class="topbar"><div><h1>My Membership</h1><div class="subtitle">${escapeHtml(m.name)}${isRealPhone && isRealPhone(m.phone) ? ' · ' + escapeHtml(m.phone) : ''}</div></div>
+      <div class="topbar-actions"><button class="btn ghost" onclick="promptPasswordChange(false)">🔐 Change password</button></div>
+    </div>
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi"><div class="kpi-label">Status</div><div class="kpi-value" style="color:${statusColor}">${status}</div><div class="kpi-sub">${m.level || ''}</div></div>
+      <div class="kpi"><div class="kpi-label">Membership expiry</div><div class="kpi-value" style="font-size:20px">${m.expiryDate ? fmtDate(m.expiryDate) : '—'}</div><div class="kpi-sub">${dLeft == null ? '' : dLeft < 0 ? `expired ${-dLeft}d ago` : `${dLeft} day${dLeft === 1 ? '' : 's'} left`}</div></div>
+      <div class="kpi ${outstanding > 0 ? 'red' : 'green'}"><div class="kpi-label">Balance due</div><div class="kpi-value">${fmt(outstanding)}</div><div class="kpi-sub">${outstanding > 0 ? 'please settle at reception' : 'all paid'}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">My sports</div><div class="card-subtitle">Your enrolled activities and attendance this month</div></div></div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="text-align:left;color:var(--text-mute);font-size:11px"><th style="padding:6px 8px">Sport</th><th style="padding:6px 8px">Coach</th><th style="padding:6px 8px;text-align:center">Planned</th><th style="padding:6px 8px;text-align:center">Attended</th></tr></thead>
+        <tbody>${sportsHtml}</tbody>
+      </table>
+      <div class="text-mute mt-3" style="font-size:11px">See the <b>Schedule</b> tab for class times. For changes to your plan, please contact the club.</div>
+    </div>`;
+};
+
+// Change the signed-in account's password. Stored by Firebase Auth (never in our
+// data). `force` = first-login default-password change (can't be skipped except by signing out).
+window.promptPasswordChange = function(force) {
+  const myMobile = (() => {
+    const id = state.user && state.user.email;
+    return isMemberEmail(id) ? id.split('@')[0].replace(/\D/g, '') : '';
+  })();
+  showModal({
+    title: force ? '🔐 Set a new password' : '🔐 Change password',
+    body: `<div style="font-size:13px;line-height:1.7">
+        ${force ? `<p>For your security, please replace the default password (your mobile number) with one only you know.</p>` : ''}
+        <div class="field"><label>New password</label><input id="pw-new" type="password" placeholder="at least 6 characters" /></div>
+        <div class="field"><label>Confirm new password</label><input id="pw-confirm" type="password" /></div>
+        <div class="text-mute" style="font-size:11px">Your password is stored securely by the sign-in system — not in the club database.</div>
+      </div>`,
+    actions: [
+      { label: force ? 'Sign out instead' : 'Cancel', class: 'btn ghost', onclick: () => { closeModal(); if (force) logout(); } },
+      { label: 'Save password', class: 'btn primary', onclick: async () => {
+          const np = $('#pw-new').value, cf = $('#pw-confirm').value;
+          if (!np || np.length < 6) { toast('Use at least 6 characters', 'error'); return; }
+          if (np !== cf) { toast('Passwords don\u2019t match', 'error'); return; }
+          if (myMobile && np.replace(/\D/g, '') === myMobile) { toast('Pick something other than your mobile number', 'error'); return; }
+          try {
+            await window.Storage.updatePassword(np);
+            closeModal();
+            toast('✓ Password updated');
+          } catch (e) { toast(e.message || 'Could not update password', 'error'); }
+        } },
+    ],
+  });
+};
+
+// ─── Users & Roles (admin) ─────────────────────────────────────────
+function userRolesListHtml() {
+  const map = (state.settings && state.settings.userRoles) || {};
+  const emails = Object.keys(map);
+  if (!emails.length) return `<div class="text-mute" style="font-size:12px;padding:8px 0">No mappings yet — every signed-in account is currently <b>Admin</b>. Add your admin email plus your coach/member logins below.</div>`;
+  const rows = emails.sort().map(e => {
+    const r = map[e] || {};
+    let linked;
+    if (r.role === 'coach') linked = escapeHtml(coachName(r.coachId) || '— pick a coach —');
+    else if (r.role === 'student') { const m = state.members.find(x => x.id === r.memberId); linked = m ? escapeHtml(m.name) : '<span class="text-mute">— pick a member —</span>'; }
+    else linked = '<span class="text-mute">full access</span>';
+    return `<tr style="border-top:1px solid var(--border)">
+      <td style="padding:6px 8px;font-family:monospace;font-size:12px">${escapeHtml(e)}</td>
+      <td style="padding:6px 8px"><span class="badge">${ROLE_LABELS[r.role] || r.role}</span></td>
+      <td style="padding:6px 8px;font-size:12px">${linked}</td>
+      <td style="padding:6px 8px;text-align:right;white-space:nowrap">
+        <button class="btn ghost sm" onclick="editUserRole('${escapeHtml(e)}')" title="Edit">✏️</button>
+        <button class="btn ghost sm" onclick="removeUserRole('${escapeHtml(e)}')" title="Remove">🗑</button>
+      </td></tr>`;
+  }).join('');
+  return `<table style="width:100%;border-collapse:collapse"><thead><tr style="text-align:left;font-size:11px;color:var(--text-mute)"><th style="padding:4px 8px">Email</th><th style="padding:4px 8px">Role</th><th style="padding:4px 8px">Linked to</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+window.renderUserRolesList = function() { const elx = document.getElementById('user-roles-list'); if (elx) elx.innerHTML = userRolesListHtml(); };
+window.editUserRole = function(email) {
+  const map = (state.settings && state.settings.userRoles) || {};
+  const existing = email ? map[email] : null;
+  const role0 = (existing && existing.role) || 'coach';
+  const coachSel = id => (state.coaches || []).map(c => `<option value="${c.id}" ${id === c.id ? 'selected' : ''}>${escapeHtml(c.name)}${isCoachActive(c) ? '' : ' (inactive)'}</option>`).join('');
+  const memberSel = id => (state.members || []).filter(m => !m.deleted).slice().sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(m => `<option value="${m.id}" ${id === m.id ? 'selected' : ''}>${escapeHtml(m.name)}</option>`).join('');
+  showModal({
+    title: email ? 'Edit user mapping' : 'Add user mapping',
+    body: `<div style="font-size:13px;line-height:1.6">
+        <div class="field"><label>Login email (the one created in Firebase Authentication)</label>
+          <input id="ur-email" type="email" value="${escapeHtml(email || '')}" ${email ? 'readonly' : ''} placeholder="coach@blackstars.qa" /></div>
+        <div class="field"><label>Role</label>
+          <select id="ur-role">
+            <option value="admin" ${role0 === 'admin' ? 'selected' : ''}>Admin — full access</option>
+            <option value="coach" ${role0 === 'coach' ? 'selected' : ''}>Coach</option>
+            <option value="student" ${role0 === 'student' ? 'selected' : ''}>Student / member</option>
+          </select></div>
+        <div class="field" id="ur-coach-wrap" style="display:${role0 === 'coach' ? 'block' : 'none'}"><label>Which coach</label><select id="ur-coach">${coachSel(existing && existing.coachId)}</select></div>
+        <div class="field" id="ur-member-wrap" style="display:${role0 === 'student' ? 'block' : 'none'}"><label>Which member</label><select id="ur-member">${memberSel(existing && existing.memberId)}</select></div>
+      </div>`,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      { label: 'Save', class: 'btn primary', onclick: () => {
+          const e = ($('#ur-email').value || '').trim().toLowerCase();
+          if (!/.+@.+\..+/.test(e)) { toast('Enter a valid email', 'error'); return; }
+          const role = $('#ur-role').value;
+          const entry = { role };
+          if (role === 'coach') { entry.coachId = parseInt($('#ur-coach').value) || null; if (!entry.coachId) { toast('Pick which coach', 'error'); return; } }
+          if (role === 'student') { entry.memberId = parseInt($('#ur-member').value) || null; if (!entry.memberId) { toast('Pick which member', 'error'); return; } }
+          if (!state.settings) state.settings = {};
+          if (!state.settings.userRoles) state.settings.userRoles = {};
+          state.settings.userRoles[e] = entry;
+          audit('user.role_map', e, `Mapped ${e} → ${role}`, entry);
+          save(); closeModal(); renderUserRolesList(); toast(`${e} → ${ROLE_LABELS[role] || role}`);
+        } },
+    ],
+  });
+  setTimeout(() => {
+    const rs = document.getElementById('ur-role');
+    if (rs) rs.onchange = () => {
+      document.getElementById('ur-coach-wrap').style.display = rs.value === 'coach' ? 'block' : 'none';
+      document.getElementById('ur-member-wrap').style.display = rs.value === 'student' ? 'block' : 'none';
+    };
+  }, 0);
+};
+window.removeUserRole = function(email) {
+  const map = (state.settings && state.settings.userRoles) || {};
+  if (!map[email]) return;
+  if (!confirm(`Remove the role mapping for ${email}? They'll fall back to the default for unmapped accounts.`)) return;
+  delete state.settings.userRoles[email];
+  audit('user.role_unmap', email, `Removed role mapping for ${email}`);
+  save(); renderUserRolesList(); toast('Mapping removed');
+};
+window.setUnmappedRole = function(v) {
+  if (!state.settings) state.settings = {};
+  state.settings.unmappedRole = (v === 'student') ? 'student' : 'admin';
+  save(); toast('Unmapped accounts → ' + (v === 'student' ? 'Student' : 'Admin'));
+};
+
 window.setPreviewRole = function(role) {
+  if (accountRole() !== 'admin') { toast('Only an admin account can preview roles', 'error'); return; }
   const r = (role === 'coach' || role === 'student') ? role : 'admin';
   state.session = { role: r };
   save();
@@ -13564,8 +13784,8 @@ function rentalFormHtml(r) {
   return `
     <div class="form-row">
       <div class="field"><label>Facility</label><select id="r-facility">${facOpts}</select></div>
-      <div class="field"><label>Date</label><input type="date" id="r-date" value="${r.date || TODAY}" /></div>
-      <div class="field"><label>Start time (optional)</label><input type="time" id="r-time" value="${r.startTime || ''}" /></div>
+      <div class="field"><label>Date <span style="color:var(--accent)">*</span></label><input type="date" id="r-date" value="${r.date || TODAY}" min="${r.date && r.date < TODAY ? r.date : TODAY}" /></div>
+      <div class="field"><label>Start time <span style="color:var(--accent)">*</span></label><input type="time" id="r-time" value="${r.startTime || ''}" /></div>
     </div>
     <div class="form-row">
       <div class="field"><label>Hours</label><input type="number" min="0.5" step="0.5" id="r-hours" value="${r.hours ?? 1}" /></div>
@@ -14019,6 +14239,18 @@ function saveRental(existingId, onDone) {
   const hourlyRate = parseFloat($('#r-rate').value) || 0;
   const amount = parseFloat($('#r-amount').value) || (hours * hourlyRate);
   if (hours <= 0 || hourlyRate <= 0) { toast('Hours and rate must be > 0', 'error'); return; }
+  // Start time is mandatory — it's what lets us detect double-bookings.
+  if (!startTime) { toast('Start time is required (it prevents double-booking the facility)', 'error'); $('#r-time')?.focus(); return; }
+  // No booking a date in the past (new bookings).
+  if (!existingId && date < TODAY) { toast('You can\u2019t book a date in the past', 'error'); $('#r-date')?.focus(); return; }
+  // No overlapping booking of the same facility on the same date.
+  const toMin = t => { const [h, mm] = String(t || '').split(':').map(Number); return (h || 0) * 60 + (mm || 0); };
+  const startMin = toMin(startTime), endMin = startMin + Math.round(hours * 60);
+  const clash = (state.rentals || []).find(x => x.id !== existingId && x.facility === facility && x.date === date && x.startTime && (() => {
+    const s2 = toMin(x.startTime), e2 = s2 + Math.round((x.hours || 0) * 60);
+    return startMin < e2 && s2 < endMin;
+  })());
+  if (clash) { toast(`${facility} is already booked at ${clash.startTime} on ${fmtDate(date)} — overlapping bookings aren\u2019t allowed.`, 'error'); return; }
   const qid = $('#r-qid').value.trim() || null;
   const method = $('#r-method').value || 'cash';
   const notes = $('#r-notes').value.trim() || null;
@@ -14027,6 +14259,11 @@ function saveRental(existingId, onDone) {
   // If yes, we don't create a duplicate rentalCustomers entry — we link the
   // rental's customerId to the member instead, so all their history is unified.
   const matchedMember = (state.members || []).find(m => m.phone && m.phone === phone);
+  // Don't book facilities against an archived member.
+  if (matchedMember && matchedMember.deleted) {
+    toast('That mobile belongs to an archived member — reactivate them, or use a different customer.', 'error');
+    return;
+  }
 
   let rcust = null;
   if (!matchedMember) {
@@ -14071,7 +14308,9 @@ function saveRental(existingId, onDone) {
     state.rentals[idx] = {
       ...old, facility, date, startTime, hours, hourlyRate, amount,
       customerName: name, customerPhone: phone, customerQid: qid,
-      customerRentalId: rcust.id, method, notes,
+      customerRentalId: rcust ? rcust.id : null,
+      memberId: matchedMember ? matchedMember.id : (old.memberId ?? null),
+      method, notes,
     };
     // Update linked invoice
     if (old.invoiceId) {
@@ -14080,6 +14319,8 @@ function saveRental(existingId, onDone) {
         inv.date = date; inv.description = desc; inv.amount = amount;
         inv.method = method; inv.month = month; inv.sport = facility;
         inv.customerName = name;
+        inv.customerId = matchedMember ? matchedMember.id : null;
+        inv.category = facility === 'Boxing Room' ? 'Boxing Room' : 'Court Rental';
       }
     }
     save();

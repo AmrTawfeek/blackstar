@@ -214,6 +214,17 @@
         }
         return lastUser;
       },
+      async updatePassword(newPassword) {
+        const u = auth.currentUser;
+        if (!u) throw new Error('Not signed in');
+        try {
+          await u.updatePassword(newPassword);   // stored securely by Firebase Auth
+          return true;
+        } catch (e) {
+          if (e && e.code === 'auth/requires-recent-login') throw new Error('Please sign out and sign in again, then change your password.');
+          throw new Error(e.message || 'Could not change password');
+        }
+      },
     };
   }
 
@@ -267,6 +278,11 @@
     currentUser() {
       if (!activeBackend) this.init();
       return activeBackend.currentUser();
+    },
+    async updatePassword(newPassword) {
+      if (!activeBackend) this.init();
+      if (!activeBackend.updatePassword) throw new Error('Password change isn\u2019t available in offline mode');
+      return await activeBackend.updatePassword(newPassword);
     },
   };
 })();

@@ -37,7 +37,7 @@ modes. Run: node tests/logic-tests.js and node tests/render-tests.js.
 
 ## To load
 Replace files in C:\Users\kshawky\Desktop\CRM\blackstars-localhost\, refresh,
-confirm footer reads v5.22.0.
+confirm footer reads v5.27.0.
 
 ## 4.85.0 note — frozen vs expired (attendance basis)
 - Member still ACTIVE → coach paid per class attended; rest pending.
@@ -594,3 +594,79 @@ Follow-ups that close the loop on the new Withdrawn/refund feature:
   empty writes are blocked regardless, until you reload.
 - Tests: 401 assertions (incl. the guard: blocks empty-over-good, allows non-empty, honors
   explicit clear/restore, protects after a failed load, lets a fresh install start empty).
+
+
+## 5.23.0 note — QC report fixes · BATCH 1: coach eligibility (High impact)
+Addresses the report's #1 recurring bug — coaches bookable for sports they don't teach.
+New shared helpers (coachTeachesSport / coachesForSport / coachOptionLabel): a coach is
+offered for a sport only if they ACTIVELY teach it. Applied to:
+- Add/Edit Member sport enrollment coach dropdown (refreshes when the sport changes; an
+  invalid coach is cleared when you switch the row's sport).
+- Class Schedule "add class" coach picker (also drops inactive coaches; shows a note if no
+  coach teaches that sport).
+- Summer Camp cell coach picker (filtered by the cell's activity when it's a real sport).
+- Switch Sport "new coach" list (rebuilds for the chosen new sport).
+Coaches with no sports recorded are not over-blocked; non-sport camp activities (Art, etc.)
+have no constraint. A currently-assigned but now-ineligible coach is kept visible (labelled)
+so historical data is never dropped. Renewal dropdown deferred to a later batch.
+Tests: 411 assertions.
+
+
+## 5.24.0 note — QC report fixes · BATCH 2: Class Schedule (High impact)
+- Added **Friday** to the class schedule (grid now Sat→Fri; columns adapt automatically).
+- Schedule sports now come from the **enabled sports** in Settings, not a static list — so a
+  newly-added sport (e.g. "Dance") appears, and **disabled sports can no longer be booked**.
+- A scheduled class whose coach later becomes **inactive** is now flagged (⚠️ + yellow outline +
+  "inactive" label) so it can be reassigned or removed.
+- A coach can no longer be **double-booked in the same day + time slot** (blocked with a message).
+- Tests: 418 assertions.
+
+
+## 5.25.0 note — QC report fixes · BATCH 4: Roles & Logins (High impact, permissions)
+- Roles are now bound to the **login account**, not just a preview toggle. On sign-in the app
+  looks up the email in a new **Users & Roles** map (Settings) and applies that role.
+- New admin screen **Settings → Users & Roles**: map each Firebase login email → Admin / Coach
+  (linked to a coach) / Student (linked to a member). "Unmapped accounts default to" Admin
+  (safe, no lock-out) or Student (least-privilege) once you've mapped your admin email.
+- Tightened access (fixes the report's permission leaks): Coach sees Schedule, Summer Camp,
+  Attendance, Trials — NOT Salaries or the full Members list. Student sees only Schedule &
+  Summer Camp — not other members' details (Expiring/Members removed).
+- Privilege-escalation closed: only an **admin account** can preview other roles; a coach/student
+  login is locked to its role and the "Exit/Back to Admin" button is hidden for them.
+- You still create the actual accounts + passwords in Firebase Console → Authentication.
+- Tests: 431 assertions.
+
+
+## 5.26.0 note — Member login by mobile number + My Membership (Batch 4b)
+- Members sign in with their **mobile number**; the app maps it to a hidden Firebase login
+  (<digits>@members.blackstars.qa). **Default password = their mobile number.**
+- **Forced change on first login** (detected because password == mobile); members (and staff)
+  can change it anytime via 🔐 Change password. Passwords are stored by **Firebase Auth**
+  (salted+hashed) — never in the club database.
+- Member accounts auto-resolve to the **Student** role linked to the matching member by phone
+  (no manual mapping needed).
+- New **My Membership** page (members' home): their status, expiry, balance due, and per-sport
+  attendance — their own data only. Members see only My Membership + Schedule + Summer Camp.
+- Ships two Firebase-side helpers in `tools/`: `create-member-logins.js` (one-time Admin SDK
+  script to bulk-create the member accounts) and `firestore-rules-recommended.txt` (make
+  members read-only).
+- Tests: 441 assertions; 26 pages render.
+
+### IMPORTANT security caveat
+With the current single-document data model, a signed-in member could technically read the
+whole club document (all members) via the browser, even though the UI shows only their own.
+The recommended rules make members **read-only** (they can't change anything). True per-member
+data isolation needs a per-member document restructure — a larger change; ask if you want it.
+
+
+## 5.27.0 note — QC report fixes · BATCH 3: Rentals (High impact)
+- Fixed the **"can't save an edited booking"** bug: editing a booking whose customer is a
+  MEMBER crashed (null customer ref) so Save did nothing. Now null-safe; the edit also keeps
+  the member link + invoice category in sync.
+- **Start time is now mandatory** (it's what enables double-booking detection).
+- **Past dates blocked** for new bookings (date picker also greys out earlier days).
+- **Archived members can't be booked** — blocked with a clear message.
+- **No overlapping bookings** of the same facility on the same date (time-overlap check).
+- Deferred: warning when a rental overlaps a *class* on the schedule (cross-system; needs a
+  facility↔sport mapping decision) — tell me if you want it.
+- Tests: 447 assertions.
