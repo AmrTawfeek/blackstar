@@ -373,7 +373,32 @@ select option:hover {
   top: 0;
   height: 100vh;
   overflow-y: auto;
+  transition: padding .15s ease;
 }
+
+/* Collapsed (icons-only) sidebar */
+#app:has(.sidebar-collapsed) { grid-template-columns: 72px 1fr; }
+.sidebar-collapsed { padding: 20px 10px; }
+.sidebar-collapsed .brand-text,
+.sidebar-collapsed .brand-sub,
+.sidebar-collapsed .nav-section,
+.sidebar-collapsed .nav-item > span:not(.icon),
+.sidebar-collapsed .sidebar-userchip-text { display: none; }
+.sidebar-collapsed .brand { justify-content: center; gap: 0; }
+.sidebar-collapsed .nav-item { justify-content: center; padding: 10px 0; }
+.sidebar-collapsed .sidebar-userchip { justify-content: center; }
+.sidebar-collapsed .sidebar-footer { display: none; }
+
+.sidebar-userchip {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 10px; margin-bottom: 14px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+}
+.sidebar-collapse-btn {
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text-dim);
+  cursor: pointer; font-size: 14px; line-height: 1; padding: 6px 9px; border-radius: 8px; margin-left: 4px;
+}
+.sidebar-collapse-btn:hover { background: var(--surface); color: var(--text); }
 
 .brand {
   display: flex;

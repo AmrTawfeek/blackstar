@@ -914,10 +914,11 @@ ${seed}
     var sm = state.members, sset = state.settings;
     state.settings = {};
     state.members = [{ id: 71, name: 'Sara', phone: '+974 5551 2345' }, { id: 72, name: 'Omar', phone: '66400661' }];
-    eq(phoneToMemberEmail('+974 5551 2345'), '55512345@members.blackstars.qa', 'member login: phone → canonical email (974 stripped)');
-    eq(phoneToMemberEmail('55512345'), '55512345@members.blackstars.qa', 'member login: 8-digit and 974-form map to the SAME email');
+    eq(phoneToMemberEmail('+974 5551 2345'), '55512345@blackstars.com', 'member login: phone → canonical email (974 stripped)');
+    eq(phoneToMemberEmail('55512345'), '55512345@blackstars.com', 'member login: 8-digit and 974-form map to the SAME email');
     eq(canonicalMobile('0097455512345'), '55512345', 'member login: 00974 prefix also stripped');
     ok(isMemberEmail('55512345@members.blackstars.qa'), 'member login: recognises synthetic member email');
+    ok(isMemberEmail('55512345@members.blackstars.qa'), 'member login: legacy domain still recognised');
     ok(!isMemberEmail('admin@blackstars.qa'), 'member login: a staff email is not a member email');
     eq((memberByPhoneDigits('55512345') || {}).id, 71, 'member login: matches member by trailing phone digits');
     var r = roleForEmail('66400661@members.blackstars.qa');
@@ -940,10 +941,10 @@ ${seed}
       { name: 'Omar', phone: '66400661' },
       { name: 'NoPhone', phone: '' },
       { name: 'Short', phone: '123' },
-    ].map(m => { const d = canonicalMobile(m.phone); const valid = d.length >= 6; return { email: valid ? d + '@members.blackstars.qa' : '', pw: valid ? d : '', valid }; });
-    eq(listRows[0].email, '55512345@members.blackstars.qa', 'login list: synthetic email from mobile');
+    ].map(m => { const d = canonicalMobile(m.phone); const valid = d.length >= 6; return { email: valid ? d + '@blackstars.com' : '', pw: valid ? d : '', valid }; });
+    eq(listRows[0].email, '55512345@blackstars.com', 'login list: synthetic email from mobile');
     eq(listRows[0].pw, '55512345', 'login list: default password = canonical mobile');
-    eq(listRows[1].email, '66400661@members.blackstars.qa', 'login list: 8-digit mobile maps directly');
+    eq(listRows[1].email, '66400661@blackstars.com', 'login list: 8-digit mobile maps directly');
     ok(!listRows[2].valid && !listRows[3].valid, 'login list: missing/short mobile flagged as no-login');
     // gender field + pink rule for female members
     var g1 = { name: 'Muna', gender: 'Female' }, g2 = { name: 'Ali', gender: 'Male' }, g3 = { name: 'X' };

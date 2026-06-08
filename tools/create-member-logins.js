@@ -4,7 +4,7 @@
  * ONE-TIME (re-runnable) script that creates a Firebase Authentication login for
  * every member, so members can sign in with their MOBILE NUMBER.
  *
- *   • login email   = <digits>@members.blackstars.qa   (hidden; built from the mobile)
+ *   • login email   = <digits>@blackstars.com   (hidden; built from the mobile)
  *   • password      = the member's mobile number (digits) — they must change it on
  *                     first login (the app forces this).
  *
@@ -27,7 +27,7 @@
 const admin = require('firebase-admin');
 const serviceAccount = require('./service-account.json');
 
-const MEMBER_EMAIL_DOMAIN = 'members.blackstars.qa';   // must match the app
+const MEMBER_EMAIL_DOMAIN = 'blackstars.com';   // must match the app
 const DATA_PATH = 'clubs/blackstars';                  // must match storage.js cfg.dataPath
 
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });

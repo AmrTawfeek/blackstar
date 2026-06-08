@@ -845,3 +845,27 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
   still work (members can sign in by mobile OR email). Delete the synthetic ones in Firebase if
   you want only email logins.
 - Regression: 484 logic assertions + 30 pages render, all passing.
+
+
+## 5.44.0 note — Collapsible sidebar + logged-in user at the top
+- Sidebar now has a **collapse/expand** toggle (« / ») in the brand row; collapsed = icons-only,
+  state remembered across sessions (localStorage).
+- The **logged-in user** (name + role) now shows at the **top** of the sidebar, just under the
+  brand (in addition to the footer). Collapses to just the avatar when the sidebar is collapsed.
+- Settings already split into separate menu items (v5.41): Users & Roles, Preferences, Club Setup,
+  Data & Backup.
+- Regression: 484 logic assertions + 30 pages render, all passing (sidebar visuals need a browser
+  check — CSS/DOM driven).
+
+
+## 5.45.0 note — Member logins back to mobile, on the blackstars.com domain
+- Member emails are unreliable placeholders, so logins are mobile-based again:
+  username = <mobile>@blackstars.com, password = <mobile> (e.g. 50413948 -> 50413948@blackstars.com).
+  (Yes, 50413948@blackstars.com is a valid email; Firebase only checks the format, not the domain.)
+- Generate member logins: now targets EVERYONE with a valid mobile (no email needed).
+- Login accepts BOTH the new blackstars.com domain AND the legacy members.blackstars.qa domain, so
+  the ~accounts already created under the old domain still sign in. (Delete the old ones in Firebase
+  if you want to avoid duplicates.)
+- Member login list shows <mobile>@blackstars.com. Members can also still sign in by typing just
+  their mobile number. tools/ script + Firestore rules updated (rules match both domains).
+- Regression: 485 logic assertions + 30 pages render, all passing.

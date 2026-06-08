@@ -11255,21 +11255,20 @@ window.promptPasswordChange = function(force) {
 // tools/ is more reliable (no client rate limits).
 window.generateMemberLogins = function() {
   if (!window.Storage.isCloud || !window.Storage.isCloud()) { toast('This only works on the cloud (Firebase) site.', 'error'); return; }
-  const validEmail = e => /.+@.+\..+/.test(String(e || '').trim());
   const all = (state.members || []).filter(m => !m.deleted);
-  // Only members who have BOTH a real email AND a valid mobile.
-  const eligible = all.filter(m => validEmail(m.email) && canonicalMobile(m.phone).length >= 6);
-  const skipped = all.length - eligible.length;
+  // Anyone with a valid mobile gets a login (emails are unreliable placeholders).
+  const eligible = all.filter(m => canonicalMobile(m.phone).length >= 6);
+  const tooShort = all.length - eligible.length;
   showModal({
     title: '🔐 Generate member logins',
     body: `<div style="font-size:13px;line-height:1.7">
-        <p>This creates a sign-in for <b>${eligible.length}</b> member${eligible.length === 1 ? '' : 's'} who have <b>both an email and a mobile</b>.</p>
+        <p>This creates a sign-in for <b>${eligible.length}</b> member${eligible.length === 1 ? '' : 's'} who have a mobile number.</p>
         <ul style="margin:6px 0 6px 18px;padding:0">
-          <li>Login (username) = their <b>email</b></li>
+          <li>Login (username) = <b>mobile</b>@${MEMBER_EMAIL_DOMAIN} (e.g. 50413948@${MEMBER_EMAIL_DOMAIN})</li>
           <li>First-time password = their <b>mobile number</b> (they'll be asked to change it)</li>
           <li>Members who already have a login are skipped</li>
         </ul>
-        ${skipped ? `<p class="text-mute" style="font-size:12px">${skipped} member(s) are missing an email or a valid mobile and will be skipped.</p>` : ''}
+        ${tooShort ? `<p class="text-mute" style="font-size:12px">${tooShort} member(s) have a missing/short mobile and will be skipped.</p>` : ''}
         <p class="text-mute" style="font-size:12px">It runs in your browser and may take a minute. Keep this tab open. If you hit a rate limit, run it again later or use the script in <code>tools/</code>.</p>
         <div id="gml-progress" style="margin-top:8px;font-weight:600"></div>
       </div>`,
@@ -11281,7 +11280,7 @@ window.generateMemberLogins = function() {
           const btn = ev && ev.target; if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
           for (const m of eligible) {
             i++;
-            const email = String(m.email).trim().toLowerCase();
+            const email = phoneToMemberEmail(m.phone);
             const pw = canonicalMobile(m.phone);
             try {
               const r = await window.Storage.provisionMemberLogin(email, pw);
@@ -11293,7 +11292,7 @@ window.generateMemberLogins = function() {
             if (prog) prog.textContent = `${i}/${eligible.length} · created ${created}, existing ${existed}${failed ? `, failed ${failed}` : ''}`;
             await new Promise(res => setTimeout(res, 150));   // throttle to ease rate limits
           }
-          audit('members.provision_logins', null, `Generated member logins (email/mobile): created ${created}, existing ${existed}, failed ${failed}`);
+          audit('members.provision_logins', null, `Generated member logins (mobile@${MEMBER_EMAIL_DOMAIN}): created ${created}, existing ${existed}, failed ${failed}`);
           if (prog) prog.textContent = `Done. Created ${created}, already had a login ${existed}${failed ? `, failed ${failed}` : ''}.`;
           if (btn) { btn.textContent = 'Done'; }
           toast(`Member logins: ${created} created, ${existed} existing${failed ? `, ${failed} failed` : ''}`, failed ? 'error' : 'success');
@@ -11418,18 +11417,14 @@ PAGES.users = (main) => {
 };
 
 window.showMemberLoginList = function() {
-  const validEmail = e => /.+@.+\..+/.test(String(e || '').trim());
   const rows = (state.members || []).filter(m => !m.deleted).slice()
     .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
     .map(m => {
       const digits = canonicalMobile(m.phone) || canonicalMobile(m.phone2);
-      const hasMobile = digits.length >= 6;
-      const hasEmail = validEmail(m.email);
-      // Login = the member's real email when they have one; password = mobile.
-      const email = hasEmail ? String(m.email).trim().toLowerCase() : (hasMobile ? digits + '@' + MEMBER_EMAIL_DOMAIN : '');
-      const valid = hasMobile && (hasEmail || true) && !!email;
-      const canLogin = hasMobile && !!email;
-      return { name: m.name || '', mobile: m.phone || '', email, pw: hasMobile ? digits : '', real: m.email || '', valid: canLogin };
+      const valid = digits.length >= 6;
+      // Login = mobile@blackstars.com; password = the mobile. Emails are unreliable
+      // placeholders, so the mobile-based login is the source of truth.
+      return { name: m.name || '', mobile: m.phone || '', email: valid ? digits + '@' + MEMBER_EMAIL_DOMAIN : '', pw: valid ? digits : '', real: m.email || '', valid };
     });
   const okCount = rows.filter(r => r.valid).length;
   const bad = rows.length - okCount;

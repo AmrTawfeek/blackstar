@@ -8,7 +8,7 @@ The app stores everything in a single document: clubs/blackstars.
 These rules:
   • require sign-in for any access (no anonymous reads of your club data);
   • let any signed-in STAFF account (real email) read AND write;
-  • let MEMBER accounts (logins on the members.blackstars.qa domain) only READ —
+  • let MEMBER accounts (logins on the blackstars.com domain) only READ —
     so a member can see their own info via the app but can never change club data.
 
   ┌──────────────────────────────────────────────────────────────────────────┐
@@ -20,7 +20,7 @@ These rules:
       function isMember() {
         return request.auth != null
           && request.auth.token.email != null
-          && request.auth.token.email.matches('.*@members[.]blackstars[.]qa$');
+          && request.auth.token.email.matches('.*@(blackstars[.]com|members[.]blackstars[.]qa)$');
       }
       function isStaff() {
         return request.auth != null && !isMember();
@@ -42,7 +42,7 @@ These rules:
 NOTES
 -----
 • "Staff" here means any signed-in account whose email is NOT on the
-  members.blackstars.qa domain — i.e. your admin and coach logins.
+  blackstars.com domain — i.e. your admin and coach logins.
 • If you DON'T want members reading the whole club document yet (it contains all
   members), change the read line to `allow read: if isStaff();` until a
   member-scoped data model is built. With the current single-document design,
