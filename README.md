@@ -694,3 +694,154 @@ data isolation needs a per-member document restructure — a larger change; ask 
   action you run after deploying. Client-side creation can hit Firebase rate limits for very
   large batches — re-run later, or use tools/create-member-logins.js (Admin SDK) for big runs.
 - Tests: 451 assertions (provisioning itself is Firebase-dependent and must be verified live).
+
+
+## 5.30.0 note — QC report fixes · BATCH 5: member-count source of truth (Medium)
+Fixes the report's "numbers disagree across pages" (active 70/71/78, expired 90/160/90).
+- New shared helper `memberCounts()` — strict per-status buckets (active/expired/completed/
+  frozen/withdrawn), always computed over NON-archived members.
+- Dashboard, Members header, the live "X of Y" counter, and Reports now all use it, so:
+  • "Active" is strictly Active (frozen/completed/withdrawn are their own buckets, not lumped in)
+  • Expired no longer balloons by counting archived members (Members page used to count over
+    ALL members incl. soft-deleted → that was the 160-vs-90 gap)
+  • Totals exclude archived everywhere.
+- Tests: 457 assertions.
+Next Medium sub-batches: Coach Performance / Attendance Report counts, Invoices & Reports
+revenue-by-category, Rentals stats.
+
+
+## 5.31.0 note — Create a user + assign role from the admin screen
+- Settings → Users & Roles → **Add user mapping** now optionally CREATES the Firebase login in
+  the same step: type an email, choose the role (Admin / Coach / Student), and enter a password.
+  Leave the password blank to just map an account you already created in Firebase.
+- Creating uses the same secondary-app approach (won't sign the admin out). If the account
+  already exists, it just saves the role mapping.
+- Tests: 457 assertions (account creation itself is Firebase-dependent — verify live).
+
+
+## 5.32.0 note — Change password for every role + role-aware sidebar
+- Every signed-in account (admin, coach, member) now has a 🔐 **Change password** button in the
+  sidebar (cloud only). Updates the password in Firebase Auth; members also still get the
+  forced change on first login + the button on My Membership.
+- Sidebar now shows the real role + initials (was always "AD / Administrator").
+- Security: **Quick backup** (full data export) and Quick search are now admin-only — a coach or
+  member can no longer download the whole database from the sidebar.
+- Tests: 457 assertions.
+
+
+## 5.33.0 note — Manage users from the app (create / edit / revoke), no Firebase console
+- CREATE: Add user mapping with a password creates the login (already shipped).
+- EDIT role/link: in-app (already shipped). EDIT password: 🔐 reset link via ✉️ for STAFF
+  (real email). Members reset their own password in-app (their @members address isn't a real inbox).
+- DELETE: client SDK cannot delete another user's Firebase account (security limit). Instead,
+  ⏸ **Revoke access** disables the mapping so the account is blocked at login (app-level), and
+  🗑 removes the mapping. A "revoked" badge shows in the list.
+- TRUE delete / resetting another user's password directly requires a Firebase Cloud Function
+  (Admin SDK, Blaze plan) — available on request; cannot be done from a static site.
+- Tests: 459 assertions.
+
+
+## 5.34.0 note — Unmapped accounts default to LEAST PRIVILEGE (security fix)
+- Previously an account that signed in but wasn't mapped to a role got Admin (chosen to avoid
+  lock-out). That meant e.g. test@test.com could see everything. Fixed: once ANY role mapping
+  exists, an unmapped account defaults to **Student** (least privilege). With NO mappings yet
+  (fresh setup) the first login is still Admin so the owner can configure things.
+- Settings → Users & Roles "Unmapped accounts default to" now defaults to Student (recommended);
+  Admin is available but flagged "not recommended".
+- To lock down test@test.com: either map it explicitly, ⏸ revoke it, or just rely on the new
+  Student default. Make sure YOUR admin email is mapped as Admin first.
+- Tests: 460 assertions.
+
+
+## 5.35.0 note — Users & Roles overview + role lookup (one screen)
+- Settings → Users & Roles now opens with a role SUMMARY (Admins / Coaches / mapped Students /
+  Members→Student / revoked counts) and a "🔎 Check a user's role" box: type any email or mobile
+  and it shows the exact role that login will get (same logic as sign-in), plus the linked
+  coach/member and how it was resolved (mapped / member mobile / default).
+- Note: a browser app cannot LIST Firebase accounts (Admin-SDK only). But since every Admin/Coach
+  must be mapped here and everyone else is a Student, this screen is the complete role picture.
+- Tests: 460 assertions.
+
+
+## 5.36.0 note — Member login list (emails to create in Firebase)
+- Settings → Users & Roles → **📋 Member login list**: a table of every member with their
+  login email (mobile@members.blackstars.qa) and default password (the mobile), since Firebase
+  requires a valid email as the username. Members with a missing/short mobile are flagged (can't
+  get a login). **Export CSV** gives you the full list (incl. real email if on file) to create or
+  cross-check accounts in the Firebase console.
+- Tests: 464 assertions.
+
+
+## 5.37.0 note — Dedicated Users & Roles screen + targeted preview
+- New **Users & Roles** screen in the sidebar (System section, admin-only). Settings now links to it.
+  Shows the **signed-in account** (email, role, linked coach/member, change-password), full account
+  list, role lookup, add/create/revoke, member-login list, and the preview controls.
+- Preview reworked: removed the generic "View as Coach/Student". Admin now clicks **Preview as
+  coach…/member…** and PICKS a specific coach/member to test as — scoped to that real person's data
+  (My Membership shows that member). Exit (top-left) returns to Admin. Preview stays admin-only.
+- Regression: 467 logic assertions + 27 pages render, all passing.
+
+### Status of the QC report (NOT fully closed)
+High tier done; one Medium sub-batch (member counts) done. ~remaining Medium (stat
+inconsistencies in Coach Performance, Attendance Report, Reports/Invoices revenue, Rentals/Team
+stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still open.
+
+
+## 5.38.0 note — Gender + age + named role banner
+- Member form: new **Gender** field (Male/Female) + a live **age** readout next to birthdate
+  (age was already computed from birthdate; now shown while editing too). Gender persists on
+  create and edit, and appears on the member detail card.
+- Role banner now shows the **person's name** (e.g. "Signed in as Muna · Student") instead of
+  just the role, and uses a **pink** accent for female members.
+- My Membership header shows the member's name (pink if female) plus age · gender.
+- Regression: 470 logic assertions + 27 pages render, all passing.
+
+
+## 5.39.0 note — SECURITY FIX: enforce role access on render, not just on click
+- Bug: a non-admin (e.g. a Student) could SEE a forbidden page (the Dashboard, with revenue/
+  expenses) if state.route was left on it after login or a refresh — navigation was filtered but
+  the render path rendered whatever route was current without re-checking the role.
+- Fix: render() now redirects to the role's home if the current role can't access state.route.
+  Login also lands each account on its own home (Student → My Membership, Coach → Schedule).
+- Regression: 476 logic assertions + 27 pages render, all passing.
+- NOTE: your deployed site shows v5.29.0 — you must deploy this build for the fix to take effect.
+
+
+## 5.40.0 note — Members can log in with their real email
+- If a member has a real email on file, signing in with THAT email now auto-resolves to Student
+  linked to that member — no manual Users & Roles entry needed (same as the mobile path).
+  Precedence: explicit mapping → mobile synthetic email → member's real email → default.
+- Add user mapping: choosing a member for a Student mapping now prefills that member's email.
+- Regression: 479 logic assertions + 27 pages render, all passing.
+
+
+## 5.41.0 note — Settings split into separate menu items + member email search
+- New **Settings** nav section with separate pages (admin-only): **Users & Roles**, **Preferences**
+  (appearance + alerts/thresholds), **Club Setup** (commission rates, expense categories, WhatsApp
+  templates), **Data & Backup** (backup/restore, storage, diagnostic, about). The single monolithic
+  "Settings" item is hidden from the sidebar (route still works).
+  Implementation keeps ALL existing controls/wiring intact — each page just scopes to its module's
+  cards — so nothing in Settings breaks.
+- Member search already matches email (name, phone, phone2, QID, email, nationality) — confirmed;
+  placeholder lists email.
+- Regression: 481 logic assertions + 30 pages render, all passing.
+
+
+## 5.42.0 note — Searchable member picker in Add user mapping
+- The "Which member" field in Add/Edit user mapping is now a **type-to-search** box (name, mobile,
+  email, QID; phone-digit tolerant) showing up to 12 matches — instead of a 200+ item dropdown.
+  Picking a member fills the box and prefills that member's email if the email field is empty.
+- Regression: 481 logic assertions + 30 pages render, all passing.
+
+
+## 5.43.0 note — Generate member logins: email = username, mobile = password
+- "Generate member logins" now targets members who have BOTH a valid email AND a mobile, and
+  creates the Firebase account with the **email as the username** and the **mobile as the
+  password**. Members missing either are skipped (counted).
+- Forced first-login password change now also fires for EMAIL logins (when the typed password
+  equals that member's mobile), not just mobile logins.
+- Member login list now shows the real email as the login when present (password = mobile).
+- NOTE: the earlier run created <mobile>@members.blackstars.qa accounts; those still exist and
+  still work (members can sign in by mobile OR email). Delete the synthetic ones in Firebase if
+  you want only email logins.
+- Regression: 484 logic assertions + 30 pages render, all passing.

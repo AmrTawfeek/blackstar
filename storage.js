@@ -240,6 +240,10 @@
           throw e;   // surface rate-limit / weak-password / network errors to the caller
         }
       },
+      async sendPasswordReset(email) {
+        await auth.sendPasswordResetEmail(email);   // emailed reset link (real inboxes only)
+        return true;
+      },
     };
   }
 
@@ -303,6 +307,11 @@
       if (!activeBackend) this.init();
       if (!activeBackend.provisionMemberLogin) throw new Error('Creating member logins requires cloud sign-in (Firebase).');
       return await activeBackend.provisionMemberLogin(email, password);
+    },
+    async sendPasswordReset(email) {
+      if (!activeBackend) this.init();
+      if (!activeBackend.sendPasswordReset) throw new Error('Password reset requires cloud sign-in (Firebase).');
+      return await activeBackend.sendPasswordReset(email);
     },
   };
 })();

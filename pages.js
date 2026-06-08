@@ -50,12 +50,14 @@ function computeStats() {
   const currSales = state.sales.filter(s => s.month === curr).reduce((s,x) => s+(x.paid||0), 0);
   const prevSales = state.sales.filter(s => s.month === prev).reduce((s,x) => s+(x.paid||0), 0);
 
-  // Member counts exclude archived (soft-deleted) members
+  // Member counts exclude archived (soft-deleted) members — one source of truth.
   const activeMembersList = activeMembers();
-  const activeMembers_ = activeMembersList.filter(m => isActiveStatus(m)).length;
-  const expiredMembers = activeMembersList.filter(m => memberStatus(m) === 'Expired').length;
-  const completedMembers = activeMembersList.filter(m => memberStatus(m) === 'Completed').length;
-  const frozenMembers = activeMembersList.filter(m => memberStatus(m) === 'Frozen').length;
+  const _mc = memberCounts();
+  const activeMembers_ = _mc.active;
+  const expiredMembers = _mc.expired;
+  const completedMembers = _mc.completed;
+  const frozenMembers = _mc.frozen;
+  const withdrawnMembers = _mc.withdrawn;
 
   const currProfit = currRevenue - currExpenses - currSalaries;
   const prevProfit = prevRevenue - prevExpenses - prevSalaries;
@@ -71,7 +73,7 @@ function computeStats() {
     currSalaries, prevSalaries,
     currSales, prevSales,
     currProfit, prevProfit,
-    activeMembers: activeMembers_, expiredMembers, completedMembers, frozenMembers,
+    activeMembers: activeMembers_, expiredMembers, completedMembers, frozenMembers, withdrawnMembers,
     totalMembers: activeMembersList.length,
     archivedMembers: state.members.length - activeMembersList.length,
     deltaRevenue: currRevenue - prevRevenue,
@@ -923,7 +925,7 @@ PAGES.members = (main) => {
       </tr>`;
     }).join('') : `<tr><td colspan="${cols.length + 2}" class="empty"><div class="empty-icon">👥</div>No members match your filters</td></tr>`;
 
-    $('#members-count').textContent = `${allRows.length} of ${state.members.length}`;
+    $('#members-count').textContent = `${allRows.length} of ${activeMembers().length}`;
 
     // Pagination bar
     $('#members-pagination').innerHTML = paginationBar(pg, allRows.length, 'members');
@@ -976,19 +978,15 @@ PAGES.members = (main) => {
     <div class="topbar">
       <div>
         <h1>Members</h1>
-        <div class="subtitle"><span id="members-count">${state.members.length} of ${state.members.length}</span> · ${(() => {
-          const a = state.members.filter(m => memberStatus(m) === 'Active').length;
-          const e = state.members.filter(m => memberStatus(m) === 'Expired').length;
-          const f = state.members.filter(m => memberStatus(m) === 'Frozen').length;
-          const c = state.members.filter(m => memberStatus(m) === 'Completed').length;
-          const w = state.members.filter(m => memberStatus(m) === 'Withdrawn').length;
+        <div class="subtitle"><span id="members-count">${activeMembers().length} of ${activeMembers().length}</span> · ${(() => {
+          const mc = memberCounts();
           const parts = [
-            `<span style="color:var(--green)">${a} active</span>`,
-            `<span style="color:var(--red)">${e} expired</span>`,
+            `<span style="color:var(--green)">${mc.active} active</span>`,
+            `<span style="color:var(--red)">${mc.expired} expired</span>`,
           ];
-          if (f) parts.push(`<span style="color:var(--blue)">❄️ ${f} frozen</span>`);
-          if (c) parts.push(`<span style="color:var(--purple)">${c} completed</span>`);
-          if (w) parts.push(`<span style="color:var(--accent-2)">↩ ${w} withdrawn</span>`);
+          if (mc.frozen) parts.push(`<span style="color:var(--blue)">❄️ ${mc.frozen} frozen</span>`);
+          if (mc.completed) parts.push(`<span style="color:var(--purple)">${mc.completed} completed</span>`);
+          if (mc.withdrawn) parts.push(`<span style="color:var(--accent-2)">↩ ${mc.withdrawn} withdrawn</span>`);
           return parts.join(' · ');
         })()}</div>
       </div>
@@ -1329,6 +1327,7 @@ function viewMember(id) {
         })()}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Start / Renewal</div><div>${m.startDate ? fmtDate(m.startDate) : '—'}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Expiry</div><div>${m.expiryDate ? fmtDate(m.expiryDate) : '—'}</div></div>
+        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Gender</div><div>${m.gender ? `<span style="color:${m.gender === 'Female' ? '#ec4899' : 'inherit'}">${escapeHtml(m.gender)}</span>` : '—'}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Level</div><div>${escapeHtml(m.level || '—')}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">No. of Renewals</div><div>${m.renewalCount || (m.renewalsBySport ? Object.values(m.renewalsBySport).reduce((a,b)=>a+b,0) : 0) || 0}${(m.renewalsBySport && Object.keys(m.renewalsBySport).length) ? ` <span class="text-mute" style="font-size:10px">(${Object.entries(m.renewalsBySport).map(([s,c])=>`${escapeHtml(s)}:${c}`).join(', ')})</span>` : ''}</div></div>
       </div>
@@ -1952,7 +1951,16 @@ function showMemberForm(m) {
       </div>
       <div class="form-row">
         <div class="field"><label>QID</label><input id="f-qid" value="${escapeHtml(m.qid || '')}" placeholder="288…" /></div>
-        <div class="field"><label>Birthdate <span class="text-mute" style="font-size:10px">(must be 3+ years old)</span></label><input id="f-bdate" type="date" value="${m.birthdate || ''}" /></div>
+        <div class="field"><label>Birthdate <span class="text-mute" style="font-size:10px">(must be 3+ years old)</span></label><input id="f-bdate" type="date" value="${m.birthdate || ''}" oninput="(function(v){var a=memberAge(v);document.getElementById('f-age-readout').textContent=a!=null?a+' yrs':'';})(this.value)" /><span id="f-age-readout" class="text-mute" style="font-size:11px">${m.birthdate && memberAge(m.birthdate) != null ? memberAge(m.birthdate) + ' yrs' : ''}</span></div>
+        <div class="field"><label>Gender</label>
+          <select id="f-gender">
+            <option value="" ${!m.gender ? 'selected' : ''}>—</option>
+            <option value="Male" ${m.gender === 'Male' ? 'selected' : ''}>Male</option>
+            <option value="Female" ${m.gender === 'Female' ? 'selected' : ''}>Female</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
         <div class="field"><label>Nationality</label>
           <input id="f-nationality" list="nationalities-list" autocomplete="off" value="${escapeHtml(m.nationality || '')}" placeholder="Type to search…" />
           <datalist id="nationalities-list">${NATIONALITIES.map(n => `<option value="${escapeHtml(n)}"></option>`).join('')}</datalist>
@@ -2016,6 +2024,7 @@ function showMemberForm(m) {
         const phone2 = phone2Input.digits ? phone2Input.phone : null;
         const email = $('#f-email').value.trim();
         const birthdate = $('#f-bdate').value;
+        const gender = ($('#f-gender') && $('#f-gender').value) || '';
 
         // 1. At least one name (English OR Arabic)
         if (!nameEn && !nameAr) {
@@ -2185,6 +2194,7 @@ function showMemberForm(m) {
           email: email || null,
           qid: $('#f-qid').value.trim() || null,
           birthdate: birthdate || null,
+          gender: gender || null,
           nationality: $('#f-nationality').value.trim() || null,
           level: $('#f-level').value || null,
           sport: primary.sport,
@@ -7715,7 +7725,7 @@ PAGES.audit = (main) => {
   refresh();
 };
 
-PAGES.settings = (main) => {
+PAGES.settings = (main, section) => {
   // Ensure settings exists
   if (!state.settings) state.settings = {};
   const cur = state.settings;
@@ -7728,7 +7738,7 @@ PAGES.settings = (main) => {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-sset="preferences">
       <div class="card-header"><div><div class="card-title">Appearance</div><div class="card-subtitle">Choose how the app looks — your selection is saved per browser</div></div></div>
       <div id="theme-picker" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:6px">
         <div class="theme-card" data-theme-value="dark" style="cursor:pointer;border:2px solid ${getTheme()==='dark'?'var(--accent)':'var(--border)'};border-radius:10px;padding:14px;background:#0a0e1a;color:#e8eaf0">
@@ -7778,7 +7788,7 @@ PAGES.settings = (main) => {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-sset="preferences">
       <div class="card-header"><div><div class="card-title">Preferences</div><div class="card-subtitle">Customize alerts and thresholds</div></div></div>
       <div class="form-row">
         <div class="field">
@@ -7822,7 +7832,7 @@ PAGES.settings = (main) => {
       <div style="margin-top:12px"><button class="btn primary" id="save-prefs">💾 Save preferences</button></div>
     </div>
 
-    <div class="card">
+    <div class="card" data-sset="club">
       <div class="card-header"><div><div class="card-title">Coach Commission Rates</div><div class="card-subtitle">Commission is calculated as this % of each coach's total paid amount (subscription value)</div></div></div>
       <div style="background:var(--surface-2);border-radius:8px;padding:12px;margin-bottom:14px">
         <label style="font-weight:600;font-size:13px;display:block;margin-bottom:6px">Commission basis</label>
@@ -7855,7 +7865,7 @@ PAGES.settings = (main) => {
       <div style="margin-top:12px"><button class="btn primary" id="save-commissions">💾 Save commission rates</button></div>
     </div>
 
-    <div class="card">
+    <div class="card" data-sset="club">
       <div class="card-header"><div><div class="card-title">💸 Expense Categories</div><div class="card-subtitle">Customize the categories shown in the New Expense form. "Others" is always available and cannot be removed.</div></div></div>
       <div id="cat-rows" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px">
         ${EXP_CATS.map((c, i) => {
@@ -7879,7 +7889,7 @@ PAGES.settings = (main) => {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-sset="club">
       <div class="card-header"><div><div class="card-title">💬 WhatsApp Reminder Templates</div><div class="card-subtitle">Bilingual messages auto-sent from the Expiring page. Tokens: <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{name}</code> <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{nameArabic}</code> <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{sport}</code> <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{coach}</code> <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{expiry}</code> <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{daysAgo}</code> <code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px">{daysLeft}</code></div></div></div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
@@ -7912,7 +7922,7 @@ PAGES.settings = (main) => {
       </div>
     </div>
 
-    <div class="card" style="border:1px solid var(--accent);background:var(--surface)">
+    <div class="card" data-sset="data" style="border:1px solid var(--accent);background:var(--surface)">
       <div class="card-header"><div><div class="card-title" style="color:var(--accent)">🔍 Diagnostic</div><div class="card-subtitle">If the data looks wrong (old coaches showing, stale numbers), use Hard Reset below</div></div></div>
       <table style="width:100%">
         <tbody>
@@ -7931,38 +7941,12 @@ PAGES.settings = (main) => {
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header"><div><div class="card-title">👥 Roles — preview</div><div class="card-subtitle">See the app the way each role would. This previews which screens each role gets.</div></div></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <label style="font-weight:600;font-size:13px;margin-right:4px">View as</label>
-        <button class="btn ${currentRole() === 'admin' ? 'primary' : 'ghost'}" onclick="setPreviewRole('admin')">🛡 Admin (full)</button>
-        <button class="btn ${currentRole() === 'coach' ? 'primary' : 'ghost'}" onclick="setPreviewRole('coach')">🥋 Coach</button>
-        <button class="btn ${currentRole() === 'student' ? 'primary' : 'ghost'}" onclick="setPreviewRole('student')">🎓 Student</button>
-      </div>
-      <div class="text-mute mt-3" style="font-size:12px;line-height:1.6">
-        <b>Admin</b> sees everything · <b>Coach</b> sees Schedule, Summer Camp, Attendance, Trials · <b>Student</b> sees Schedule &amp; Summer Camp only. While previewing, an <b>Exit</b> button (top-left) returns you to Admin.<br>
-        ℹ️ This is a quick <b>view preview</b> for admins. Real per-account access is set in <b>Users &amp; Roles</b> below and enforced at sign-in.
-      </div>
+    <div class="card" data-sset="data">
+      <div class="card-header"><div><div class="card-title">🔐 Users &amp; Roles</div><div class="card-subtitle">Manage logins, roles, and role preview on their own screen.</div></div></div>
+      <button class="btn primary" onclick="navigate('users')">Open Users &amp; Roles →</button>
     </div>
 
-    <div class="card">
-      <div class="card-header"><div><div class="card-title">🔐 Users &amp; Roles</div><div class="card-subtitle">Map each login email to a role. Enforced when that account signs in (cloud).</div></div></div>
-      <div id="user-roles-list">${userRolesListHtml()}</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">
-        <button class="btn primary sm" onclick="editUserRole()">＋ Add user mapping</button>
-        <button class="btn ghost sm" onclick="generateMemberLogins()" title="Create a Firebase login for every member (mobile = password)">🔐 Generate member logins</button>
-        <label style="font-size:12px;margin-left:8px">Unmapped accounts default to:</label>
-        <select id="unmapped-role" onchange="setUnmappedRole(this.value)" style="padding:4px 8px">
-          <option value="admin" ${(state.settings?.unmappedRole || 'admin') === 'admin' ? 'selected' : ''}>Admin (safe default — no lock-out)</option>
-          <option value="student" ${(state.settings?.unmappedRole) === 'student' ? 'selected' : ''}>Student (least privilege)</option>
-        </select>
-      </div>
-      <div class="text-mute mt-3" style="font-size:12px;line-height:1.6">
-        ☁️ You create the actual accounts &amp; passwords in <b>Firebase Console → Authentication → Add user</b>. Here you only set what role each email gets. A <b>Coach</b> mapping is linked to a coach record; a <b>Student</b> mapping to a member record. Keep at least one <b>Admin</b> mapped (e.g. your own email) before switching unmapped accounts to Student.
-      </div>
-    </div>
-
-    <div class="card">
+    <div class="card" data-sset="data">
       <div class="card-header"><div><div class="card-title">Data Management</div><div class="card-subtitle">Full backup &amp; restore · daily backups</div></div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn primary" id="backup-btn">💾 Backup all data (1 JSON file)</button>
@@ -7979,7 +7963,7 @@ PAGES.settings = (main) => {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-sset="data">
       <div class="card-header"><div><div class="card-title">Storage Stats</div></div></div>
       <table>
         <tbody>
@@ -7995,7 +7979,7 @@ PAGES.settings = (main) => {
       </table>
     </div>
 
-    <div class="card">
+    <div class="card" data-sset="data">
       <div class="card-header"><div><div class="card-title">About</div></div></div>
       <table>
         <tbody>
@@ -8262,7 +8246,19 @@ window.downloadBackup = function() {
     });
     location.reload();
   });
+
+  // When opened as a focused sub-page, show only that module's cards (all the
+  // controls are still wired — we only hide the other modules) and retitle.
+  if (section) {
+    const titles = { preferences: 'Preferences', club: 'Club Setup', data: 'Data & Backup' };
+    main.querySelectorAll('.card[data-sset]').forEach(c => { if (c.dataset.sset !== section) c.style.display = 'none'; });
+    const h = main.querySelector('.topbar h1'); if (h) h.textContent = titles[section] || 'Settings';
+    const sub = main.querySelector('.topbar .subtitle'); if (sub) sub.textContent = 'Settings · ' + (titles[section] || '');
+  }
 };
+PAGES.preferences = (main) => PAGES.settings(main, 'preferences');
+PAGES.club = (main) => PAGES.settings(main, 'club');
+PAGES.databackup = (main) => PAGES.settings(main, 'data');
 
 // ─── Modal helpers ──────────────────────────────────────────
 function showModal({ title, body, actions = [] }) {
@@ -11173,7 +11169,7 @@ window.deleteTrial = function(id) {
 // Switch the role-preview. Pure view layer (no security) until online sign-in exists.
 // ─── My Membership (member self-service, read-only, own data only) ──
 PAGES.mymembership = (main) => {
-  const meId = state.user && state.user.memberId;
+  const meId = (typeof effectiveMemberId === 'function') ? effectiveMemberId() : (state.user && state.user.memberId);
   const m = (state.members || []).find(x => x.id === meId);
   if (!m) {
     main.innerHTML = `<div class="topbar"><div><h1>My Membership</h1></div></div>
@@ -11198,8 +11194,11 @@ PAGES.mymembership = (main) => {
     </tr>`;
   }).join('') : `<tr><td colspan="4" style="padding:10px" class="text-mute">No active sports on record.</td></tr>`;
 
+  const isGirl = m.gender === 'Female';
+  const nameColor = isGirl ? '#ec4899' : 'inherit';
+  const ageTxt = (typeof memberAge === 'function' && m.birthdate && memberAge(m.birthdate) != null) ? `${memberAge(m.birthdate)} yrs · ` : '';
   main.innerHTML = `
-    <div class="topbar"><div><h1>My Membership</h1><div class="subtitle">${escapeHtml(m.name)}${isRealPhone && isRealPhone(m.phone) ? ' · ' + escapeHtml(m.phone) : ''}</div></div>
+    <div class="topbar"><div><h1 style="color:${nameColor}">${escapeHtml(m.name)}</h1><div class="subtitle">${ageTxt}${m.gender ? escapeHtml(m.gender) + ' · ' : ''}My Membership${isRealPhone && isRealPhone(m.phone) ? ' · ' + escapeHtml(m.phone) : ''}</div></div>
       <div class="topbar-actions"><button class="btn ghost" onclick="promptPasswordChange(false)">🔐 Change password</button></div>
     </div>
     <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
@@ -11256,18 +11255,21 @@ window.promptPasswordChange = function(force) {
 // tools/ is more reliable (no client rate limits).
 window.generateMemberLogins = function() {
   if (!window.Storage.isCloud || !window.Storage.isCloud()) { toast('This only works on the cloud (Firebase) site.', 'error'); return; }
-  const eligible = (state.members || []).filter(m => !m.deleted && canonicalMobile(m.phone).length >= 6);
-  const tooShort = (state.members || []).filter(m => !m.deleted && canonicalMobile(m.phone).length < 6).length;
+  const validEmail = e => /.+@.+\..+/.test(String(e || '').trim());
+  const all = (state.members || []).filter(m => !m.deleted);
+  // Only members who have BOTH a real email AND a valid mobile.
+  const eligible = all.filter(m => validEmail(m.email) && canonicalMobile(m.phone).length >= 6);
+  const skipped = all.length - eligible.length;
   showModal({
     title: '🔐 Generate member logins',
     body: `<div style="font-size:13px;line-height:1.7">
-        <p>This creates a sign-in for <b>${eligible.length}</b> member${eligible.length === 1 ? '' : 's'} who have a mobile number.</p>
+        <p>This creates a sign-in for <b>${eligible.length}</b> member${eligible.length === 1 ? '' : 's'} who have <b>both an email and a mobile</b>.</p>
         <ul style="margin:6px 0 6px 18px;padding:0">
-          <li>Login = their mobile number</li>
-          <li>First-time password = their mobile number (they'll be asked to change it)</li>
+          <li>Login (username) = their <b>email</b></li>
+          <li>First-time password = their <b>mobile number</b> (they'll be asked to change it)</li>
           <li>Members who already have a login are skipped</li>
         </ul>
-        ${tooShort ? `<p class="text-mute" style="font-size:12px">${tooShort} member(s) have a missing/short mobile and will be skipped.</p>` : ''}
+        ${skipped ? `<p class="text-mute" style="font-size:12px">${skipped} member(s) are missing an email or a valid mobile and will be skipped.</p>` : ''}
         <p class="text-mute" style="font-size:12px">It runs in your browser and may take a minute. Keep this tab open. If you hit a rate limit, run it again later or use the script in <code>tools/</code>.</p>
         <div id="gml-progress" style="margin-top:8px;font-weight:600"></div>
       </div>`,
@@ -11279,7 +11281,7 @@ window.generateMemberLogins = function() {
           const btn = ev && ev.target; if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
           for (const m of eligible) {
             i++;
-            const email = phoneToMemberEmail(m.phone);
+            const email = String(m.email).trim().toLowerCase();
             const pw = canonicalMobile(m.phone);
             try {
               const r = await window.Storage.provisionMemberLogin(email, pw);
@@ -11291,7 +11293,7 @@ window.generateMemberLogins = function() {
             if (prog) prog.textContent = `${i}/${eligible.length} · created ${created}, existing ${existed}${failed ? `, failed ${failed}` : ''}`;
             await new Promise(res => setTimeout(res, 150));   // throttle to ease rate limits
           }
-          audit('members.provision_logins', null, `Generated member logins: created ${created}, existing ${existed}, failed ${failed}`);
+          audit('members.provision_logins', null, `Generated member logins (email/mobile): created ${created}, existing ${existed}, failed ${failed}`);
           if (prog) prog.textContent = `Done. Created ${created}, already had a login ${existed}${failed ? `, failed ${failed}` : ''}.`;
           if (btn) { btn.textContent = 'Done'; }
           toast(`Member logins: ${created} created, ${existed} existing${failed ? `, ${failed} failed` : ''}`, failed ? 'error' : 'success');
@@ -11310,24 +11312,161 @@ function userRolesListHtml() {
     if (r.role === 'coach') linked = escapeHtml(coachName(r.coachId) || '— pick a coach —');
     else if (r.role === 'student') { const m = state.members.find(x => x.id === r.memberId); linked = m ? escapeHtml(m.name) : '<span class="text-mute">— pick a member —</span>'; }
     else linked = '<span class="text-mute">full access</span>';
-    return `<tr style="border-top:1px solid var(--border)">
+    return `<tr style="border-top:1px solid var(--border)${r.disabled ? ';opacity:.55' : ''}">
       <td style="padding:6px 8px;font-family:monospace;font-size:12px">${escapeHtml(e)}</td>
-      <td style="padding:6px 8px"><span class="badge">${ROLE_LABELS[r.role] || r.role}</span></td>
+      <td style="padding:6px 8px"><span class="badge">${ROLE_LABELS[r.role] || r.role}</span>${r.disabled ? ' <span class="badge" style="background:var(--red);color:#fff">revoked</span>' : ''}</td>
       <td style="padding:6px 8px;font-size:12px">${linked}</td>
       <td style="padding:6px 8px;text-align:right;white-space:nowrap">
         <button class="btn ghost sm" onclick="editUserRole('${escapeHtml(e)}')" title="Edit">✏️</button>
-        <button class="btn ghost sm" onclick="removeUserRole('${escapeHtml(e)}')" title="Remove">🗑</button>
+        ${!e.endsWith('@' + MEMBER_EMAIL_DOMAIN) ? `<button class="btn ghost sm" onclick="sendUserReset('${escapeHtml(e)}')" title="Email a password-reset link">✉️</button>` : ''}
+        <button class="btn ghost sm" onclick="toggleUserDisabled('${escapeHtml(e)}')" title="${r.disabled ? 'Restore access' : 'Revoke access (block sign-in)'}">${r.disabled ? '▶' : '⏸'}</button>
+        <button class="btn ghost sm" onclick="removeUserRole('${escapeHtml(e)}')" title="Remove mapping">🗑</button>
       </td></tr>`;
   }).join('');
   return `<table style="width:100%;border-collapse:collapse"><thead><tr style="text-align:left;font-size:11px;color:var(--text-mute)"><th style="padding:4px 8px">Email</th><th style="padding:4px 8px">Role</th><th style="padding:4px 8px">Linked to</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
-window.renderUserRolesList = function() { const elx = document.getElementById('user-roles-list'); if (elx) elx.innerHTML = userRolesListHtml(); };
+window.renderUserRolesList = function() { const elx = document.getElementById('user-roles-list'); if (elx) elx.innerHTML = userRolesListHtml(); const s = document.getElementById('user-roles-summary'); if (s) s.innerHTML = userRolesSummaryHtml(); };
+function userRolesSummaryHtml() {
+  const map = (state.settings && state.settings.userRoles) || {};
+  let admins = 0, coaches = 0, students = 0, revoked = 0;
+  for (const k in map) { const r = map[k] || {}; if (r.disabled) revoked++; if (r.role === 'admin') admins++; else if (r.role === 'coach') coaches++; else if (r.role === 'student') students++; }
+  const memberCount = (state.members || []).filter(m => !m.deleted).length;
+  const pill = (n, label, color) => `<span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:3px 9px;border-radius:20px;background:${color};color:#fff;font-weight:600">${n} ${label}</span>`;
+  return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+    ${pill(admins, admins === 1 ? 'Admin' : 'Admins', 'var(--accent-2)')}
+    ${pill(coaches, coaches === 1 ? 'Coach' : 'Coaches', 'var(--blue)')}
+    ${pill(students, 'mapped Students', 'var(--purple)')}
+    ${pill(memberCount, 'Members → Student', 'var(--green)')}
+    ${revoked ? pill(revoked, 'revoked', 'var(--red)') : ''}
+  </div>`;
+}
+window.lookupUserRole = function() {
+  const el = document.getElementById('ur-lookup'); const out = document.getElementById('ur-lookup-result');
+  if (!el || !out) return;
+  const raw = (el.value || '').trim();
+  if (!raw) { out.innerHTML = ''; return; }
+  // Resolve the same way login does: a phone-like entry becomes a member email.
+  const looksPhone = !raw.includes('@') && raw.replace(/\D/g, '').length >= 6;
+  const email = looksPhone ? phoneToMemberEmail(raw) : raw.toLowerCase();
+  const map = (state.settings && state.settings.userRoles) || {};
+  const mapped = map[email];
+  const r = roleForEmail(email);
+  let linked = '';
+  if (r.role === 'coach') linked = ' · ' + (coachName(r.coachId) || 'unlinked coach');
+  else if (r.role === 'student') { const m = state.members.find(x => x.id === r.memberId); linked = m ? ' · ' + escapeHtml(m.name) : (looksPhone ? ' · no member matches this mobile' : ''); }
+  const how = mapped ? 'mapped explicitly' : (isMemberEmail(email) ? 'member mobile login' : 'not mapped → default');
+  const revoked = mapped && mapped.disabled ? ' <span class="badge" style="background:var(--red);color:#fff">revoked</span>' : '';
+  out.innerHTML = `<div style="padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px">
+    <span style="font-family:monospace;font-size:12px">${escapeHtml(email)}</span> → <span class="badge">${ROLE_LABELS[r.role] || r.role}</span>${revoked}${escapeHtml(linked)}
+    <div class="text-mute" style="font-size:11px;margin-top:2px">${how}</div></div>`;
+};
+// ─── Users & Roles — dedicated admin screen ────────────────────────
+PAGES.users = (main) => {
+  const u = state.user || {};
+  const acct = accountRole();
+  const linkedName = acct === 'coach' ? coachName(u.coachId)
+    : acct === 'student' ? ((state.members.find(m => m.id === u.memberId) || {}).name || '')
+    : '';
+  main.innerHTML = `
+    <div class="topbar"><div><h1>Users &amp; Roles</h1><div class="subtitle">Manage logins, roles, and role preview</div></div></div>
+
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">👤 Signed in</div><div class="card-subtitle">The account you're using right now</div></div></div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span style="font-family:monospace;font-size:13px">${escapeHtml(u.email || '—')}</span>
+        <span class="badge">${ROLE_LABELS[acct] || acct}</span>
+        ${linkedName ? `<span class="text-mute" style="font-size:12px">· ${escapeHtml(linkedName)}</span>` : ''}
+        ${window.Storage && window.Storage.isCloud && window.Storage.isCloud() ? `<button class="btn ghost sm" onclick="promptPasswordChange(false)" style="margin-left:auto">🔐 Change my password</button>` : ''}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">👁 Preview as another role <span class="text-mute" style="font-weight:400">(admin only)</span></div><div class="card-subtitle">Test the app as a specific coach or member. Exit (top-left) returns you to Admin.</div></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn ${currentRole() === 'admin' ? 'primary' : 'ghost'}" onclick="setPreviewRole('admin')">🛡 Admin (full)</button>
+        <button class="btn ghost" onclick="previewAsCoach()">🥋 Preview as coach…</button>
+        <button class="btn ghost" onclick="previewAsMember()">🎓 Preview as member…</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">🔐 Accounts &amp; roles</div><div class="card-subtitle">Every Admin/Coach is listed here. Members are Students (by mobile).</div></div></div>
+      <div id="user-roles-summary">${userRolesSummaryHtml()}</div>
+      <div style="margin:10px 0;padding:10px;background:var(--surface-2);border-radius:8px">
+        <div style="font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.5px;font-weight:600;margin-bottom:6px">🔎 Check a user's role</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="ur-lookup" placeholder="email or mobile number" style="flex:1;min-width:200px;padding:6px 10px" onkeydown="if(event.key==='Enter')lookupUserRole()" />
+          <button class="btn ghost sm" onclick="lookupUserRole()">Check role</button>
+        </div>
+        <div id="ur-lookup-result" style="font-size:13px;margin-top:8px"></div>
+      </div>
+      <div id="user-roles-list">${userRolesListHtml()}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">
+        <button class="btn primary sm" onclick="editUserRole()">＋ Add user mapping</button>
+        <button class="btn ghost sm" onclick="generateMemberLogins()" title="Create a Firebase login for every member (mobile = password)">🔐 Generate member logins</button>
+        <button class="btn ghost sm" onclick="showMemberLoginList()" title="List every member with their login email + default password">📋 Member login list</button>
+        <label style="font-size:12px;margin-left:8px">Unmapped accounts default to:</label>
+        <select id="unmapped-role" onchange="setUnmappedRole(this.value)" style="padding:4px 8px">
+          <option value="student" ${(state.settings?.unmappedRole || 'student') === 'student' ? 'selected' : ''}>Student — least privilege (recommended)</option>
+          <option value="admin" ${(state.settings?.unmappedRole) === 'admin' ? 'selected' : ''}>Admin — full access (not recommended)</option>
+        </select>
+      </div>
+      <div class="text-mute mt-3" style="font-size:12px;line-height:1.6">
+        ☁️ Create accounts in Firebase Console → Authentication. <b>Admins and Coaches must be mapped here</b> (the app can't read a staff role from Firebase). <b>Members</b> sign in with their mobile and are Students automatically. Any account not mapped is treated as <b>Student</b>.
+      </div>
+    </div>`;
+};
+
+window.showMemberLoginList = function() {
+  const validEmail = e => /.+@.+\..+/.test(String(e || '').trim());
+  const rows = (state.members || []).filter(m => !m.deleted).slice()
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+    .map(m => {
+      const digits = canonicalMobile(m.phone) || canonicalMobile(m.phone2);
+      const hasMobile = digits.length >= 6;
+      const hasEmail = validEmail(m.email);
+      // Login = the member's real email when they have one; password = mobile.
+      const email = hasEmail ? String(m.email).trim().toLowerCase() : (hasMobile ? digits + '@' + MEMBER_EMAIL_DOMAIN : '');
+      const valid = hasMobile && (hasEmail || true) && !!email;
+      const canLogin = hasMobile && !!email;
+      return { name: m.name || '', mobile: m.phone || '', email, pw: hasMobile ? digits : '', real: m.email || '', valid: canLogin };
+    });
+  const okCount = rows.filter(r => r.valid).length;
+  const bad = rows.length - okCount;
+  const tableRows = rows.map(r => `<tr style="border-top:1px solid var(--border)${r.valid ? '' : ';opacity:.5'}">
+      <td style="padding:5px 8px">${escapeHtml(r.name)}</td>
+      <td style="padding:5px 8px;font-family:monospace;font-size:11px">${escapeHtml(r.mobile)}</td>
+      <td style="padding:5px 8px;font-family:monospace;font-size:11px">${r.valid ? escapeHtml(r.email) : '<span style="color:var(--red)">no valid mobile</span>'}</td>
+      <td style="padding:5px 8px;font-family:monospace;font-size:11px">${r.valid ? escapeHtml(r.pw) : '—'}</td>
+    </tr>`).join('');
+  showModal({
+    title: `📋 Member logins (${okCount})`,
+    body: `<div style="font-size:12px;color:var(--text-mute);margin-bottom:8px">Login email = <b>mobile</b>@${MEMBER_EMAIL_DOMAIN} · default password = the mobile number. ${bad ? `<span style="color:var(--red)">${bad} member(s) have no valid mobile and can't get a login.</span>` : ''}</div>
+      <div style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead style="position:sticky;top:0;background:var(--surface)"><tr style="text-align:left;color:var(--text-mute);font-size:11px"><th style="padding:6px 8px">Name</th><th style="padding:6px 8px">Mobile</th><th style="padding:6px 8px">Login email</th><th style="padding:6px 8px">Default password</th></tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </div>`,
+    actions: [
+      { label: 'Close', class: 'btn ghost', onclick: closeModal },
+      { label: '📥 Export CSV', class: 'btn primary', onclick: () => {
+          const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+          const csv = ['Name,Mobile,Login email,Default password,Real email,Can log in']
+            .concat(rows.map(r => [r.name, r.mobile, r.email, r.pw, r.real, r.valid ? 'Yes' : 'No'].map(esc).join(','))).join('\n');
+          downloadFile('member-logins.csv', csv, 'text/csv');
+          toast('Exported member-logins.csv');
+        } },
+    ],
+  });
+};
 window.editUserRole = function(email) {
   const map = (state.settings && state.settings.userRoles) || {};
   const existing = email ? map[email] : null;
   const role0 = (existing && existing.role) || 'coach';
   const coachSel = id => (state.coaches || []).map(c => `<option value="${c.id}" ${id === c.id ? 'selected' : ''}>${escapeHtml(c.name)}${isCoachActive(c) ? '' : ' (inactive)'}</option>`).join('');
-  const memberSel = id => (state.members || []).filter(m => !m.deleted).slice().sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(m => `<option value="${m.id}" ${id === m.id ? 'selected' : ''}>${escapeHtml(m.name)}</option>`).join('');
+  const preMember = (existing && existing.memberId != null) ? (state.members || []).find(m => m.id === existing.memberId) : null;
+  const memberSel = () => '';
   showModal({
     title: email ? 'Edit user mapping' : 'Add user mapping',
     body: `<div style="font-size:13px;line-height:1.6">
@@ -11340,27 +11479,76 @@ window.editUserRole = function(email) {
             <option value="student" ${role0 === 'student' ? 'selected' : ''}>Student / member</option>
           </select></div>
         <div class="field" id="ur-coach-wrap" style="display:${role0 === 'coach' ? 'block' : 'none'}"><label>Which coach</label><select id="ur-coach">${coachSel(existing && existing.coachId)}</select></div>
-        <div class="field" id="ur-member-wrap" style="display:${role0 === 'student' ? 'block' : 'none'}"><label>Which member</label><select id="ur-member">${memberSel(existing && existing.memberId)}</select></div>
+        <div class="field" id="ur-member-wrap" style="display:${role0 === 'student' ? 'block' : 'none'};position:relative"><label>Which member</label>
+          <input id="ur-member-search" autocomplete="off" placeholder="Type a name, mobile or email…" value="${preMember ? escapeHtml(preMember.name) : ''}" />
+          <input type="hidden" id="ur-member" value="${preMember ? preMember.id : ''}" />
+          <div id="ur-member-results" style="position:absolute;left:0;right:0;z-index:60;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:2px;max-height:220px;overflow:auto;display:none;box-shadow:0 8px 24px rgba(0,0,0,.18)"></div>
+        </div>
+        ${email ? '' : `<div class="field"><label>Password <span class="text-mute" style="font-size:10px">(optional — fill to CREATE the login now; leave blank if you already made it in Firebase)</label><input id="ur-pass" type="text" placeholder="at least 6 characters" autocomplete="new-password" /></div>`}
       </div>`,
     actions: [
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
-      { label: 'Save', class: 'btn primary', onclick: () => {
+      { label: email ? 'Save' : 'Save', class: 'btn primary', onclick: async (ev) => {
           const e = ($('#ur-email').value || '').trim().toLowerCase();
           if (!/.+@.+\..+/.test(e)) { toast('Enter a valid email', 'error'); return; }
           const role = $('#ur-role').value;
           const entry = { role };
           if (role === 'coach') { entry.coachId = parseInt($('#ur-coach').value) || null; if (!entry.coachId) { toast('Pick which coach', 'error'); return; } }
           if (role === 'student') { entry.memberId = parseInt($('#ur-member').value) || null; if (!entry.memberId) { toast('Pick which member', 'error'); return; } }
+          // Optionally CREATE the Firebase login in the same step.
+          const passEl = document.getElementById('ur-pass');
+          const pass = passEl ? passEl.value : '';
+          if (pass) {
+            if (pass.length < 6) { toast('Password must be at least 6 characters', 'error'); return; }
+            const btn = ev && ev.target; if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+            try {
+              const r = await window.Storage.provisionMemberLogin(e, pass);
+              toast(r === 'exists' ? 'That login already existed — role saved.' : `✓ Login created for ${e}`);
+            } catch (err) {
+              if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+              toast('Could not create login: ' + (err.message || err.code || 'error'), 'error');
+              return;
+            }
+          }
           if (!state.settings) state.settings = {};
           if (!state.settings.userRoles) state.settings.userRoles = {};
           state.settings.userRoles[e] = entry;
-          audit('user.role_map', e, `Mapped ${e} → ${role}`, entry);
+          audit('user.role_map', e, `Mapped ${e} → ${role}${pass ? ' (login created)' : ''}`, entry);
           save(); closeModal(); renderUserRolesList(); toast(`${e} → ${ROLE_LABELS[role] || role}`);
         } },
     ],
   });
   setTimeout(() => {
     const rs = document.getElementById('ur-role');
+    const emailEl = document.getElementById('ur-email');
+    const msearch = document.getElementById('ur-member-search');
+    const mhidden = document.getElementById('ur-member');
+    const mres = document.getElementById('ur-member-results');
+    const renderMemberResults = (q) => {
+      q = (q || '').trim().toLowerCase();
+      if (!q) { mres.style.display = 'none'; mres.innerHTML = ''; return; }
+      const qd = q.replace(/\D/g, '');
+      const matches = (state.members || []).filter(m => !m.deleted).filter(m => {
+        const hay = [m.name, m.nameArabic, m.phone, m.phone2, m.qid, m.email].filter(Boolean).join(' ').toLowerCase();
+        if (hay.includes(q)) return true;
+        if (qd.length >= 4 && (phoneSearchMatches(m.phone, qd) || phoneSearchMatches(m.phone2, qd))) return true;
+        return false;
+      }).slice(0, 12);
+      mres.innerHTML = matches.length
+        ? matches.map(m => `<div class="ur-mopt" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-email="${escapeHtml(m.email || '')}" style="padding:7px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border)">${escapeHtml(m.name)}<span style="color:var(--text-mute);font-size:11px"> · ${escapeHtml(m.phone || '—')}${m.email ? ' · ' + escapeHtml(m.email) : ''}</span></div>`).join('')
+        : '<div style="padding:8px 10px;color:var(--text-mute);font-size:12px">No member matches</div>';
+      mres.style.display = 'block';
+      mres.querySelectorAll('.ur-mopt').forEach(opt => opt.addEventListener('click', () => {
+        mhidden.value = opt.dataset.id;
+        msearch.value = opt.dataset.name;
+        mres.style.display = 'none';
+        if (emailEl && !emailEl.readOnly && !emailEl.value.trim() && opt.dataset.email) emailEl.value = opt.dataset.email;
+      }));
+    };
+    if (msearch) {
+      msearch.addEventListener('input', e => { mhidden.value = ''; renderMemberResults(e.target.value); });
+      msearch.addEventListener('focus', e => { if (e.target.value) renderMemberResults(e.target.value); });
+    }
     if (rs) rs.onchange = () => {
       document.getElementById('ur-coach-wrap').style.display = rs.value === 'coach' ? 'block' : 'none';
       document.getElementById('ur-member-wrap').style.display = rs.value === 'student' ? 'block' : 'none';
@@ -11377,17 +11565,64 @@ window.removeUserRole = function(email) {
 };
 window.setUnmappedRole = function(v) {
   if (!state.settings) state.settings = {};
-  state.settings.unmappedRole = (v === 'student') ? 'student' : 'admin';
-  save(); toast('Unmapped accounts → ' + (v === 'student' ? 'Student' : 'Admin'));
+  state.settings.unmappedRole = (v === 'admin') ? 'admin' : 'student';
+  save(); toast('Unmapped accounts → ' + (v === 'admin' ? 'Admin' : 'Student'));
+};
+window.toggleUserDisabled = function(email) {
+  const map = (state.settings && state.settings.userRoles) || {};
+  const en = map[email];
+  if (!en) return;
+  en.disabled = !en.disabled;
+  audit(en.disabled ? 'user.disable' : 'user.enable', email, `${en.disabled ? 'Revoked' : 'Restored'} access for ${email}`);
+  save(); renderUserRolesList();
+  toast(en.disabled ? 'Access revoked — they can no longer sign in' : 'Access restored');
+};
+window.sendUserReset = async function(email) {
+  if (email.endsWith('@' + MEMBER_EMAIL_DOMAIN)) { toast('Members don\u2019t have a real email inbox — they reset via the app instead.', 'error'); return; }
+  try { await window.Storage.sendPasswordReset(email); toast('Password-reset email sent to ' + email); }
+  catch (e) { toast('Could not send reset: ' + (e.message || e.code || 'error'), 'error'); }
 };
 
-window.setPreviewRole = function(role) {
+window.setPreviewRole = function(role, id) {
   if (accountRole() !== 'admin') { toast('Only an admin account can preview roles', 'error'); return; }
-  const r = (role === 'coach' || role === 'student') ? role : 'admin';
-  state.session = { role: r };
+  if (role === 'coach') { state.session = { role: 'coach', coachId: id != null ? id : null }; }
+  else if (role === 'student') { state.session = { role: 'student', memberId: id != null ? id : null }; }
+  else { state.session = { role: 'admin' }; }
   save();
-  navigate(roleHome(r));
-  toast(r === 'admin' ? 'Admin — full access' : 'Previewing as ' + (ROLE_LABELS[r] || r));
+  navigate(roleHome(state.session.role));
+  toast(state.session.role === 'admin' ? 'Admin — full access' : 'Previewing as ' + (ROLE_LABELS[state.session.role] || state.session.role));
+};
+// Admin-only: pick which coach to preview as (so it's scoped to a real person).
+window.previewAsCoach = function() {
+  if (accountRole() !== 'admin') { toast('Admins only', 'error'); return; }
+  const list = (state.coaches || []).filter(c => isCoachActive(c));
+  if (!list.length) { toast('No active coaches to preview', 'error'); return; }
+  showModal({
+    title: '🥋 Preview as coach',
+    body: `<div class="field"><label>Pick a coach to test as</label>
+      <select id="prev-coach">${list.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</select></div>
+      <div class="text-mute" style="font-size:12px">You'll see exactly what this coach sees. Use Exit (top-left) to return to Admin.</div>`,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      { label: 'Preview', class: 'btn primary', onclick: () => { const id = parseInt($('#prev-coach').value); closeModal(); setPreviewRole('coach', id); } },
+    ],
+  });
+};
+// Admin-only: pick which member to preview as.
+window.previewAsMember = function() {
+  if (accountRole() !== 'admin') { toast('Admins only', 'error'); return; }
+  const list = (state.members || []).filter(m => !m.deleted).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  if (!list.length) { toast('No members to preview', 'error'); return; }
+  showModal({
+    title: '🎓 Preview as member',
+    body: `<div class="field"><label>Pick a member to test as</label>
+      <select id="prev-member">${list.map(m => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('')}</select></div>
+      <div class="text-mute" style="font-size:12px">You'll see their My Membership + the class schedule only. Use Exit (top-left) to return to Admin.</div>`,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      { label: 'Preview', class: 'btn primary', onclick: () => { const id = parseInt($('#prev-member').value); closeModal(); setPreviewRole('student', id); } },
+    ],
+  });
 };
 
 // Stamp when a member was last reminded (on clicking 💬 Remind) and show it inline.
@@ -12378,11 +12613,13 @@ PAGES.reports = (main) => {
     const topExp = [...exps].sort((a, b) => b.amount - a.amount).slice(0, 10);
 
     // Active members + churn (members with expiry inside or before this period).
-    // Excludes archived (soft-deleted) members.
+    // Excludes archived (soft-deleted) members. Uses the shared count helper so
+    // this matches the Dashboard and the Members page exactly.
     const _activeList = activeMembers();
-    const activeMembers_ = _activeList.filter(m => isActiveStatus(m)).length;
-    const totalMembers = _activeList.length;
-    const expiredInPeriod = _activeList.filter(m => inPeriodDate(m.expiryDate) && m.status === 'Expired').length;
+    const _mcR = memberCounts();
+    const activeMembers_ = _mcR.active;
+    const totalMembers = _mcR.total;
+    const expiredInPeriod = _activeList.filter(m => inPeriodDate(m.expiryDate) && memberStatus(m) === 'Expired').length;
 
     return { invs, exps, sals, revenue, expensesTotal, salariesTotal, profit, profitMargin,
              avgInvoice, prevRev, revByCat, sportRev, expByCat, topExp,

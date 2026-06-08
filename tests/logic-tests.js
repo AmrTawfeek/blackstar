@@ -890,16 +890,23 @@ ${seed}
     eq(roleForEmail('coach@bs.qa').role, 'coach', 'roles: mapped coach email → coach');
     eq(roleForEmail('COACH@BS.QA').role, 'coach', 'roles: email match is case-insensitive');
     eq(roleForEmail('mem@bs.qa').memberId, 9, 'roles: student mapping carries memberId');
-    eq(roleForEmail('unknown@bs.qa').role, 'admin', 'roles: unmapped → admin by default (no lock-out)');
-    state.settings.unmappedRole = 'student';
-    eq(roleForEmail('unknown@bs.qa').role, 'student', 'roles: unmapped → student when tightened');
+    eq(roleForEmail('unknown@bs.qa').role, 'student', 'roles: unmapped → student (least privilege) once mappings exist');
+    state.settings.unmappedRole = 'admin';
+    eq(roleForEmail('unknown@bs.qa').role, 'admin', 'roles: unmapped → admin only if explicitly chosen');
     state.settings = {};
-    eq(roleForEmail('anyone@bs.qa').role, 'admin', 'roles: empty map (bootstrap) → admin');
+    eq(roleForEmail('anyone@bs.qa').role, 'admin', 'roles: empty map (bootstrap) → admin so owner can set up');
     // escalation guard: a coach ACCOUNT cannot preview/escalate to admin
     state.user = { role: 'coach' }; state.session = { role: 'admin' };
     eq(currentRole(), 'coach', 'roles: coach account locked to coach even if session says admin');
     state.user = { role: 'admin' }; state.session = { role: 'coach' };
     eq(currentRole(), 'coach', 'roles: admin account may preview coach');
+    // effective id helpers honor admin preview of a specific coach/member
+    state.user = { role: 'admin', coachId: null, memberId: null }; state.session = { role: 'coach', coachId: 42 };
+    eq(effectiveCoachId(), 42, 'preview: admin previewing coach 42 → effectiveCoachId 42');
+    state.session = { role: 'student', memberId: 7 };
+    eq(effectiveMemberId(), 7, 'preview: admin previewing member 7 → effectiveMemberId 7');
+    state.user = { role: 'coach', coachId: 9 }; state.session = { role: 'coach', coachId: 9 };
+    eq(effectiveCoachId(), 9, 'preview: real coach account → own coachId');
     state.user = su; state.session = ss2; state.settings = sset;
   })();
   // Batch 4b: member mobile login → synthetic email → student scoped to that member
@@ -919,6 +926,44 @@ ${seed}
     var r2 = roleForEmail('99999999@members.blackstars.qa');
     eq(r2.role, 'student', 'member login: unknown phone still student (memberId null)');
     eq(r2.memberId, null, 'member login: unknown phone → no member link');
+    // a member's OWN real email resolves to Student linked to them (no mapping needed)
+    var sm2 = state.members;
+    state.members = [{ id: 81, name: 'Kareem', email: 'kareem@test.com', phone: '50413948' }];
+    var byEmail = roleForEmail('kareem@test.com');
+    eq(byEmail.role, 'student', 'email login: member real email → student');
+    eq(byEmail.memberId, 81, 'email login: linked to the member by email');
+    eq(roleForEmail('KAREEM@TEST.COM').memberId, 81, 'email login: case-insensitive email match');
+    state.members = sm2;
+    // member login list: each member → login email + default password + validity flag
+    var listRows = [
+      { name: 'Sara', phone: '+974 5551 2345' },
+      { name: 'Omar', phone: '66400661' },
+      { name: 'NoPhone', phone: '' },
+      { name: 'Short', phone: '123' },
+    ].map(m => { const d = canonicalMobile(m.phone); const valid = d.length >= 6; return { email: valid ? d + '@members.blackstars.qa' : '', pw: valid ? d : '', valid }; });
+    eq(listRows[0].email, '55512345@members.blackstars.qa', 'login list: synthetic email from mobile');
+    eq(listRows[0].pw, '55512345', 'login list: default password = canonical mobile');
+    eq(listRows[1].email, '66400661@members.blackstars.qa', 'login list: 8-digit mobile maps directly');
+    ok(!listRows[2].valid && !listRows[3].valid, 'login list: missing/short mobile flagged as no-login');
+    // gender field + pink rule for female members
+    var g1 = { name: 'Muna', gender: 'Female' }, g2 = { name: 'Ali', gender: 'Male' }, g3 = { name: 'X' };
+    ok(g1.gender === 'Female', 'gender: female stored');
+    eq(g2.gender, 'Male', 'gender: male stored');
+    ok(!g3.gender, 'gender: optional (absent ok)');
+    var pink = m => m.gender === 'Female';
+    ok(pink(g1) && !pink(g2) && !pink(g3), 'gender: pink styling only for female');
+    // Generate member logins now targets members with BOTH email and mobile
+    var validEmail = e => /.+@.+\..+/.test(String(e || '').trim());
+    var gpool = [
+      { name: 'A', email: 'a@x.com', phone: '50000001' },   // both → eligible
+      { name: 'B', email: '', phone: '50000002' },           // no email → skip
+      { name: 'C', email: 'c@x.com', phone: '' },            // no mobile → skip
+      { name: 'D', email: 'bad', phone: '50000004' },        // bad email → skip
+    ];
+    var gelig = gpool.filter(m => validEmail(m.email) && canonicalMobile(m.phone).length >= 6);
+    eq(gelig.length, 1, 'gen: only members with BOTH valid email and mobile are eligible');
+    eq(gelig[0].name, 'A', 'gen: the both-having member is picked');
+    eq(canonicalMobile(gpool[0].phone), '50000001', 'gen: password = canonical mobile');
     // provisioning eligibility: needs a canonical mobile of >= 6 digits, not archived
     var pool = [
       { id: 1, phone: '55546447' },
@@ -931,6 +976,38 @@ ${seed}
     eq(eligible.length, 2, 'provision: only members with a valid mobile and not archived are eligible');
     ok(!eligible.some(m => m.id === 3 || m.id === 4 || m.id === 5), 'provision: short/missing/archived excluded');
     state.members = sm; state.settings = sset;
+  })();
+  // Batch 5 (stats): one source of truth for member counts (Dashboard=Members=Reports)
+  (function(){
+    var sm = state.members;
+    var future = '2099-01-01', past = '2000-01-01';
+    state.members = [
+      { id: 1, expiryDate: future },                              // Active
+      { id: 2, expiryDate: future },                              // Active
+      { id: 3, expiryDate: past },                                // Expired
+      { id: 4, expiryDate: past },                                // Expired
+      { id: 5, status: 'Withdrawn', expiryDate: future },         // Withdrawn (NOT active)
+      { id: 6, currentFreezeUntil: future, expiryDate: past },    // Frozen (not expired)
+      { id: 7, expiryDate: past, deleted: true },                 // archived → excluded entirely
+    ];
+    var mc = memberCounts();
+    eq(mc.total, 6, 'counts: archived members excluded from total');
+    eq(mc.active, 2, 'counts: Active is strict (withdrawn/frozen/expired NOT counted as active)');
+    eq(mc.expired, 2, 'counts: expired excludes the archived one');
+    eq(mc.frozen, 1, 'counts: frozen bucket');
+    eq(mc.withdrawn, 1, 'counts: withdrawn is its own bucket, not active');
+    eq(mc.current, mc.active + mc.completed + mc.frozen, 'counts: current = active+completed+frozen');
+    state.members = sm;
+  })();
+  // Batch (user mgmt): disabled mapping blocks login; role still resolvable
+  (function(){
+    var sset = state.settings;
+    state.settings = { userRoles: { 'coach@bs.qa': { role: 'coach', coachId: 1, disabled: true }, 'ok@bs.qa': { role: 'admin' } } };
+    var map = state.settings.userRoles;
+    ok(!!(map['coach@bs.qa'] && map['coach@bs.qa'].disabled), 'usermgmt: revoked account is flagged disabled');
+    ok(!(map['ok@bs.qa'] && map['ok@bs.qa'].disabled), 'usermgmt: normal account not disabled');
+    eq(roleForEmail('coach@bs.qa').role, 'coach', 'usermgmt: role still resolves (login layer enforces the block)');
+    state.settings = sset;
   })();
   // Batch 3 (rentals): overlap detection + edit save no longer crashes for members
   (function(){
@@ -987,6 +1064,15 @@ ${seed}
   ok(!roleCanAccess('coach', 'mymembership') || true, 'role: My Membership is member-scoped (nav-hidden for others)');
   eq(roleHome('coach'), 'schedule', 'role: coach home = schedule (tightened access)');
   eq(roleHome('student'), 'mymembership', 'role: student home = My Membership');
+  // render-level guard: a forbidden current route is redirected to role home
+  var guardRoute = (role, route) => roleCanAccess(role, route) ? route : roleHome(role);
+  eq(guardRoute('student', 'dashboard'), 'mymembership', 'guard: student on dashboard → My Membership');
+  eq(guardRoute('student', 'salaries'), 'mymembership', 'guard: student on salaries → redirected');
+  eq(guardRoute('coach', 'dashboard'), 'schedule', 'guard: coach on dashboard → schedule');
+  eq(guardRoute('student', 'schedule'), 'schedule', 'guard: allowed route kept');
+  eq(guardRoute('admin', 'dashboard'), 'dashboard', 'guard: admin keeps any route');
+  ok(roleCanAccess('admin', 'preferences') && roleCanAccess('admin', 'club') && roleCanAccess('admin', 'databackup') && roleCanAccess('admin', 'users'), 'settings split: admin can open all settings sub-pages');
+  ok(!roleCanAccess('coach', 'databackup') && !roleCanAccess('student', 'preferences') && !roleCanAccess('student', 'users'), 'settings split: non-admins cannot open settings sub-pages');
 
   // ── Multi-sport reminder message ──
   var rsMem = { name: 'Multi', enrollments: [{ sport: 'Karate' }, { sport: 'Boxing' }, { sport: 'Summer Camp' }] };
