@@ -869,3 +869,166 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
 - Member login list shows <mobile>@blackstars.com. Members can also still sign in by typing just
   their mobile number. tools/ script + Firestore rules updated (rules match both domains).
 - Regression: 485 logic assertions + 30 pages render, all passing.
+
+
+## 5.46.0 note — Danger Zone page + forced backup & double-confirm
+- Destructive actions (Clear all data, Hard Reset, Load demo data) moved OFF the Data & Backup page
+  to their own admin-only **Danger Zone** menu item.
+- Each destructive action now: (1) downloads a full backup automatically, then (2) asks for
+  confirmation TWICE before it runs.
+- Data & Backup keeps the safe tools (Backup, Restore, Fix names, Storage stats, Diagnostic info).
+- Regression: 487 logic assertions + 31 pages render, all passing.
+
+
+## 5.48.0 note — Schedule is read-only (view + export) for coaches & students
+- Only admins can edit the Class Schedule. Coaches and students now see a read-only grid:
+  no drag palette, no per-class delete (×), no Clear all, no drag-to-move/click-to-edit.
+- They can still VIEW the schedule, use the coach/sport filters, and Export PNG (EN + Arabic).
+- Subtitle shows "· view only" for non-admins.
+- Regression: 488 logic assertions + 31 pages render, all passing.
+
+
+## 5.49.0 note — Student screen (attendance dates + history) + Coach Advice
+- My Membership now shows: an **Attendance log with real dates** (date · sport · present/absent,
+  newest first) and a **Membership history** table (subscriptions/renewals: sport, coach, start,
+  end, classes, paid), plus a teaser of advice from the coach.
+- New **Coach Advice** feature: coaches send advice to their students (pick a student, write a note);
+  students read advice addressed to them (read-only) on a "My Advice" page and on My Membership.
+  Data: state.advices [{id,memberId,coachId,text,date}]. Coach + student roles can access it.
+- Regression: 489 logic assertions + 32 pages render, all passing.
+- NOT done this version: full Arabic interface (see notes to user — it's a dedicated project).
+
+
+## 5.50.0 note — Arabic (member-facing) interface + language toggle
+- New language toggle (ع / EN) in the sidebar brand row AND on the login screen. Switches the
+  member-facing screens to Arabic and sets right-to-left (RTL) layout. Persisted per browser.
+- Translated: Login, role banner, student/coach nav labels, My Membership (all labels, tables,
+  statuses, attendance log, history, advice), My Advice page, and the Change-password dialog.
+- HONEST SCOPE: the admin/back-office screens remain in English (that's by design — customers only
+  see the member screens). Numbers/dates use the existing formatters.
+- Regression: 493 logic assertions + 32 pages render, all passing (Arabic rendering/RTL needs a
+  browser check).
+
+
+## 5.51.0 note — Collapsible sidebar groups
+- Each sidebar SECTION (Main, Finance, Insights, System, Settings) is now a collapsible group:
+  click the section header to fold/unfold its links. A chevron shows the state.
+- Collapsed groups are remembered per browser; the group containing the current page always stays
+  open. In icon-only (collapsed sidebar) mode all icons remain visible.
+- Section headers are translated in Arabic mode too.
+- Regression: 493 logic assertions + 32 pages render, all passing.
+
+
+## 5.52.0 note — Full menu Arabic + name-only member form
+- Arabic mode now translates the ENTIRE sidebar menu (not just member items) + the section headers,
+  the collapse-menu label, the footer buttons (search/backup/change password/guide/sign out) and the
+  role labels — so the menu is no longer a mix of English and Arabic. (Page CONTENT on admin screens
+  is still English by design.)
+- New member form: ONLY the name is required now. Mobile, sport enrollment, birthdate, etc. are all
+  optional — you can save a member with just a name and fill the rest later. Form markers updated
+  (Mobile no longer shows *, Sport enrollments marked optional).
+- Regression: 493 logic assertions + 32 pages render, all passing.
+
+
+## 5.53.0 note — Attendance screen shows total attended classes (all students)
+- The Attendance page header now shows a green "Attended" figure: the TOTAL number of present (Y)
+  classes across ALL students in the current view (the grid month, or every month when "All months"
+  is selected). It respects the coach/sport/search filters and updates as you mark cells.
+- Regression: 494 logic assertions + 32 pages render, all passing.
+
+
+## 5.54.0 note — Dashboard translated to Arabic
+- The Dashboard page content is now translated in Arabic mode: title, Refresh/Export, the
+  "Needs attention today" block (expired/expiring/finished/low-stock), the info row (renewing,
+  birthdays, most popular), and all KPI cards (Total Revenue, Active Members, Total Expenses,
+  Net Profit, Coaching/Court Rental Revenue, Equipment Sales, Revenue Mix) + chart titles.
+- Dates/numbers stay in Western format (month names still English in the date range line).
+- Other admin pages (Members, Reports, etc.) are still English — can be done next on request.
+- Regression: 494 logic assertions + 32 pages render, all passing.
+
+
+## 5.55.0 note — Collapsible footer ("More"); Sign out always visible
+- The sidebar footer utility links (Quick search, Quick backup, Change password, User Guide) are now
+  tucked under a collapsible "More" toggle (collapsed by default). Sign out stays always visible.
+- State persisted per browser.
+- Regression: 494 logic assertions + 32 pages render, all passing.
+
+
+## 5.56.0 note — First registration auto-fills (new members) + form tidy
+- New member: the First registration date now AUTO-fills with the earliest sport start date and
+  tracks it live as you add/change sports (with a hint + "reset to auto" if you type your own).
+  Existing members keep their stored value.
+- Tidied the First registration / Membership expiry row labels (shorter helper text, hint lines).
+- Regression: 495 logic assertions + 32 pages render, all passing.
+
+
+## 5.57.0 note — Confirm guards on name-only member create
+- Name is still the only HARD requirement, but creating a NEW member now asks for confirmation when:
+  (a) no mobile number is entered (they can't log in / risk of duplicates), and
+  (b) no sport is enrolled (no membership, expiry or invoice).
+- This keeps the quick name-only workflow you asked for, while preventing empty members by accident.
+- Editing an existing member is not nagged. Regression: 495 logic assertions + 32 pages render, all passing.
+
+
+## 5.58.0 note — Required fields restored (name + mobile + sport)
+- Reverted the name-only relaxation. Adding/editing a member now REQUIRES, as hard blocks (no
+  "are you sure" dialogs): a name, a valid mobile number, and at least one complete sport enrollment
+  (sport + classes>0 + price>0, plus coach unless Summer Camp).
+- Form markers restored: Mobile shows *, Sport enrollments shows *.
+- Regression: 495 logic assertions + 32 pages render, all passing.
+
+
+## 5.59.0 note — Dashboard: Renewal revenue potential
+- New highlighted card on the Dashboard: "Renewal revenue potential" = the total you'd collect if
+  EVERY distinct (non-deleted) member renewed once at their current membership price (sum of each
+  member's enrolment prices). Shows the total + how many distinct members it covers and how many
+  have a priced membership.
+- Helpers: memberRenewalValue(m) and clubRenewalValue(members). Translated for Arabic mode.
+- Regression: 499 logic assertions + 32 pages render, all passing.
+
+
+## 5.60.0 note — Removed duplicate user chip in sidebar
+- The sidebar showed the logged-in user TWICE (a chip under the brand AND the footer pill). Removed
+  the top chip; the single account block now lives in the footer (name + role + version + cloud/offline)
+  right above the More group and Sign out.
+- Regression: 499 logic assertions + 32 pages render, all passing.
+
+
+## 5.61.0 note — Each device keeps its own screen (route is not synced)
+- Hardened the per-device session: the open PAGE (route), the signed-in IDENTITY (user) and the admin
+  PREVIEW role (session) are now stripped from every cloud write and preserved on every remote update
+  AND on load. Two people signed in at once no longer "screen-share" — navigating on one device does
+  not change the other's page. (Club DATA still syncs live, as intended.)
+- Note: the deployed site must be updated — older builds predate this and will still follow each other.
+- Regression: 500 logic assertions + 32 pages render, all passing.
+
+
+## 5.62.0 note — Expiring page: attendance sheet PDF per member
+- Each member row on the Expiring page now has a "📄 Sheet" action that prints the member's attendance
+  sheet for their LAST subscription (start/last-renewal → expiry). If the period crosses a calendar
+  month it includes BOTH months (one section per month per sport), with per-sport and overall totals.
+- Implemented as window._attPdfSubscription(memberId); reuses the existing attendance-PDF styling.
+- Regression: 503 logic assertions + 32 pages render, all passing.
+
+
+## 5.63.0 note — Coach home dashboard + two-way advice comments
+- New coach landing page ("My Dashboard", coachhome) — the coach's home after login. Shows:
+  their students (roster + sports), their salary for the CURRENT month and PREVIOUS months
+  (Fixed + Commission + Total, commission = rate x active-member revenue that month), and a recent
+  advice card with a link to write more. Coach-only route; admins see it when previewing as a coach.
+- Advice is now a TWO-WAY thread: students can reply/comment on advice from their coach, and coaches
+  can reply back. Each advice carries a comments[] thread ({by, name, text, date}); shown under each
+  note on both the coach and student Advice screens. Arabic-translated.
+- Helper: coachEarnings(coach, month). Regression: 507 logic assertions + 33 pages render, all passing.
+
+
+## 5.64.0 note — More info for student & coach roles
+- STUDENT (My Membership): new "Next class" card (soonest upcoming session for their sports, pulled
+  from the weekly Schedule) and a "Payment history" table (their own invoices: date, ref, for, amount,
+  paid, due). Both Arabic-translated.
+- COACH (My Dashboard): the student roster now shows each student's attendance THIS MONTH (attended/total
+  + rate %, colour-coded) and last-attended date, with a ⚠ "at risk" flag for low attendance (<50% over
+  2+ marked sessions). New "My students expiring" card lists the coach's students who are expired or
+  expiring within 14 days, soonest first.
+- All scoped to own data only (students see their own; coaches see only their students).
+- Regression: 512 logic assertions + 33 pages render, all passing.

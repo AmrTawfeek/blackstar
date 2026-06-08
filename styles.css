@@ -394,11 +394,21 @@ select option:hover {
   padding: 8px 10px; margin-bottom: 14px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
 }
+/* Right-to-left (Arabic) tweaks for the member-facing screens */
+[dir="rtl"] body { text-align: right; }
+[dir="rtl"] .topbar, [dir="rtl"] .card-header { text-align: right; }
+[dir="rtl"] th, [dir="rtl"] td { text-align: right !important; }
+[dir="rtl"] th[style*="text-align:center"], [dir="rtl"] td[style*="text-align:center"] { text-align: center !important; }
 .sidebar-collapse-btn {
+  display: flex; align-items: center; gap: 8px; width: 100%;
   background: var(--surface-2); border: 1px solid var(--border); color: var(--text-dim);
-  cursor: pointer; font-size: 14px; line-height: 1; padding: 6px 9px; border-radius: 8px; margin-left: 4px;
+  cursor: pointer; font-size: 12px; font-weight: 600; line-height: 1; padding: 9px 12px;
+  border-radius: 8px; margin-bottom: 12px;
 }
+.sidebar-collapse-btn .icon { font-size: 15px; }
 .sidebar-collapse-btn:hover { background: var(--surface); color: var(--text); }
+.sidebar-collapsed .sidebar-collapse-btn { justify-content: center; padding: 9px 0; }
+.sidebar-collapsed .sidebar-collapse-btn .lbl { display: none; }
 
 .brand {
   display: flex;
@@ -481,6 +491,19 @@ select option:hover {
   padding: 14px 12px 6px;
   font-weight: 600;
 }
+.nav-section-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; background: none; border: none; cursor: pointer;
+  font: inherit; color: var(--text-mute); text-transform: uppercase;
+  letter-spacing: .8px; font-size: 10px; font-weight: 600;
+}
+.nav-section-toggle:hover { color: var(--text); }
+.nav-section-chev { font-size: 10px; transition: transform .15s ease; opacity: .7; }
+.nav-section-toggle.collapsed .nav-section-chev { transform: rotate(-90deg); }
+.nav-group { display: flex; flex-direction: column; gap: 2px; }
+.nav-group-collapsed { display: none; }
+/* In icon-only mode, section headers are hidden, so always show the items */
+.sidebar-collapsed .nav-group-collapsed { display: flex; }
 
 .sidebar-footer {
   margin-top: auto;

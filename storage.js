@@ -169,6 +169,7 @@
         const persistable = { ...state, _updatedAt: Date.now() };
         delete persistable.user;
         delete persistable.route;
+        delete persistable.session;
         skipNextRemoteUpdate = true;
         docRef().set(persistable, { merge: false })
           .catch(e => console.warn('[Storage:firebase] save failed (will retry on next save):', e));

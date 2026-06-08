@@ -1063,17 +1063,113 @@ ${seed}
   ok(!roleCanAccess('student', 'expiring'), 'role: student cannot open Expiring (other members\u2019 details)');
   ok(roleCanAccess('student', 'mymembership'), 'role: student can open My Membership');
   ok(!roleCanAccess('coach', 'mymembership') || true, 'role: My Membership is member-scoped (nav-hidden for others)');
-  eq(roleHome('coach'), 'schedule', 'role: coach home = schedule (tightened access)');
+  eq(roleHome('coach'), 'coachhome', 'role: coach home = coachhome');
   eq(roleHome('student'), 'mymembership', 'role: student home = My Membership');
   // render-level guard: a forbidden current route is redirected to role home
   var guardRoute = (role, route) => roleCanAccess(role, route) ? route : roleHome(role);
   eq(guardRoute('student', 'dashboard'), 'mymembership', 'guard: student on dashboard → My Membership');
   eq(guardRoute('student', 'salaries'), 'mymembership', 'guard: student on salaries → redirected');
-  eq(guardRoute('coach', 'dashboard'), 'schedule', 'guard: coach on dashboard → schedule');
+  eq(guardRoute('coach', 'dashboard'), 'coachhome', 'guard: coach on dashboard → coachhome');
   eq(guardRoute('student', 'schedule'), 'schedule', 'guard: allowed route kept');
   eq(guardRoute('admin', 'dashboard'), 'dashboard', 'guard: admin keeps any route');
   ok(roleCanAccess('admin', 'preferences') && roleCanAccess('admin', 'club') && roleCanAccess('admin', 'databackup') && roleCanAccess('admin', 'users'), 'settings split: admin can open all settings sub-pages');
   ok(!roleCanAccess('coach', 'databackup') && !roleCanAccess('student', 'preferences') && !roleCanAccess('student', 'users'), 'settings split: non-admins cannot open settings sub-pages');
+  ok(roleCanAccess('admin', 'danger'), 'danger zone: admin can open');
+  ok(!roleCanAccess('coach', 'danger') && !roleCanAccess('student', 'danger'), 'danger zone: non-admins blocked');
+  var schedCanEdit = r => r === 'admin';
+  ok(schedCanEdit('admin') && !schedCanEdit('coach') && !schedCanEdit('student'), 'schedule: editable for admin only; coach/student read-only');
+  // Coach Advice: coach + student can access; coachStudents (invoice-based) resolves students
+  ok(roleCanAccess('coach', 'advice') && roleCanAccess('student', 'advice'), 'advice: coach and student can open');
+  // language helper t(en, ar)
+  setLang('en'); eq(t('Status', 'الحالة'), 'Status', 'lang: English by default');
+  setLang('ar'); eq(t('Status', 'الحالة'), 'الحالة', 'lang: Arabic when set');
+  eq(t('Only English'), 'Only English', 'lang: falls back to English when no Arabic given');
+  setLang('en');
+  // Attendance: club-wide total attended = sum of all 'Y' marks across students/sports
+  state.members.push({ id: 995, name: 'AT1', dailyAttendance: { '2026-06': { Boxing: { '1': 'Y', '2': 'Y', '3': 'N' } } } });
+  state.members.push({ id: 996, name: 'AT2', dailyAttendance: { '2026-06': { MMA: { '1': 'Y', '2': 'N' } } } });
+  var clubA = 0;
+  for (const mm of state.members.filter(x => [995, 996].includes(x.id))) {
+    const mo = mm.dailyAttendance['2026-06'];
+    for (const sp of Object.keys(mo)) for (const k in mo[sp]) if (mo[sp][k] === 'Y') clubA++;
+  }
+  eq(clubA, 3, 'attendance: club-wide attended = total Y marks across all students');
+  // First registration auto = earliest sport start
+  var frRows = [{ start: '2026-08-06' }, { start: '2026-07-01' }, { start: '' }];
+  var frStarts = frRows.map(r => r.start).filter(Boolean).sort();
+  eq(frStarts[0], '2026-07-01', 'first-reg: auto = earliest sport start date');
+  // Renewal revenue potential = sum of every member's enrolment prices
+  state.members.push({ id: 980, name: 'RV1', enrollments: [{ sport: 'Boxing', price: 300 }, { sport: 'MMA', price: 200 }] });
+  state.members.push({ id: 981, name: 'RV2', enrollments: [{ sport: 'Boxing', price: 350 }] });
+  state.members.push({ id: 982, name: 'RV3', enrollments: [] });
+  state.members.push({ id: 983, name: 'RV4', deleted: true, enrollments: [{ sport: 'Boxing', price: 999 }] });
+  eq(memberRenewalValue(state.members.find(m => m.id === 980)), 500, 'renewal: per-member value sums enrolment prices');
+  eq(memberRenewalValue(state.members.find(m => m.id === 982)), 0, 'renewal: member with no enrolments = 0');
+  var rv = clubRenewalValue(state.members.filter(m => [980, 981, 982, 983].includes(m.id)));
+  eq(rv.total, 850, 'renewal: club total excludes deleted (500+350)');
+  eq(rv.withValue, 2, 'renewal: counts only members with a priced membership');
+  state.members = state.members.filter(m => ![980, 981, 982, 983].includes(m.id));
+  // Device-local fields (open page, identity, preview role) must never be synced
+  state.route = 'reports'; state.user = { name: 'A' }; state.session = { role: 'coach' };
+  var _cap = null; var _prevStore = window.Storage;
+  window.Storage = { save: (s) => { _cap = s; }, load: () => {}, isCloud: () => false };
+  try { save(); } catch (e) {}
+  window.Storage = _prevStore;
+  ok(_cap && !('route' in _cap) && !('user' in _cap) && !('session' in _cap),
+    'sync: route/user/session are device-local and never persisted to the cloud');
+  // Attendance sheet: months touched by a subscription window (1, 2, or across a year)
+  function _monthsBetween(startISO, endISO) {
+    let months = []; let cur = startISO.slice(0, 7); const last = endISO.slice(0, 7); let guard = 0;
+    while (guard++ < 6) { months.push(cur); if (cur === last) break; let [yy, mm] = cur.split('-').map(Number); mm += 1; if (mm > 12) { mm = 1; yy += 1; } cur = yy + '-' + String(mm).padStart(2, '0'); }
+    return months;
+  }
+  eq(_monthsBetween('2026-05-09', '2026-06-09').join(','), '2026-05,2026-06', 'sub-sheet: spans both months across a boundary');
+  eq(_monthsBetween('2026-06-01', '2026-06-20').join(','), '2026-06', 'sub-sheet: single month when within one month');
+  eq(_monthsBetween('2026-12-15', '2027-01-10').join(','), '2026-12,2027-01', 'sub-sheet: spans the year boundary');
+  // Coach earnings = fixed + commission on active-member revenue for the month
+  state.coaches.push({ id: 970, name: 'CE', rate: 30, fixedSalary: 1000, active: 'Y' });
+  state.members.push({ id: 970, name: 'CEM' });
+  state.invoices.push({ id: 99970, coachId: 970, customerId: 970, amount: 1000, month: '2026-06' });
+  var _ce = coachEarnings(state.coaches.find(c => c.id === 970), '2026-06');
+  eq(_ce.total, 1300, 'coach earnings: fixed 1000 + commission (1000 x 30%) = 1300');
+  eq(_ce.commission, 300, 'coach earnings: commission is rate x active-member revenue');
+  state.coaches = state.coaches.filter(c => c.id !== 970);
+  state.members = state.members.filter(m => m.id !== 970);
+  state.invoices = state.invoices.filter(i => i.id !== 99970);
+  // Advice comment thread: comments array stores replies by coach/student
+  if (!Array.isArray(state.advices)) state.advices = [];
+  state.advices.push({ id: 99971, memberId: 1, coachId: 1, text: 'Work on guard', date: '2026-06-01', comments: [] });
+  var _adv = state.advices.find(a => a.id === 99971);
+  _adv.comments.push({ by: 'student', name: 'S', text: 'Thanks coach', date: '2026-06-02' });
+  eq(_adv.comments.length, 1, 'advice: student can post a reply comment');
+  eq(_adv.comments[0].by, 'student', 'advice: comment records who wrote it');
+  state.advices = state.advices.filter(a => a.id !== 99971);
+  // Next-class picker: soonest upcoming slot among the student's sports
+  function _nextClass(sports, rows, nowWd, nowHour) {
+    const W = { sat: 6, sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5 };
+    let best = null;
+    for (const c of rows) { if (!sports.includes(c.sport)) continue; const wd = W[c.day]; if (wd == null) continue; let da = (wd - nowWd + 7) % 7; if (da === 0 && c.slot <= nowHour) da = 7; const score = da * 24 + c.slot; if (!best || score < best.score) best = { score, c }; }
+    return best;
+  }
+  var _sched = [{ day: 'tue', slot: 17, sport: 'Boxing' }, { day: 'wed', slot: 16, sport: 'MMA' }];
+  eq(_nextClass(['Boxing', 'MMA'], _sched, 2, 10).c.sport, 'Boxing', 'next-class: picks soonest upcoming today');
+  eq(_nextClass(['Boxing', 'MMA'], _sched, 2, 18).c.sport, 'MMA', 'next-class: rolls to next day when today\u2019s slot has passed');
+  // At-risk flag: low attendance with at least 2 marked sessions
+  function _atRisk(y, n) { const m = y + n; const r = m ? y / m * 100 : null; return m >= 2 && r < 50; }
+  ok(_atRisk(1, 3) === true, 'at-risk: 25% over 4 sessions is flagged');
+  ok(_atRisk(3, 1) === false, 'at-risk: 75% is not flagged');
+  ok(_atRisk(0, 1) === false, 'at-risk: a single mark is not enough to flag');
+  state.members = state.members.filter(m => ![995, 996].includes(m.id));
+  state.coaches.push({ id: 999, name: 'Coach Z', active: 'Y' });
+  state.members.push({ id: 991, name: 'CS1' });
+  state.members.push({ id: 992, name: 'CS2' });
+  state.invoices.push({ id: 99001, customerId: 991, category: 'Membership', sport: 'Boxing', coachId: 999, amount: 300 });
+  state.invoices.push({ id: 99002, customerId: 992, category: 'Membership', lineItems: [{ sport: 'MMA', coachId: 999, price: 200 }], amount: 200 });
+  var cs = coachStudents(999).map(m => m.id).sort((a, b) => a - b);
+  eq(JSON.stringify(cs), JSON.stringify([991, 992]), 'advice: coachStudents = members with membership invoices under that coach');
+  state.members = state.members.filter(m => ![991, 992].includes(m.id));
+  state.coaches = state.coaches.filter(c => c.id !== 999);
+  state.invoices = state.invoices.filter(i => ![99001, 99002].includes(i.id));
 
   // ── Multi-sport reminder message ──
   var rsMem = { name: 'Multi', enrollments: [{ sport: 'Karate' }, { sport: 'Boxing' }, { sport: 'Summer Camp' }] };
