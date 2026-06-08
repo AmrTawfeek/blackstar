@@ -907,8 +907,10 @@ ${seed}
     var sm = state.members, sset = state.settings;
     state.settings = {};
     state.members = [{ id: 71, name: 'Sara', phone: '+974 5551 2345' }, { id: 72, name: 'Omar', phone: '66400661' }];
-    eq(phoneToMemberEmail('+974 5551 2345'), '97455512345@members.blackstars.qa', 'member login: phone → synthetic email (digits only)');
-    ok(isMemberEmail('97455512345@members.blackstars.qa'), 'member login: recognises synthetic member email');
+    eq(phoneToMemberEmail('+974 5551 2345'), '55512345@members.blackstars.qa', 'member login: phone → canonical email (974 stripped)');
+    eq(phoneToMemberEmail('55512345'), '55512345@members.blackstars.qa', 'member login: 8-digit and 974-form map to the SAME email');
+    eq(canonicalMobile('0097455512345'), '55512345', 'member login: 00974 prefix also stripped');
+    ok(isMemberEmail('55512345@members.blackstars.qa'), 'member login: recognises synthetic member email');
     ok(!isMemberEmail('admin@blackstars.qa'), 'member login: a staff email is not a member email');
     eq((memberByPhoneDigits('55512345') || {}).id, 71, 'member login: matches member by trailing phone digits');
     var r = roleForEmail('66400661@members.blackstars.qa');
@@ -917,6 +919,17 @@ ${seed}
     var r2 = roleForEmail('99999999@members.blackstars.qa');
     eq(r2.role, 'student', 'member login: unknown phone still student (memberId null)');
     eq(r2.memberId, null, 'member login: unknown phone → no member link');
+    // provisioning eligibility: needs a canonical mobile of >= 6 digits, not archived
+    var pool = [
+      { id: 1, phone: '55546447' },
+      { id: 2, phone: '+974 5012 3456' },
+      { id: 3, phone: '123' },          // too short
+      { id: 4, phone: '', },            // no phone
+      { id: 5, phone: '50001111', deleted: true },  // archived
+    ];
+    var eligible = pool.filter(m => !m.deleted && canonicalMobile(m.phone).length >= 6);
+    eq(eligible.length, 2, 'provision: only members with a valid mobile and not archived are eligible');
+    ok(!eligible.some(m => m.id === 3 || m.id === 4 || m.id === 5), 'provision: short/missing/archived excluded');
     state.members = sm; state.settings = sset;
   })();
   // Batch 3 (rentals): overlap detection + edit save no longer crashes for members

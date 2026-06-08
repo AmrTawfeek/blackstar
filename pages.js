@@ -7950,6 +7950,7 @@ PAGES.settings = (main) => {
       <div id="user-roles-list">${userRolesListHtml()}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">
         <button class="btn primary sm" onclick="editUserRole()">＋ Add user mapping</button>
+        <button class="btn ghost sm" onclick="generateMemberLogins()" title="Create a Firebase login for every member (mobile = password)">🔐 Generate member logins</button>
         <label style="font-size:12px;margin-left:8px">Unmapped accounts default to:</label>
         <select id="unmapped-role" onchange="setUnmappedRole(this.value)" style="padding:4px 8px">
           <option value="admin" ${(state.settings?.unmappedRole || 'admin') === 'admin' ? 'selected' : ''}>Admin (safe default — no lock-out)</option>
@@ -11249,6 +11250,56 @@ window.promptPasswordChange = function(force) {
 };
 
 // ─── Users & Roles (admin) ─────────────────────────────────────────
+// Bulk-create Firebase logins for every member (mobile number = login + default
+// password). Runs client-side via a secondary Firebase app, throttled, skipping
+// members who already have a login. For very large clubs the Admin-SDK script in
+// tools/ is more reliable (no client rate limits).
+window.generateMemberLogins = function() {
+  if (!window.Storage.isCloud || !window.Storage.isCloud()) { toast('This only works on the cloud (Firebase) site.', 'error'); return; }
+  const eligible = (state.members || []).filter(m => !m.deleted && canonicalMobile(m.phone).length >= 6);
+  const tooShort = (state.members || []).filter(m => !m.deleted && canonicalMobile(m.phone).length < 6).length;
+  showModal({
+    title: '🔐 Generate member logins',
+    body: `<div style="font-size:13px;line-height:1.7">
+        <p>This creates a sign-in for <b>${eligible.length}</b> member${eligible.length === 1 ? '' : 's'} who have a mobile number.</p>
+        <ul style="margin:6px 0 6px 18px;padding:0">
+          <li>Login = their mobile number</li>
+          <li>First-time password = their mobile number (they'll be asked to change it)</li>
+          <li>Members who already have a login are skipped</li>
+        </ul>
+        ${tooShort ? `<p class="text-mute" style="font-size:12px">${tooShort} member(s) have a missing/short mobile and will be skipped.</p>` : ''}
+        <p class="text-mute" style="font-size:12px">It runs in your browser and may take a minute. Keep this tab open. If you hit a rate limit, run it again later or use the script in <code>tools/</code>.</p>
+        <div id="gml-progress" style="margin-top:8px;font-weight:600"></div>
+      </div>`,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      { label: 'Create logins', class: 'btn primary', onclick: async (ev) => {
+          const prog = document.getElementById('gml-progress');
+          let created = 0, existed = 0, failed = 0, i = 0;
+          const btn = ev && ev.target; if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
+          for (const m of eligible) {
+            i++;
+            const email = phoneToMemberEmail(m.phone);
+            const pw = canonicalMobile(m.phone);
+            try {
+              const r = await window.Storage.provisionMemberLogin(email, pw);
+              if (r === 'created') created++; else existed++;
+            } catch (e) {
+              failed++;
+              if (e && e.code === 'auth/too-many-requests') { if (prog) prog.textContent = `Rate-limited after ${i}. Created ${created}, skipped ${existed}. Try again later for the rest.`; break; }
+            }
+            if (prog) prog.textContent = `${i}/${eligible.length} · created ${created}, existing ${existed}${failed ? `, failed ${failed}` : ''}`;
+            await new Promise(res => setTimeout(res, 150));   // throttle to ease rate limits
+          }
+          audit('members.provision_logins', null, `Generated member logins: created ${created}, existing ${existed}, failed ${failed}`);
+          if (prog) prog.textContent = `Done. Created ${created}, already had a login ${existed}${failed ? `, failed ${failed}` : ''}.`;
+          if (btn) { btn.textContent = 'Done'; }
+          toast(`Member logins: ${created} created, ${existed} existing${failed ? `, ${failed} failed` : ''}`, failed ? 'error' : 'success');
+        } },
+    ],
+  });
+};
+
 function userRolesListHtml() {
   const map = (state.settings && state.settings.userRoles) || {};
   const emails = Object.keys(map);

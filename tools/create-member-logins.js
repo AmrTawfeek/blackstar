@@ -35,6 +35,14 @@ const db = admin.firestore();
 const auth = admin.auth();
 
 const digitsOf = s => String(s || '').replace(/\D/g, '');
+// Canonical = digits with the Qatar country code stripped — matches the app, so
+// members can sign in whether or not they type the 974 prefix.
+function canonicalMobile(input) {
+  let d = digitsOf(input);
+  if (d.startsWith('00')) d = d.slice(2);
+  if (d.startsWith('974') && d.length > 8) d = d.slice(3);
+  return d;
+}
 
 (async () => {
   const snap = await db.doc(DATA_PATH).get();
@@ -44,7 +52,7 @@ const digitsOf = s => String(s || '').replace(/\D/g, '');
 
   let created = 0, skipped = 0; const problems = [];
   for (const m of members) {
-    const digits = digitsOf(m.phone) || digitsOf(m.phone2);
+    const digits = canonicalMobile(m.phone) || canonicalMobile(m.phone2);
     if (digits.length < 6) { problems.push(`${m.name || m.id}: mobile too short / missing ("${m.phone || ''}")`); continue; }
     const email = `${digits}@${MEMBER_EMAIL_DOMAIN}`;
     try {

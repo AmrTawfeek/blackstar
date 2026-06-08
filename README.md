@@ -670,3 +670,27 @@ data isolation needs a per-member document restructure — a larger change; ask 
 - Deferred: warning when a rental overlaps a *class* on the schedule (cross-system; needs a
   facility↔sport mapping decision) — tell me if you want it.
 - Tests: 447 assertions.
+
+
+## 5.28.0 note — Member login tolerant of country code
+- Member logins now work whether the member types their 8-digit number (55512345) OR the
+  full form (+974 5551 2345 / 97455512345). The number is canonicalised (974/00 stripped) and
+  the login also tries the password as-typed and canonicalised.
+- The bulk-create script uses the same canonical form, so accounts are created as
+  <8-digit>@members.blackstars.qa with the 8-digit number as the default password.
+- NOTE: if you already created a test account with the 974 form (e.g.
+  97455546447@members.blackstars.qa / 97455546447), either log in with that exact pair, or
+  delete it and recreate as 55546447@members.blackstars.qa / 55546447.
+- Tests: 449 assertions.
+
+
+## 5.29.0 note — One-click "Generate member logins" (admin)
+- New admin button in Settings → Users & Roles → **🔐 Generate member logins**. Creates a
+  Firebase login for every member with a mobile number (login = mobile, first-time password =
+  mobile; they're forced to change it). Members who already have a login are skipped.
+- Runs client-side via a SECONDARY Firebase app, so creating accounts does NOT log the admin
+  out. Throttled (~150ms each) with a live progress count and a created/existing/failed report.
+- Honest limits: this is NOT "on deploy" (a static site has no server); it's a one-click admin
+  action you run after deploying. Client-side creation can hit Firebase rate limits for very
+  large batches — re-run later, or use tools/create-member-logins.js (Admin SDK) for big runs.
+- Tests: 451 assertions (provisioning itself is Firebase-dependent and must be verified live).

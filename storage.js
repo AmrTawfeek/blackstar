@@ -225,6 +225,21 @@
           throw new Error(e.message || 'Could not change password');
         }
       },
+      // Create a member login WITHOUT disturbing the admin's current session, by
+      // using a separate ("secondary") Firebase app just for provisioning.
+      async provisionMemberLogin(email, password) {
+        let secondary;
+        try { secondary = firebase.app('memberProvisioner'); }
+        catch (_) { secondary = firebase.initializeApp({ apiKey: cfg.apiKey, authDomain: cfg.authDomain, projectId: cfg.projectId }, 'memberProvisioner'); }
+        try {
+          await secondary.auth().createUserWithEmailAndPassword(email, password);
+          await secondary.auth().signOut().catch(() => {});
+          return 'created';
+        } catch (e) {
+          if (e && e.code === 'auth/email-already-in-use') return 'exists';
+          throw e;   // surface rate-limit / weak-password / network errors to the caller
+        }
+      },
     };
   }
 
@@ -283,6 +298,11 @@
       if (!activeBackend) this.init();
       if (!activeBackend.updatePassword) throw new Error('Password change isn\u2019t available in offline mode');
       return await activeBackend.updatePassword(newPassword);
+    },
+    async provisionMemberLogin(email, password) {
+      if (!activeBackend) this.init();
+      if (!activeBackend.provisionMemberLogin) throw new Error('Creating member logins requires cloud sign-in (Firebase).');
+      return await activeBackend.provisionMemberLogin(email, password);
     },
   };
 })();
