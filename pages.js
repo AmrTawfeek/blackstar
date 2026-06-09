@@ -800,19 +800,19 @@ PAGES.members = (main) => {
   window.openMemberColumns = function() {
     const cols = allColumns();
     showModal({
-      title: '🧩 Table columns',
+      title: '🧩 ' + t('Columns', 'الأعمدة'),
       body: `<div style="font-size:13px;line-height:1.6">
-        <p class="text-mute">Tick the columns to show. Only <b>Member</b> (English name + mobile) is always shown.</p>
+        <p class="text-mute">${t('Tick the columns to show. Only <b>Member</b> (English name + mobile) is always shown.', 'حدّد الأعمدة التي تريد عرضها. يظهر عمود <b>العضو</b> (الاسم بالإنجليزية + الجوال) دائماً.')}</p>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px">
           ${cols.map(c => `<label style="display:flex;align-items:center;gap:8px;cursor:${c.always ? 'not-allowed' : 'pointer'};opacity:${c.always ? '.6' : '1'}">
-            <input type="checkbox" class="mcol-cb" value="${c.key}" ${isColVisible(c) ? 'checked' : ''} ${c.always ? 'disabled checked' : ''}> ${escapeHtml(c.label)}${c.always ? ' <span class="text-mute" style="font-size:10px">(always)</span>' : ''}
+            <input type="checkbox" class="mcol-cb" value="${c.key}" ${isColVisible(c) ? 'checked' : ''} ${c.always ? 'disabled checked' : ''}> ${escapeHtml(c.label)}${c.always ? ` <span class="text-mute" style="font-size:10px">(${t('always', 'دائماً')})</span>` : ''}
           </label>`).join('')}
         </div>
       </div>`,
       actions: [
-        { label: 'Reset to default', class: 'btn ghost', onclick: () => { if (state.settings) delete state.settings.memberColsV2; save(); closeModal(); render(); } },
-        { label: 'Close', class: 'btn ghost', onclick: closeModal },
-        { label: 'Apply', class: 'btn primary', onclick: () => {
+        { label: t('Reset to default', 'إعادة للوضع الافتراضي'), class: 'btn ghost', onclick: () => { if (state.settings) delete state.settings.memberColsV2; save(); closeModal(); render(); } },
+        { label: t('Close', 'إغلاق'), class: 'btn ghost', onclick: closeModal },
+        { label: t('Apply', 'تطبيق'), class: 'btn primary', onclick: () => {
             const chosen = $$('.mcol-cb').filter(cb => cb.checked && !cb.disabled).map(cb => cb.value);
             if (!state.settings) state.settings = {};
             state.settings.memberColsV2 = chosen; save(); closeModal(); render();
@@ -1028,7 +1028,7 @@ PAGES.members = (main) => {
       </div>
       <div class="topbar-actions">
         <button class="btn ghost" id="find-duplicates" title="Scan all members for duplicate phone numbers">🔍 Find Duplicates</button>
-        <button class="btn ghost" id="member-columns" title="Show / hide table columns">🧩 Columns</button>
+        <button class="btn ghost" id="member-columns" title="Show / hide table columns">🧩 ${t('Columns', 'الأعمدة')}</button>
         <button class="btn ghost" id="export-members">📥 Export CSV</button>
         <button class="btn primary" id="add-member">+ Add Member</button>
       </div>
@@ -9004,19 +9004,27 @@ PAGES.attendance = (main) => {
     window._attCurrentMonth = gMonth;
     const rows = getRows();
 
-    // Club-wide total of attended (present / 'Y') classes across ALL the rows
-    // currently shown — summed over the grid month, or every month when "All
-    // months" is selected.
+    // Club-wide total of attended (present / 'Y') classes across the rows shown.
+    // Respects the day filter: if specific day(s) are selected we count only those
+    // days, so the total matches what the grid is showing (otherwise the whole
+    // grid month, or every month when "All months" is selected).
     const totalMonths = (filter.month === 'all') ? monthsWithData() : [gMonth];
+    const dayFilter = (filter.month === 'all') ? [] : (filter.days || []).filter(d => d >= 1 && d <= 31);
     let clubAttended = 0;
     for (const { m, sport } of rows) {
       for (const mk of totalMonths) {
         const dd = m.dailyAttendance?.[mk]?.[sport] || {};
-        for (const k in dd) if (dd[k] === 'Y') clubAttended++;
+        for (const k in dd) {
+          if (dd[k] !== 'Y') continue;
+          if (dayFilter.length && !dayFilter.includes(parseInt(k))) continue;
+          clubAttended++;
+        }
       }
     }
     const grandEl = document.getElementById('att-grand');
     if (grandEl) grandEl.textContent = String(clubAttended);
+    const grandLabelEl = document.getElementById('att-grand-label');
+    if (grandLabelEl) grandLabelEl.textContent = dayFilter.length === 1 ? 'ATTENDED · DAY ' + dayFilter[0] : dayFilter.length > 1 ? 'ATTENDED · ' + dayFilter.length + ' DAYS' : (filter.month === 'all' ? 'ATTENDED · ALL' : 'ATTENDED · ' + fmtMonth(gMonth).toUpperCase());
 
     // ── "All months" summary: one column per month, Y counts + year total ──
     if (filter.month === 'all') {
@@ -9216,9 +9224,9 @@ PAGES.attendance = (main) => {
         <div class="subtitle"><span id="att-count">Loading...</span></div>
       </div>
       <div class="topbar-actions">
-        <div title="Total classes attended (present) by all students in the current view" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4px 14px;margin-right:6px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:10px">
+        <div title="Classes attended (present) by students in the current view — respects the day filter" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4px 14px;margin-right:6px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:10px">
           <span style="font-size:20px;font-weight:700;color:var(--green);line-height:1"><span id="att-grand">0</span></span>
-          <span style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.5px">${t('Attended', 'إجمالي الحضور')}</span>
+          <span id="att-grand-label" style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.5px">${t('Attended', 'إجمالي الحضور')}</span>
         </div>
         <button class="btn ghost" id="att-today">📍 Today</button>
         <button class="btn ghost" id="att-import">📂 Import CSV</button>

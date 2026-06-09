@@ -1169,3 +1169,25 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
 - Added editFamily(): rename a household, change its shared contact phone, or disband it (members kept,
   just un-grouped). Reachable from the Families card (✏️) and the family detail modal (✏️ Rename / edit).
 - Regression: 551 logic assertions + 35 pages render, all passing.
+
+
+## 5.80.0 note — Correct Arabic term for Columns (الأعمدة)
+- The Members "Columns" button and modal are now bilingual and use الأعمدة (not الحقول) for Columns in
+  Arabic mode; chrome (intro, Reset/Close/Apply, "always") translated. Will use الأقسام for Sections
+  wherever a Sections label appears.
+- Regression: 551 logic assertions + 35 pages render, all passing.
+
+
+## 5.81.0 note — Summer Camp 6-week duration
+- Added a "6 weeks" (42-day) camp duration option to the camp price/duration table (default price 2500
+  QAR, editable in settings). 2 weeks and 3 weeks already existed. The tier is backfilled into existing
+  data on load and the dropdown re-sorts by days. Admin can change the price anytime.
+- Regression: 552 logic assertions + 35 pages render, all passing.
+
+
+## 5.82.0 note — Attendance "Attended" chip now respects the day filter
+- The green ATTENDED total used to sum Y-marks across the whole grid month even when a single day was
+  selected (e.g. 25 rows shown for Day 9 but the chip read 58 = the month total). It now counts only the
+  selected day(s), so it matches what the grid shows; with no day filter it shows the month (or all) total.
+  The chip label shows the scope (e.g. "ATTENDED · DAY 9", "ATTENDED · JUN 26", "ATTENDED · ALL").
+- Regression: 552 logic assertions + 35 pages render, all passing.

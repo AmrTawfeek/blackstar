@@ -1172,6 +1172,7 @@ ${seed}
   // Age <-> birthdate two-way: deriving a birthdate from an age reads back as that age
   eq(memberAge(ageToBirthdate(8)), 8, 'age-field: ageToBirthdate(8) reads back as age 8');
   eq(memberAge(ageToBirthdate(35)), 35, 'age-field: ageToBirthdate(35) reads back as age 35');
+  ok(DEFAULT_SUMMER_CAMP_PRICES.some(p => p.days === 42), 'camp: a 6-week (42-day) duration option exists');
   eq(ageToBirthdate(''), '', 'age-field: blank age yields no birthdate');
   eq(ageToBirthdate(0), '', 'age-field: zero/invalid age yields no birthdate');
   // Renewal value falls back to the latest real invoice when enrolment prices are blank
