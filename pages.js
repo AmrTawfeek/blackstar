@@ -2020,7 +2020,8 @@ function showMemberForm(m) {
       </div>
       <div class="form-row">
         <div class="field"><label>QID</label><input id="f-qid" value="${escapeHtml(m.qid || '')}" placeholder="288…" /></div>
-        <div class="field"><label>Birthdate <span class="text-mute" style="font-size:10px">(must be 3+ years old)</span></label><input id="f-bdate" type="date" value="${m.birthdate || ''}" oninput="(function(v){var a=memberAge(v);document.getElementById('f-age-readout').textContent=a!=null?a+' yrs':'';})(this.value)" /><span id="f-age-readout" class="text-mute" style="font-size:11px">${m.birthdate && memberAge(m.birthdate) != null ? memberAge(m.birthdate) + ' yrs' : ''}</span></div>
+        <div class="field"><label>Birthdate <span class="text-mute" style="font-size:10px">(must be 3+ years old)</span></label><input id="f-bdate" type="date" value="${m.birthdate || ''}" oninput="(function(v){var a=memberAge(v);var ai=document.getElementById('f-age');if(ai)ai.value=a!=null?a:'';})(this.value)" /></div>
+        <div class="field" style="max-width:110px"><label>Age <span class="text-mute" style="font-size:10px">(quick)</span></label><input id="f-age" type="number" min="3" max="120" value="${m.birthdate && memberAge(m.birthdate) != null ? memberAge(m.birthdate) : ''}" placeholder="e.g. 8" oninput="(function(v){var bd=ageToBirthdate(v);var bi=document.getElementById('f-bdate');if(bi)bi.value=bd;})(this.value)" title="Type an age to auto-fill an approximate birthdate, or enter the exact birthdate on the left" /></div>
         <div class="field"><label>Gender</label>
           <select id="f-gender">
             <option value="" ${!m.gender ? 'selected' : ''}>—</option>
@@ -3249,7 +3250,37 @@ window.viewFamily = function(famId) {
         <div class="kpi" style="flex:1;min-width:120px"><div class="kpi-label">${t('Shared phone', 'الهاتف المشترك')}</div><div class="kpi-value" style="font-size:15px">${phone ? phoneCell(phone) : '—'}</div></div>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px"><tbody>${rows || `<tr><td class="text-mute" style="padding:14px">${t('No members', 'لا يوجد أعضاء')}</td></tr>`}</tbody></table>`,
-    actions: [{ label: t('Close', 'إغلاق'), class: 'btn primary', onclick: closeModal }],
+    actions: [{ label: '✏️ ' + t('Rename / edit', 'تعديل الاسم'), class: 'btn ghost', onclick: () => { closeModal(); editFamily(famId); } }, { label: t('Close', 'إغلاق'), class: 'btn primary', onclick: closeModal }],
+  });
+};
+
+// Rename a household / change its shared phone, or disband it (members are kept).
+window.editFamily = function(famId) {
+  const fam = getFamily(famId); if (!fam) return;
+  showModal({
+    title: '✏️ ' + t('Edit household', 'تعديل العائلة'),
+    body: `
+      <div class="field"><label>${t('Family name', 'اسم العائلة')}</label><input id="ef-name" value="${escapeHtml(fam.name || '')}" placeholder="${t('e.g. Al-Jarboei family', 'مثال: عائلة الجربوعي')}" /></div>
+      <div class="field"><label>${t('Shared contact phone', 'هاتف التواصل المشترك')} <span class="text-mute" style="font-size:10px">(${t('optional', 'اختياري')})</span></label><input id="ef-phone" value="${escapeHtml(fam.phone || '')}" placeholder="+974…" /></div>
+      <div class="text-mute" style="font-size:11px;margin-top:6px">${familyMembers(famId).length} ${t('members in this household', 'عضو في هذه العائلة')}.</div>`,
+    actions: [
+      { label: '🗑 ' + t('Disband', 'حلّ العائلة'), class: 'btn ghost', onclick: () => {
+        if (!confirm(t('Disband this household? Members are kept but un-grouped.', 'حلّ هذه العائلة؟ يبقى الأعضاء لكن دون تجميع.'))) return;
+        for (const m of familyMembers(famId, true)) m.familyId = null;
+        state.families = state.families.filter(f => f.id !== famId);
+        if (typeof audit === 'function') audit('family.delete', 'family:' + famId, 'disbanded household');
+        save(); closeModal(); render(); toast(t('Household disbanded', 'تم حلّ العائلة'));
+      } },
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
+        const name = $('#ef-name').value.trim();
+        if (!name) { toast(t('Enter a family name', 'أدخل اسم العائلة'), 'error'); return; }
+        fam.name = name;
+        fam.phone = $('#ef-phone').value.trim() || null;
+        if (typeof audit === 'function') audit('family.update', 'family:' + famId, 'renamed to ' + name);
+        save(); closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
+      } },
+    ],
   });
 };
 
@@ -3280,6 +3311,7 @@ PAGES.families = (main) => {
           <div style="margin-top:6px;display:flex;gap:6px;justify-content:flex-end">
             ${phone && isRealPhone(phone) ? `<a class="btn ghost sm" href="${waLink(phone)}" target="_blank" title="WhatsApp the family">💬 ${t('Message', 'مراسلة')}</a>` : ''}
             <button class="btn ghost sm" onclick="viewFamily(${f.id})">👁 ${t('View', 'عرض')}</button>
+            <button class="btn ghost sm" onclick="editFamily(${f.id})" title="${t('Rename / edit', 'تعديل الاسم')}">✏️</button>
           </div>
         </div>
       </div>
@@ -3548,19 +3580,27 @@ PAGES.schedule = (main) => {
     });
 
     // Move a class up (earlier) / down (later) one time slot in the same day.
+    // Move a class to the earlier/later TIME slot — within the SAME day only.
+    // c.day is never changed; only c.slot (the hour) moves up/down one row.
     function moveClass(id, dir) {
       const c = state.schedule.find(x => x.id === id);
       if (!c) return;
       const hours = SLOTS.map(sl => sl.hour);
       const cur = typeof c.slot === 'number' ? c.slot : parseInt(c.slot);
-      const ni = hours.indexOf(cur) + dir;
-      if (ni < 0 || ni >= hours.length) { toast(dir < 0 ? 'Already in the earliest slot' : 'Already in the latest slot', 'error'); return; }
+      let idx = hours.indexOf(cur);
+      if (idx === -1) {
+        // Slot value not on the grid — snap to the closest valid slot first.
+        let best = Infinity;
+        hours.forEach((h, i) => { const d = Math.abs(h - (cur || h)); if (d < best) { best = d; idx = i; } });
+      }
+      const ni = idx + dir;
+      if (ni < 0 || ni >= hours.length) { toast(dir < 0 ? 'Already in the earliest time slot' : 'Already in the latest time slot', 'error'); return; }
       const newSlot = hours[ni];
       if (c.coachId != null) {
         const clash = state.schedule.find(x => x.id !== id && x.day === c.day && x.slot === newSlot && x.coachId === c.coachId);
-        if (clash) { toast(`${coachName(c.coachId)} already has ${clash.sport} in that slot`, 'error'); return; }
+        if (clash) { toast(`${coachName(c.coachId)} already has ${clash.sport} in that time slot`, 'error'); return; }
       }
-      c.slot = newSlot;
+      c.slot = newSlot;   // same day — only the time changes
       save(); refresh();
     }
     if (canEdit) $$('.sch-up').forEach(btn => btn.addEventListener('click', e => { e.stopPropagation(); moveClass(parseInt(btn.dataset.id), -1); }));

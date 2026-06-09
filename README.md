@@ -1150,3 +1150,22 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
   by rate). Multi-sport members show a 🏅 medal with the total attended and a hover tooltip (ⓘ) breaking
   it down per sport (attended/planned). Counts only Y-marks inside the member's current cycle window.
 - Regression: 547 logic assertions + 35 pages render, all passing.
+
+
+## 5.77.0 note — Age field (two-way with birthdate) on the member form
+- The member form now has an editable Age box next to Birthdate. Typing a birthdate fills the age; typing
+  an age auto-fills an approximate birthdate (today minus N years, so the age reads back exactly). Only the
+  birthdate is stored (age stays derived via memberAge), so nothing drifts. New helper ageToBirthdate().
+- Regression: 551 logic assertions + 35 pages render, all passing.
+
+
+## 5.78.0 note — Schedule move arrows clarified (same day, time only)
+- Confirmed/hardened: the ▲/▼ arrows move a class to the earlier/later TIME slot within the SAME day
+  only — c.day is never changed, just c.slot. Added a snap for off-grid slot values and clearer wording.
+- Regression: 551 logic assertions + 35 pages render, all passing.
+
+
+## 5.79.0 note — Edit / rename household
+- Added editFamily(): rename a household, change its shared contact phone, or disband it (members kept,
+  just un-grouped). Reachable from the Families card (✏️) and the family detail modal (✏️ Rename / edit).
+- Regression: 551 logic assertions + 35 pages render, all passing.

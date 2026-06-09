@@ -1169,6 +1169,11 @@ ${seed}
   var _ar = _attBy(_em);
   eq(_ar.find(x => x.sport === 'Boxing').attended, 2, 'expiring-attended: counts Y within the cycle and excludes a mark before the start date');
   eq(_ar.find(x => x.sport === 'Swimming').attended, 1, 'expiring-attended: counts per sport separately');
+  // Age <-> birthdate two-way: deriving a birthdate from an age reads back as that age
+  eq(memberAge(ageToBirthdate(8)), 8, 'age-field: ageToBirthdate(8) reads back as age 8');
+  eq(memberAge(ageToBirthdate(35)), 35, 'age-field: ageToBirthdate(35) reads back as age 35');
+  eq(ageToBirthdate(''), '', 'age-field: blank age yields no birthdate');
+  eq(ageToBirthdate(0), '', 'age-field: zero/invalid age yields no birthdate');
   // Renewal value falls back to the latest real invoice when enrolment prices are blank
   state.members.push({ id: 984, name: 'RVI', enrollments: [] });
   state.invoices.push({ id: 99984, customerId: 984, amount: 300, date: '2026-05-01' });
