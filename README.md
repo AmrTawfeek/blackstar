@@ -1032,3 +1032,35 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
   expiring within 14 days, soonest first.
 - All scoped to own data only (students see their own; coaches see only their students).
 - Regression: 512 logic assertions + 33 pages render, all passing.
+
+
+## 5.65.0 note — Student self-service freeze (with allowance)
+- Students can freeze their own membership from My Membership. Allowance = 5 days per 30 days of
+  validity (30d→5, 60d→10, 90d→15 …), tracked per membership cycle (renewing resets it); a single
+  freeze request is capped at 7 days ("up to one week at a time").
+- Freezing pauses the membership and shifts the expiry (and per-sport ends) forward by the frozen
+  days, reusing the existing applyFreeze(). The card shows remaining/used allowance; a frozen member
+  sees their resume date. Arabic-translated. Only an Active (non-frozen) membership can be frozen.
+- Regression: 519 logic assertions + 33 pages render, all passing.
+
+
+## 5.66.0 note — Zero-write exports for coach & student
+- All read-only (no DB writes, no growth to the shared document):
+- STUDENT (My Membership): "📅 Add to calendar" downloads an .ics of their weekly classes (recurring,
+  with coach + location) for Google/Apple Calendar; "📄 Attendance report" prints their attendance sheet.
+- COACH (My Dashboard): "🖨 Sign-in sheet" prints a blank students × days-of-month attendance grid;
+  "⬇ Roster CSV" exports their students with this-month attendance, rate, status, expiry, mobile.
+- Reuses downloadFile()/daysInMonth()/the print engine. Arabic-translated.
+- Regression: 521 logic assertions + 33 pages render, all passing.
+
+
+## 5.67.0 note — Switch Sport can distribute classes across multiple sports
+- The Switch Sport modal now has a "＋ Distribute into another sport" button. A member's REMAINING
+  classes (planned − attended) can be split across several new sports/coaches, each with its own class
+  count. A live tally enforces that the allocation equals the remaining classes.
+- Commission: the old coach still keeps (attended/planned) × price; the remaining value is split across
+  the targets in proportion to the classes each receives, credited to each new coach. The net-zero
+  reconciliation invoice now carries one positive line per target.
+- Enrollments: the source enrollment is replaced by one enrollment per target (classes + proportional
+  value). Single-target switches behave exactly as before (unchanged path).
+- Regression: 526 logic assertions + 33 pages render, all passing.

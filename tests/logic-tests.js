@@ -1159,6 +1159,36 @@ ${seed}
   ok(_atRisk(1, 3) === true, 'at-risk: 25% over 4 sessions is flagged');
   ok(_atRisk(3, 1) === false, 'at-risk: 75% is not flagged');
   ok(_atRisk(0, 1) === false, 'at-risk: a single mark is not enough to flag');
+  // Freeze allowance: 5 days per 30 days of validity, tracked per cycle
+  state.members.push({ id: 960, name: 'FZ', startDate: '2026-06-01', expiryDate: '2026-07-01', enrollments: [{ sport: 'Boxing', validity: 30 }], freezes: [] });
+  var _fm = state.members.find(m => m.id === 960);
+  eq(freezeAllowance(_fm).allowanceDays, 5, 'freeze: 30-day validity = 5 days allowance');
+  _fm.enrollments = [{ validity: 60 }];
+  eq(freezeAllowance(_fm).allowanceDays, 10, 'freeze: 60-day validity = 10 days allowance');
+  _fm.enrollments = [{ validity: 90 }];
+  eq(freezeAllowance(_fm).allowanceDays, 15, 'freeze: 90-day validity = 15 days allowance');
+  _fm.enrollments = [{ validity: 60 }]; _fm.freezes = [{ days: 3, start: '2026-06-10' }];
+  eq(freezeAllowance(_fm).usedDays, 3, 'freeze: counts days used in current cycle');
+  eq(freezeAllowance(_fm).remainingDays, 7, 'freeze: remaining = allowance - used');
+  _fm.freezes = [{ days: 5, start: '2026-05-01' }];
+  eq(freezeAllowance(_fm).usedDays, 0, 'freeze: freezes before the cycle start are not counted');
+  state.members = state.members.filter(m => m.id !== 960);
+  var _af = { expiryDate: '2026-07-01', freezes: [] };
+  applyFreeze(_af, 7, 'x');
+  eq(_af.expiryDate, '2026-07-08', 'freeze: applyFreeze shifts expiry forward by the frozen days');
+  // Calendar (.ics) export: next occurrence date for a weekly class
+  function _nextDate(wd, hour, now) { const d = new Date(now.getFullYear(), now.getMonth(), now.getDate()); let add = (wd - d.getDay() + 7) % 7; if (add === 0 && hour <= now.getHours()) add = 7; d.setDate(d.getDate() + add); return d; }
+  var _tue = new Date(2026, 5, 9, 10, 0, 0); // Tue 9 Jun 2026, 10:00
+  eq(_nextDate(2, 17, _tue).getDate(), 9, 'ics: a class later today keeps today\u2019s date');
+  eq(_nextDate(2, 8, _tue).getDate(), 16, 'ics: a class already passed today rolls to next week');
+  // Sport-switch distribution: remaining value split across targets by class count
+  var _sp = computeSwitchSplit(800, 2, 8); // 800 price, 2 of 8 attended
+  eq(Math.round(_sp.aShare), 200, 'switch: old coach keeps (attended/planned) x price');
+  eq(Math.round(_sp.bShare), 600, 'switch: remaining value = price - aShare');
+  var _rem = 6, _t1 = _sp.bShare * (4 / _rem), _t2 = _sp.bShare * (2 / _rem);
+  eq(Math.round(_t1), 400, 'switch-distribute: 4 of 6 classes → 400');
+  eq(Math.round(_t2), 200, 'switch-distribute: 2 of 6 classes → 200');
+  eq(Math.round(_t1 + _t2), Math.round(_sp.bShare), 'switch-distribute: target values sum to the remaining value');
   state.members = state.members.filter(m => ![995, 996].includes(m.id));
   state.coaches.push({ id: 999, name: 'Coach Z', active: 'Y' });
   state.members.push({ id: 991, name: 'CS1' });

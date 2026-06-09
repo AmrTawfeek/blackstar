@@ -10008,6 +10008,9 @@ window.switchSport = function(memberId) {
     return total;
   }
 
+  // Switch targets — one by default; admin can distribute into several sports.
+  let targets = [{ sport: defaultToSport, coachId: defaultFrom.coachId, classes: null }];
+
   showModal({
     title: `🔄 Switch Sport · ${m.name}`,
     body: `
@@ -10027,17 +10030,12 @@ window.switchSport = function(memberId) {
         <div class="field"><label>Switch date</label><input id="sw-date" type="date" value="${TODAY}" /></div>
       </div>
 
-      <div style="margin:14px 0 6px;font-size:11px;color:var(--blue);text-transform:uppercase;letter-spacing:.6px;font-weight:600">Switch TO</div>
-      <div class="form-row">
-        <div class="field"><label>New sport</label>
-          <select id="sw-sport">
-            ${sportsList.map(s => `<option ${s === defaultToSport ? 'selected' : ''}>${s}</option>`).join('')}
-          </select>
-        </div>
-        <div class="field"><label>New coach</label>
-          <select id="sw-coach">${coachOpts(defaultFrom.coachId)}</select>
-        </div>
+      <div style="margin:14px 0 6px;display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:11px;color:var(--blue);text-transform:uppercase;letter-spacing:.6px;font-weight:600">Switch TO</span>
+        <button type="button" id="sw-add-target" class="btn ghost sm" style="padding:4px 10px;font-size:11px;text-transform:none">＋ Distribute into another sport</button>
       </div>
+      <div id="sw-remaining" class="text-mute" style="font-size:11px;margin-bottom:8px;display:none"></div>
+      <div id="sw-targets"></div>
 
       <div class="field"><label>Reason (optional)</label><input id="sw-reason" placeholder="e.g. Wants to focus on Boxing" /></div>
 
@@ -10048,12 +10046,74 @@ window.switchSport = function(memberId) {
       { label: '🔄 Confirm Switch', class: 'btn primary', onclick: () => {
         const fromIdx = parseInt($('#sw-from').value);
         const from = enrolled[fromIdx];
-        const toSport = $('#sw-sport').value;
-        const toCoachId = parseInt($('#sw-coach').value);
         const switchDate = $('#sw-date').value || TODAY;
         const reason = $('#sw-reason').value.trim() || null;
-
         if (!from) { toast('Pick the sport to switch from', 'error'); return; }
+
+        // Read the target row(s) from the dynamic list.
+        const tgs = targets.map((t, i) => ({
+          sport: ($('#sw-sport-' + i) || {}).value || t.sport,
+          coachId: parseInt(($('#sw-coach-' + i) || {}).value) || null,
+          classes: targets.length > 1 ? (parseInt(($('#sw-classes-' + i) || {}).value) || 0) : null,
+        }));
+
+        // ════ MULTI-TARGET DISTRIBUTION (split remaining classes across sports) ════
+        if (tgs.length > 1) {
+          const attendedA = countAttendedUpTo(from.sport, switchDate);
+          const planned = parseInt(from.classes) || 0;
+          const remaining = Math.max(0, planned - attendedA);
+          const creditedBase = coachBaseForSport(m, from.sport, from.coachId);
+          const priceBase = creditedBase > 0 ? creditedBase : (parseFloat(from.price) || 0);
+          const switchMonth = switchDate.slice(0, 7);
+          for (const tg of tgs) {
+            if (!tg.sport) { toast('Pick a sport for each new row', 'error'); return; }
+            if (tg.sport === SUMMER_CAMP) { toast('Summer Camp can\'t be a distribution target — remove it.', 'error'); return; }
+            if (!tg.coachId) { toast('Pick a coach for each new row', 'error'); return; }
+          }
+          if (new Set(tgs.map(t => t.sport)).size !== tgs.length) { toast('Each new sport must be different', 'error'); return; }
+          if (from.sport === SUMMER_CAMP) { toast('Distribution isn\'t available when switching FROM Summer Camp.', 'error'); return; }
+          const sumClasses = tgs.reduce((s, t) => s + (t.classes || 0), 0);
+          if (sumClasses <= 0) { toast('Allocate the remaining classes across the new sports', 'error'); return; }
+          if (sumClasses !== remaining) { toast('Allocated ' + sumClasses + ' but ' + remaining + ' classes remain — they must match.', 'error'); return; }
+
+          const split = computeSwitchSplit(priceBase, attendedA, planned);
+          const aShare = split.aShare, bShare = split.bShare;
+          const resolved = tgs.map(t => ({ ...t, value: remaining > 0 ? bShare * (t.classes / remaining) : 0 }));
+
+          // Net-zero reconciliation invoice: A's deduction + one positive per target.
+          if (bShare > 0 && remaining > 0) {
+            const lineItems = [{ sport: from.sport, coach: coachName(from.coachId), coachId: from.coachId, classes: -remaining, price: -bShare }];
+            for (const tr of resolved) lineItems.push({ sport: tr.sport, coach: coachName(tr.coachId), coachId: tr.coachId, classes: tr.classes, price: tr.value });
+            state.invoices.push({
+              id: nextId(state.invoices), date: switchDate,
+              description: m.name + ' — sport switch (distributed): ' + from.sport + ' → ' + tgs.map(t => t.sport).join(', '),
+              amount: 0, method: 'transfer', month: switchMonth, ref: 'SW-' + Date.now().toString().slice(-6),
+              sport: from.sport + ' → ' + tgs.map(t => t.sport).join('/'), coach: coachName(from.coachId) + ' → multiple', coachId: null,
+              customerId: m.id, customerName: m.name, category: 'Membership', activityType: 'switch-credit', switchCredit: true, lineItems,
+            });
+          }
+          if (!Array.isArray(m.sportSwitches)) m.sportSwitches = [];
+          m.sportSwitches.push({
+            id: 'sw_' + Date.now(), date: switchDate, fromSport: from.sport, fromCoachId: from.coachId, fromCoach: coachName(from.coachId),
+            distributed: true, targets: resolved.map(t => ({ sport: t.sport, coachId: t.coachId, coach: coachName(t.coachId), classes: t.classes, value: t.value })),
+            reason, snapshot: { attendedByOld: attendedA, totalClasses: planned, originalPrice: priceBase, aShare, bShare, switchMonth }, createdAt: new Date().toISOString(),
+          });
+          if (!Array.isArray(m.enrollments)) m.enrollments = [];
+          if (m.enrollments.length === 0 && enrolled.length) m.enrollments = enrolled.map(e => ({ ...e }));
+          const srcIdx = m.enrollments.findIndex(e => e.sport === from.sport && e.coachId === from.coachId);
+          const srcEnroll = srcIdx >= 0 ? m.enrollments[srcIdx] : from;
+          if (srcIdx >= 0) m.enrollments.splice(srcIdx, 1);
+          for (const tr of resolved) m.enrollments.push({ sport: tr.sport, coachId: tr.coachId, classes: tr.classes, price: tr.value, start: srcEnroll.start || switchDate, validity: srcEnroll.validity || DEFAULT_VALIDITY });
+          if (m.sport === from.sport && m.coachId === from.coachId) { m.sport = resolved[0].sport; m.coachId = resolved[0].coachId; }
+          audit('sport.switch', 'member:' + m.id, 'Distributed ' + from.sport + ' → ' + tgs.map(t => t.sport).join(', ') + ' for ' + (m.name || m.nameArabic), { memberId: m.id });
+          save(); closeModal(); render();
+          toast('Switched · ' + from.sport + ' distributed into ' + tgs.length + ' sports · ' + coachName(from.coachId) + ' keeps ' + fmt(aShare));
+          return;
+        }
+
+        // ════ SINGLE TARGET (unchanged behavior) ════
+        const toSport = tgs[0].sport;
+        const toCoachId = tgs[0].coachId;
         if (!toSport) { toast('Pick the new sport', 'error'); return; }
         if (toSport !== SUMMER_CAMP && !toCoachId) { toast('Pick the new coach', 'error'); return; }
         if (from.sport === toSport && from.coachId === toCoachId) {
@@ -10205,96 +10265,151 @@ window.switchSport = function(memberId) {
     ],
   });
 
-  // Wire live preview of commission split — recalculates as user picks options
+  // ─── Target rows: render, add/remove, coach dropdowns, remaining tally ───
+  function remainingClasses() {
+    const from = enrolled[parseInt($('#sw-from')?.value || 0)] || defaultFrom;
+    const attended = countAttendedUpTo(from.sport, $('#sw-date')?.value || TODAY);
+    return Math.max(0, (parseInt(from.classes) || 0) - attended);
+  }
+  function rebuildRowCoaches(i) {
+    const sportSel = $('#sw-sport-' + i), coachSel = $('#sw-coach-' + i);
+    if (!sportSel || !coachSel) return;
+    const sport = sportSel.value;
+    if (sport === SUMMER_CAMP) { coachSel.innerHTML = '<option value="">— none (camp) —</option>'; targets[i].coachId = null; return; }
+    const prev = targets[i].coachId || null;
+    const list = coachesForSport(sport, prev);
+    coachSel.innerHTML = list.length
+      ? list.map(co => `<option value="${co.id}" ${co.id === prev ? 'selected' : ''}>${coachOptionLabel(co, sport)}</option>`).join('')
+      : '<option value="">— no active coach teaches this sport —</option>';
+    targets[i].coachId = parseInt(coachSel.value) || null;
+  }
+  function updateRemaining() {
+    const el = $('#sw-remaining'); if (!el) return;
+    if (targets.length <= 1) { el.style.display = 'none'; return; }
+    const rem = remainingClasses();
+    const sum = targets.reduce((s, t) => s + (parseInt(t.classes) || 0), 0);
+    const ok = sum === rem;
+    el.style.display = 'block';
+    el.innerHTML = `Allocate <b>${rem}</b> remaining class${rem === 1 ? '' : 'es'} across the sports below · allocated <b style="color:${ok ? 'var(--green)' : 'var(--accent)'}">${sum}</b>${ok ? ' ✓' : ' — must equal ' + rem}`;
+  }
+  function renderTargets() {
+    const wrap = $('#sw-targets'); if (!wrap) return;
+    const multi = targets.length > 1;
+    wrap.innerHTML = targets.map((t, i) => {
+      const opts = sportsList.map(s => `<option ${s === t.sport ? 'selected' : ''}>${s}</option>`).join('');
+      const classCol = multi ? `<div class="field" style="max-width:92px"><label>Classes</label><input type="number" min="0" id="sw-classes-${i}" value="${t.classes == null ? '' : t.classes}" /></div>` : '';
+      const rmBtn = multi ? `<button type="button" class="btn ghost sm sw-rm" data-i="${i}" title="Remove" style="align-self:flex-end;margin-bottom:2px;padding:6px 9px">✕</button>` : '';
+      return `<div class="form-row" style="align-items:flex-end;gap:8px;margin-bottom:6px">
+        <div class="field"><label>${multi ? 'Sport ' + (i + 1) : 'New sport'}</label><select id="sw-sport-${i}">${opts}</select></div>
+        <div class="field"><label>New coach</label><select id="sw-coach-${i}"></select></div>
+        ${classCol}${rmBtn}
+      </div>`;
+    }).join('');
+    targets.forEach((t, i) => {
+      rebuildRowCoaches(i);
+      const sp = $('#sw-sport-' + i);
+      if (sp) sp.addEventListener('change', () => { targets[i].sport = sp.value; rebuildRowCoaches(i); updatePreview(); });
+      const co = $('#sw-coach-' + i);
+      if (co) co.addEventListener('change', () => { targets[i].coachId = parseInt(co.value) || null; updatePreview(); });
+      const cl = $('#sw-classes-' + i);
+      if (cl) cl.addEventListener('input', () => { targets[i].classes = parseInt(cl.value) || 0; updateRemaining(); updatePreview(); });
+    });
+    $$('.sw-rm').forEach(b => b.addEventListener('click', () => {
+      targets.splice(parseInt(b.dataset.i), 1);
+      if (targets.length === 1) targets[0].classes = null;
+      renderTargets();
+    }));
+    updateRemaining(); updatePreview();
+  }
+  function addTarget() {
+    const rem = remainingClasses();
+    const from = enrolled[parseInt($('#sw-from')?.value || 0)] || defaultFrom;
+    if (from.sport === SUMMER_CAMP) { toast('Distribution isn\'t available from Summer Camp', 'error'); return; }
+    // Seed class counts: first row gets all remaining the first time we go multi.
+    if (targets.length === 1 && targets[0].classes == null) targets[0].classes = rem;
+    const taken = new Set(targets.map(t => t.sport));
+    const newSport = sportsList.find(s => s !== SUMMER_CAMP && s !== from.sport && !taken.has(s)) || sportsList.find(s => !taken.has(s)) || sportsList[0];
+    targets.push({ sport: newSport, coachId: null, classes: 0 });
+    renderTargets();
+  }
+
+  // Live commission preview — single-target keeps the detailed view; multi shows the split.
   function updatePreview() {
-    const fromIdx = parseInt($('#sw-from')?.value || 0);
-    const from = enrolled[fromIdx];
+    const from = enrolled[parseInt($('#sw-from')?.value || 0)];
     if (!from) return;
     const switchDate = $('#sw-date')?.value || TODAY;
-    const newCoachId = parseInt($('#sw-coach')?.value || from.coachId);
     const attended = countAttendedUpTo(from.sport, switchDate);
     const totalClasses = parseInt(from.classes) || 0;
-    const price = parseFloat(from.price) || 0;
+    const remaining = Math.max(0, totalClasses - attended);
+    const creditedBase = coachBaseForSport(m, from.sport, from.coachId);
+    const price = creditedBase > 0 ? creditedBase : (parseFloat(from.price) || 0);
+    const switchMonth = switchDate.slice(0, 7);
+    const monthLabel = fmtMonth(switchMonth);
+    const elPrev = $('#sw-preview'); if (!elPrev) return;
+
+    if (targets.length > 1) {
+      const split = computeSwitchSplit(price, attended, totalClasses);
+      const oldRate = parseFloat(state.coaches.find(c => c.id === from.coachId)?.rate) || 0;
+      const aDeduct = (price - split.aShare) * oldRate / 100;
+      const rows = targets.map((t, i) => {
+        const cls = parseInt($('#sw-classes-' + i)?.value) || 0;
+        const val = remaining > 0 ? split.bShare * (cls / remaining) : 0;
+        const coachId = parseInt($('#sw-coach-' + i)?.value) || null;
+        const rate = parseFloat(state.coaches.find(c => c.id === coachId)?.rate) || 0;
+        return `<div style="display:flex;justify-content:space-between;padding:3px 0;border-top:1px solid var(--border)"><span>${escapeHtml(($('#sw-sport-' + i)?.value) || t.sport)} · ${escapeHtml(coachName(coachId))} · ${cls} cls</span><span style="color:var(--green);font-weight:600">+${fmt(val * rate / 100)} <span style="color:var(--text-mute);font-weight:400">@${rate}%</span></span></div>`;
+      }).join('');
+      elPrev.innerHTML = `<div style="font-weight:700;margin-bottom:6px">📊 Distributed reconciliation (${escapeHtml(monthLabel)})</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">${escapeHtml(coachName(from.coachId))} attended ${attended}/${totalClasses} — keeps ${fmt(split.aShare)} base. The remaining ${fmt(split.bShare)} is split across the sports by class count:</div>
+        <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(242,96,96,.06);border-radius:6px;margin-bottom:4px"><span style="color:var(--red)">${escapeHtml(coachName(from.coachId))} deduction</span><span style="color:var(--red);font-weight:700">−${fmt(aDeduct)}</span></div>
+        ${rows}`;
+      return;
+    }
+
+    const newCoachId = parseInt($('#sw-coach-0')?.value || from.coachId);
     const oldCoachName = coachName(from.coachId);
     const newCoachName = coachName(newCoachId);
     let aShare = 0, bShare = 0;
-    if (attended === 0) {
-      aShare = 0; bShare = 0;
-    } else if (totalClasses > 0) {
-      aShare = (attended / totalClasses) * price;
-      bShare = price - aShare;
-    }
-    const switchMonth = switchDate.slice(0, 7);
-    const monthLabel = fmtMonth(switchMonth);
-
+    if (attended === 0) { aShare = 0; bShare = 0; }
+    else if (totalClasses > 0) { aShare = (attended / totalClasses) * price; bShare = price - aShare; }
     let body;
-    const toSport = $('#sw-sport')?.value || '';
+    const toSport = $('#sw-sport-0')?.value || '';
     const fromIsCamp = from.sport === SUMMER_CAMP;
     const toIsCamp = toSport === SUMMER_CAMP;
     if (fromIsCamp || toIsCamp) {
-      body = `
-        <div style="font-weight:700;color:var(--accent-2);margin-bottom:6px">🌞 Summer Camp · no commission reconciliation</div>
-        <div style="color:var(--text-dim)">${fromIsCamp ? 'Switching FROM Summer Camp — no commission was earned to split.' : 'Switching TO Summer Camp — new sport generates no commission.'}</div>
-        <div style="margin-top:4px;color:var(--text-mute);font-size:11px">The enrollment record will be updated. Past Summer Camp revenue stays as club income.</div>
-      `;
+      body = `<div style="font-weight:700;color:var(--accent-2);margin-bottom:6px">🌞 Summer Camp · no commission reconciliation</div>
+        <div style="color:var(--text-dim)">${fromIsCamp ? 'Switching FROM Summer Camp — no commission was earned to split.' : 'Switching TO Summer Camp — new sport generates no commission.'}</div>`;
     } else if (attended === 0) {
-      body = `
-        <div style="font-weight:700;color:var(--accent);margin-bottom:6px">⚠️ No commission earned</div>
+      body = `<div style="font-weight:700;color:var(--accent);margin-bottom:6px">⚠️ No commission earned</div>
         <div>${escapeHtml(oldCoachName)} has 0 attended classes for ${from.sport} as of ${fmtDate(switchDate)}.</div>
-        <div style="margin-top:4px;color:var(--text-mute)">Neither coach earns commission from this enrollment. Future enrollments / renewals will count for the new coach.</div>
-      `;
+        <div style="margin-top:4px;color:var(--text-mute)">Neither coach earns commission from this enrollment.</div>`;
     } else {
       const rate = parseFloat(state.coaches.find(c => c.id === from.coachId)?.rate) || 0;
       const newRate = parseFloat(state.coaches.find(c => c.id === newCoachId)?.rate) || 0;
-      const aCommissionOriginal = price * rate / 100;
-      const aCommissionAdjusted = aShare * rate / 100;
-      const aDeduction = aCommissionOriginal - aCommissionAdjusted;
+      const aDeduction = (price * rate / 100) - (aShare * rate / 100);
       const bCommission = bShare * newRate / 100;
-      body = `
-        <div style="font-weight:700;margin-bottom:6px">📊 Commission reconciliation (${escapeHtml(monthLabel)})</div>
-        <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">${escapeHtml(oldCoachName)} attended ${attended} of ${totalClasses} classes (${totalClasses ? Math.round(attended/totalClasses*100) : 0}%) — he keeps ${fmt(aShare)} QAR base, ${escapeHtml(newCoachName)} gets ${fmt(bShare)} QAR.</div>
+      body = `<div style="font-weight:700;margin-bottom:6px">📊 Commission reconciliation (${escapeHtml(monthLabel)})</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">${escapeHtml(oldCoachName)} attended ${attended} of ${totalClasses} classes (${totalClasses ? Math.round(attended / totalClasses * 100) : 0}%) — he keeps ${fmt(aShare)} QAR base, ${escapeHtml(newCoachName)} gets ${fmt(bShare)} QAR.</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
           <div style="padding:8px;background:rgba(242,96,96,.06);border:1px solid rgba(242,96,96,.2);border-radius:6px">
             <div style="font-size:10px;color:var(--red);text-transform:uppercase;font-weight:600">${escapeHtml(oldCoachName)} · deduction</div>
             <div style="font-size:16px;font-weight:700;margin-top:2px;color:var(--red)">−${fmt(aDeduction)} QAR</div>
             <div style="font-size:10px;color:var(--text-mute);margin-top:2px">in ${escapeHtml(monthLabel)}'s payroll</div>
-            <div style="font-size:10px;color:var(--text-mute)">(was paid for ${fmt(price)}, should have been ${fmt(aShare)})</div>
           </div>
           <div style="padding:8px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);border-radius:6px">
             <div style="font-size:10px;color:var(--green);text-transform:uppercase;font-weight:600">${escapeHtml(newCoachName)} · earning</div>
             <div style="font-size:16px;font-weight:700;margin-top:2px;color:var(--green)">+${fmt(bCommission)} QAR</div>
-            <div style="font-size:10px;color:var(--text-mute);margin-top:2px">in ${escapeHtml(monthLabel)}'s payroll</div>
-            <div style="font-size:10px;color:var(--text-mute)">(commission on ${fmt(bShare)} base @ ${newRate}%)</div>
+            <div style="font-size:10px;color:var(--text-mute);margin-top:2px">commission on ${fmt(bShare)} @ ${newRate}%</div>
           </div>
-        </div>
-        <div style="margin-top:8px;padding:6px 8px;background:var(--surface);border-radius:4px;font-size:10px;color:var(--text-mute)">
-          💡 The original ${fmtMonth(((state.invoices.find(i => i.customerId === m.id && (i.lineItems||[]).some(li => li.sport === from.sport && li.coachId === from.coachId))?.month) || switchMonth))} invoice stays unchanged. An internal reconciliation invoice is created in ${escapeHtml(monthLabel)} to net the two coaches correctly. Snapshot locks at confirm — won't recalculate later.
-        </div>
-      `;
+        </div>`;
     }
-    const elPrev = $('#sw-preview');
-    if (elPrev) elPrev.innerHTML = body;
+    elPrev.innerHTML = body;
   }
-  function rebuildSwCoaches() {
-    const sportSel = $('#sw-sport'), coachSel = $('#sw-coach');
-    if (!sportSel || !coachSel) return;
-    const sport = sportSel.value;
-    if (sport === SUMMER_CAMP) { coachSel.innerHTML = '<option value="">— none (camp) —</option>'; return; }
-    const prev = parseInt(coachSel.value) || null;
-    const list = coachesForSport(sport, prev);
-    coachSel.innerHTML = list.length
-      ? list.map(co => `<option value="${co.id}" ${co.id === prev ? 'selected' : ''}>${coachOptionLabel(co, sport)}</option>`).join('')
-      : '<option value="">— no active coach teaches this sport —</option>';
-  }
+
   setTimeout(() => {
-    const sp = $('#sw-sport');
-    if (sp) sp.addEventListener('change', () => { rebuildSwCoaches(); updatePreview(); });
-    ['#sw-from','#sw-coach','#sw-date'].forEach(id => {
-      const elx = $(id);
-      if (elx) elx.addEventListener('change', updatePreview);
-    });
-    rebuildSwCoaches();   // filter coaches to the default new sport on open
-    updatePreview();
+    const addBtn = $('#sw-add-target');
+    if (addBtn) addBtn.addEventListener('click', addTarget);
+    ['#sw-from', '#sw-date'].forEach(id => { const elx = $(id); if (elx) elx.addEventListener('change', () => { renderTargets(); }); });
+    renderTargets();
   }, 50);
 };
 
@@ -11349,6 +11464,72 @@ window.deleteTrial = function(id) {
 
 // Switch the role-preview. Pure view layer (no security) until online sign-in exists.
 // ─── My Membership (member self-service, read-only, own data only) ──
+// Student self-service freeze: pick days within the per-cycle allowance.
+window.studentFreeze = function(memberId) {
+  const m = state.members.find(x => x.id === memberId);
+  if (!m) return;
+  if (m.currentFreezeUntil && TODAY <= m.currentFreezeUntil) {
+    toast(t('Your membership is already frozen.', 'عضويتك مجمّدة بالفعل.'), 'error');
+    return;
+  }
+  if (memberStatus(m) !== 'Active') {
+    toast(t('Only an active membership can be frozen.', 'يمكن تجميد العضوية النشطة فقط.'), 'error');
+    return;
+  }
+  const fz = freezeAllowance(m);
+  const maxReq = Math.min(fz.remainingDays, fz.perRequestCap);
+  if (maxReq < 1) {
+    toast(t('You have used your freeze allowance for this membership.', 'لقد استخدمت كامل رصيد التجميد لهذه العضوية.'), 'error');
+    return;
+  }
+  const presets = [1, 3, 5, 7].filter(d => d <= maxReq);
+  showModal({
+    title: '❄️ ' + t('Freeze my membership', 'تجميد عضويتي'),
+    body: `
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div class="text-mute" style="font-size:13px">${t('Freezing pauses your membership and pushes your expiry date forward by the same number of days, so you don\u2019t lose any paid days.', 'التجميد يوقف عضويتك مؤقتاً ويؤجّل تاريخ الانتهاء بنفس عدد الأيام، فلا تخسر أي يوم مدفوع.')}</div>
+        <div style="background:var(--surface-2);border-radius:8px;padding:10px 12px;font-size:12px">
+          <div style="display:flex;justify-content:space-between"><span class="text-mute">${t('Your allowance', 'رصيدك')}</span><span class="font-bold">${fz.allowanceDays} ${t('days', 'يوم')}</span></div>
+          <div style="display:flex;justify-content:space-between"><span class="text-mute">${t('Already used', 'المستخدم')}</span><span class="font-bold">${fz.usedDays} ${t('days', 'يوم')}</span></div>
+          <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);margin-top:5px;padding-top:5px"><span class="text-mute">${t('Remaining', 'المتبقي')}</span><span class="font-bold" style="color:var(--blue)">${fz.remainingDays} ${t('days', 'يوم')}</span></div>
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px">${t('How many days?', 'كم عدد الأيام؟')} <span class="text-mute" style="font-weight:400">(${t('max', 'حد أقصى')} ${maxReq})</span></label>
+          <div id="sfz-presets" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+            ${presets.map(d => `<button type="button" class="btn ghost sm sfz-preset" data-days="${d}" style="padding:6px 14px;font-size:12px">${d} ${t('day' + (d === 1 ? '' : 's'), 'يوم')}</button>`).join('')}
+          </div>
+          <input type="number" id="sfz-days" min="1" max="${maxReq}" value="${maxReq}" style="width:100%;padding:10px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)" />
+        </div>
+        <div id="sfz-preview" style="background:var(--surface-2);border-radius:8px;padding:12px;font-size:12px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="text-mute">${t('Resume on', 'يُستأنف في')}</span><span class="font-bold" id="sfz-resume">${fmtDate(addDays(TODAY, maxReq))}</span></div>
+          <div style="display:flex;justify-content:space-between"><span class="text-mute">${t('New expiry', 'الانتهاء الجديد')}</span><span class="font-bold" style="color:var(--blue)" id="sfz-newexp">${m.expiryDate ? fmtDate(addDays(m.expiryDate, maxReq)) : '—'}</span></div>
+        </div>
+        <div class="text-mute" style="font-size:11px">${t('Note: up to one week per request. Your allowance resets when you renew.', 'ملاحظة: حتى أسبوع واحد لكل طلب. يتجدد رصيدك عند التجديد.')}</div>
+      </div>`,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), onclick: closeModal },
+      { label: '❄️ ' + t('Freeze', 'تجميد'), primary: true, onclick: () => {
+        let days = parseInt(document.getElementById('sfz-days').value) || 0;
+        days = Math.max(1, Math.min(days, maxReq));
+        applyFreeze(m, days, 'Self-service freeze');
+        if (typeof audit === 'function') audit('member.freeze', 'member:' + m.id, `student froze ${days}d`);
+        save(); closeModal(); render();
+        toast(t(`Membership frozen for ${days} day${days === 1 ? '' : 's'}`, `تم تجميد العضوية لمدة ${days} يوم`));
+      }},
+    ],
+  });
+  const sync = (val) => {
+    const d = Math.max(1, Math.min(parseInt(val) || 1, maxReq));
+    const r = document.getElementById('sfz-resume'); if (r) r.textContent = fmtDate(addDays(TODAY, d));
+    const ne = document.getElementById('sfz-newexp'); if (ne && m.expiryDate) ne.textContent = fmtDate(addDays(m.expiryDate, d));
+  };
+  document.querySelectorAll('.sfz-preset').forEach(b => b.addEventListener('click', () => {
+    const d = b.dataset.days; const inp = document.getElementById('sfz-days'); if (inp) inp.value = d; sync(d);
+  }));
+  const di = document.getElementById('sfz-days');
+  if (di) di.addEventListener('input', () => sync(di.value));
+};
+
 PAGES.mymembership = (main) => {
   const meId = (typeof effectiveMemberId === 'function') ? effectiveMemberId() : (state.user && state.user.memberId);
   const m = (state.members || []).find(x => x.id === meId);
@@ -11485,9 +11666,38 @@ PAGES.mymembership = (main) => {
     </tr>`;
   }).join('') : `<tr><td colspan="6" style="padding:10px" class="text-mute">${t('No payments on record yet.', 'لا توجد مدفوعات مسجّلة بعد.')}</td></tr>`;
 
+  // Self-service freeze card.
+  const isFrozen = m.currentFreezeUntil && TODAY <= m.currentFreezeUntil;
+  const fz = freezeAllowance(m);
+  let freezeCardHtml = '';
+  if (isFrozen) {
+    freezeCardHtml = `<div class="card" style="margin-bottom:16px;border:1px solid rgba(91,141,239,.4)">
+      <div style="display:flex;align-items:center;gap:12px">
+        <div style="font-size:28px">❄️</div>
+        <div><div style="font-weight:700;font-size:15px">${t('Your membership is frozen', 'عضويتك مجمّدة')}</div>
+          <div class="text-mute" style="font-size:12px">${t('Resumes on', 'يُستأنف في')} <b>${fmtDate(m.currentFreezeUntil)}</b> · ${t('your expiry was extended', 'تم تمديد تاريخ انتهائك')}</div></div>
+      </div></div>`;
+  } else if (memberStatus(m) === 'Active') {
+    const canFreeze = Math.min(fz.remainingDays, fz.perRequestCap) >= 1;
+    freezeCardHtml = `<div class="card" style="margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div><div class="card-title">❄️ ${t('Freeze my membership', 'تجميد عضويتي')}</div>
+          <div class="card-subtitle">${t('Pause your membership — your expiry shifts forward by the same days', 'أوقف عضويتك مؤقتاً — يتأجل انتهاؤك بنفس عدد الأيام')}</div>
+          <div class="text-mute" style="font-size:12px;margin-top:4px">${t('Allowance', 'الرصيد')}: <b>${fz.remainingDays}</b> ${t('of', 'من')} ${fz.allowanceDays} ${t('days left this cycle', 'يوم متبقٍ هذه الدورة')}${fz.usedDays ? ` · ${fz.usedDays} ${t('used', 'مستخدم')}` : ''}</div>
+        </div>
+        ${canFreeze
+          ? `<button class="btn primary" onclick="studentFreeze(${m.id})">❄️ ${t('Freeze now', 'تجميد الآن')}</button>`
+          : `<span class="text-mute" style="font-size:12px">${t('No freeze days left this cycle', 'لا يوجد رصيد تجميد متبقٍ هذه الدورة')}</span>`}
+      </div></div>`;
+  }
+
   main.innerHTML = `
     <div class="topbar"><div><h1 style="color:${nameColor}">${escapeHtml(m.name)}</h1><div class="subtitle">${ageTxt}${m.gender ? escapeHtml(t(m.gender, m.gender === 'Female' ? 'أنثى' : 'ذكر')) + ' · ' : ''}${t('My Membership', 'عضويتي')}${isRealPhone && isRealPhone(m.phone) ? ' · ' + escapeHtml(m.phone) : ''}</div></div>
-      <div class="topbar-actions"><button class="btn ghost" onclick="promptPasswordChange(false)">🔐 ${t('Change password', 'تغيير كلمة المرور')}</button></div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="window._myScheduleICS(${m.id})" title="${t('Add your classes to your phone calendar', 'أضف حصصك إلى تقويم هاتفك')}">📅 ${t('Add to calendar', 'إضافة للتقويم')}</button>
+        <button class="btn ghost" onclick="window._attPdfSubscription(${m.id})" title="${t('Download your attendance sheet', 'حمّل ورقة حضورك')}">📄 ${t('Attendance report', 'تقرير الحضور')}</button>
+        <button class="btn ghost" onclick="promptPasswordChange(false)">🔐 ${t('Change password', 'تغيير كلمة المرور')}</button>
+      </div>
     </div>
     <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
       <div class="kpi"><div class="kpi-label">${t('Status', 'الحالة')}</div><div class="kpi-value" style="color:${statusColor}">${t(status, { Active: 'نشط', Expired: 'منتهٍ', Frozen: 'مجمّد', Withdrawn: 'منسحب', Completed: 'مكتمل' }[status] || status)}</div><div class="kpi-sub">${m.level || ''}</div></div>
@@ -11498,6 +11708,7 @@ PAGES.mymembership = (main) => {
       <div class="card-header"><div><div class="card-title">⏱ ${t('Next class', 'حصتك القادمة')}</div></div></div>
       ${nextClassHtml}
     </div>
+    ${freezeCardHtml}
     <div class="card">
       <div class="card-header"><div><div class="card-title">${t('My sports', 'رياضاتي')}</div><div class="card-subtitle">${t('Your enrolled activities and attendance this month', 'أنشطتك المسجّلة وحضورك هذا الشهر')}</div></div></div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -11544,6 +11755,93 @@ PAGES.mymembership = (main) => {
 };
 
 // ─── Coach Advice (coach writes → student reads) ───────────────
+// ─── Zero-write exports (calendar / sign-in sheet / roster CSV) ─────────────
+// Student: download enrolled classes as an .ics calendar file (weekly recurring).
+window._myScheduleICS = function(memberId) {
+  const m = state.members.find(x => x.id === memberId); if (!m) return;
+  const sports = ((m.enrollments && m.enrollments.length) ? m.enrollments : []).map(e => e.sport).filter(Boolean);
+  const W = { sat: 6, sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5 };
+  const rows = (state.schedule || []).filter(c => sports.includes(c.sport));
+  if (!rows.length) { toast(t('No classes found in the schedule for your sports.', 'لا توجد حصص في الجدول لرياضاتك.'), 'error'); return; }
+  const pad = n => String(n).padStart(2, '0');
+  const now = new Date();
+  const nextDateFor = (wd, hour) => {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    let add = (wd - d.getDay() + 7) % 7;
+    if (add === 0 && hour <= now.getHours()) add = 7;
+    d.setDate(d.getDate() + add);
+    return d;
+  };
+  const fmtDT = (d, hour) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(hour)}0000`;
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Black Stars CRM//EN', 'CALSCALE:GREGORIAN'];
+  rows.forEach((c, i) => {
+    const wd = W[c.day]; if (wd == null) return;
+    const hour = typeof c.slot === 'number' ? c.slot : parseInt(c.slot);
+    const d = nextDateFor(wd, hour);
+    lines.push('BEGIN:VEVENT',
+      `UID:bs-${m.id}-${c.id || i}@blackstars`,
+      `DTSTART:${fmtDT(d, hour)}`,
+      `DTEND:${fmtDT(d, hour + 1)}`,
+      'RRULE:FREQ=WEEKLY',
+      `SUMMARY:${c.sport}${c.sport !== SUMMER_CAMP ? ' - ' + (coachName(c.coachId) || '') : ''}`,
+      'LOCATION:Black Stars Sports Club',
+      'END:VEVENT');
+  });
+  lines.push('END:VCALENDAR');
+  downloadFile(`${m.name.replace(/[^a-z0-9]+/gi, '_')}_classes.ics`, lines.join('\r\n'), 'text/calendar');
+  toast(t('Calendar file downloaded', 'تم تنزيل ملف التقويم'));
+};
+
+// Coach: printable BLANK sign-in sheet — students × days of the current month.
+window._coachSignInSheet = function(coachId) {
+  const coach = state.coaches.find(c => c.id === coachId);
+  if (!coach) { toast('Coach not found', 'error'); return; }
+  const students = coachStudents(coach.id).filter(s => !s.deleted).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  if (!students.length) { toast(t('No students to list.', 'لا يوجد طلاب لعرضهم.'), 'error'); return; }
+  const mo = TODAY.slice(0, 7); const days = daysInMonth(mo);
+  const dayHeads = Array.from({ length: days }, (_, i) => `<th style="border:1px solid #ccc;padding:2px;font-size:9px;width:20px">${i + 1}</th>`).join('');
+  const body = students.map((s, idx) => `<tr>
+    <td style="border:1px solid #ccc;padding:4px 6px;font-size:11px">${idx + 1}. ${escapeHtml(s.name)}</td>
+    <td style="border:1px solid #ccc;padding:4px 6px;font-size:10px;color:#666">${escapeHtml((s.sports || []).join(', '))}</td>
+    ${Array.from({ length: days }, () => '<td style="border:1px solid #ccc;height:22px"></td>').join('')}
+  </tr>`).join('');
+  const win = window.open('', '_blank');
+  if (!win) { toast('Pop-up blocked — allow pop-ups to print', 'error'); return; }
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>signin_sheet</title>
+    <style>@page{size:A4 landscape;margin:10mm}body{font-family:Arial,sans-serif;padding:18px;color:#111}
+    h1{font-size:16px;margin:0 0 2px}.sub{color:#666;font-size:12px;margin-bottom:12px}
+    table{border-collapse:collapse;width:100%}th{background:#fafafa}</style></head><body>
+    <h1>Black Stars Sports Club — Sign-in Sheet</h1>
+    <div class="sub">Coach ${escapeHtml(coach.name)} · ${fmtMonth(mo)} · ${students.length} students</div>
+    <table><thead><tr><th style="border:1px solid #ccc;padding:4px 6px;font-size:10px;text-align:left">Student</th><th style="border:1px solid #ccc;padding:4px 6px;font-size:10px;text-align:left">Sport</th>${dayHeads}</tr></thead>
+    <tbody>${body}</tbody></table>
+    <div style="margin-top:14px;font-size:10px;color:#999">Tick attendance per day, then enter into the system later. Generated ${fmtDate(TODAY)}.</div>
+    <script>window.onload=()=>window.print();<\/script></body></html>`);
+  win.document.close();
+};
+
+// Coach: export own roster (with this-month attendance + expiry) as CSV.
+window._coachRosterCsv = function(coachId) {
+  const coach = state.coaches.find(c => c.id === coachId);
+  if (!coach) { toast('Coach not found', 'error'); return; }
+  const students = coachStudents(coach.id).filter(s => !s.deleted).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  if (!students.length) { toast(t('No students to export.', 'لا يوجد طلاب للتصدير.'), 'error'); return; }
+  const mo = TODAY.slice(0, 7);
+  const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const header = ['Student', 'Sports', 'Mobile', 'Attended', 'Marked', 'Rate%', 'Status', 'Expiry'];
+  const lines = [header.join(',')];
+  for (const s of students) {
+    const mem = state.members.find(x => x.id === s.id) || {};
+    let y = 0, n = 0;
+    for (const sp of (s.sports || [])) { const dd = (mem.dailyAttendance?.[mo] || {})[sp] || {}; for (const d in dd) { if (dd[d] === 'Y') y++; else if (dd[d] === 'N') n++; } }
+    const marked = y + n; const rate = marked ? Math.round(y / marked * 100) : '';
+    lines.push([s.name, (s.sports || []).join(' / '), mem.phone || '', y, marked, rate,
+      (typeof memberStatus === 'function' ? memberStatus(mem) : ''), mem.expiryDate || ''].map(esc).join(','));
+  }
+  downloadFile(`${coach.name.replace(/[^a-z0-9]+/gi, '_')}_roster_${mo}.csv`, lines.join('\n'), 'text/csv');
+  toast(t('Roster exported', 'تم تصدير القائمة'));
+};
+
 // ─── Coach home: my students · my salary (this + previous months) · advice ──
 PAGES.coachhome = (main) => {
   const coachId = (typeof effectiveCoachId === 'function') ? effectiveCoachId() : null;
@@ -11602,6 +11900,10 @@ PAGES.coachhome = (main) => {
       <div>
         <h1>🧑‍🏫 ${escapeHtml(coach.name)}</h1>
         <div class="subtitle">${t('Your students, salary and advice', 'طلابك وراتبك ونصائحك')} · ${coach.rate ? coach.rate + '% ' + t('commission', 'عمولة') : ''}${coach.fixedSalary ? (coach.rate ? ' · ' : '') + t('Fixed', 'ثابت') + ' ' + fmt(coach.fixedSalary) : ''}</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="window._coachSignInSheet(${coach.id})" title="${t('Printable blank attendance sheet', 'ورقة حضور فارغة للطباعة')}">🖨 ${t('Sign-in sheet', 'ورقة الحضور')}</button>
+        <button class="btn ghost" onclick="window._coachRosterCsv(${coach.id})" title="${t('Export your roster as CSV', 'تصدير قائمتك CSV')}">⬇ ${t('Roster CSV', 'تصدير القائمة')}</button>
       </div>
     </div>
 
