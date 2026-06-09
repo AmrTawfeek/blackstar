@@ -1150,6 +1150,25 @@ ${seed}
   state.members = state.members.filter(m => m.id !== 7101);
   state.invoices = state.invoices.filter(i => i.id !== 79001);
   state.coaches = state.coaches.filter(c => ![7001, 7002].includes(c.id));
+  // Family / household helpers
+  if (!Array.isArray(state.families)) state.families = [];
+  state.families.push({ id: 8001, name: 'Test Family' });
+  state.members.push({ id: 8101, name: 'Kid A', familyId: 8001 });
+  state.members.push({ id: 8102, name: 'Kid B', familyId: 8001 });
+  state.members.push({ id: 8103, name: 'Outsider', familyId: null });
+  eq(familyMembers(8001).length, 2, 'family: groups members by familyId');
+  eq(familyName(8001), 'Test Family', 'family: uses the household name');
+  ok(!familyMembers(8001).some(m => m.id === 8103), 'family: a member without the familyId is not included');
+  eq(familyOutstanding(8001), memberOutstanding(8101) + memberOutstanding(8102), 'family: combined balance = sum of member balances');
+  state.members = state.members.filter(m => ![8101, 8102, 8103].includes(m.id));
+  state.families = state.families.filter(f => f.id !== 8001);
+  // Expiring screen: attended Y-marks counted per sport within the cycle window
+  var _em = { startDate: '2026-06-01', expiryDate: '2026-06-30', enrollments: [{ sport: 'Boxing', classes: 8 }, { sport: 'Swimming', classes: 8 }],
+    dailyAttendance: { '2026-06': { Boxing: { '3': 'Y', '5': 'Y', '7': 'N' }, Swimming: { '4': 'Y' } }, '2026-05': { Boxing: { '20': 'Y' } } } };
+  function _attBy(m) { const da = m.dailyAttendance || {}, start = m.startDate, end = m.expiryDate, out = []; for (const e of m.enrollments) { let y = 0; for (const mk in da) { const sm = da[mk] && da[mk][e.sport]; if (!sm) continue; for (const d in sm) { if (sm[d] !== 'Y') continue; const iso = mk + '-' + String(d).padStart(2, '0'); if (start && iso < start) continue; if (end && iso > end) continue; y++; } } out.push({ sport: e.sport, attended: y }); } return out; }
+  var _ar = _attBy(_em);
+  eq(_ar.find(x => x.sport === 'Boxing').attended, 2, 'expiring-attended: counts Y within the cycle and excludes a mark before the start date');
+  eq(_ar.find(x => x.sport === 'Swimming').attended, 1, 'expiring-attended: counts per sport separately');
   // Renewal value falls back to the latest real invoice when enrolment prices are blank
   state.members.push({ id: 984, name: 'RVI', enrollments: [] });
   state.invoices.push({ id: 99984, customerId: 984, amount: 300, date: '2026-05-01' });

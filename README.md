@@ -1131,3 +1131,22 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
   future renewals) or "from registration date" (past membership invoices are re-credited to the new
   coach too — a full hand-over that then lets you delete the old coach).
 - Regression: 541 logic assertions + 34 pages render, all passing.
+
+
+## 5.75.0 note — Family / household (part 1 of the family + reminders work)
+- New 'families' concept: members carry m.familyId; state.families[] stores the household name + shared
+  contact phone. Helpers: familyMembers/getFamily/familyName/familyContactPhone/familyOutstanding.
+- Member profile has a new 👨‍👩‍👧 Family action to create a household or add the member to an existing one
+  (or remove). New "Families" screen (Main nav, Arabic label) lists households with member chips,
+  combined balance, expiring count, and a WhatsApp-the-family button; a per-family detail modal shows
+  members, statuses, expiries and the combined balance.
+- Arabic-translated, admin nav. Regression: 545 logic assertions + 35 pages render, all passing.
+- NOTE: automated WhatsApp sending + PDF attachment is NOT possible from the static client app; the
+  upcoming Reminder Center will be assisted (one-click prefilled WhatsApp + downloadable PDF).
+
+
+## 5.76.0 note — Expiring screen shows attended classes
+- New "Attended" column on the Expiring screen. Single-sport members show attended/planned (colour-coded
+  by rate). Multi-sport members show a 🏅 medal with the total attended and a hover tooltip (ⓘ) breaking
+  it down per sport (attended/planned). Counts only Y-marks inside the member's current cycle window.
+- Regression: 547 logic assertions + 35 pages render, all passing.

@@ -1397,6 +1397,7 @@ function viewMember(id) {
     `,
     actions: [
       { label: '📜 Full History', class: 'btn ghost', onclick: () => { closeModal(); openMemberHistory(id); } },
+      { label: '👨‍👩‍👧 Family', class: 'btn ghost', onclick: () => { closeModal(); assignFamily(id); } },
       { label: 'Edit', class: 'btn ghost', onclick: () => { closeModal(); editMember(id); } },
       { label: 'Close', class: 'btn primary', onclick: closeModal },
     ],
@@ -3169,6 +3170,133 @@ PAGES.campschedule = (main) => {
   });
   wireCells();
   updateDateLabel();
+};
+
+// ─── Family / household ──────────────────────────────────────────────────────
+// Assign a member to a household (existing or new), or remove from one.
+window.assignFamily = function(memberId) {
+  const m = state.members.find(x => x.id === memberId);
+  if (!m) return;
+  const fams = (state.families || []).slice().sort((a, b) => familyName(a.id).localeCompare(familyName(b.id)));
+  showModal({
+    title: '👨‍👩‍👧 ' + t('Family / household', 'العائلة'),
+    body: `
+      <div style="font-size:13px;margin-bottom:12px">${t('Group', 'اجمع')} <b>${escapeHtml(m.name)}</b> ${t('with siblings/parent under one household.', 'مع إخوته/والده في عائلة واحدة.')}
+        ${m.familyId ? `<div class="text-mute" style="font-size:12px;margin-top:4px">${t('Currently in', 'حالياً ضمن')}: <b>${escapeHtml(familyName(m.familyId))}</b></div>` : ''}
+      </div>
+      <div class="field"><label>${t('Add to existing household', 'إضافة إلى عائلة قائمة')}</label>
+        <select id="fam-pick">
+          <option value="">— ${t('select', 'اختر')} —</option>
+          ${fams.map(f => `<option value="${f.id}" ${m.familyId === f.id ? 'selected' : ''}>${escapeHtml(familyName(f.id))} · ${familyMembers(f.id).length} ${t('members', 'عضو')}</option>`).join('')}
+        </select>
+      </div>
+      <div style="text-align:center;color:var(--text-mute);font-size:12px;margin:6px 0">— ${t('or', 'أو')} —</div>
+      <div class="field"><label>${t('Create a new household', 'إنشاء عائلة جديدة')}</label>
+        <input id="fam-new-name" placeholder="${t('e.g. Al-Jarboei family', 'مثال: عائلة الجربوعي')}" />
+        <input id="fam-new-phone" placeholder="${t('Shared contact phone (optional)', 'هاتف التواصل المشترك (اختياري)')}" style="margin-top:6px" value="${escapeHtml(m.phone || '')}" />
+      </div>`,
+    actions: [
+      m.familyId ? { label: '✕ ' + t('Remove from family', 'إزالة من العائلة'), class: 'btn ghost', onclick: () => {
+        m.familyId = null; save(); closeModal(); render(); toast(t('Removed from household', 'تمت الإزالة من العائلة'));
+      } } : null,
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
+        const pick = $('#fam-pick').value;
+        const newName = $('#fam-new-name').value.trim();
+        const newPhone = $('#fam-new-phone').value.trim();
+        if (newName) {
+          const fam = { id: nextId(state.families), name: newName, phone: newPhone || null, createdAt: new Date().toISOString() };
+          state.families.push(fam);
+          m.familyId = fam.id;
+        } else if (pick) {
+          m.familyId = parseInt(pick);
+        } else {
+          toast(t('Pick a household or enter a new name', 'اختر عائلة أو أدخل اسماً جديداً'), 'error'); return;
+        }
+        if (typeof audit === 'function') audit('member.family', 'member:' + m.id, 'set family ' + m.familyId);
+        save(); closeModal(); render();
+        toast(t('Saved to household', 'تم الحفظ في العائلة') + ': ' + familyName(m.familyId));
+      } },
+    ].filter(Boolean),
+  });
+};
+
+// Open a household summary (members, combined balance, nearest expiry).
+window.viewFamily = function(famId) {
+  const fam = getFamily(famId); if (!fam) return;
+  const members = familyMembers(famId);
+  const phone = familyContactPhone(famId);
+  const rows = members.map(m => {
+    const st = memberStatus(m);
+    const out = memberOutstanding(m.id);
+    const dl = m.expiryDate ? daysUntil(m.expiryDate) : null;
+    return `<tr style="border-top:1px solid var(--border)">
+      <td style="padding:8px 10px"><div style="font-weight:600">${escapeHtml(m.name)}</div><div class="text-mute" style="font-size:11px">${escapeHtml(m.sport || (m.enrollments?.[0]?.sport) || '—')}</div></td>
+      <td style="padding:8px 10px"><span class="badge ${st.toLowerCase()}" style="font-size:10px">${st}</span></td>
+      <td style="padding:8px 10px;font-size:12px">${m.expiryDate ? fmtDate(m.expiryDate) + (dl != null ? ` <span class="text-mute">(${dl < 0 ? -dl + 'd ago' : dl + 'd'})</span>` : '') : '—'}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:600;color:${out > 0 ? 'var(--red)' : 'var(--green)'}">${fmt(out)}</td>
+      <td style="padding:8px 10px;text-align:right"><button class="btn ghost sm" onclick="closeModal();viewMember(${m.id})">👁</button></td>
+    </tr>`;
+  }).join('');
+  const totalOut = familyOutstanding(famId);
+  showModal({
+    title: '👨‍👩‍👧 ' + familyName(famId),
+    wide: true,
+    body: `
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+        <div class="kpi" style="flex:1;min-width:120px"><div class="kpi-label">${t('Members', 'الأعضاء')}</div><div class="kpi-value num">${members.length}</div></div>
+        <div class="kpi ${totalOut > 0 ? 'red' : 'green'}" style="flex:1;min-width:120px"><div class="kpi-label">${t('Family balance', 'رصيد العائلة')}</div><div class="kpi-value num">${fmt(totalOut)}</div></div>
+        <div class="kpi" style="flex:1;min-width:120px"><div class="kpi-label">${t('Shared phone', 'الهاتف المشترك')}</div><div class="kpi-value" style="font-size:15px">${phone ? phoneCell(phone) : '—'}</div></div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px"><tbody>${rows || `<tr><td class="text-mute" style="padding:14px">${t('No members', 'لا يوجد أعضاء')}</td></tr>`}</tbody></table>`,
+    actions: [{ label: t('Close', 'إغلاق'), class: 'btn primary', onclick: closeModal }],
+  });
+};
+
+PAGES.families = (main) => {
+  const fams = (state.families || []).slice();
+  // Build rows; skip empty households (all members removed/archived).
+  const rows = fams.map(f => ({ f, members: familyMembers(f.id) }))
+    .filter(x => x.members.length)
+    .sort((a, b) => familyName(a.f.id).localeCompare(familyName(b.f.id)));
+  const totalHouseholds = rows.length;
+  const totalKids = rows.reduce((s, x) => s + x.members.length, 0);
+  const totalOut = rows.reduce((s, x) => s + familyOutstanding(x.f.id), 0);
+
+  const cards = rows.length ? rows.map(({ f, members }) => {
+    const out = familyOutstanding(f.id);
+    const phone = familyContactPhone(f.id);
+    const expiringSoon = members.filter(m => { const d = m.expiryDate ? daysUntil(m.expiryDate) : null; return d != null && d <= 7; }).length;
+    const chips = members.map(m => `<span class="badge ${memberStatus(m).toLowerCase()}" style="font-size:10px;margin:2px" title="${escapeHtml(memberStatus(m))}">${escapeHtml(m.name)}</span>`).join(' ');
+    return `<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
+          <div style="font-weight:800;font-size:16px;cursor:pointer" onclick="viewFamily(${f.id})">👨‍👩‍👧 ${escapeHtml(familyName(f.id))}</div>
+          <div style="margin-top:6px">${chips}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:12px;color:var(--text-mute)">${members.length} ${t('members', 'عضو')}${expiringSoon ? ` · <span style="color:var(--accent-2)">${expiringSoon} ${t('expiring', 'قرب الانتهاء')}</span>` : ''}</div>
+          <div style="font-weight:700;color:${out > 0 ? 'var(--red)' : 'var(--green)'};margin-top:2px">${t('Balance', 'الرصيد')}: ${fmt(out)}</div>
+          <div style="margin-top:6px;display:flex;gap:6px;justify-content:flex-end">
+            ${phone && isRealPhone(phone) ? `<a class="btn ghost sm" href="${waLink(phone)}" target="_blank" title="WhatsApp the family">💬 ${t('Message', 'مراسلة')}</a>` : ''}
+            <button class="btn ghost sm" onclick="viewFamily(${f.id})">👁 ${t('View', 'عرض')}</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join('') : `<div class="card text-mute" style="text-align:center;padding:30px">${t('No households yet. Open a member, tap', 'لا توجد عائلات بعد. افتح عضواً واضغط')} <b>👨‍👩‍👧 ${t('Family', 'العائلة')}</b> ${t('to group siblings together.', 'لجمع الإخوة معاً.')}</div>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div><h1>👨‍👩‍👧 ${t('Families', 'العائلات')}</h1>
+        <div class="subtitle">${t('Households — siblings & parents grouped together', 'العائلات — الإخوة وأولياء الأمور معاً')}</div></div>
+    </div>
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi"><div class="kpi-label">${t('Households', 'العائلات')}</div><div class="kpi-value num">${totalHouseholds}</div></div>
+      <div class="kpi blue"><div class="kpi-label">${t('Members in families', 'أعضاء ضمن عائلات')}</div><div class="kpi-value num">${totalKids}</div></div>
+      <div class="kpi ${totalOut > 0 ? 'red' : 'green'}"><div class="kpi-label">${t('Combined balance', 'إجمالي الأرصدة')}</div><div class="kpi-value num">${fmt(totalOut)}</div></div>
+    </div>
+    ${cards}`;
 };
 
 // ─── Summer Camp members list (admin) + transportation flag ─────────────────
@@ -11093,6 +11221,43 @@ PAGES.expiring = (main) => {
     return true;
   }
 
+  // Attended Y-marks per enrolled sport within the member's current cycle window.
+  function attendedBySport(m) {
+    const da = m.dailyAttendance || {};
+    const start = m.startDate || null, end = m.expiryDate || null;
+    const enrolls = (m.enrollments && m.enrollments.length) ? m.enrollments : (m.sport ? [{ sport: m.sport, classes: 0 }] : []);
+    const out = [];
+    for (const e of enrolls) {
+      if (!e.sport) continue;
+      let y = 0;
+      for (const mk of Object.keys(da)) {
+        const sportMap = da[mk] && da[mk][e.sport];
+        if (!sportMap) continue;
+        for (const d of Object.keys(sportMap)) {
+          if (sportMap[d] !== 'Y') continue;
+          const iso = mk + '-' + String(d).padStart(2, '0');
+          if (start && iso < start) continue;
+          if (end && iso > end) continue;
+          y++;
+        }
+      }
+      out.push({ sport: e.sport, attended: y, planned: e.classes || 0 });
+    }
+    return out;
+  }
+  function attendedCell(m) {
+    const list = attendedBySport(m);
+    if (!list.length) return '<span class="text-mute">—</span>';
+    if (list.length === 1) {
+      const a = list[0];
+      const col = a.planned ? (a.attended / a.planned >= 0.75 ? 'var(--green)' : a.attended / a.planned >= 0.4 ? 'var(--accent-2)' : 'var(--red)') : 'var(--text)';
+      return `<span style="font-weight:700;color:${col}" title="${escapeHtml(a.sport)}">${a.attended}${a.planned ? '/' + a.planned : ''}</span>`;
+    }
+    const total = list.reduce((s, a) => s + a.attended, 0);
+    const tip = list.map(a => `${a.sport}: ${a.attended}${a.planned ? '/' + a.planned : ''}`).join('\n');
+    return `<span style="font-weight:700;cursor:help;border-bottom:1px dotted var(--text-mute)" title="${escapeHtml(tip)}">🏅 ${total} <span class="text-mute" style="font-weight:400;font-size:11px">(${list.length} ${t('sports', 'رياضات')}) ⓘ</span></span>`;
+  }
+
   function rowHtml({ m, days }, bucket) {
     const color = bucket === 'expired' ? 'var(--red)' : bucket === 'soon' ? 'var(--accent-2)' : 'var(--text-dim)';
     const label = bucket === 'expired' ? `${Math.abs(days)}d ago` : bucket === 'soon' ? `in ${days}d` : `in ${days}d`;
@@ -11125,6 +11290,7 @@ PAGES.expiring = (main) => {
         <td>${lastR ? fmtDate(lastR) : '<span class="text-mute">—</span>'}</td>
         <td><span style="color:${color};font-weight:600">${fmtDate(m.expiryDate)}</span></td>
         <td><span style="color:${color};font-weight:700">${label}</span></td>
+        <td class="text-right">${attendedCell(m)}</td>
         <td class="text-right" style="white-space:nowrap">
           ${phone
             ? `<a class="btn primary sm" href="${reminderHref}" target="_blank" onclick="event.stopPropagation();markReminded(${m.id})" title="Send bilingual reminder via WhatsApp">💬 Remind</a>`
@@ -11163,7 +11329,7 @@ PAGES.expiring = (main) => {
                   <th style="width:32px;text-align:center" onclick="event.stopPropagation()">
                     <input type="checkbox" class="exp-select-all" data-bucket="${bucket}" ${allPhonesSelected ? 'checked' : ''} ${phoneIds.length === 0 ? 'disabled' : ''} title="Select all in this section (with phone)" />
                   </th>
-                  <th>Member</th><th>Mobile</th><th>Last Renewal</th><th>Expiry</th><th>When</th><th class="text-right">Actions</th>
+                  <th>Member</th><th>Mobile</th><th>Last Renewal</th><th>Expiry</th><th>When</th><th class="text-right">Attended</th><th class="text-right">Actions</th>
                 </tr></thead>
                 <tbody>${list.map(x => rowHtml(x, bucket)).join('')}</tbody>
               </table>
