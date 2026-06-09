@@ -6,8 +6,8 @@
 // Returns figures for the CURRENT month and the PREVIOUS month. The keys are
 // `curr*` / `prev*`. Legacy code may still reference `may*` / `apr*` — those
 // are kept as aliases below so we don't break things during the transition.
-function computeStats() {
-  const curr = currentMonth();
+function computeStats(monthKey) {
+  const curr = monthKey || (typeof window !== 'undefined' && window._dashMonth) || currentMonth();
   // Previous month: take 1st of current, subtract a day, format YYYY-MM
   const d = new Date(curr + '-01T00:00:00');
   d.setDate(0);
@@ -207,6 +207,16 @@ PAGES.dashboard = (main) => {
         <div class="subtitle">Black Stars Sports Club · ${(() => { const a = availableMonths(); return a.length ? (a.length === 1 ? fmtMonth(a[0]) : `${fmtMonth(a[0])} – ${fmtMonth(a[a.length-1])}`) : 'No data yet'; })()}</div>
       </div>
       <div class="topbar-actions">
+        <select id="dash-month" title="${t('Show figures for this month', 'عرض الأرقام لهذا الشهر')}" style="padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px">
+          ${(() => {
+            const sel = window._dashMonth || currentMonth();
+            const set = new Set([currentMonth(), sel]);
+            for (const i of state.invoices) if (i.month) set.add(i.month);
+            for (const e of (state.expenses || [])) if (e.month) set.add(e.month);
+            const months = [...set].filter(Boolean).sort().reverse();
+            return months.map(mk => `<option value="${mk}" ${mk === sel ? 'selected' : ''}>${fmtMonth(mk)}</option>`).join('');
+          })()}
+        </select>
         <button class="btn ghost" id="export-btn">📥 ${t('Export','تصدير')}</button>
         <button class="btn primary" id="refresh-btn">🔄 ${t('Refresh','تحديث')}</button>
       </div>
@@ -320,8 +330,8 @@ PAGES.dashboard = (main) => {
     <div class="kpi-grid">
       <div class="kpi">
         <div class="kpi-icon">💰</div>
-        <div class="kpi-label">${t('Total Revenue','إجمالي الإيرادات')} (${fmtMonth(s.prevMonth).split(' ')[0]}+${fmtMonth(s.currMonth).split(' ')[0]})</div>
-        <div class="kpi-value num">${fmt(s.prevRevenue + s.currRevenue)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
+        <div class="kpi-label">${t('Total Revenue','إجمالي الإيرادات')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
+        <div class="kpi-value num">${fmt(s.currRevenue)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
         ${kpiDelta(s.currRevenue, s.prevRevenue)}
         ${sparkline([s.prevRevenue, s.currRevenue])}
       </div>
@@ -333,8 +343,8 @@ PAGES.dashboard = (main) => {
       </div>
       <div class="kpi orange">
         <div class="kpi-icon">💸</div>
-        <div class="kpi-label">${t('Total Expenses','إجمالي المصروفات')}</div>
-        <div class="kpi-value num">${fmt(s.prevExpenses + s.currExpenses + s.prevSalaries + s.currSalaries)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
+        <div class="kpi-label">${t('Total Expenses','إجمالي المصروفات')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
+        <div class="kpi-value num">${fmt(s.currExpenses + s.currSalaries)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
         <div class="kpi-delta flat">${t('Ops + payroll','تشغيل + رواتب')}</div>
       </div>
       <div class="kpi ${s.currProfit >= 0 ? 'green' : 'red'}">
@@ -350,20 +360,20 @@ PAGES.dashboard = (main) => {
     <div class="kpi-grid mb-3">
       <div class="kpi green">
         <div class="kpi-icon">🥋</div>
-        <div class="kpi-label">${t('Coaching Revenue','إيرادات التدريب')} (${fmtMonth(s.prevMonth).split(' ')[0]}+${fmtMonth(s.currMonth).split(' ')[0]})</div>
-        <div class="kpi-value num">${fmt(s.prevCoachingRevenue + s.currCoachingRevenue)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
+        <div class="kpi-label">${t('Coaching Revenue','إيرادات التدريب')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
+        <div class="kpi-value num">${fmt(s.currCoachingRevenue)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
         <div class="kpi-delta flat">${t('Memberships + classes','اشتراكات + حصص')}</div>
       </div>
       <div class="kpi cyan">
         <div class="kpi-icon">🏟</div>
-        <div class="kpi-label">${t('Court Rental Revenue','إيرادات تأجير الملاعب')}</div>
-        <div class="kpi-value num">${fmt(s.prevRentalRevenue + s.currRentalRevenue)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
-        <div class="kpi-delta flat">${s.prevRentalCount + s.currRentalCount} ${t('bookings','حجوزات')}</div>
+        <div class="kpi-label">${t('Court Rental Revenue','إيرادات تأجير الملاعب')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
+        <div class="kpi-value num">${fmt(s.currRentalRevenue)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
+        <div class="kpi-delta flat">${s.currRentalCount} ${t('bookings','حجوزات')}</div>
       </div>
       <div class="kpi purple">
         <div class="kpi-icon">🛒</div>
-        <div class="kpi-label">${t('Equipment Sales','مبيعات المعدات')}</div>
-        <div class="kpi-value num">${fmt(s.aprSales + s.maySales)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
+        <div class="kpi-label">${t('Equipment Sales','مبيعات المعدات')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
+        <div class="kpi-value num">${fmt(s.maySales)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
         <div class="kpi-delta flat">${t('Uniforms & gear','الأزياء والمعدات')}</div>
       </div>
       <div class="kpi">
@@ -490,6 +500,8 @@ PAGES.dashboard = (main) => {
 
   $('#refresh-btn').addEventListener('click', () => { render(); toast('Refreshed'); });
   $('#export-btn').addEventListener('click', exportDashboardCSV);
+  const dashMonthSel = $('#dash-month');
+  if (dashMonthSel) dashMonthSel.addEventListener('change', () => { window._dashMonth = dashMonthSel.value; render(); });
   const dashBackup = $('#dash-backup-now');
   if (dashBackup) dashBackup.addEventListener('click', () => window.downloadBackup());
 };
@@ -674,6 +686,9 @@ function downloadFile(filename, content, mime = 'text/plain') {
 PAGES.members = (main) => {
   let filter = loadFilter('members', { search: '', status: 'all', sports: [], coach: 'all', nationality: 'all', incomplete: 'all' });
   if (!Array.isArray(filter.sports)) filter.sports = filter.sport && filter.sport !== 'all' ? [filter.sport] : [];  // migrate old single-sport filter
+  if (!Array.isArray(filter.statuses)) filter.statuses = (filter.status && filter.status !== 'all') ? [filter.status] : [];
+  if (!Array.isArray(filter.coaches)) filter.coaches = (filter.coach && filter.coach !== 'all') ? [String(filter.coach)] : [];
+  if (!Array.isArray(filter.nationalities)) filter.nationalities = (filter.nationality && filter.nationality !== 'all') ? [filter.nationality] : [];
   const pg = makePager(10);
   const selected = new Set();   // member ids ticked for bulk actions (persists across pages)
 
@@ -824,10 +839,11 @@ PAGES.members = (main) => {
 
   function applyFilter(f = filter) {
     return state.members.filter(m => {
-      // Archived (soft-deleted) members are hidden unless explicitly requested
-      // via the status filter. Default "all" status still excludes them.
-      if (m.deleted && f.status !== 'Archived') return false;
-      if (!m.deleted && f.status === 'Archived') return false;
+      // Archived (soft-deleted) members show only when 'Archived' is selected.
+      const wantArchived = (f.statuses || []).includes('Archived');
+      const statusSel = (f.statuses || []).filter(s => s !== 'Archived');
+      if (m.deleted && !wantArchived) return false;
+      if (!m.deleted && wantArchived && statusSel.length === 0) return false; // only Archived chosen
       if (f.search) {
         const raw = f.search.trim();
         const q = raw.toLowerCase();
@@ -842,19 +858,21 @@ PAGES.members = (main) => {
         if (!hit && q.length >= 3 && !/\d/.test(q)) hit = fuzzyMatch(m.name, q) || fuzzyMatch(m.nameArabic, q);
         if (!hit) return false;
       }
-      if (f.status !== 'all' && f.status !== 'Archived' && memberStatus(m) !== f.status) return false;
+      // Status filter (multi-select): for non-archived members, match any chosen status.
+      if (statusSel.length && !m.deleted && !statusSel.includes(memberStatus(m))) return false;
       // Sport filter (multi-select): keep if the member is in ANY selected sport
       if (f.sports && f.sports.length) {
         const sports = new Set([m.sport, ...((m.enrollments||[]).map(e=>e.sport))].filter(Boolean));
         if (!f.sports.some(sp => sports.has(sp))) return false;
       }
-      // Coach filter: check the legacy primary coachId AND every enrollment row
-      if (f.coach !== 'all') {
-        const cid = parseInt(f.coach);
-        const coachIds = new Set([m.coachId, ...((m.enrollments||[]).map(e=>e.coachId))].filter(Boolean));
-        if (!coachIds.has(cid)) return false;
+      // Coach filter (multi-select): match the legacy primary coach OR any enrollment coach
+      if (f.coaches && f.coaches.length) {
+        const want = f.coaches.map(Number);
+        const coachIds = new Set([m.coachId, ...((m.enrollments||[]).map(e=>e.coachId))].filter(v => v != null));
+        if (!want.some(cid => coachIds.has(cid))) return false;
       }
-      if (f.nationality !== 'all' && (m.nationality || '') !== f.nationality) return false;
+      // Nationality filter (multi-select)
+      if (f.nationalities && f.nationalities.length && !f.nationalities.includes(m.nationality || '')) return false;
       // Data-quality filter: missing any of the key fields, OR a specific field
       if (f.incomplete !== 'all') {
         const hasPhone = !!(m.phone && m.phone.trim() && !m.phone.startsWith('+9747000'));
@@ -892,10 +910,10 @@ PAGES.members = (main) => {
     // "Filters hiding rows" banner — same helper as the Enrolled report. The
     // baseline is the default (unfiltered) view; we clamp so the Archived view
     // (a different set, not a subset) never shows a negative count.
-    const DEFAULT_F = { search: '', status: 'all', sports: [], coach: 'all', nationality: 'all', incomplete: 'all' };
+    const DEFAULT_F = { search: '', statuses: [], sports: [], coaches: [], nationalities: [], incomplete: 'all' };
     const baseline = applyFilter(DEFAULT_F).length;
-    const anyFilterActive = filter.search || filter.status !== 'all' || (filter.sports && filter.sports.length) ||
-      filter.coach !== 'all' || filter.nationality !== 'all' || filter.incomplete !== 'all';
+    const anyFilterActive = filter.search || (filter.statuses && filter.statuses.length) || (filter.sports && filter.sports.length) ||
+      (filter.coaches && filter.coaches.length) || (filter.nationalities && filter.nationalities.length) || filter.incomplete !== 'all';
     const hiddenByFilters = Math.max(0, baseline - allRows.length);
     const banner = $('#members-filter-banner');
     if (banner) {
@@ -911,10 +929,11 @@ PAGES.members = (main) => {
           filter = { ...DEFAULT_F };
           saveFilter('members', filter);
           pg.page = 1;
-          const reset = { 'search-input': '', 'filter-status': 'all', 'filter-coach': 'all', 'filter-nationality': 'all', 'filter-incomplete': 'all' };
-          Object.entries(reset).forEach(([id, v]) => { const el = $('#' + id); if (el) el.value = v; });
-          $$('.filter-sport-cb').forEach(cb => { cb.checked = false; });
-          const sl = $('#filter-sport-label'); if (sl) sl.textContent = 'All sports';
+          const si = $('#search-input'); if (si) si.value = '';
+          const fi = $('#filter-incomplete'); if (fi) fi.value = 'all';
+          $$('.filter-status-cb, .filter-sport-cb, .filter-coach-cb, .filter-nat-cb').forEach(cb => { cb.checked = false; });
+          const labs = { 'filter-status-label': 'All status', 'filter-sport-label': 'All sports', 'filter-coach-label': 'All coaches', 'filter-nat-label': '🌍 All nationalities' };
+          Object.entries(labs).forEach(([id, txt]) => { const el = $('#' + id); if (el) el.textContent = txt; });
           refresh();
         });
       } else {
@@ -1044,15 +1063,15 @@ PAGES.members = (main) => {
       </div>
       <div class="filter-bar">
         <div class="search"><input id="search-input" type="text" placeholder="Search name, phone, QID, email..." value="${escapeHtml(filter.search || '')}" /></div>
-        <select id="filter-status" class="btn ghost">
-          <option value="all" ${filter.status === 'all' ? 'selected' : ''}>All status</option>
-          <option value="Active" ${filter.status === 'Active' ? 'selected' : ''}>Active</option>
-          <option value="Completed" ${filter.status === 'Completed' ? 'selected' : ''}>Completed</option>
-          <option value="Frozen" ${filter.status === 'Frozen' ? 'selected' : ''}>❄️ Frozen</option>
-          <option value="Expired" ${filter.status === 'Expired' ? 'selected' : ''}>Expired</option>
-          <option value="Withdrawn" ${filter.status === 'Withdrawn' ? 'selected' : ''}>↩ Withdrawn</option>
-          <option value="Archived" ${filter.status === 'Archived' ? 'selected' : ''}>📦 Archived</option>
-        </select>
+        <div style="position:relative">
+          <button type="button" id="filter-status-btn" class="btn ghost" style="min-width:120px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more statuses">
+            <span id="filter-status-label">${filter.statuses && filter.statuses.length ? (filter.statuses.length === 1 ? escapeHtml(filter.statuses[0]) : filter.statuses.length + ' statuses') : 'All status'}</span>
+            <span style="opacity:.6">▾</span>
+          </button>
+          <div id="filter-status-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:170px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            ${['Active', 'Completed', 'Frozen', 'Expired', 'Withdrawn', 'Archived'].map(st => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-status-cb" value="${st}" ${(filter.statuses||[]).includes(st) ? 'checked' : ''} /> ${({ Frozen: '❄️ Frozen', Withdrawn: '↩ Withdrawn', Archived: '📦 Archived' }[st] || st)}</label>`).join('')}
+          </div>
+        </div>
         <div style="position:relative">
           <button type="button" id="filter-sport-btn" class="btn ghost" style="min-width:140px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more sports">
             <span id="filter-sport-label">${filter.sports && filter.sports.length ? (filter.sports.length === 1 ? escapeHtml(filter.sports[0]) : filter.sports.length + ' sports') : 'All sports'}</span>
@@ -1062,14 +1081,24 @@ PAGES.members = (main) => {
             ${SPORTS.map(s => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-sport-cb" value="${escapeHtml(s)}" ${(filter.sports||[]).includes(s) ? 'checked' : ''} /> ${escapeHtml(s)}</label>`).join('')}
           </div>
         </div>
-        <select id="filter-coach" class="btn ghost">
-          <option value="all" ${filter.coach === 'all' ? 'selected' : ''}>All coaches</option>
-          ${state.coaches.map(c => `<option value="${c.id}" ${String(filter.coach) === String(c.id) ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
-        </select>
-        <select id="filter-nationality" class="btn ghost">
-          <option value="all" ${filter.nationality === 'all' ? 'selected' : ''}>🌍 All nationalities</option>
-          ${[...new Set(state.members.map(m => m.nationality).filter(Boolean))].sort().map(n => `<option value="${escapeHtml(n)}" ${filter.nationality === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
-        </select>
+        <div style="position:relative">
+          <button type="button" id="filter-coach-btn" class="btn ghost" style="min-width:140px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more coaches">
+            <span id="filter-coach-label">${filter.coaches && filter.coaches.length ? (filter.coaches.length === 1 ? escapeHtml(coachName(parseInt(filter.coaches[0]))) : filter.coaches.length + ' coaches') : 'All coaches'}</span>
+            <span style="opacity:.6">▾</span>
+          </button>
+          <div id="filter-coach-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            ${state.coaches.map(c => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-coach-cb" value="${c.id}" ${(filter.coaches||[]).map(String).includes(String(c.id)) ? 'checked' : ''} /> ${escapeHtml(c.name)}</label>`).join('')}
+          </div>
+        </div>
+        <div style="position:relative">
+          <button type="button" id="filter-nat-btn" class="btn ghost" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more nationalities">
+            <span id="filter-nat-label">🌍 ${filter.nationalities && filter.nationalities.length ? (filter.nationalities.length === 1 ? escapeHtml(filter.nationalities[0]) : filter.nationalities.length + ' nationalities') : 'All nationalities'}</span>
+            <span style="opacity:.6">▾</span>
+          </button>
+          <div id="filter-nat-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            ${[...new Set(state.members.map(m => m.nationality).filter(Boolean))].sort().map(n => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-nat-cb" value="${escapeHtml(n)}" ${(filter.nationalities||[]).includes(n) ? 'checked' : ''} /> ${escapeHtml(n)}</label>`).join('') || '<div class="text-mute" style="font-size:12px;padding:4px">No nationalities recorded</div>'}
+          </div>
+        </div>
         <select id="filter-incomplete" class="btn ghost" title="Find records missing key fields">
           <option value="all" ${filter.incomplete === 'all' ? 'selected' : ''}>📋 All data</option>
           <option value="any" ${filter.incomplete === 'any' ? 'selected' : ''}>⚠️ Missing any field</option>
@@ -1104,23 +1133,24 @@ PAGES.members = (main) => {
   const refreshAndSave = () => { saveFilter('members', filter); refresh(); };
 
   $('#search-input').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refreshAndSave(); });
-  $('#filter-status').addEventListener('change', e => { filter.status = e.target.value; pg.page = 1; refreshAndSave(); });
-  // Multi-select sport filter
-  const fSportBtn = $('#filter-sport-btn');
-  const fSportMenu = $('#filter-sport-menu');
-  if (fSportBtn && fSportMenu) {
-    fSportBtn.addEventListener('click', e => { e.stopPropagation(); fSportMenu.style.display = fSportMenu.style.display === 'none' ? 'block' : 'none'; });
-    document.addEventListener('click', e => { if (!fSportBtn.contains(e.target) && !fSportMenu.contains(e.target)) fSportMenu.style.display = 'none'; });
-    $$('.filter-sport-cb').forEach(cb => cb.addEventListener('change', () => {
-      filter.sports = $$('.filter-sport-cb').filter(x => x.checked).map(x => x.value);
-      const n = filter.sports.length;
-      $('#filter-sport-label').textContent = n === 0 ? 'All sports' : (n === 1 ? filter.sports[0] : n + ' sports');
-      pg.page = 1;
-      refreshAndSave();
+  // Reusable multi-select dropdown wiring (button + checkbox menu).
+  function wireMultiFilter(key, cbClass, btnId, menuId, labelId, allText, oneFmt) {
+    const btn = $('#' + btnId), menu = $('#' + menuId);
+    if (!btn || !menu) return;
+    btn.addEventListener('click', e => { e.stopPropagation(); menu.style.display = menu.style.display === 'none' ? 'block' : 'none'; });
+    document.addEventListener('click', e => { if (!btn.contains(e.target) && !menu.contains(e.target)) menu.style.display = 'none'; });
+    $$('.' + cbClass).forEach(cb => cb.addEventListener('change', () => {
+      filter[key] = $$('.' + cbClass).filter(x => x.checked).map(x => x.value);
+      const n = filter[key].length;
+      const lab = $('#' + labelId);
+      if (lab) lab.textContent = (labelId === 'filter-nat-label' ? '🌍 ' : '') + (n === 0 ? allText : (n === 1 ? oneFmt(filter[key][0]) : n + ' ' + (key === 'statuses' ? 'statuses' : key === 'coaches' ? 'coaches' : key === 'nationalities' ? 'nationalities' : 'selected')));
+      pg.page = 1; refreshAndSave();
     }));
   }
-  $('#filter-coach').addEventListener('change', e => { filter.coach = e.target.value; pg.page = 1; refreshAndSave(); });
-  $('#filter-nationality').addEventListener('change', e => { filter.nationality = e.target.value; pg.page = 1; refreshAndSave(); });
+  wireMultiFilter('statuses', 'filter-status-cb', 'filter-status-btn', 'filter-status-menu', 'filter-status-label', 'All status', v => v);
+  wireMultiFilter('sports', 'filter-sport-cb', 'filter-sport-btn', 'filter-sport-menu', 'filter-sport-label', 'All sports', v => v);
+  wireMultiFilter('coaches', 'filter-coach-cb', 'filter-coach-btn', 'filter-coach-menu', 'filter-coach-label', 'All coaches', v => coachName(parseInt(v)));
+  wireMultiFilter('nationalities', 'filter-nat-cb', 'filter-nat-btn', 'filter-nat-menu', 'filter-nat-label', 'All nationalities', v => v);
   $('#filter-incomplete').addEventListener('change', e => { filter.incomplete = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#add-member').addEventListener('click', () => addMember());
   $('#export-members').addEventListener('click', () => exportMembersChoice());
@@ -1167,14 +1197,15 @@ PAGES.members = (main) => {
 // can decide whether to archive duplicates or merge their history.
 function showDuplicatesModal() {
   const clusters = findAllDuplicateMembers();
-  if (!clusters.length) {
+  const similar = findSimilarNameClusters();
+  if (!clusters.length && !similar.length) {
     showModal({
       title: '🔍 Duplicate Scan',
       body: `
         <div style="text-align:center;padding:30px 20px">
           <div style="font-size:48px;margin-bottom:14px">✅</div>
-          <div style="font-size:16px;font-weight:600;margin-bottom:6px">No duplicates found</div>
-          <div class="text-mute" style="font-size:13px">All ${activeMembers().length} active members have unique phone numbers.</div>
+          <div style="font-size:16px;font-weight:600;margin-bottom:6px">No duplicates or similar names found</div>
+          <div class="text-mute" style="font-size:13px">All ${activeMembers().length} active members look unique.</div>
         </div>
       `,
       actions: [{ label: 'Close', class: 'btn primary', onclick: closeModal }],
@@ -1182,67 +1213,69 @@ function showDuplicatesModal() {
     return;
   }
 
-  // Sort clusters: largest first, then alphabetical
-  clusters.sort((a, b) => b.length - a.length || (a[0].name || '').localeCompare(b[0].name || ''));
+  // Shared row renderer for a member inside a cluster.
+  const memberRow = (m) => {
+    const archived = m.deleted ? ' <span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-2);font-size:9px;padding:1px 6px">📦 ARCHIVED</span>' : '';
+    const status = m.deleted ? '—' : memberStatus(m);
+    const stClass = m.deleted ? '' : status.toLowerCase();
+    const sport = m.sport || (m.enrollments?.[0]?.sport) || '—';
+    const lastSeen = m.expiryDate ? fmtDate(m.expiryDate) : (m.joinDate ? fmtDate(m.joinDate) : '—');
+    return `
+      <tr>
+        <td style="padding:8px 10px;border-bottom:1px solid var(--border)">
+          <div style="font-weight:600">${escapeHtml(m.name)}${m.nameArabic ? ` · <span class="text-mute" style="font-weight:normal" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}${archived}</div>
+          <div class="text-mute" style="font-size:11px">${escapeHtml(sport)} · ${escapeHtml(coachName(m.coachId))}${m.qid ? ' · QID ' + escapeHtml(m.qid) : ''}</div>
+        </td>
+        <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px" class="text-mute">${escapeHtml(m.phone || '—')}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px">${m.deleted ? '<span class="text-mute">archived</span>' : `<span class="badge ${stClass}" style="font-size:10px">${status}</span>`}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px" class="text-mute">${lastSeen}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap">
+          <button class="btn ghost sm" onclick="closeModal();viewMember(${m.id})" title="Open profile">👁 View</button>
+          ${m.deleted
+            ? `<button class="btn ghost sm" onclick="closeModal();restoreMember(${m.id})" title="Restore archived" style="color:var(--green)">↩ Restore</button>
+               <button class="btn ghost sm" onclick="closeModal();permanentlyDeleteMember(${m.id})" title="Permanently delete — cannot be undone" style="color:var(--red)">🗑 Delete forever</button>`
+            : `<button class="btn ghost sm" onclick="closeModal();deleteMember(${m.id})" title="Archive (soft delete)" style="color:var(--red)">📦 Archive</button>`}
+        </td>
+      </tr>`;
+  };
+  const clusterCard = (headerHtml, rows) => `
+    <div style="border:1px solid var(--border);border-radius:10px;margin-bottom:14px;overflow:hidden">
+      <div style="padding:10px 14px;background:var(--surface-2);border-bottom:1px solid var(--border)">${headerHtml}</div>
+      <table style="width:100%;border-collapse:collapse"><tbody>${rows}</tbody></table>
+    </div>`;
 
+  clusters.sort((a, b) => b.length - a.length || (a[0].name || '').localeCompare(b[0].name || ''));
   const totalDupes = clusters.reduce((s, c) => s + c.length, 0);
   const archivedCount = clusters.reduce((s, c) => s + c.filter(m => m.deleted).length, 0);
 
-  const clustersHtml = clusters.map((cluster, idx) => {
-    const phone = cluster[0].phone;  // representative
-    const rowsHtml = cluster.map(m => {
-      const archived = m.deleted ? ' <span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-2);font-size:9px;padding:1px 6px">📦 ARCHIVED</span>' : '';
-      const status = m.deleted ? '—' : memberStatus(m);
-      const stClass = m.deleted ? '' : status.toLowerCase();
-      // Show sport + coach + expiry to help admin decide which one is "real"
-      const sport = m.sport || (m.enrollments?.[0]?.sport) || '—';
-      const lastSeen = m.expiryDate ? fmtDate(m.expiryDate) : (m.joinDate ? fmtDate(m.joinDate) : '—');
-      return `
-        <tr>
-          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">
-            <div style="font-weight:600">${escapeHtml(m.name)}${m.nameArabic ? ` · <span class="text-mute" style="font-weight:normal" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}${archived}</div>
-            <div class="text-mute" style="font-size:11px">${escapeHtml(sport)} · ${escapeHtml(coachName(m.coachId))}${m.qid ? ' · QID ' + escapeHtml(m.qid) : ''}</div>
-          </td>
-          <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px" class="text-mute">${escapeHtml(m.phone || '')}</td>
-          <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px">${m.deleted ? '<span class="text-mute">archived</span>' : `<span class="badge ${stClass}" style="font-size:10px">${status}</span>`}</td>
-          <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px" class="text-mute">${lastSeen}</td>
-          <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap">
-            <button class="btn ghost sm" onclick="closeModal();viewMember(${m.id})" title="Open profile">👁 View</button>
-            ${m.deleted
-              ? `<button class="btn ghost sm" onclick="closeModal();restoreMember(${m.id})" title="Restore archived" style="color:var(--green)">↩ Restore</button>
-                 <button class="btn ghost sm" onclick="closeModal();permanentlyDeleteMember(${m.id})" title="Permanently delete — cannot be undone" style="color:var(--red)">🗑 Delete forever</button>`
-              : `<button class="btn ghost sm" onclick="closeModal();deleteMember(${m.id})" title="Archive (soft delete)" style="color:var(--red)">📦 Archive</button>`}
-          </td>
-        </tr>
-      `;
-    }).join('');
-    return `
-      <div style="border:1px solid var(--border);border-radius:10px;margin-bottom:14px;overflow:hidden">
-        <div style="padding:10px 14px;background:var(--surface-2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
-          <div>
-            <div style="font-weight:700;font-size:13px">Cluster ${idx + 1} · ${cluster.length} members share name + phone <code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:12px">${escapeHtml(phone || '—')}</code></div>
-            <div class="text-mute" style="font-size:11px;margin-top:2px">Review each one. Keep the legitimate record, archive the rest.</div>
-          </div>
-        </div>
-        <table style="width:100%;border-collapse:collapse">
-          <tbody>${rowsHtml}</tbody>
-        </table>
-      </div>
-    `;
-  }).join('');
+  const exactHtml = clusters.map((cluster, idx) => clusterCard(
+    `<div style="font-weight:700;font-size:13px">Cluster ${idx + 1} · ${cluster.length} members share name + phone <code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:12px">${escapeHtml(cluster[0].phone || '—')}</code></div>
+     <div class="text-mute" style="font-size:11px;margin-top:2px">Very likely the same person. Keep the legitimate record, archive the rest.</div>`,
+    cluster.map(memberRow).join('')
+  )).join('');
+
+  const similarTotal = similar.reduce((s, c) => s + c.length, 0);
+  const similarHtml = similar.map((cluster, idx) => clusterCard(
+    `<div style="font-weight:700;font-size:13px">Similar #${idx + 1} · ${cluster.length} members with near-matching names</div>
+     <div class="text-mute" style="font-size:11px;margin-top:2px">May or may not be the same person (different phones) — review before archiving.</div>`,
+    cluster.map(memberRow).join('')
+  )).join('');
 
   showModal({
-    title: `🔍 Duplicate Scan — ${clusters.length} cluster${clusters.length === 1 ? '' : 's'} found`,
+    title: `🔍 Duplicate & Similar-Name Scan`,
     wide: true,
     body: `
-      <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:12px;display:flex;gap:10px;align-items:flex-start">
-        <span style="font-size:18px">⚠️</span>
-        <div style="flex:1;line-height:1.6">
-          <b>${totalDupes} members in ${clusters.length} cluster${clusters.length === 1 ? '' : 's'}</b> share both a phone number and a name${archivedCount ? ` (${archivedCount} already archived)` : ''} — these are very likely the same person entered more than once. (Members who share only a phone but have different names — e.g. a family — are not shown here.)<br>
-          For each cluster, decide which record is the real one. Archive the others — their invoices and attendance history stay intact.
+      ${clusters.length ? `
+        <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:12px;display:flex;gap:10px;align-items:flex-start">
+          <span style="font-size:18px">⚠️</span>
+          <div style="flex:1;line-height:1.6"><b>${totalDupes} members in ${clusters.length} cluster${clusters.length === 1 ? '' : 's'}</b> share both a phone and a name${archivedCount ? ` (${archivedCount} already archived)` : ''} — almost certainly the same person entered twice. Keep one, archive the others (their invoices &amp; attendance stay intact).</div>
         </div>
-      </div>
-      ${clustersHtml}
+        <div style="font-weight:700;font-size:13px;margin-bottom:8px">📞 Same phone + name</div>
+        ${exactHtml}` : ''}
+      ${similar.length ? `
+        <div style="font-weight:700;font-size:13px;margin:${clusters.length ? '20px' : '0'} 0 8px">✍️ Similar names <span class="text-mute" style="font-weight:normal">(${similarTotal} members in ${similar.length} group${similar.length === 1 ? '' : 's'})</span></div>
+        <div class="text-mute" style="font-size:12px;margin-bottom:10px">Names that look alike (typos, different spellings, or reordered words) — possibly the same person. These may have <b>different phone numbers</b>, so check carefully.</div>
+        ${similarHtml}` : ''}
     `,
     actions: [
       { label: 'Close', class: 'btn primary', onclick: closeModal },
@@ -2832,6 +2865,7 @@ PAGES.campschedule = (main) => {
       </div>
       <div class="topbar-actions">
         <button class="btn ghost" id="camp-print" title="Print the selected day (or save as PDF from the print dialog)">🖨 Print</button>
+        <button class="btn ghost" id="camp-print-ar" title="Print the selected day in Arabic (RTL)">🖨 طباعة (عربي)</button>
         <button class="btn ghost" id="camp-reset" title="Restore the original camp schedule for all five days">↺ Reset to default</button>
       </div>
     </div>
@@ -2955,6 +2989,46 @@ PAGES.campschedule = (main) => {
     w.document.close();
   }
 
+  // Arabic (RTL) print version of the same day.
+  const GROUP_AR = { kids: 'نجوم الصغار (4-7)', boys: 'نجوم الأولاد (7-12)', girls: 'نجوم البنات (7-12)' };
+  const breakAR = s => /Breakfast/i.test(s) ? '🍳 الإفطار واستراحة'
+    : /Prayer/i.test(s) ? '🕌 استراحة الصلاة'
+    : /Dismissal/i.test(s) ? '🎒 الانصراف'
+    : /Lunch/i.test(s) ? '🍽 الغداء' : s;
+  function buildPrintHtmlAR(dayKey, dateLabel) {
+    const head = groups.map(g => `<th style="padding:10px;border:1px solid #ccc;background:${g.color};color:#fff;font-weight:800">${escapeHtml(GROUP_AR[g.key] || g.label)}</th>`).join('');
+    let ai = -1;
+    const rows = CAMP_SLOTS.map(slot => {
+      const time = `<td style="padding:8px 10px;border:1px solid #ccc;font-weight:700;font-size:12px;white-space:nowrap;background:#f4f4f6">${slot.time}</td>`;
+      if (slot.type === 'break') {
+        const bg = (slot.label || '').includes('Breakfast') ? '#fdf0c8' : (slot.label || '').includes('Prayer') ? '#dff3e1' : '#eceef0';
+        return `<tr>${time}<td colspan="3" style="padding:10px;border:1px solid #ccc;text-align:center;font-weight:800;background:${bg}">${escapeHtml(breakAR(slot.label))}</td></tr>`;
+      }
+      ai++; const ri = ai;
+      const cells = groups.map(g => {
+        const cell = ((cs.days[dayKey] || [])[ri] || {})[g.key] || { activity: '', coach: '' };
+        return `<td style="padding:12px;border:1px solid #ccc;background:#fff;vertical-align:middle">${cell.activity ? `<div style="font-weight:800;color:${g.color};font-size:14px">${campActivityIcon(cell.activity)} ${escapeHtml(cell.activity)}</div>${cell.coach ? `<div style="font-size:11px;color:#777;margin-top:2px">(${escapeHtml(cell.coach)})</div>` : ''}` : ''}</td>`;
+      }).join('');
+      return `<tr>${time}${cells}</tr>`;
+    }).join('');
+    return `<div style="text-align:center;margin-bottom:14px">
+        <div style="font-size:22px;font-weight:900;color:#f26060">★ أكاديمية بلاك ستارز</div>
+        <div style="font-size:16px;font-weight:800;margin-top:2px">جدول المعسكر الصيفي</div>
+        <div style="font-size:13px;color:#444;margin-top:4px">${escapeHtml(dateLabel)}</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;font-family:Arial,sans-serif" dir="rtl">
+        <thead><tr><th style="padding:10px;border:1px solid #ccc;background:#f4f4f6;width:110px">الوقت</th>${head}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+  function printCampAR() {
+    const dateLabel = `${dayNameAR(selDay)} · اليوم ${dayNum(selDay)}${window.__campDate ? ' · ' + fmtDate(window.__campDate) : ''} · المعسكر ${fmtDate(cs.startDate)} – ${fmtDate(cs.endDate)}`;
+    const w = window.open('', '_blank');
+    if (!w) { toast('Allow pop-ups to print', 'error'); return; }
+    w.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>المعسكر الصيفي — ${escapeHtml(dayNameAR(selDay))}</title><style>@page{size:landscape;margin:12mm}body{font-family:Arial,'Segoe UI',Tahoma,sans-serif;padding:10px;color:#111;direction:rtl}</style></head><body onload="window.print()">${buildPrintHtmlAR(selDay, dateLabel)}</body></html>`);
+    w.document.close();
+  }
+
   const daySel = $('#camp-day');
   if (daySel) daySel.addEventListener('change', e => {
     selOff = false;
@@ -2984,6 +3058,8 @@ PAGES.campschedule = (main) => {
   });
   const printBtn = $('#camp-print');
   if (printBtn) printBtn.addEventListener('click', printCamp);
+  const printArBtn = $('#camp-print-ar');
+  if (printArBtn) printArBtn.addEventListener('click', printCampAR);
 
   const resetBtn = $('#camp-reset');
   if (resetBtn) resetBtn.addEventListener('click', () => {
@@ -2993,6 +3069,86 @@ PAGES.campschedule = (main) => {
   });
   wireCells();
   updateDateLabel();
+};
+
+// ─── Summer Camp members list (admin) + transportation flag ─────────────────
+window.toggleCampTransport = function(id) {
+  const m = state.members.find(x => x.id === id);
+  if (!m) return;
+  m.campTransport = !m.campTransport;
+  if (typeof audit === 'function') audit('member.update', 'member:' + id, 'camp transport ' + (m.campTransport ? 'ON' : 'OFF'));
+  save(); render();
+};
+PAGES.campmembers = (main) => {
+  const isCamp = m => m && !m.deleted && (m.sport === SUMMER_CAMP || (m.enrollments || []).some(e => e.sport === SUMMER_CAMP));
+  const list = state.members.filter(isCamp).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const withTransport = list.filter(m => m.campTransport).length;
+
+  const rows = list.length ? list.map((m, i) => {
+    const st = memberStatus(m);
+    const campEnr = (m.enrollments || []).find(e => e.sport === SUMMER_CAMP);
+    const coach = campEnr ? coachName(campEnr.coachId) : (m.sport === SUMMER_CAMP ? coachName(m.coachId) : '—');
+    const on = !!m.campTransport;
+    return `<tr style="border-top:1px solid var(--border)">
+      <td style="padding:9px 10px;color:var(--text-mute)">${i + 1}</td>
+      <td style="padding:9px 10px">
+        <div style="font-weight:600">${escapeHtml(m.name)}</div>
+        ${m.nameArabic ? `<div class="text-mute" style="font-size:11px" dir="rtl">${escapeHtml(m.nameArabic)}</div>` : ''}
+      </td>
+      <td style="padding:9px 10px;font-size:12px">${phoneCell(m.phone)}</td>
+      <td style="padding:9px 10px;font-size:12px" class="text-mute">${(typeof memberAge === 'function' && m.birthdate && memberAge(m.birthdate) != null) ? memberAge(m.birthdate) + ' yrs' : '—'}</td>
+      <td style="padding:9px 10px;font-size:12px"><span class="badge ${st.toLowerCase()}" style="font-size:10px">${st}</span></td>
+      <td style="padding:9px 10px;text-align:center">
+        <button class="btn ${on ? '' : 'ghost'} sm" onclick="toggleCampTransport(${m.id})" title="Click to toggle transportation" style="${on ? 'background:var(--green);color:#fff;border-color:var(--green)' : ''};min-width:96px">
+          ${on ? '🚌 Yes' : '— No'}
+        </button>
+      </td>
+      <td style="padding:9px 10px;text-align:right"><button class="btn ghost sm" onclick="viewMember(${m.id})">👁 View</button></td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="7" style="padding:20px;text-align:center" class="text-mute">No members are enrolled in Summer Camp yet.</td></tr>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🚌 ${t('Camp Members', 'أعضاء المعسكر')}</h1>
+        <div class="subtitle">${t('Everyone enrolled in Summer Camp', 'كل المسجّلين في المعسكر الصيفي')}</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" id="campmem-export">⬇ ${t('Export CSV', 'تصدير CSV')}</button>
+      </div>
+    </div>
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi"><div class="kpi-label">${t('Camp members', 'أعضاء المعسكر')}</div><div class="kpi-value num">${list.length}</div></div>
+      <div class="kpi green"><div class="kpi-label">🚌 ${t('Need transport', 'يحتاجون النقل')}</div><div class="kpi-value num">${withTransport}</div></div>
+      <div class="kpi"><div class="kpi-label">${t('No transport', 'بدون نقل')}</div><div class="kpi-value num">${list.length - withTransport}</div></div>
+    </div>
+    <div class="card">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="text-align:left;color:var(--text-mute);font-size:11px">
+          <th style="padding:6px 10px">#</th>
+          <th style="padding:6px 10px">${t('Member', 'العضو')}</th>
+          <th style="padding:6px 10px">${t('Phone', 'الهاتف')}</th>
+          <th style="padding:6px 10px">${t('Age', 'العمر')}</th>
+          <th style="padding:6px 10px">${t('Status', 'الحالة')}</th>
+          <th style="padding:6px 10px;text-align:center">🚌 ${t('Transportation', 'النقل')}</th>
+          <th style="padding:6px 10px;text-align:right">${t('Action', 'إجراء')}</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+
+  const expBtn = $('#campmem-export');
+  if (expBtn) expBtn.addEventListener('click', () => {
+    const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const header = ['Name', 'Arabic name', 'Phone', 'Age', 'Status', 'Transportation'];
+    const lines = [header.join(',')];
+    for (const m of list) {
+      const age = (typeof memberAge === 'function' && m.birthdate && memberAge(m.birthdate) != null) ? memberAge(m.birthdate) : '';
+      lines.push([m.name, m.nameArabic || '', m.phone || '', age, memberStatus(m), m.campTransport ? 'Yes' : 'No'].map(esc).join(','));
+    }
+    downloadFile('summer-camp-members.csv', lines.join('\n'), 'text/csv');
+    toast('Exported summer-camp-members.csv');
+  });
 };
 
 PAGES.schedule = (main) => {
@@ -3110,6 +3266,10 @@ PAGES.schedule = (main) => {
               <div style="font-size:9px;font-weight:500;opacity:.95;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(coach ? coach.name : 'No coach')}${coach && !isCoachActive(coach) ? ' · inactive' : ''}</div>
             </div>
             ${warn}
+            ${canEdit ? `<div style="display:flex;flex-direction:column;gap:1px;flex-shrink:0">
+              <button class="sch-up" data-id="${c.id}" title="Move earlier" style="background:rgba(0,0,0,.22);border:none;color:white;width:16px;height:13px;border-radius:3px;cursor:pointer;font-size:8px;padding:0;line-height:1;display:flex;align-items:center;justify-content:center">▲</button>
+              <button class="sch-down" data-id="${c.id}" title="Move later" style="background:rgba(0,0,0,.22);border:none;color:white;width:16px;height:13px;border-radius:3px;cursor:pointer;font-size:8px;padding:0;line-height:1;display:flex;align-items:center;justify-content:center">▼</button>
+            </div>` : ''}
             ${canEdit ? `<button class="sch-del" data-id="${c.id}" title="Remove" style="background:rgba(0,0,0,.25);border:none;color:white;width:18px;height:18px;border-radius:50%;cursor:pointer;font-size:11px;flex-shrink:0;padding:0;display:flex;align-items:center;justify-content:center">×</button>` : ''}
           </div>`;
         }).join('');
@@ -3159,6 +3319,25 @@ PAGES.schedule = (main) => {
       });
     });
 
+    // Move a class up (earlier) / down (later) one time slot in the same day.
+    function moveClass(id, dir) {
+      const c = state.schedule.find(x => x.id === id);
+      if (!c) return;
+      const hours = SLOTS.map(sl => sl.hour);
+      const cur = typeof c.slot === 'number' ? c.slot : parseInt(c.slot);
+      const ni = hours.indexOf(cur) + dir;
+      if (ni < 0 || ni >= hours.length) { toast(dir < 0 ? 'Already in the earliest slot' : 'Already in the latest slot', 'error'); return; }
+      const newSlot = hours[ni];
+      if (c.coachId != null) {
+        const clash = state.schedule.find(x => x.id !== id && x.day === c.day && x.slot === newSlot && x.coachId === c.coachId);
+        if (clash) { toast(`${coachName(c.coachId)} already has ${clash.sport} in that slot`, 'error'); return; }
+      }
+      c.slot = newSlot;
+      save(); refresh();
+    }
+    if (canEdit) $$('.sch-up').forEach(btn => btn.addEventListener('click', e => { e.stopPropagation(); moveClass(parseInt(btn.dataset.id), -1); }));
+    if (canEdit) $$('.sch-down').forEach(btn => btn.addEventListener('click', e => { e.stopPropagation(); moveClass(parseInt(btn.dataset.id), 1); }));
+
     // Make existing class blocks draggable / clickable to edit (admins only)
     if (canEdit) $$('.sch-class').forEach(block => {
       block.setAttribute('draggable', 'true');
@@ -3171,7 +3350,7 @@ PAGES.schedule = (main) => {
       block.addEventListener('mouseleave', hideSchHover);
       // Click on the body (not the × button) → change coach
       block.addEventListener('click', e => {
-        if (e.target.classList.contains('sch-del')) return;
+        if (e.target.classList.contains('sch-del') || e.target.classList.contains('sch-up') || e.target.classList.contains('sch-down')) return;
         const id = parseInt(block.dataset.id);
         const c = state.schedule.find(x => x.id === id);
         if (c) pickCoachAndAdd(c.sport, c.day, c.slot, c);
@@ -11545,16 +11724,37 @@ PAGES.mymembership = (main) => {
     : (m.subscriptions || []).map(s => ({ sport: s.activity, coachId: s.coachId, classes: s.totalClasses || 0, price: s.amountPaid || 0 }));
   const outstanding = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0;
   const mo = TODAY.slice(0, 7);
+  const SPORT_META = {
+    'MMA': { e: '🥋', c: '#f59e0b' }, 'Boxing': { e: '🥊', c: '#ef4444' }, 'Kick Boxing': { e: '🥊', c: '#dc2626' },
+    'Karate': { e: '🥋', c: '#84cc16' }, 'Taekwondo': { e: '🦵', c: '#6366f1' }, 'Gymnastic': { e: '🤸', c: '#10b981' },
+    'Football': { e: '⚽', c: '#22c55e' }, 'Swimming': { e: '🏊', c: '#06b6d4' }, 'Zumba': { e: '💃', c: '#ec4899' },
+    'Summer Camp': { e: '☀️', c: '#f59e0b' },
+  };
+  const sportMeta = sp => SPORT_META[sp] || { e: '🏅', c: '#5b8def' };
   const sportsHtml = enrolled.length ? enrolled.map(e => {
     const dd = m.dailyAttendance?.[mo]?.[e.sport] || {};
     let y = 0; for (const k in dd) if (dd[k] === 'Y') y++;
-    return `<tr style="border-top:1px solid var(--border)">
-      <td style="padding:8px">${escapeHtml(e.sport)}</td>
-      <td style="padding:8px">${e.sport === SUMMER_CAMP ? '—' : escapeHtml(coachName(e.coachId))}</td>
-      <td style="padding:8px;text-align:center">${e.classes || 0}</td>
-      <td style="padding:8px;text-align:center">${y} ${t('this month', 'هذا الشهر')}</td>
-    </tr>`;
-  }).join('') : `<tr><td colspan="4" style="padding:10px" class="text-mute">${t('No active sports on record.', 'لا توجد رياضات مسجّلة.')}</td></tr>`;
+    const planned = e.classes || 0;
+    const pct = planned ? Math.min(100, Math.round(y / planned * 100)) : 0;
+    const meta = sportMeta(e.sport);
+    return `<div style="border:1px solid var(--border);border-radius:16px;padding:18px;background:linear-gradient(135deg,${meta.c}14,transparent 70%)">
+      <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+        <div style="width:60px;height:60px;border-radius:16px;background:${meta.c}26;display:flex;align-items:center;justify-content:center;font-size:32px;flex-shrink:0">${meta.e}</div>
+        <div style="flex:1;min-width:140px">
+          <div style="font-size:22px;font-weight:800;line-height:1.1">${escapeHtml(e.sport)}</div>
+          <div style="font-size:14px;color:var(--text-mute);margin-top:3px">👤 ${e.sport === SUMMER_CAMP ? t('No coach (camp)', 'بدون مدرب (معسكر)') : t('Coach', 'المدرب') + ': ' + escapeHtml(coachName(e.coachId))}</div>
+        </div>
+        <div style="display:flex;gap:22px;text-align:center">
+          <div><div style="font-size:30px;font-weight:800;color:var(--blue);line-height:1">${planned}</div><div style="font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">${t('Planned', 'المخطط')}</div></div>
+          <div><div style="font-size:30px;font-weight:800;color:var(--green);line-height:1">${y}</div><div style="font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">${t('Attended', 'الحضور')}</div></div>
+        </div>
+      </div>
+      <div style="margin-top:14px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-mute);margin-bottom:5px"><span>${t('This month', 'هذا الشهر')}</span><span><b style="color:var(--text)">${y}</b> ${t('of', 'من')} ${planned} ${t('classes', 'حصة')} · ${pct}%</span></div>
+        <div style="height:10px;background:var(--surface);border-radius:99px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${meta.c};border-radius:99px;transition:width .4s"></div></div>
+      </div>
+    </div>`;
+  }).join('') : `<div class="text-mute" style="font-size:14px;padding:14px;text-align:center">${t('No active sports on record.', 'لا توجد رياضات مسجّلة.')}</div>`;
 
   const isGirl = m.gender === 'Female';
   const nameColor = isGirl ? '#ec4899' : 'inherit';
@@ -11710,12 +11910,9 @@ PAGES.mymembership = (main) => {
     </div>
     ${freezeCardHtml}
     <div class="card">
-      <div class="card-header"><div><div class="card-title">${t('My sports', 'رياضاتي')}</div><div class="card-subtitle">${t('Your enrolled activities and attendance this month', 'أنشطتك المسجّلة وحضورك هذا الشهر')}</div></div></div>
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead><tr style="text-align:left;color:var(--text-mute);font-size:11px"><th style="padding:6px 8px">${t('Sport', 'الرياضة')}</th><th style="padding:6px 8px">${t('Coach', 'المدرب')}</th><th style="padding:6px 8px;text-align:center">${t('Planned', 'المخطط')}</th><th style="padding:6px 8px;text-align:center">${t('Attended', 'الحضور')}</th></tr></thead>
-        <tbody>${sportsHtml}</tbody>
-      </table>
-      <div class="text-mute mt-3" style="font-size:11px">${t('See the <b>Schedule</b> tab for class times. For changes to your plan, please contact the club.', 'راجع تبويب <b>الجدول</b> لمواعيد الحصص. لأي تعديل على اشتراكك، يرجى التواصل مع النادي.')}</div>
+      <div class="card-header"><div><div class="card-title" style="font-size:18px">🥋 ${t('My sports', 'رياضاتي')}</div><div class="card-subtitle">${t('Your enrolled activities and attendance this month', 'أنشطتك المسجّلة وحضورك هذا الشهر')}</div></div></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px">${sportsHtml}</div>
+      <div class="text-mute mt-3" style="font-size:12px;margin-top:14px">${t('See the <b>Schedule</b> tab for class times. For changes to your plan, please contact the club.', 'راجع تبويب <b>الجدول</b> لمواعيد الحصص. لأي تعديل على اشتراكك، يرجى التواصل مع النادي.')}</div>
     </div>
 
     <div class="card" style="margin-top:14px">

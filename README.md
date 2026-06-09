@@ -1064,3 +1064,59 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
 - Enrollments: the source enrollment is replaced by one enrollment per target (classes + proportional
   value). Single-target switches behave exactly as before (unchanged path).
 - Regression: 526 logic assertions + 33 pages render, all passing.
+
+
+## 5.68.0 note — Renewal revenue potential now counts every paying member
+- Fixed under-counting on the Dashboard "Renewal revenue potential" card. memberRenewalValue() now
+  falls back to each member's most recent REAL invoice total (then latest subscription amountPaid)
+  when their enrolment prices are blank/0 — so imported and renewed members are included and the
+  "with a priced membership" count reflects everyone who actually pays.
+- Zero-amount and internal switch-credit invoices are ignored in the fallback.
+- Regression: 528 logic assertions + 33 pages render, all passing.
+
+
+## 5.69.0 note — "My sports" redesigned for families (bigger, clearer)
+- The student "My sports" table is now a grid of large, friendly cards: each sport shows a coloured
+  icon, the sport name in big bold, the coach, two large numbers (Planned / Attended this month) and a
+  coloured progress bar (attended of planned · %). Sport-specific colours and emojis. Arabic-translated,
+  responsive (cards reflow on small screens).
+- Regression: 528 logic assertions + 33 pages render, all passing.
+
+
+## 5.70.0 note — Dashboard is single-month with a month dropdown
+- The Dashboard KPI cards now show ONE month (default = current month) instead of spanning two months.
+  Total Revenue, Total Expenses, Coaching Revenue, Court Rental, Equipment Sales, Net Profit and
+  Revenue Mix are all for the selected month; labels show just that month.
+- New month dropdown in the Dashboard header (lists months that have data + current). computeStats(month)
+  honors it; month-over-month deltas/sparklines compare to the previous month. Selection is per-device
+  (window._dashMonth — not synced to the DB) and resets to the current month on reload.
+- Regression: 528 logic assertions + 33 pages render, all passing.
+
+
+## 5.71.0 note — Schedule: move a class up/down by arrows
+- Each class block on the Schedule now has small ▲ / ▼ arrows (admin only) to move it to the earlier /
+  later time slot in the same day — an alternative to dragging. Clamped at the first/last slot, and
+  blocked if it would clash with the same coach already booked in the target slot. Filters are preserved.
+- Regression: 534 logic assertions + 33 pages render, all passing.
+
+
+## 5.72.0 note — Members filters now allow multiple selections
+- Status, Sport, Coach and Nationality on the Members page are now multi-select checkbox dropdowns
+  (Sport already was). Pick several at once — e.g. Active + Frozen, or two coaches — and the list shows
+  members matching ANY of the chosen values. Button labels show the count ("2 statuses", a single
+  value, or "All ...").
+- Filter state migrates old single values into arrays (filter.statuses/coaches/nationalities). Archived
+  still shows only when 'Archived' is ticked. Clear-filters resets all of them.
+- Regression: 534 logic assertions + 33 pages render, all passing.
+
+
+## 5.73.0 note — Similar-name cleanup · Arabic camp print · Camp members + transport
+- MEMBERS "Find Duplicates" now also finds SIMILAR NAMES (typos, different spellings, reordered words),
+  in English or Arabic, regardless of phone — a new section in the scan modal with View/Archive actions.
+  Exact phone+name duplicates still shown first; similar-name groups already covered by those are skipped.
+- SUMMER CAMP schedule: added an Arabic (RTL) print button ("طباعة (عربي)") — Arabic title, day, group
+  and break labels; activities/coaches print as entered.
+- NEW "Camp Members" screen (admin, 🚌): lists everyone enrolled in Summer Camp with a per-member
+  TRANSPORTATION toggle (Yes/No, stored as m.campTransport), KPI counts, and CSV export. New route
+  registered in nav (+ Arabic label) and render harness.
+- Regression: 537 logic assertions + 34 pages render, all passing.

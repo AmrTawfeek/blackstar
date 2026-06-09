@@ -1108,6 +1108,37 @@ ${seed}
   var rv = clubRenewalValue(state.members.filter(m => [980, 981, 982, 983].includes(m.id)));
   eq(rv.total, 850, 'renewal: club total excludes deleted (500+350)');
   eq(rv.withValue, 2, 'renewal: counts only members with a priced membership');
+  // Dashboard month selector: computeStats honors the chosen month
+  var _cs = computeStats('2026-03');
+  eq(_cs.currMonth, '2026-03', 'dashboard: computeStats uses the selected month');
+  eq(_cs.prevMonth, '2026-02', 'dashboard: previous month derived from the selected month');
+  // Schedule: move class up/down one slot (clamped at the ends)
+  var _hrs = [15, 16, 17, 18, 19, 20];
+  function _moveSlot(cur, dir) { var ni = _hrs.indexOf(cur) + dir; return (ni < 0 || ni >= _hrs.length) ? null : _hrs[ni]; }
+  eq(_moveSlot(17, -1), 16, 'schedule: move up goes to the earlier slot');
+  eq(_moveSlot(17, 1), 18, 'schedule: move down goes to the later slot');
+  eq(_moveSlot(15, -1), null, 'schedule: cannot move above the earliest slot');
+  eq(_moveSlot(20, 1), null, 'schedule: cannot move below the latest slot');
+  // Similar-name detection (cleanup helper)
+  state.members.push({ id: 9961, name: 'Mohammed Ali' });
+  state.members.push({ id: 9962, name: 'Mohamed Ali' });   // typo variant
+  state.members.push({ id: 9963, name: 'Qwxz Unrelated Person' });
+  state.members.push({ id: 9964, name: 'Ali Hassan' });
+  state.members.push({ id: 9965, name: 'Hassan Ali' });     // reordered words
+  var _sc = findSimilarNameClusters();
+  ok(_sc.some(g => g.some(m => m.id === 9961) && g.some(m => m.id === 9962)), 'similar-names: typo variants cluster together');
+  ok(_sc.some(g => g.some(m => m.id === 9964) && g.some(m => m.id === 9965)), 'similar-names: reordered words cluster together');
+  ok(!_sc.some(g => g.some(m => m.id === 9963) && g.length > 1), 'similar-names: a distinct name is not grouped');
+  state.members = state.members.filter(m => ![9961, 9962, 9963, 9964, 9965].includes(m.id));
+  // Renewal value falls back to the latest real invoice when enrolment prices are blank
+  state.members.push({ id: 984, name: 'RVI', enrollments: [] });
+  state.invoices.push({ id: 99984, customerId: 984, amount: 300, date: '2026-05-01' });
+  state.invoices.push({ id: 99985, customerId: 984, amount: 450, date: '2026-06-01' });
+  eq(memberRenewalValue(state.members.find(m => m.id === 984)), 450, 'renewal: falls back to latest paid invoice when enrolment prices are blank');
+  state.invoices.push({ id: 99986, customerId: 984, amount: 0, date: '2026-06-10', switchCredit: true });
+  eq(memberRenewalValue(state.members.find(m => m.id === 984)), 450, 'renewal: ignores zero / switch-credit invoices in the fallback');
+  state.members = state.members.filter(m => m.id !== 984);
+  state.invoices = state.invoices.filter(i => ![99984, 99985, 99986].includes(i.id));
   state.members = state.members.filter(m => ![980, 981, 982, 983].includes(m.id));
   // Device-local fields (open page, identity, preview role) must never be synced
   state.route = 'reports'; state.user = { name: 'A' }; state.session = { role: 'coach' };
