@@ -1120,3 +1120,14 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
   TRANSPORTATION toggle (Yes/No, stored as m.campTransport), KPI counts, and CSV export. New route
   registered in nav (+ Arabic label) and render harness.
 - Regression: 537 logic assertions + 34 pages render, all passing.
+
+
+## 5.74.0 note — Coach delete + coach transfer
+- TEAM → coach profile now has 🗑 Delete and 🔁 Transfer students.
+- Delete is allowed only when the coach has NO linked records (no students, enrolments, scheduled
+  classes, or invoices); otherwise a modal explains what is still linked and points to Transfer.
+- Transfer moves the coach's students (primary + enrolment coachId) and scheduled classes to a chosen
+  new coach. Salary basis: "from transfer date" (past pay stays with the old coach; new coach earns from
+  future renewals) or "from registration date" (past membership invoices are re-credited to the new
+  coach too — a full hand-over that then lets you delete the old coach).
+- Regression: 541 logic assertions + 34 pages render, all passing.

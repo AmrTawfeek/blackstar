@@ -2653,8 +2653,108 @@ window.viewCoach = function(id) {
     `,
     actions: [
       { label: active ? '🚫 Deactivate' : '✅ Activate', class: 'btn ghost', onclick: () => { toggleCoachActive(id); closeModal(); viewCoach(id); } },
+      { label: '🔁 Transfer students', class: 'btn ghost', onclick: () => { closeModal(); transferCoachStudents(id); } },
       { label: 'Edit', class: 'btn ghost', onclick: () => { closeModal(); editCoach(id); } },
+      { label: '🗑 Delete', class: 'btn ghost', onclick: () => { closeModal(); deleteCoach(id); } },
       { label: 'Close', class: 'btn primary', onclick: closeModal },
+    ],
+  });
+};
+
+// Delete a coach — only when nothing links to them (no students, enrollments,
+// scheduled classes, or invoices). Otherwise explain and point to Transfer.
+window.deleteCoach = function(id) {
+  const c = state.coaches.find(x => x.id === id);
+  if (!c) return;
+  const students = coachStudents(id).length;
+  const enrollLinks = state.members.filter(m => !m.deleted && (m.coachId === id || (m.enrollments || []).some(e => e.coachId === id))).length;
+  const schedLinks = (state.schedule || []).filter(s => s.coachId === id).length;
+  const invLinks = (state.invoices || []).some(inv => inv.coachId === id || (inv.lineItems || []).some(li => li.coachId === id));
+  if (students || enrollLinks || schedLinks || invLinks) {
+    showModal({
+      title: 'Cannot delete this coach yet',
+      body: `<div style="padding:4px 2px;font-size:13px;line-height:1.6">
+        <b>${escapeHtml(c.name)}</b> still has linked records, so deleting would orphan data:
+        <ul style="margin:10px 0 0;padding-left:18px">
+          ${students ? `<li><b>${students}</b> active student${students === 1 ? '' : 's'}</li>` : ''}
+          ${enrollLinks ? `<li><b>${enrollLinks}</b> member${enrollLinks === 1 ? '' : 's'} assigned (enrolment / primary coach)</li>` : ''}
+          ${schedLinks ? `<li><b>${schedLinks}</b> scheduled class${schedLinks === 1 ? '' : 'es'}</li>` : ''}
+          ${invLinks ? `<li>past invoices reference this coach</li>` : ''}
+        </ul>
+        <div style="margin-top:12px;color:var(--text-mute)">Use <b>🔁 Transfer students</b> to move everyone to another coach first (choose the <b>registration-date</b> basis to also hand over past invoices), then delete. Or just <b>Deactivate</b> to hide the coach while keeping all history.</div>
+      </div>`,
+      actions: [
+        { label: '🔁 Transfer students', class: 'btn ghost', onclick: () => { closeModal(); transferCoachStudents(id); } },
+        { label: 'Close', class: 'btn primary', onclick: closeModal },
+      ],
+    });
+    return;
+  }
+  if (!confirm(`Delete coach "${c.name}"? This cannot be undone.`)) return;
+  state.coaches = state.coaches.filter(x => x.id !== id);
+  audit('coach.delete', 'coach:' + id, 'Deleted coach ' + c.name);
+  save(); render(); toast('Coach deleted');
+};
+
+// Transfer one coach's students/classes to another coach. Salary basis:
+//  • transfer date  → past invoices stay with the old coach; the new coach earns
+//    from future renewals (enrolments now point to them).
+//  • registration   → past membership invoices are also re-credited to the new
+//    coach, as if they had these students from the start.
+window.transferCoachStudents = function(fromId) {
+  const from = state.coaches.find(c => c.id === fromId);
+  if (!from) return;
+  const targets = activeCoaches().filter(c => c.id !== fromId);
+  if (!targets.length) { toast('No other active coach to transfer to', 'error'); return; }
+  const studentCount = coachStudents(fromId).length;
+  const enrollCount = state.members.reduce((n, m) => n + ((m.enrollments || []).filter(e => e.coachId === fromId).length) + (m.coachId === fromId ? 1 : 0), 0);
+  const schedCount = (state.schedule || []).filter(s => s.coachId === fromId).length;
+  showModal({
+    title: `🔁 Transfer · ${from.name}`,
+    body: `
+      <div style="font-size:13px;line-height:1.6;margin-bottom:14px">Move <b>${from.name}</b>'s students and classes to another coach.
+        <div class="text-mute" style="font-size:12px;margin-top:6px">${studentCount} student${studentCount === 1 ? '' : 's'} · ${enrollCount} enrolment link${enrollCount === 1 ? '' : 's'} · ${schedCount} scheduled class${schedCount === 1 ? '' : 'es'} will move.</div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>New coach</label><select id="tr-to">${targets.map(c => `<option value="${c.id}">${escapeHtml(c.name)} · ${c.rate || 0}%</option>`).join('')}</select></div>
+        <div class="field"><label>Effective date</label><input id="tr-date" type="date" value="${TODAY}" /></div>
+      </div>
+      <div class="field"><label>Salary / commission basis</label>
+        <label style="display:flex;gap:8px;align-items:flex-start;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer">
+          <input type="radio" name="tr-basis" value="transfer" checked style="margin-top:2px" />
+          <span style="font-size:12px"><b>From transfer date</b><br><span class="text-mute">Past pay stays with ${escapeHtml(from.name)}. The new coach earns from future renewals.</span></span>
+        </label>
+        <label style="display:flex;gap:8px;align-items:flex-start;padding:8px;border:1px solid var(--border);border-radius:8px;cursor:pointer">
+          <input type="radio" name="tr-basis" value="registration" style="margin-top:2px" />
+          <span style="font-size:12px"><b>From registration date</b><br><span class="text-mute">Re-credit ${escapeHtml(from.name)}'s past membership invoices to the new coach too (full hand-over — lets you delete the old coach afterwards).</span></span>
+        </label>
+      </div>`,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      { label: '🔁 Transfer', class: 'btn primary', onclick: () => {
+        const toId = parseInt($('#tr-to').value);
+        const to = state.coaches.find(c => c.id === toId);
+        const eff = $('#tr-date').value || TODAY;
+        const basis = (document.querySelector('input[name="tr-basis"]:checked') || {}).value || 'transfer';
+        if (!to) { toast('Pick a coach', 'error'); return; }
+        let moved = 0;
+        for (const m of state.members) {
+          if (m.coachId === fromId) { m.coachId = toId; moved++; }
+          for (const e of (m.enrollments || [])) if (e.coachId === fromId) { e.coachId = toId; moved++; }
+        }
+        let movedSched = 0;
+        for (const s of (state.schedule || [])) if (s.coachId === fromId) { s.coachId = toId; movedSched++; }
+        let movedInv = 0;
+        if (basis === 'registration') {
+          for (const inv of (state.invoices || [])) {
+            if (inv.coachId === fromId) { inv.coachId = toId; inv.coach = to.name; movedInv++; }
+            for (const li of (inv.lineItems || [])) if (li.coachId === fromId) { li.coachId = toId; li.coach = to.name; movedInv++; }
+          }
+        }
+        audit('coach.transfer', 'coach:' + fromId, `Transferred ${from.name} → ${to.name} (${basis}, eff ${eff})`, { fromId, toId, basis, eff, moved, movedSched, movedInv });
+        save(); closeModal(); render();
+        toast(`Transferred ${from.name}'s students to ${to.name}${basis === 'registration' ? ' (incl. past invoices)' : ''}`);
+      } },
     ],
   });
 };

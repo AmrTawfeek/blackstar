@@ -1130,6 +1130,26 @@ ${seed}
   ok(_sc.some(g => g.some(m => m.id === 9964) && g.some(m => m.id === 9965)), 'similar-names: reordered words cluster together');
   ok(!_sc.some(g => g.some(m => m.id === 9963) && g.length > 1), 'similar-names: a distinct name is not grouped');
   state.members = state.members.filter(m => ![9961, 9962, 9963, 9964, 9965].includes(m.id));
+  // Coach transfer + delete-link detection
+  state.coaches.push({ id: 7001, name: 'OldC', rate: 30, active: 'Y' });
+  state.coaches.push({ id: 7002, name: 'NewC', rate: 40, active: 'Y' });
+  state.members.push({ id: 7101, name: 'TM', coachId: 7001, enrollments: [{ sport: 'Boxing', coachId: 7001, price: 100 }] });
+  state.invoices.push({ id: 79001, customerId: 7101, category: 'Membership', coachId: 7001, coach: 'OldC', amount: 100, lineItems: [{ sport: 'Boxing', coachId: 7001, coach: 'OldC', price: 100 }] });
+  var _links = state.members.filter(m => m.coachId === 7001 || (m.enrollments || []).some(e => e.coachId === 7001)).length;
+  ok(_links > 0, 'coach-delete: a coach with assigned members is detected as linked (blocks deletion)');
+  // transfer-date basis: reassign enrolments + primary coach only
+  for (const m of state.members) { if (m.coachId === 7001) m.coachId = 7002; for (const e of (m.enrollments || [])) if (e.coachId === 7001) e.coachId = 7002; }
+  var _tm = state.members.find(m => m.id === 7101);
+  eq(_tm.coachId, 7002, 'coach-transfer: primary coach reassigned to new coach');
+  eq(_tm.enrollments[0].coachId, 7002, 'coach-transfer: enrolment coach reassigned to new coach');
+  // registration basis: also re-credit past invoice lines
+  var _inv = state.invoices.find(i => i.id === 79001);
+  if (_inv.coachId === 7001) _inv.coachId = 7002;
+  for (const li of _inv.lineItems) if (li.coachId === 7001) li.coachId = 7002;
+  eq(_inv.lineItems[0].coachId, 7002, 'coach-transfer: registration basis re-credits past invoice line to new coach');
+  state.members = state.members.filter(m => m.id !== 7101);
+  state.invoices = state.invoices.filter(i => i.id !== 79001);
+  state.coaches = state.coaches.filter(c => ![7001, 7002].includes(c.id));
   // Renewal value falls back to the latest real invoice when enrolment prices are blank
   state.members.push({ id: 984, name: 'RVI', enrollments: [] });
   state.invoices.push({ id: 99984, customerId: 984, amount: 300, date: '2026-05-01' });
