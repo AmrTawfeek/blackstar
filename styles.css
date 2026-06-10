@@ -264,6 +264,18 @@ a { color: var(--blue); text-decoration: none; }
   transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease;
 }
 
+/* Radios & checkboxes must never be full-width (they are sometimes placed inside
+   .field, which would otherwise stretch and pad them, breaking option layouts). */
+input[type="radio"],
+input[type="checkbox"],
+.field input[type="radio"],
+.field input[type="checkbox"] {
+  width: auto !important;
+  padding: 0 !important;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
 .field input:hover,
 .field select:hover,
 .field textarea:hover {

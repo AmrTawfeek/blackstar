@@ -1191,3 +1191,50 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
   selected day(s), so it matches what the grid shows; with no day filter it shows the month (or all) total.
   The chip label shows the scope (e.g. "ATTENDED · DAY 9", "ATTENDED · JUN 26", "ATTENDED · ALL").
 - Regression: 552 logic assertions + 35 pages render, all passing.
+
+
+## 5.83.0 note — Backup button fixed + moved to the top
+- Moved "Backup" to the Dashboard topbar beside Refresh (removed the footer button; the footer keeps the
+  info text + Settings link). Topbar buttons are now wired BEFORE the chart draws, so a charting error
+  can never leave them dead.
+- Hardened downloadBackup(): wrapped in try/catch with a clear error toast, strips device fields
+  (user/route/session), and falls back to a circular-safe JSON serializer so it always produces a file.
+- Regression: 552 logic assertions + 35 pages render, all passing.
+
+
+## 5.84.0 note — Fix stretched radios/checkboxes in modals
+- Radios/checkboxes placed inside a .field (e.g. the coach Transfer "salary basis" options) were being
+  stretched to width:100% with input padding by the global .field input rule, leaving a huge gap before
+  the label text. Added a CSS rule so radios & checkboxes are always auto-width with no padding.
+- Regression: 552 logic assertions + 35 pages render, all passing.
+
+
+## 5.85.0 note — Inactive coaches grouped in filter · trials can record 2 sports
+- Members coach filter now groups ACTIVE coaches first, then a "Former / inactive" section (still
+  selectable for historical filtering, shown faded with "(former)"). Deactivating a coach never
+  un-assigns their students — they remain that coach's records and coachName() still resolves the name.
+- Trials: added an optional 2nd "sport tried" + coach. Saved as t.sport2/t.coachId2, shown in the list
+  ("+ Sport / + Coach"), and the sport filter matches either sport. Picking a 2nd sport requires its coach
+  and must differ from the first.
+- Regression: 555 logic assertions + 35 pages render, all passing.
+
+
+## 5.86.0 note — Products page fully Arabic-translated
+- Translated all English labels on the Products page via t(): title, subtitle, the four KPI cards
+  (catalog, inventory cost/margin, low stock, out of stock), filters (search placeholder, All categories,
+  All stock levels, In stock/Low/Out), table headers (Product/Category/Cost/Sell price/Stock/Stock
+  value/Status), row status badges (In stock/Low/Out of stock), Restock button, edit/delete titles,
+  empty state, and the product count. Numbers/SKU unchanged.
+- Regression: 555 logic assertions + 35 pages render, all passing.
+
+
+## 5.87.0 note — Attendance-based commission switched ON + rule on the pay slip
+- The agreed rule (already implemented behind state.settings.commissionBasis) is now the active default.
+  A one-time load migration switches existing clubs to 'attendance' (sets commissionBasisInit so admins
+  can still switch back to 'payment' from Settings/Salaries). Fresh installs default to attendance.
+- Rule (computeAttendanceCommission): commission = fee x rate spread over the membership; each month
+  earns per attended class (fee / total classes x rate); finishing all classes in a month pays full that
+  month; on expiry the remaining commission trues up in full; a frozen membership keeps its remainder
+  pending until it truly ends. Pending amounts shown separately.
+- Coach pay slip PDF now shows a "How commission is calculated" points box (when basis = attendance) plus
+  a Pending row. Regression: 557 logic assertions + 35 pages render, all passing.

@@ -218,6 +218,7 @@ PAGES.dashboard = (main) => {
           })()}
         </select>
         <button class="btn ghost" id="export-btn">📥 ${t('Export','تصدير')}</button>
+        <button class="btn ghost" id="dash-backup-top" title="Download a JSON backup of all your data">💾 ${t('Backup','نسخة احتياطية')}</button>
         <button class="btn primary" id="refresh-btn">🔄 ${t('Refresh','تحديث')}</button>
       </div>
     </div>
@@ -487,23 +488,22 @@ PAGES.dashboard = (main) => {
             : 'When you receive a new version of this app, ALWAYS export a backup first, then import it after replacing files. Your data lives in this browser only.'}
         </div>
       </div>
-      <button class="btn primary sm" id="dash-backup-now">💾 Backup now</button>
       <button class="btn ghost sm" onclick="navigate('settings')">⚙️ Settings</button>
     </div>
   `;
 
-  // Post-render
+  // Post-render — wire buttons FIRST so a later chart-draw error can't break them.
+  $('#refresh-btn').addEventListener('click', () => { render(); toast('Refreshed'); });
+  $('#export-btn').addEventListener('click', exportDashboardCSV);
+  const dashBackupTop = $('#dash-backup-top');
+  if (dashBackupTop) dashBackupTop.addEventListener('click', () => window.downloadBackup());
+  const dashMonthSel = $('#dash-month');
+  if (dashMonthSel) dashMonthSel.addEventListener('change', () => { window._dashMonth = dashMonthSel.value; render(); });
+
   drawRevenueChart();
   drawSportDonut();
   drawCoachLeaderboard();
   drawRecentInvoices();
-
-  $('#refresh-btn').addEventListener('click', () => { render(); toast('Refreshed'); });
-  $('#export-btn').addEventListener('click', exportDashboardCSV);
-  const dashMonthSel = $('#dash-month');
-  if (dashMonthSel) dashMonthSel.addEventListener('change', () => { window._dashMonth = dashMonthSel.value; render(); });
-  const dashBackup = $('#dash-backup-now');
-  if (dashBackup) dashBackup.addEventListener('click', () => window.downloadBackup());
 };
 
 // ─── Revenue chart (bars) ───────────────────────────────────
@@ -1087,7 +1087,14 @@ PAGES.members = (main) => {
             <span style="opacity:.6">▾</span>
           </button>
           <div id="filter-coach-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
-            ${state.coaches.map(c => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-coach-cb" value="${c.id}" ${(filter.coaches||[]).map(String).includes(String(c.id)) ? 'checked' : ''} /> ${escapeHtml(c.name)}</label>`).join('')}
+            ${(() => {
+              const cbHtml = (c, faded) => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px${faded ? ';opacity:.72' : ''}"><input type="checkbox" class="filter-coach-cb" value="${c.id}" ${(filter.coaches || []).map(String).includes(String(c.id)) ? 'checked' : ''} /> ${escapeHtml(c.name)}${faded ? ' <span class="text-mute" style="font-size:10px">(former)</span>' : ''}</label>`;
+              const act = state.coaches.filter(c => isCoachActive(c));
+              const inact = state.coaches.filter(c => !isCoachActive(c));
+              let html = act.map(c => cbHtml(c, false)).join('');
+              if (inact.length) html += `<div style="margin:6px 0 2px;padding:5px 6px 3px;font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.5px;border-top:1px solid var(--border)">Former / inactive</div>` + inact.map(c => cbHtml(c, true)).join('');
+              return html;
+            })()}
           </div>
         </div>
         <div style="position:relative">
@@ -6662,8 +6669,22 @@ window.downloadPayslipPDF = function(coachId, monthKey) {
         <div class="row"><span>Commission base (eligible revenue)</span><span>${fmt(pay.commissionBase)} QAR</span></div>
         <div class="row"><span>Commission rate</span><span>${pay.commissionRate}%</span></div>
         <div class="row"><span>Commission earned</span><span>${fmt(pay.commissionAmount)} QAR</span></div>
+        ${pay.basis === 'attendance' && pay.commissionPending > 0 ? `<div class="row" style="color:#b45309"><span>Pending (not yet earned — see rule below)</span><span>${fmt(pay.commissionPending)} QAR</span></div>` : ''}
       ` : ''}
       <div class="row bold"><span>Gross pay</span><span>${fmt(pay.gross)} QAR</span></div>
+
+      ${pay.basis === 'attendance' ? `
+        <h2>How commission is calculated</h2>
+        <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;font-size:12px;line-height:1.7;color:#333">
+          <ul style="margin:0;padding-left:18px">
+            <li>Commission = the member's fee × your rate (${pay.commissionRate}%), earned over their membership.</li>
+            <li>Each month you earn for the <b>classes attended that month</b> (fee ÷ total classes × rate, per class).</li>
+            <li>If the member <b>finishes all classes</b> in a month, you get the <b>full</b> commission that month.</li>
+            <li>When the membership <b>expires</b>, any remaining commission is <b>paid out in full</b> — even if the member stopped attending.</li>
+            <li>A <b>frozen</b> membership is paused: its remainder stays <i>pending</i> until the membership actually ends.</li>
+          </ul>
+        </div>
+      ` : ''}
 
       ${pay.advance > 0 ? `
         <h2>Advances (deducted)</h2>
@@ -7083,7 +7104,7 @@ PAGES.products = (main) => {
       const stock = productCurrentStock(p.id);
       const threshold = p.lowStockThreshold || 3;
       const stockColor = stock === 0 ? 'var(--red)' : stock <= threshold ? 'var(--accent-2)' : 'var(--green)';
-      const stockLabel = stock === 0 ? 'Out of stock' : stock <= threshold ? 'Low' : 'In stock';
+      const stockLabel = stock === 0 ? t('Out of stock', 'نفد المخزون') : stock <= threshold ? t('Low', 'منخفض') : t('In stock', 'متوفر');
       return `
         <tr>
           <td><div class="font-bold">${escapeHtml(p.name)}</div>${p.sku ? `<div class="text-mute" style="font-size:11px">SKU: ${escapeHtml(p.sku)}</div>` : ''}</td>
@@ -7094,13 +7115,13 @@ PAGES.products = (main) => {
           <td class="text-right num">${fmt(stock * (p.price || 0))}</td>
           <td><span class="badge" style="background:${stockColor==='var(--red)'?'rgba(239,68,68,.15)':stockColor==='var(--accent-2)'?'rgba(242,163,60,.15)':'rgba(16,185,129,.15)'};color:${stockColor};font-size:10px">${stockLabel}</span></td>
           <td class="text-right" style="white-space:nowrap">
-            <button class="btn ghost sm" onclick="restockProduct(${p.id})" title="Restock (add inventory)">➕ Restock</button>
-            <button class="btn ghost sm" onclick="editProduct(${p.id})" title="Edit">✏️</button>
-            <button class="btn ghost sm" onclick="deleteProduct(${p.id})" title="Delete">🗑</button>
+            <button class="btn ghost sm" onclick="restockProduct(${p.id})" title="Restock (add inventory)">➕ ${t('Restock', 'إعادة تخزين')}</button>
+            <button class="btn ghost sm" onclick="editProduct(${p.id})" title="${t('Edit', 'تعديل')}">✏️</button>
+            <button class="btn ghost sm" onclick="deleteProduct(${p.id})" title="${t('Delete', 'حذف')}">🗑</button>
           </td>
         </tr>`;
-    }).join('') : `<tr><td colspan="8" class="empty"><div class="empty-icon">📦</div>No products match</td></tr>`;
-    $('#prod-count').textContent = `${all.length} product${all.length===1?'':'s'}`;
+    }).join('') : `<tr><td colspan="8" class="empty"><div class="empty-icon">📦</div>${t('No products match', 'لا توجد منتجات مطابقة')}</td></tr>`;
+    $('#prod-count').textContent = `${all.length} ${t('products', 'منتج')}`;
     renderPagination('prod-pagination', pg, all.length, refresh);
   }
 
@@ -7116,54 +7137,54 @@ PAGES.products = (main) => {
   main.innerHTML = `
     <div class="topbar">
       <div>
-        <h1>📦 Products</h1>
-        <div class="subtitle"><span id="prod-count">Loading...</span> · ${fmt(totalValue)} QAR sell value · ${fmt(totalCost)} QAR cost value</div>
+        <h1>📦 ${t('Products', 'المنتجات')}</h1>
+        <div class="subtitle"><span id="prod-count">Loading...</span> · ${fmt(totalValue)} ${t('QAR sell value', 'ر.ق قيمة البيع')} · ${fmt(totalCost)} ${t('QAR cost value', 'ر.ق قيمة التكلفة')}</div>
       </div>
       <div class="topbar-actions">
-        <button class="btn primary" id="prod-add">+ New Product</button>
+        <button class="btn primary" id="prod-add">+ ${t('New Product', 'منتج جديد')}</button>
       </div>
     </div>
 
     <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
       <div class="kpi green">
-        <div class="kpi-label">📦 Products in catalog</div>
+        <div class="kpi-label">📦 ${t('Products in catalog', 'المنتجات في الكتالوج')}</div>
         <div class="kpi-value">${(state.products || []).length}</div>
-        <div class="kpi-sub">${fmt(totalValue)} QAR sell value</div>
+        <div class="kpi-sub">${fmt(totalValue)} ${t('QAR sell value', 'ر.ق قيمة البيع')}</div>
       </div>
       <div class="kpi blue">
-        <div class="kpi-label">💰 Inventory cost (original)</div>
+        <div class="kpi-label">💰 ${t('Inventory cost (original)', 'تكلفة المخزون (الأصلية)')}</div>
         <div class="kpi-value">${fmt(totalCost)}</div>
-        <div class="kpi-sub">amount paid for stock${totalCost > 0 ? ` · margin ${fmt(totalValue - totalCost)} QAR` : ''}</div>
+        <div class="kpi-sub">${t('amount paid for stock', 'المبلغ المدفوع للمخزون')}${totalCost > 0 ? ` · ${t('margin', 'هامش')} ${fmt(totalValue - totalCost)} ${t('QAR', 'ر.ق')}` : ''}</div>
       </div>
       <div class="kpi orange">
-        <div class="kpi-label">⚠️ Low stock</div>
+        <div class="kpi-label">⚠️ ${t('Low stock', 'مخزون منخفض')}</div>
         <div class="kpi-value">${lowCount}</div>
-        <div class="kpi-sub">at or below threshold</div>
+        <div class="kpi-sub">${t('at or below threshold', 'عند الحد أو أقل')}</div>
       </div>
       <div class="kpi red">
-        <div class="kpi-label">⛔ Out of stock</div>
+        <div class="kpi-label">⛔ ${t('Out of stock', 'نفد المخزون')}</div>
         <div class="kpi-value">${outCount}</div>
-        <div class="kpi-sub">need restocking</div>
+        <div class="kpi-sub">${t('need restocking', 'يحتاج إعادة تخزين')}</div>
       </div>
     </div>
 
     <div class="card">
       <div class="filter-bar">
-        <div class="search"><input id="prod-search" type="text" placeholder="Search product name, category, SKU..." /></div>
+        <div class="search"><input id="prod-search" type="text" placeholder="${t('Search product name, category, SKU...', 'ابحث باسم المنتج أو الفئة أو SKU...')}" /></div>
         <select id="prod-cat" class="btn ghost">
-          <option value="all">All categories</option>
+          <option value="all">${t('All categories', 'كل الفئات')}</option>
           ${cats.map(c => `<option>${escapeHtml(c)}</option>`).join('')}
         </select>
         <select id="prod-stock" class="btn ghost">
-          <option value="all">All stock levels</option>
-          <option value="available">In stock</option>
-          <option value="low">⚠️ Low</option>
-          <option value="out">⛔ Out</option>
+          <option value="all">${t('All stock levels', 'كل مستويات المخزون')}</option>
+          <option value="available">${t('In stock', 'متوفر')}</option>
+          <option value="low">⚠️ ${t('Low', 'منخفض')}</option>
+          <option value="out">⛔ ${t('Out', 'نفد')}</option>
         </select>
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Product</th><th>Category</th><th class="text-right">Cost</th><th class="text-right">Sell price</th><th class="text-right">Stock</th><th class="text-right">Stock value</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>${t('Product', 'المنتج')}</th><th>${t('Category', 'الفئة')}</th><th class="text-right">${t('Cost', 'التكلفة')}</th><th class="text-right">${t('Sell price', 'سعر البيع')}</th><th class="text-right">${t('Stock', 'المخزون')}</th><th class="text-right">${t('Stock value', 'قيمة المخزون')}</th><th>${t('Status', 'الحالة')}</th><th></th></tr></thead>
           <tbody id="prod-tbody"></tbody>
         </table>
       </div>
@@ -8640,18 +8661,28 @@ PAGES.settings = (main, section) => {
   });
 
 window.downloadBackup = function() {
-  const data = JSON.stringify({
-    appVersion: APP_VERSION,
-    schemaVersion: SCHEMA_VERSION,
-    exported: new Date().toISOString(),
-    ...state,
-    user: undefined,
-    route: undefined,
-  }, null, 2);
-  downloadFile(`blackstars-backup-${TODAY}.json`, data, 'application/json');
-  try { localStorage.setItem('bs-last-backup', String(Date.now())); } catch (_) {}
-  if (window.__hideBackupReminder) window.__hideBackupReminder();
-  toast(`✓ Backup saved · ${state.members.length} members · ${state.invoices.length} invoices`);
+  try {
+    const { user, route, session, ...rest } = state;
+    const payload = { appVersion: APP_VERSION, schemaVersion: SCHEMA_VERSION, exported: new Date().toISOString(), ...rest };
+    let data;
+    try {
+      data = JSON.stringify(payload, null, 2);
+    } catch (e) {
+      // Fallback: drop any circular references so the backup still saves.
+      const seen = new WeakSet();
+      data = JSON.stringify(payload, (k, v) => {
+        if (typeof v === 'object' && v !== null) { if (seen.has(v)) return undefined; seen.add(v); }
+        return v;
+      }, 2);
+    }
+    downloadFile(`blackstars-backup-${TODAY}.json`, data, 'application/json');
+    try { localStorage.setItem('bs-last-backup', String(Date.now())); } catch (_) {}
+    if (window.__hideBackupReminder) window.__hideBackupReminder();
+    toast(`✓ Backup saved · ${state.members.length} members · ${state.invoices.length} invoices`);
+  } catch (err) {
+    console.error('Backup failed', err);
+    toast('Backup failed: ' + (err && err.message ? err.message : 'unknown error'), 'error');
+  }
 };
 
   $('#backup-btn').addEventListener('click', () => window.downloadBackup());
@@ -11670,7 +11701,7 @@ PAGES.trials = (main) => {
   function applyFilter() {
     return (state.trials || []).filter(t => {
       if (filter.status !== 'all' && t.status !== filter.status) return false;
-      if (filter.sport !== 'all' && t.sport !== filter.sport) return false;
+      if (filter.sport !== 'all' && t.sport !== filter.sport && t.sport2 !== filter.sport) return false;
       if (filter.search) {
         const q = filter.search.toLowerCase();
         const hay = [t.name, t.nameArabic, t.phone, t.email, t.notes].filter(Boolean).join(' ').toLowerCase();
@@ -11700,8 +11731,8 @@ PAGES.trials = (main) => {
             </div>
           </td>
           <td>${phoneCell(phone)}</td>
-          <td>${escapeHtml(t.sport || '—')}</td>
-          <td>${t.coachId ? escapeHtml(coachName(t.coachId)) : '<span class="text-mute">—</span>'}</td>
+          <td>${escapeHtml(t.sport || '—')}${t.sport2 ? `<div class="text-mute" style="font-size:10px">+ ${escapeHtml(t.sport2)}</div>` : ''}</td>
+          <td>${t.coachId ? escapeHtml(coachName(t.coachId)) : '<span class="text-mute">—</span>'}${t.sport2 && t.coachId2 ? `<div class="text-mute" style="font-size:10px">+ ${escapeHtml(coachName(t.coachId2))}</div>` : ''}</td>
           <td>${t.trialDate ? fmtDate(t.trialDate) : '<span class="text-mute">—</span>'}${daysSince != null ? `<div class="text-mute" style="font-size:10px">${daysSince}d ago</div>` : ''}</td>
           <td>${t.followUpDate ? fmtDate(t.followUpDate) : '<span class="text-mute">—</span>'}</td>
           <td><span style="color:${statusColor};font-weight:600;text-transform:capitalize">${t.status || 'new'}</span></td>
@@ -11728,7 +11759,7 @@ PAGES.trials = (main) => {
   const conversionRate = all.length ? Math.round(convertedCount / all.length * 100) : 0;
 
   // Unique sports for filter dropdown
-  const uniqSports = [...new Set(all.map(t => t.sport).filter(Boolean))].sort();
+  const uniqSports = [...new Set(all.flatMap(t => [t.sport, t.sport2]).filter(Boolean))].sort();
 
   main.innerHTML = `
     <div class="topbar">
@@ -11862,6 +11893,10 @@ function showTrialForm(t) {
         <div class="field"><label>With Coach <span style="color:var(--accent)">*</span></label><select id="t-coach"><option value="" ${!t.coachId ? 'selected' : ''}>— pick a coach —</option>${activeCoaches().map(c => `<option value="${c.id}" ${c.id===t.coachId?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select></div>
       </div>
       <div class="form-row">
+        <div class="field"><label>2nd sport tried <span class="text-mute" style="font-size:10px">(optional)</span></label><select id="t-sport2"><option value="" ${!t.sport2 ? 'selected' : ''}>— none —</option>${SPORTS.map(s => `<option ${s===t.sport2?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div class="field"><label>With Coach</label><select id="t-coach2"><option value="" ${!t.coachId2 ? 'selected' : ''}>— pick a coach —</option>${activeCoaches().map(c => `<option value="${c.id}" ${c.id===t.coachId2?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-row">
         <div class="field"><label>Trial date</label><input id="t-date" type="date" value="${t.trialDate || TODAY}" /></div>
         <div class="field"><label>Follow-up date</label><input id="t-fu" type="date" value="${t.followUpDate || ''}" /></div>
       </div>
@@ -11910,6 +11945,10 @@ function showTrialForm(t) {
         const coachId = parseInt($('#t-coach').value);
         if (!sport) { toast('Sport is required', 'error'); $('#t-sport')?.focus(); return; }
         if (!coachId) { toast('Coach is required (so admin knows who delivered the trial)', 'error'); $('#t-coach')?.focus(); return; }
+        const sport2 = $('#t-sport2').value;
+        const coachId2 = parseInt($('#t-coach2').value) || null;
+        if (sport2 && sport2 === sport) { toast('Pick a different second sport', 'error'); $('#t-sport2')?.focus(); return; }
+        if (sport2 && !coachId2) { toast('Pick a coach for the second sport', 'error'); $('#t-coach2')?.focus(); return; }
         const email = $('#t-email').value.trim();
         if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
           toast('Email format is invalid', 'error');
@@ -11925,6 +11964,8 @@ function showTrialForm(t) {
           email: email || null,
           sport,
           coachId,
+          sport2: sport2 || null,
+          coachId2: sport2 ? coachId2 : null,
           trialDate: $('#t-date').value || TODAY,
           followUpDate: $('#t-fu').value || null,
           status: $('#t-status').value,

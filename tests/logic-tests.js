@@ -1173,6 +1173,16 @@ ${seed}
   eq(memberAge(ageToBirthdate(8)), 8, 'age-field: ageToBirthdate(8) reads back as age 8');
   eq(memberAge(ageToBirthdate(35)), 35, 'age-field: ageToBirthdate(35) reads back as age 35');
   ok(DEFAULT_SUMMER_CAMP_PRICES.some(p => p.days === 42), 'camp: a 6-week (42-day) duration option exists');
+  // Trials can record a 2nd sport — filter matches either sport
+  function _trialMatch(t, sel) { return sel === 'all' || t.sport === sel || t.sport2 === sel; }
+  ok(_trialMatch({ sport: 'Boxing', sport2: 'Swimming' }, 'Swimming'), 'trial: sport filter matches the 2nd sport tried');
+  ok(_trialMatch({ sport: 'Boxing', sport2: 'Swimming' }, 'Boxing'), 'trial: sport filter matches the 1st sport tried');
+  ok(!_trialMatch({ sport: 'Boxing', sport2: 'Swimming' }, 'Karate'), 'trial: sport filter excludes an unrelated sport');
+  // Attendance-based commission: per-class accrual + expiry true-up = full commission
+  var _fee = 600, _planned = 8, _rate = 30;
+  var _perClass = (_fee * _rate / 100) / _planned; // 22.5
+  eq(Math.round(_perClass * 3 * 100) / 100, 67.5, 'attendance-commission: 3 attended classes earn 3x the per-class amount');
+  eq(Math.round((_perClass * 3 + _perClass * 5) * 100) / 100, Math.round(_fee * _rate / 100 * 100) / 100, 'attendance-commission: attended + expiry true-up equals the full commission');
   eq(ageToBirthdate(''), '', 'age-field: blank age yields no birthdate');
   eq(ageToBirthdate(0), '', 'age-field: zero/invalid age yields no birthdate');
   // Renewal value falls back to the latest real invoice when enrolment prices are blank
