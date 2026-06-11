@@ -1238,3 +1238,116 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
   pending until it truly ends. Pending amounts shown separately.
 - Coach pay slip PDF now shows a "How commission is calculated" points box (when basis = attendance) plus
   a Pending row. Regression: 557 logic assertions + 35 pages render, all passing.
+
+
+## 5.88.0 note — Fix invisible Coach Advice textarea
+- The advice input on the Coach Advice page was collapsing/rendering invisibly for some coaches, so
+  "Send advice" always said "Write some advice first". Gave every .field textarea a guaranteed
+  min-height (84px), resize:vertical and display:block, plus a belt-and-suspenders inline style on the
+  advice box so it can never collapse or render white-on-white.
+- Regression: 557 logic assertions + 35 pages render, all passing.
+
+
+## 5.89.0 note — Renewal-potential detail page + camp member edit (transport & duration)
+- The Dashboard "Renewal revenue potential" card is now clickable → opens a new hidden admin page
+  (renewaldetail) listing ONE row per member x enrolled sport (incl. Summer Camp): Name, Mobile, Sport,
+  Start date, End date, Paid value, with a total and CSV export. Start/End derived from the matching
+  subscription, else enrolment start + validity, else member start/expiry.
+- Camp Members: added a Duration column (2 weeks / 3 weeks / 6 weeks etc., from durationLabel) and an
+  Edit action -> editCampMember() modal to update the transport flag AND the camp duration in one place
+  (updates the camp enrolment, its subscription end date, and member expiry when camp is the membership).
+  CSV export now includes Duration.
+- Also includes the v5.88.0 Coach Advice textarea fix.
+- Regression: 558 logic assertions + 36 pages render, all passing.
+
+
+## 5.90.0 note — Fix Dashboard Backup button (downloadBackup was page-scoped)
+- Root cause: window.downloadBackup was defined INSIDE another page's wiring function, so it only existed
+  after visiting Settings/Data & Backup. On a fresh load on the Dashboard it was undefined, so the topbar
+  Backup button did nothing. Moved the definition to top level so it is always available from any page.
+- Regression: 559 logic assertions + 36 pages render, all passing (incl. a check that downloadBackup is global).
+
+
+## 5.91.0 note — Nav regrouping
+- New left-menu sections / order: Main · Summer Camp · Team & Sports · Finance · Insights · System.
+- Summer Camp section = Summer Camp (schedule) + Camp Members.
+- Team & Sports section = Team (coaches) + Sports.
+- Merged the old Settings section into System (Users & Roles, Preferences, Club Setup, Data & Backup,
+  Danger Zone now live under System alongside Data Import/Export and Audit Log).
+- Removed the redundant "Users & Roles" card from the Data & Backup screen (it only linked to the
+  dedicated Users page).
+- Arabic section labels added: المعسكر الصيفي, الفريق والرياضات.
+- Regression: 562 logic assertions + 36 pages render, all passing.
+
+
+## 5.92.0 note — Summer Camp: Drivers / Transport page
+- New page (Summer Camp section) "Drivers / Transport" (route campdrivers). Manage drivers (name +
+  mobile: add / edit / delete) and link each camp student to a driver via a per-student dropdown.
+- Data: state.drivers = [{id,name,phone}]; member.campDriverId links a camp student to a driver.
+  Assigning a driver also flags campTransport=true; deleting a driver unassigns its students.
+- KPIs (drivers / assigned / not assigned), per-driver student counts, and CSV export of the
+  student↔driver roster. Arabic-labelled throughout. Bilingual nav label added.
+- Regression: 564 logic assertions + 37 pages render, all passing.
+
+
+## 5.93.0 note — Camp transport split into 3 simple pieces
+- Drivers screen (campdrivers) is now drivers-only: add/edit/delete name + mobile, with student counts.
+- Camp Members screen: each member now has a Driver dropdown (assignDriver) + Driver column in CSV.
+- New "Driver Students" screen (camproutes): each driver shown with the students they pick up (name +
+  phone), an "Not assigned" group, CSV + Print. Summer Camp section now: Summer Camp · Camp Members ·
+  Drivers · Driver Students.
+- Regression: 565 logic assertions + 38 pages render, all passing.
+
+
+## 5.94.0 note — Split the crowded Main menu into logical groups
+- Main: Dashboard (+ role homes). New Membership group: Members, Families, Expiring, Trials, History.
+  New Activities group: Schedule, Attendance, Rentals, Coach Advice.
+- Full section order: Main · Membership · Activities · Summer Camp · Team & Sports · Finance · Insights ·
+  System. Arabic labels added: العضوية (Membership), الأنشطة (Activities).
+- Regression: 567 logic assertions + 38 pages render, all passing.
+
+
+## 5.95.0 note — Coach view part 1: own-classes scoping + next class
+- Attendance: a signed-in coach now sees ONLY the sports they actually coach (per-enrolment coachId);
+  the coach filter is hidden for them. Admin behaviour unchanged.
+- Schedule: a coach sees ONLY their own classes (others hidden, not just dimmed).
+- Coach dashboard: new "Your next class" card (sport · day · time · Today/Tomorrow/in N days) from the
+  weekly schedule.
+- (Salary is already shown on the coach dashboard; the advice textarea fix shipped in 5.88.0.)
+- Regression: 567 logic assertions + 38 pages render, all passing.
+
+
+## 5.96.0 note — Private sport variants (shared icon + lock)
+- Any sport can have a "(Private)" variant: a separate, separately-priced sport that shares the base
+  sport icon/colour and adds a 🔒 lock + "Private" tag. Convention: name ends with " (Private)".
+- Helpers isPrivateSport()/baseSportName(); schedule + My-Sports icon resolvers look up the base name and
+  append 🔒 for private. Sports screen gets a 🔒+ "Make private variant" button per sport that creates
+  "<Sport> (Private)" (inherits icon/colour). Price is typed per enrolment as usual.
+- Regression: 569 logic assertions + 38 pages render, all passing.
+
+
+## 5.97.0 note — Student view enhancements
+- Renewal alert banner at the top of My Membership when the membership is expired or expiring within
+  7 days (red/amber, bilingual, "renew at reception").
+- Advice card now shows the full coach↔student reply thread inline, a reply count in the subtitle, and a
+  "Reply" button that opens the Advice tab (where students can post replies). Was read-only before.
+- (My Membership already had: status/expiry/balance KPIs, next-class card, my-sports cards with
+  attendance, freeze, attendance log, membership + payment history, calendar export, attendance PDF.)
+- Regression: 569 logic assertions + 38 pages render, all passing.
+
+
+## 5.98.0 note — Pre-launch QA batch (QC report fixes + consistency)
+- Search false matches (QC): short queries (<=4 chars) now require exact/prefix match — "Test" no longer
+  matches "Best"/"Tens". Longer queries keep typo tolerance (madani ~ madanee). Tests added.
+- Dashboard "Needs attention" now uses memberStatus() for expired/expiring, so Dashboard, Members and
+  Expiring all agree on what "expired" means (QC count-mismatch fix). Also removed a stale hardcoded
+  sub.month==='may' filter from the finished-all-classes alert (legacy bug — alert only worked for May).
+- Members CSV export now writes the LIVE memberStatus() instead of the stale stored m.status, so CSV
+  counts match the table (QC fix).
+- Members table Attendance column: when a member has several sports, the cell now labels WHICH sport the
+  count belongs to (QC: count appeared to mismatch the Sport column).
+- Private sports: coachTeachesSport() now matches the BASE sport, so a Kick Boxing coach can be booked
+  for "Kick Boxing (Private)" (coach-sport validation respected for variants).
+- Verified already-fixed QC items: rentals (mandatory start time, no past dates, no archived members,
+  overlap block), schedule coach-sport validation + inactive-coach warning + same-slot clash block.
+- Regression: 572 logic assertions + 38 pages render, all passing.

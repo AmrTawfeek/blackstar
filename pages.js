@@ -138,22 +138,23 @@ PAGES.dashboard = (main) => {
   const expiredList = [], expiringList = [], finishedList = [], lowStockList = [];
   for (const m of state.members) {
     if (m.deleted) continue;  // archived members don't trigger alerts
-    if (memberStatus(m) === 'Withdrawn') continue;  // withdrawn members don't need renewal alerts
-    // expiry-based
-    if (m.expiryDate) {
+    const st = memberStatus(m);
+    if (st === 'Withdrawn') continue;  // withdrawn members don't need renewal alerts
+    // expiry-based — use the SAME status logic as the Members page so the
+    // dashboard, Members tab and Expiring tab all agree on what "expired" means.
+    if (st === 'Expired') {
+      const d = m.expiryDate ? daysUntil(m.expiryDate) : null;
+      expiredList.push({ m, days: d != null ? d : 0 });
+    } else if (st === 'Active' && m.expiryDate) {
       const d = daysUntil(m.expiryDate);
-      if (d != null) {
-        if (d < 0) expiredList.push({ m, days: d });
-        else if (d <= threshold) expiringList.push({ m, days: d });
-      }
+      if (d != null && d >= 0 && d <= threshold) expiringList.push({ m, days: d });
     }
     // finished all classes but still active (likely needs renewal)
     for (const sub of (m.subscriptions || [])) {
-      if (sub.month !== 'may') continue;
       const tot = sub.totalClasses || 0;
       const liveSp = liveAttendanceCount(m, sub.activity);
       const att = liveSp.total > 0 ? liveSp.y : (sub.attendedClasses || 0);
-      if (tot > 0 && att >= tot && m.status === 'Active') {
+      if (tot > 0 && att >= tot && st === 'Active') {
         finishedList.push({ m, sport: sub.activity || m.sport });
         break;
       }
@@ -388,10 +389,10 @@ PAGES.dashboard = (main) => {
     ${(() => {
       const proj = clubRenewalValue(state.members);
       return `
-    <div class="card mb-3" style="border:1px solid rgba(16,185,129,.35);background:linear-gradient(135deg,rgba(16,185,129,.10),rgba(16,185,129,.02))">
+    <div class="card mb-3" onclick="navigate('renewaldetail')" title="${t('Click for the full breakdown by member & sport', 'اضغط لعرض التفصيل حسب العضو والرياضة')}" style="cursor:pointer;border:1px solid rgba(16,185,129,.35);background:linear-gradient(135deg,rgba(16,185,129,.10),rgba(16,185,129,.02))">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
         <div>
-          <div class="card-title" style="display:flex;align-items:center;gap:8px">💰 ${t('Renewal revenue potential','إجمالي قيمة التجديد المحتملة')}</div>
+          <div class="card-title" style="display:flex;align-items:center;gap:8px">💰 ${t('Renewal revenue potential','إجمالي قيمة التجديد المحتملة')} <span style="font-size:11px;color:var(--green)">→</span></div>
           <div class="card-subtitle">${t('If every member renewed once at their current membership price', 'إذا جدّد كل عضو اشتراكه مرة واحدة بسعره الحالي')}</div>
         </div>
         <div style="text-align:right">
@@ -682,6 +683,33 @@ function downloadFile(filename, content, mime = 'text/plain') {
   setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 100);
 }
 
+// Download a full JSON backup of all data. Defined at top level so it is ALWAYS
+// available (e.g. from the Dashboard topbar), not only after visiting Settings.
+window.downloadBackup = function() {
+  try {
+    const { user, route, session, ...rest } = state;
+    const payload = { appVersion: APP_VERSION, schemaVersion: SCHEMA_VERSION, exported: new Date().toISOString(), ...rest };
+    let data;
+    try {
+      data = JSON.stringify(payload, null, 2);
+    } catch (e) {
+      // Fallback: drop any circular references so the backup still saves.
+      const seen = new WeakSet();
+      data = JSON.stringify(payload, (k, v) => {
+        if (typeof v === 'object' && v !== null) { if (seen.has(v)) return undefined; seen.add(v); }
+        return v;
+      }, 2);
+    }
+    downloadFile(`blackstars-backup-${TODAY}.json`, data, 'application/json');
+    try { localStorage.setItem('bs-last-backup', String(Date.now())); } catch (_) {}
+    if (window.__hideBackupReminder) window.__hideBackupReminder();
+    toast(`✓ Backup saved · ${state.members.length} members · ${state.invoices.length} invoices`);
+  } catch (err) {
+    console.error('Backup failed', err);
+    toast('Backup failed: ' + (err && err.message ? err.message : 'unknown error'), 'error');
+  }
+};
+
 // ─── MEMBERS ──────────────────────────────────────────────────
 PAGES.members = (main) => {
   let filter = loadFilter('members', { search: '', status: 'all', sports: [], coach: 'all', nationality: 'all', incomplete: 'all' });
@@ -710,7 +738,12 @@ PAGES.members = (main) => {
     const att = live.total > 0 ? live.y : (mr.attendedClasses || 0);
     const pct = mr.totalClasses ? Math.round(att / mr.totalClasses * 100) : null;
     const color = pct == null ? 'var(--text-mute)' : pct >= 75 ? 'var(--green)' : pct >= 40 ? 'var(--accent-2)' : 'var(--red)';
-    return `<span class="num" style="color:${color};font-weight:600">${att}/${mr.totalClasses}</span>`;
+    // If the member has several sports, say WHICH sport this count belongs to —
+    // the number is for the most recent subscription, which may not be the
+    // sport shown first in the Sport column.
+    const sportsCount = new Set([m.sport, ...(m.enrollments || []).map(e => e.sport)].filter(Boolean)).size;
+    const tag = (sportsCount > 1 && mr.activity) ? `<div class="text-mute" style="font-size:9px;line-height:1.1">${escapeHtml(mr.activity)}</div>` : '';
+    return `<span class="num" style="color:${color};font-weight:600">${att}/${mr.totalClasses}</span>${tag}`;
   }
   function expiryCellHtml(m) {
     if (!m.expiryDate) return dash;
@@ -2544,7 +2577,7 @@ function exportMembersCSV(list) {
   if (!members.length) { toast('No members to export', 'error'); return; }
   const rows = [['ID','Name','Name (Arabic)','Sport','Coach','Phone','Phone 2','Email','QID','Birthdate','Level','Joined','Expiry','Status']];
   for (const m of members) {
-    rows.push([m.id, m.name, m.nameArabic || '', m.sport, coachName(m.coachId), m.phone || '', m.phone2 || '', m.email || '', m.qid || '', m.birthdate || '', m.level || '', m.joinDate, m.expiryDate || '', m.status]);
+    rows.push([m.id, m.name, m.nameArabic || '', m.sport, coachName(m.coachId), m.phone || '', m.phone2 || '', m.email || '', m.qid || '', m.birthdate || '', m.level || '', m.joinDate, m.expiryDate || '', memberStatus(m)]);
   }
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
   downloadFile('members.csv', csv, 'text/csv');
@@ -3346,10 +3379,144 @@ window.toggleCampTransport = function(id) {
   if (typeof audit === 'function') audit('member.update', 'member:' + id, 'camp transport ' + (m.campTransport ? 'ON' : 'OFF'));
   save(); render();
 };
+
+// Edit a camp member: update transport flag + camp duration (2/3/6 weeks, etc.)
+// in one focused dialog. Adjusts the camp enrolment, its subscription end date,
+// and the member's expiry when the camp is their membership.
+window.editCampMember = function(id) {
+  const m = state.members.find(x => x.id === id);
+  if (!m) return;
+  const campPrices = (state.settings && state.settings.summerCampPrices) || DEFAULT_SUMMER_CAMP_PRICES;
+  const campEnr = (m.enrollments || []).find(e => e.sport === SUMMER_CAMP);
+  const campSub = (m.subscriptions || []).filter(s => s.activity === SUMMER_CAMP).slice(-1)[0];
+  const days = (campEnr && (campEnr.classes || campEnr.days)) || (campSub && campSub.totalClasses) || null;
+  const curLabel = (campEnr && campEnr.durationLabel) || (campSub && campSub.durationLabel)
+    || (days && (campPrices.find(p => p.days === days) || {}).label) || '';
+  showModal({
+    title: '🌞 ' + t('Edit camp member', 'تعديل عضو المعسكر'),
+    body: `
+      <div class="text-mute" style="font-size:12px;margin-bottom:10px">${escapeHtml(m.name)}</div>
+      <div class="field"><label>${t('Camp duration', 'مدة المعسكر')}</label>
+        <select id="ecm-duration">${campPrices.map(p => `<option value="${escapeHtml(p.label)}" ${curLabel === p.label ? 'selected' : ''}>${escapeHtml(p.label)} · ${fmt(p.price)} QAR</option>`).join('')}</select>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px">
+        <input type="checkbox" id="ecm-transport" ${m.campTransport ? 'checked' : ''}> 🚌 ${t('Needs transportation', 'يحتاج النقل')}
+      </label>
+      <div class="text-mute" style="font-size:11px;margin-top:8px">${t('Changing the duration updates the camp end date. The original invoice is not changed automatically.', 'تغيير المدة يحدّث تاريخ نهاية المعسكر. لا يتم تعديل الفاتورة الأصلية تلقائياً.')}</div>`,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
+        m.campTransport = $('#ecm-transport').checked;
+        const label = $('#ecm-duration').value;
+        const picked = campPrices.find(p => p.label === label);
+        if (picked) {
+          const start = (campSub && campSub.start) || (campEnr && campEnr.start) || m.startDate || TODAY;
+          if (campEnr) { campEnr.durationLabel = picked.label; campEnr.classes = picked.days; campEnr.price = picked.price; campEnr.start = campEnr.start || start; }
+          if (campSub) { campSub.durationLabel = picked.label; campSub.totalClasses = picked.days; campSub.start = campSub.start || start; campSub.end = addDays(start, picked.days); }
+          if (m.sport === SUMMER_CAMP) { m.expiryDate = addDays(start, picked.days); m.price = picked.price; }
+        }
+        if (typeof audit === 'function') audit('member.update', 'member:' + m.id, 'camp edit: ' + label + ', transport ' + (m.campTransport ? 'on' : 'off'));
+        save(); closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
+      } },
+    ],
+  });
+};
+
+// Renewal-potential breakdown: one row per (member × enrolled sport), incl. Summer
+// Camp, with start/end dates and the renewal price. Reached by clicking the
+// "Renewal revenue potential" card on the Dashboard.
+PAGES.renewaldetail = (main) => {
+  const subFor = (m, sport) => {
+    let best = null;
+    for (const s of (m.subscriptions || [])) if (s.activity === sport && (s.start || s.end)) best = s;
+    return best;
+  };
+  const rows = [];
+  for (const m of state.members.filter(x => !x.deleted)) {
+    const ens = (m.enrollments && m.enrollments.length) ? m.enrollments
+      : (m.sport ? [{ sport: m.sport, price: m.price, start: m.startDate }] : []);
+    if (!ens.length) {
+      const v = memberRenewalValue(m);
+      if (v > 0) rows.push({ m, sport: m.sport || '—', start: m.startDate || null, end: m.expiryDate || null, price: v });
+      continue;
+    }
+    for (const e of ens) {
+      const sub = subFor(m, e.sport);
+      const start = (sub && sub.start) || e.start || m.startDate || null;
+      let end = (sub && sub.end) || null;
+      if (!end && start) end = addDays(start, parseInt(e.validity || DEFAULT_VALIDITY));
+      if (!end) end = m.expiryDate || null;
+      rows.push({ m, sport: e.sport || '—', start, end, price: parseFloat(e.price) || 0 });
+    }
+  }
+  rows.sort((a, b) => (a.m.name || '').localeCompare(b.m.name || '') || (a.sport || '').localeCompare(b.sport || ''));
+  const total = rows.reduce((s, r) => s + (r.price || 0), 0);
+  const distinct = new Set(rows.map(r => r.m.id)).size;
+
+  window._renewalDetailCSV = () => {
+    const head = ['Name', 'Arabic name', 'Mobile', 'Sport', 'Start date', 'End date', 'Paid value (QAR)'];
+    const lines = [head.join(',')];
+    for (const r of rows) {
+      lines.push([r.m.name || '', r.m.nameArabic || '', r.m.phone || '', r.sport,
+        r.start || '', r.end || '', r.price || 0]
+        .map(x => `"${String(x).replace(/"/g, '""')}"`).join(','));
+    }
+    downloadFile(`renewal-potential-${TODAY}.csv`, lines.join('\n'), 'text/csv');
+  };
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>💰 ${t('Renewal revenue potential', 'إجمالي قيمة التجديد المحتملة')}</h1>
+        <div class="subtitle">${rows.length} ${t('enrolments', 'اشتراك')} · ${distinct} ${t('distinct members', 'عضو مختلف')} · ${t('total', 'الإجمالي')} ${fmt(total)} QAR</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="navigate('dashboard')">← ${t('Back', 'رجوع')}</button>
+        <button class="btn ghost" onclick="_renewalDetailCSV()">⬇ ${t('Export CSV', 'تصدير CSV')}</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>${t('Member', 'العضو')}</th><th>${t('Mobile', 'الجوال')}</th><th>${t('Sport', 'الرياضة')}</th>
+            <th>${t('Start date', 'تاريخ البدء')}</th><th>${t('End date', 'تاريخ الانتهاء')}</th><th class="text-right">${t('Paid value', 'القيمة المدفوعة')}</th>
+          </tr></thead>
+          <tbody>
+            ${rows.length ? rows.map((r, i) => `<tr>
+              <td class="text-mute">${i + 1}</td>
+              <td><div class="font-bold">${escapeHtml(r.m.name || '—')}</div>${r.m.nameArabic ? `<div class="text-mute" style="font-size:11px">${escapeHtml(r.m.nameArabic)}</div>` : ''}</td>
+              <td>${r.m.phone ? escapeHtml(r.m.phone) : '<span class="text-mute">—</span>'}</td>
+              <td><span class="badge">${escapeHtml(r.sport)}</span></td>
+              <td>${r.start ? fmtDate(r.start) : '<span class="text-mute">—</span>'}</td>
+              <td>${r.end ? fmtDate(r.end) : '<span class="text-mute">—</span>'}</td>
+              <td class="text-right num font-bold">${fmt(r.price || 0)}</td>
+            </tr>`).join('') : `<tr><td colspan="7" class="empty"><div class="empty-icon">💰</div>${t('No priced enrolments yet', 'لا توجد اشتراكات مُسعّرة بعد')}</td></tr>`}
+          </tbody>
+          ${rows.length ? `<tfoot><tr style="border-top:2px solid var(--border);font-weight:800">
+            <td colspan="6" class="text-right">${t('Total renewal potential', 'إجمالي قيمة التجديد المحتملة')}</td>
+            <td class="text-right num" style="color:var(--green)">${fmt(total)} QAR</td>
+          </tr></tfoot>` : ''}
+        </table>
+      </div>
+    </div>`;
+};
+
 PAGES.campmembers = (main) => {
   const isCamp = m => m && !m.deleted && (m.sport === SUMMER_CAMP || (m.enrollments || []).some(e => e.sport === SUMMER_CAMP));
   const list = state.members.filter(isCamp).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const withTransport = list.filter(m => m.campTransport).length;
+  const campPrices = (state.settings && state.settings.summerCampPrices) || DEFAULT_SUMMER_CAMP_PRICES;
+  const drivers = (state.drivers || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const driverOptions = sel => `<option value="">${t('— no driver —', '— بدون سائق —')}</option>` +
+    drivers.map(d => `<option value="${d.id}" ${sel === d.id ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('');
+  const campDurationLabel = m => {
+    const e = (m.enrollments || []).find(x => x.sport === SUMMER_CAMP);
+    const s = (m.subscriptions || []).filter(x => x.activity === SUMMER_CAMP).slice(-1)[0];
+    const days = (e && (e.classes || e.days)) || (s && s.totalClasses) || null;
+    return (e && e.durationLabel) || (s && s.durationLabel)
+      || (days && (campPrices.find(p => p.days === days) || {}).label) || (days ? days + ' ' + t('days', 'يوم') : '—');
+  };
 
   const rows = list.length ? list.map((m, i) => {
     const st = memberStatus(m);
@@ -3364,15 +3531,22 @@ PAGES.campmembers = (main) => {
       </td>
       <td style="padding:9px 10px;font-size:12px">${phoneCell(m.phone)}</td>
       <td style="padding:9px 10px;font-size:12px" class="text-mute">${(typeof memberAge === 'function' && m.birthdate && memberAge(m.birthdate) != null) ? memberAge(m.birthdate) + ' yrs' : '—'}</td>
+      <td style="padding:9px 10px;font-size:12px"><span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-2);font-size:10px">🌞 ${escapeHtml(campDurationLabel(m))}</span></td>
       <td style="padding:9px 10px;font-size:12px"><span class="badge ${st.toLowerCase()}" style="font-size:10px">${st}</span></td>
       <td style="padding:9px 10px;text-align:center">
         <button class="btn ${on ? '' : 'ghost'} sm" onclick="toggleCampTransport(${m.id})" title="Click to toggle transportation" style="${on ? 'background:var(--green);color:#fff;border-color:var(--green)' : ''};min-width:96px">
           ${on ? '🚌 Yes' : '— No'}
         </button>
       </td>
-      <td style="padding:9px 10px;text-align:right"><button class="btn ghost sm" onclick="viewMember(${m.id})">👁 View</button></td>
+      <td style="padding:9px 10px">
+        <select onchange="assignDriver(${m.id}, this.value)" ${drivers.length ? '' : 'disabled'} style="min-width:140px;font-size:12px">${driverOptions(m.campDriverId)}</select>
+      </td>
+      <td style="padding:9px 10px;text-align:right;white-space:nowrap">
+        <button class="btn ghost sm" onclick="editCampMember(${m.id})" title="${t('Edit duration & transport', 'تعديل المدة والنقل')}">✏️ ${t('Edit', 'تعديل')}</button>
+        <button class="btn ghost sm" onclick="viewMember(${m.id})">👁 ${t('View', 'عرض')}</button>
+      </td>
     </tr>`;
-  }).join('') : `<tr><td colspan="7" style="padding:20px;text-align:center" class="text-mute">No members are enrolled in Summer Camp yet.</td></tr>`;
+  }).join('') : `<tr><td colspan="9" style="padding:20px;text-align:center" class="text-mute">No members are enrolled in Summer Camp yet.</td></tr>`;
 
   main.innerHTML = `
     <div class="topbar">
@@ -3396,8 +3570,10 @@ PAGES.campmembers = (main) => {
           <th style="padding:6px 10px">${t('Member', 'العضو')}</th>
           <th style="padding:6px 10px">${t('Phone', 'الهاتف')}</th>
           <th style="padding:6px 10px">${t('Age', 'العمر')}</th>
+          <th style="padding:6px 10px">🌞 ${t('Duration', 'المدة')}</th>
           <th style="padding:6px 10px">${t('Status', 'الحالة')}</th>
           <th style="padding:6px 10px;text-align:center">🚌 ${t('Transportation', 'النقل')}</th>
+          <th style="padding:6px 10px">🚐 ${t('Driver', 'السائق')}</th>
           <th style="padding:6px 10px;text-align:right">${t('Action', 'إجراء')}</th>
         </tr></thead>
         <tbody>${rows}</tbody>
@@ -3407,20 +3583,185 @@ PAGES.campmembers = (main) => {
   const expBtn = $('#campmem-export');
   if (expBtn) expBtn.addEventListener('click', () => {
     const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
-    const header = ['Name', 'Arabic name', 'Phone', 'Age', 'Status', 'Transportation'];
+    const header = ['Name', 'Arabic name', 'Phone', 'Age', 'Duration', 'Status', 'Transportation', 'Driver'];
     const lines = [header.join(',')];
     for (const m of list) {
       const age = (typeof memberAge === 'function' && m.birthdate && memberAge(m.birthdate) != null) ? memberAge(m.birthdate) : '';
-      lines.push([m.name, m.nameArabic || '', m.phone || '', age, memberStatus(m), m.campTransport ? 'Yes' : 'No'].map(esc).join(','));
+      const drv = (state.drivers || []).find(d => d.id === m.campDriverId);
+      lines.push([m.name, m.nameArabic || '', m.phone || '', age, campDurationLabel(m), memberStatus(m), m.campTransport ? 'Yes' : 'No', drv ? drv.name : ''].map(esc).join(','));
     }
     downloadFile('summer-camp-members.csv', lines.join('\n'), 'text/csv');
     toast('Exported summer-camp-members.csv');
   });
 };
 
+// ─── Summer Camp · Drivers / Transport ─────────────────────────────
+// Manage drivers (name + mobile) and link camp students to a driver.
+function driverName(id) { const d = (state.drivers || []).find(x => x.id === id); return d ? d.name : null; }
+
+window.addDriver = function() {
+  showModal({
+    title: '🚐 ' + t('Add driver', 'إضافة سائق'),
+    body: `
+      <div class="field"><label>${t('Driver name', 'اسم السائق')} <span style="color:var(--accent)">*</span></label><input id="drv-name" placeholder="${t('e.g. Mahmoud', 'مثال: محمود')}" /></div>
+      <div class="field"><label>${t('Mobile', 'الجوال')}</label><input id="drv-phone" placeholder="+974…" /></div>`,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: t('Add', 'إضافة'), class: 'btn primary', onclick: () => {
+        const name = $('#drv-name').value.trim();
+        if (!name) { toast(t('Enter a driver name', 'أدخل اسم السائق'), 'error'); return; }
+        if (!Array.isArray(state.drivers)) state.drivers = [];
+        const d = { id: nextId(state.drivers), name, phone: $('#drv-phone').value.trim() || '' };
+        state.drivers.push(d);
+        if (typeof audit === 'function') audit('driver.create', 'driver:' + d.id, name);
+        save(); closeModal(); render(); toast(t('Driver added', 'تمت إضافة السائق'));
+      } },
+    ],
+  });
+};
+
+window.editDriver = function(id) {
+  const d = (state.drivers || []).find(x => x.id === id); if (!d) return;
+  showModal({
+    title: '✏️ ' + t('Edit driver', 'تعديل السائق'),
+    body: `
+      <div class="field"><label>${t('Driver name', 'اسم السائق')} <span style="color:var(--accent)">*</span></label><input id="drv-name" value="${escapeHtml(d.name || '')}" /></div>
+      <div class="field"><label>${t('Mobile', 'الجوال')}</label><input id="drv-phone" value="${escapeHtml(d.phone || '')}" placeholder="+974…" /></div>`,
+    actions: [
+      { label: '🗑 ' + t('Delete', 'حذف'), class: 'btn ghost', onclick: () => {
+        const n = state.members.filter(m => m.campDriverId === id).length;
+        if (!confirm(t('Delete this driver?', 'حذف هذا السائق؟') + (n ? ' ' + n + ' ' + t('student(s) will be unassigned.', 'طالب سيُلغى ربطه.') : ''))) return;
+        state.members.forEach(m => { if (m.campDriverId === id) m.campDriverId = null; });
+        state.drivers = state.drivers.filter(x => x.id !== id);
+        if (typeof audit === 'function') audit('driver.delete', 'driver:' + id, d.name);
+        save(); closeModal(); render(); toast(t('Driver deleted', 'تم حذف السائق'));
+      } },
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
+        const name = $('#drv-name').value.trim();
+        if (!name) { toast(t('Enter a driver name', 'أدخل اسم السائق'), 'error'); return; }
+        d.name = name; d.phone = $('#drv-phone').value.trim() || '';
+        if (typeof audit === 'function') audit('driver.update', 'driver:' + id, name);
+        save(); closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
+      } },
+    ],
+  });
+};
+
+// Assign (or clear) a camp student's driver. Assigning a driver also flags transport.
+window.assignDriver = function(memberId, driverId) {
+  const m = state.members.find(x => x.id === memberId); if (!m) return;
+  m.campDriverId = driverId ? parseInt(driverId) : null;
+  if (m.campDriverId) m.campTransport = true;
+  if (typeof audit === 'function') audit('member.update', 'member:' + memberId, 'camp driver → ' + (driverName(m.campDriverId) || 'none'));
+  save(); render();
+};
+
+PAGES.campdrivers = (main) => {
+  if (!Array.isArray(state.drivers)) state.drivers = [];
+  const isCamp = m => m && !m.deleted && (m.sport === SUMMER_CAMP || (m.enrollments || []).some(e => e.sport === SUMMER_CAMP));
+  const campStudents = state.members.filter(isCamp);
+  const drivers = state.drivers.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const assignedCount = campStudents.filter(m => m.campDriverId).length;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🚐 ${t('Drivers', 'السائقون')}</h1>
+        <div class="subtitle">${t('Manage camp drivers — name and mobile', 'إدارة سائقي المعسكر — الاسم والجوال')}</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn primary" onclick="addDriver()">+ ${t('Add driver', 'إضافة سائق')}</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi"><div class="kpi-label">🚐 ${t('Drivers', 'السائقون')}</div><div class="kpi-value num">${drivers.length}</div></div>
+      <div class="kpi green"><div class="kpi-label">✅ ${t('Students assigned', 'طلاب مرتبطون')}</div><div class="kpi-value num">${assignedCount}</div></div>
+      <div class="kpi"><div class="kpi-label">⏳ ${t('Not assigned', 'غير مرتبطين')}</div><div class="kpi-value num">${campStudents.length - assignedCount}</div></div>
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>${t('Driver', 'السائق')}</th><th>${t('Mobile', 'الجوال')}</th><th class="text-right">${t('Students', 'الطلاب')}</th><th></th></tr></thead>
+          <tbody>
+            ${drivers.length ? drivers.map(d => {
+              const n = campStudents.filter(m => m.campDriverId === d.id).length;
+              return `<tr>
+                <td class="font-bold">${escapeHtml(d.name)}</td>
+                <td>${d.phone ? phoneCell(d.phone) : '<span class="text-mute">—</span>'}</td>
+                <td class="text-right num">${n}</td>
+                <td class="text-right"><button class="btn ghost sm" onclick="editDriver(${d.id})">✏️ ${t('Edit', 'تعديل')}</button></td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="4" class="empty"><div class="empty-icon">🚐</div>${t('No drivers yet — add one above', 'لا يوجد سائقون بعد — أضف سائقاً بالأعلى')}</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+      <div class="text-mute" style="font-size:12px;margin-top:8px">${t('Link students to a driver from the Camp Members screen. See the list per driver on Driver Students.', 'اربط الطلاب بالسائق من شاشة أعضاء المعسكر. اعرض قائمة كل سائق في شاشة طلاب كل سائق.')}</div>
+    </div>`;
+};
+
+// One screen showing each driver and the students assigned to them (pickup roster).
+PAGES.camproutes = (main) => {
+  if (!Array.isArray(state.drivers)) state.drivers = [];
+  const isCamp = m => m && !m.deleted && (m.sport === SUMMER_CAMP || (m.enrollments || []).some(e => e.sport === SUMMER_CAMP));
+  const campStudents = state.members.filter(isCamp).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const drivers = state.drivers.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const unassigned = campStudents.filter(m => !m.campDriverId);
+
+  window._driverRosterCSV = () => {
+    const head = ['Driver', 'Driver mobile', 'Student', 'Arabic name', 'Student mobile'];
+    const lines = [head.join(',')];
+    for (const d of drivers) {
+      for (const m of campStudents.filter(x => x.campDriverId === d.id)) {
+        lines.push([d.name, d.phone || '', m.name || '', m.nameArabic || '', m.phone || ''].map(x => `"${String(x).replace(/"/g, '""')}"`).join(','));
+      }
+    }
+    for (const m of unassigned) lines.push(['(unassigned)', '', m.name || '', m.nameArabic || '', m.phone || ''].map(x => `"${String(x).replace(/"/g, '""')}"`).join(','));
+    downloadFile(`driver-students-${TODAY}.csv`, lines.join('\n'), 'text/csv');
+    toast('Exported driver-students.csv');
+  };
+
+  const studentRow = m => `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;border-top:1px solid var(--border)">
+      <div><span class="font-bold">${escapeHtml(m.name)}</span>${m.nameArabic ? ` <span class="text-mute" style="font-size:11px" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}</div>
+      <div style="font-size:12px">${m.phone ? phoneCell(m.phone) : '<span class="text-mute">—</span>'}</div>
+    </div>`;
+
+  const driverCard = d => {
+    const kids = campStudents.filter(m => m.campDriverId === d.id);
+    return `<div class="card" style="margin-bottom:12px">
+      <div class="card-header"><div>
+        <div class="card-title">🚐 ${escapeHtml(d.name)} <span class="badge" style="font-size:10px">${kids.length} ${t('students', 'طالب')}</span></div>
+        <div class="card-subtitle">${d.phone ? escapeHtml(d.phone) : t('no mobile on file', 'لا يوجد جوال')}</div>
+      </div></div>
+      ${kids.length ? kids.map(studentRow).join('') : `<div class="text-mute" style="font-size:12px">${t('No students assigned yet', 'لا يوجد طلاب مرتبطون بعد')}</div>`}
+    </div>`;
+  };
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🧒 ${t('Driver Students', 'طلاب كل سائق')}</h1>
+        <div class="subtitle">${t('Each driver and the students they pick up', 'كل سائق والطلاب الذين ينقلهم')}</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="_driverRosterCSV()">⬇ ${t('Export CSV', 'تصدير CSV')}</button>
+        <button class="btn ghost" onclick="window.print()">🖨 ${t('Print', 'طباعة')}</button>
+      </div>
+    </div>
+    ${drivers.length ? drivers.map(driverCard).join('') : `<div class="card"><div class="empty"><div class="empty-icon">🚐</div>${t('No drivers yet — add them on the Drivers screen', 'لا يوجد سائقون — أضفهم من شاشة السائقين')}</div></div>`}
+    ${unassigned.length ? `<div class="card" style="border:1px dashed var(--accent-2)">
+      <div class="card-header"><div><div class="card-title" style="color:var(--accent-2)">⏳ ${t('Not assigned to a driver', 'غير مرتبطين بسائق')} <span class="badge" style="font-size:10px">${unassigned.length}</span></div><div class="card-subtitle">${t('Assign them from Camp Members', 'اربطهم من أعضاء المعسكر')}</div></div></div>
+      ${unassigned.map(studentRow).join('')}
+    </div>` : ''}`;
+};
+
 PAGES.schedule = (main) => {
   // Coaches and students get a read-only schedule (view + export). Only admins edit.
   const canEdit = currentRole() === 'admin';
+  // A signed-in coach sees ONLY their own classes.
+  const myCoachId = (currentRole() === 'coach') ? effectiveCoachId() : null;
   const DAYS = [
     { key: 'sat', label: 'SATURDAY' },
     { key: 'sun', label: 'SUNDAY' },
@@ -3451,10 +3792,10 @@ PAGES.schedule = (main) => {
     'Swimming':    { color: '#06b6d4', emoji: '🏊' },
     'Zumba':       { color: '#ec4899', emoji: '💃' },
   };
-  const sportColor = sp => (SPORT_THEME[sp] || { color: '#5b8def', emoji: '🏃' }).color;
-  const sportEmoji = sp => (SPORT_THEME[sp] || { color: '#5b8def', emoji: '🏃' }).emoji;
+  const sportColor = sp => (SPORT_THEME[baseSportName(sp)] || SPORT_THEME[sp] || { color: '#5b8def', emoji: '🏃' }).color;
+  const sportEmoji = sp => { const e = (SPORT_THEME[baseSportName(sp)] || SPORT_THEME[sp] || { emoji: '🏃' }).emoji; return isPrivateSport(sp) ? e + '🔒' : e; };
 
-  let filter = { coachId: 'all', sport: 'all' };
+  let filter = { coachId: myCoachId != null ? myCoachId : 'all', sport: 'all' };
 
   // Find classes for a given day + slot
   function classesAt(day, hour) {
@@ -3522,7 +3863,7 @@ PAGES.schedule = (main) => {
       for (const day of DAYS) {
         const cls = classesAt(day.key, slot.hour);
         const dropZone = `data-day="${day.key}" data-slot="${slot.hour}"`;
-        const items = cls.map(c => {
+        const items = cls.filter(c => myCoachId == null || isFiltered(c)).map(c => {
           const dimmed = !isFiltered(c);
           const coach = state.coaches.find(x => x.id === c.coachId);
           const warn = (coach && !isCoachActive(coach))
@@ -7863,6 +8204,7 @@ PAGES.sports = (main) => {
             <button class="btn ghost sm" onclick="moveSport('${escapeHtml(s.name)}', -1)" title="Move up" ${idx === 0 ? 'disabled' : ''}>↑</button>
             <button class="btn ghost sm" onclick="moveSport('${escapeHtml(s.name)}', 1)" title="Move down" ${idx === sports.length - 1 ? 'disabled' : ''}>↓</button>
             <button class="btn ghost sm" onclick="editSport('${escapeHtml(s.name)}')" title="Rename">✏️</button>
+            ${(!isPrivateSport(s.name) && s.name !== SUMMER_CAMP) ? `<button class="btn ghost sm" onclick="makePrivateVariant('${escapeHtml(s.name)}')" title="Create a private (1:1) variant of this sport">🔒+</button>` : ''}
             <button class="btn ghost sm" onclick="toggleSport('${escapeHtml(s.name)}')" title="${isEnabled ? 'Disable (hide from new registrations)' : 'Re-enable'}">${isEnabled ? '🚫' : '✅'}</button>
             ${usage === 0 ? `<button class="btn ghost sm" onclick="deleteSport('${escapeHtml(s.name)}')" title="Delete (only allowed when no one is registered)" style="color:var(--red)">🗑</button>` : `<button class="btn ghost sm" disabled title="Cannot delete — ${usage} enrollments use this sport" style="opacity:.4">🔒</button>`}
           </td>
@@ -8003,6 +8345,19 @@ window.addSport = function() {
       }},
     ],
   });
+};
+
+// Create a "(Private)" variant of an existing sport — shares the base sport's
+// icon/colour but is a separate, separately-priced sport.
+window.makePrivateVariant = function(name) {
+  const variant = baseSportName(name) + ' (Private)';
+  if (!Array.isArray(state.settings.sports)) state.settings.sports = [];
+  if (state.settings.sports.some(s => (typeof s === 'string' ? s : s.name) === variant)) { toast(`"${variant}" already exists`, 'error'); return; }
+  const maxOrder = Math.max(0, ...state.settings.sports.map(s => s.order ?? 0));
+  state.settings.sports.push({ name: variant, enabled: true, order: maxOrder + 1 });
+  if (typeof audit === 'function') audit('sport.create', 'sport:' + variant, 'private variant of ' + name);
+  save(); render();
+  toast(`Added ${variant} 🔒`);
 };
 
 window.editSport = function(oldName) {
@@ -8442,11 +8797,6 @@ PAGES.settings = (main, section) => {
     </div>
 
     <div class="card" data-sset="data">
-      <div class="card-header"><div><div class="card-title">🔐 Users &amp; Roles</div><div class="card-subtitle">Manage logins, roles, and role preview on their own screen.</div></div></div>
-      <button class="btn primary" onclick="navigate('users')">Open Users &amp; Roles →</button>
-    </div>
-
-    <div class="card" data-sset="data">
       <div class="card-header"><div><div class="card-title">Data Management</div><div class="card-subtitle">Full backup &amp; restore · daily backups</div></div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn primary" id="backup-btn">💾 Backup all data (1 JSON file)</button>
@@ -8660,31 +9010,6 @@ PAGES.settings = (main, section) => {
     });
   });
 
-window.downloadBackup = function() {
-  try {
-    const { user, route, session, ...rest } = state;
-    const payload = { appVersion: APP_VERSION, schemaVersion: SCHEMA_VERSION, exported: new Date().toISOString(), ...rest };
-    let data;
-    try {
-      data = JSON.stringify(payload, null, 2);
-    } catch (e) {
-      // Fallback: drop any circular references so the backup still saves.
-      const seen = new WeakSet();
-      data = JSON.stringify(payload, (k, v) => {
-        if (typeof v === 'object' && v !== null) { if (seen.has(v)) return undefined; seen.add(v); }
-        return v;
-      }, 2);
-    }
-    downloadFile(`blackstars-backup-${TODAY}.json`, data, 'application/json');
-    try { localStorage.setItem('bs-last-backup', String(Date.now())); } catch (_) {}
-    if (window.__hideBackupReminder) window.__hideBackupReminder();
-    toast(`✓ Backup saved · ${state.members.length} members · ${state.invoices.length} invoices`);
-  } catch (err) {
-    console.error('Backup failed', err);
-    toast('Backup failed: ' + (err && err.message ? err.message : 'unknown error'), 'error');
-  }
-};
-
   $('#backup-btn').addEventListener('click', () => window.downloadBackup());
   $('#fixnames-btn')?.addEventListener('click', () => window.fixNameCapitalization());
 
@@ -8877,6 +9202,17 @@ PAGES.attendance = (main) => {
   const _defaultDays = _defaultMonth === _todayMonth ? [_now.getDate()] : [];
   let filter = { month: _defaultMonth, coach: 'all', search: '', sports: [], memberId: null, days: _defaultDays, att: 'all' };
 
+  // When a COACH is signed in, the attendance grid shows ONLY the sports they
+  // actually coach (per-enrolment coachId), so a coach can mark their own
+  // classes and nobody else's.
+  const myCoachId = (typeof currentRole === 'function' && currentRole() === 'coach') ? effectiveCoachId() : null;
+  function coachSportsFor(m, cid) {
+    const set = new Set();
+    if (m.coachId === cid && m.sport) set.add(m.sport);
+    (m.enrollments || []).forEach(e => { if (e.coachId === cid && e.sport) set.add(e.sport); });
+    return set;
+  }
+
   // Collect all sports a member is enrolled in (primary + enrollments + subs)
   function memberSports(m) {
     const set = new Set();
@@ -8899,7 +9235,11 @@ PAGES.attendance = (main) => {
       if (filter.memberId != null && m.id !== filter.memberId) continue;
       const sports = memberSports(m);
       if (!sports.length) sports.push(m.sport || '—');
-      const wanted = filter.sports.length ? sports.filter(s => filter.sports.includes(s)) : sports;
+      let wanted = filter.sports.length ? sports.filter(s => filter.sports.includes(s)) : sports;
+      if (myCoachId != null) {
+        const mine = coachSportsFor(m, myCoachId);
+        wanted = wanted.filter(s => mine.has(s));
+      }
       if (!wanted.length) continue;
       if (filter.search) {
         const raw = filter.search.trim();
@@ -9291,7 +9631,7 @@ PAGES.attendance = (main) => {
           <option value="4">Week 4 (22–28)</option>
           <option value="5">Week 5 (29–end)</option>
         </select>
-        <select id="att-coach" class="btn ghost">
+        <select id="att-coach" class="btn ghost" ${myCoachId != null ? 'style="display:none"' : ''}>
           <option value="all">All coaches</option>
           ${state.coaches.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
         </select>
@@ -12085,7 +12425,7 @@ PAGES.mymembership = (main) => {
     'Football': { e: '⚽', c: '#22c55e' }, 'Swimming': { e: '🏊', c: '#06b6d4' }, 'Zumba': { e: '💃', c: '#ec4899' },
     'Summer Camp': { e: '☀️', c: '#f59e0b' },
   };
-  const sportMeta = sp => SPORT_META[sp] || { e: '🏅', c: '#5b8def' };
+  const sportMeta = sp => { const b = SPORT_META[baseSportName(sp)] || SPORT_META[sp] || { e: '🏅', c: '#5b8def' }; return { c: b.c, e: isPrivateSport(sp) ? b.e + '🔒' : b.e, priv: isPrivateSport(sp) }; };
   const sportsHtml = enrolled.length ? enrolled.map(e => {
     const dd = m.dailyAttendance?.[mo]?.[e.sport] || {};
     let y = 0; for (const k in dd) if (dd[k] === 'Y') y++;
@@ -12096,7 +12436,7 @@ PAGES.mymembership = (main) => {
       <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
         <div style="width:60px;height:60px;border-radius:16px;background:${meta.c}26;display:flex;align-items:center;justify-content:center;font-size:32px;flex-shrink:0">${meta.e}</div>
         <div style="flex:1;min-width:140px">
-          <div style="font-size:22px;font-weight:800;line-height:1.1">${escapeHtml(e.sport)}</div>
+          <div style="font-size:22px;font-weight:800;line-height:1.1">${escapeHtml(e.sport)}${meta.priv ? ` <span class="badge" style="background:#6b728022;color:#6b7280;font-size:10px;vertical-align:middle">🔒 ${t('Private', 'خاص')}</span>` : ''}</div>
           <div style="font-size:14px;color:var(--text-mute);margin-top:3px">👤 ${e.sport === SUMMER_CAMP ? t('No coach (camp)', 'بدون مدرب (معسكر)') : t('Coach', 'المدرب') + ': ' + escapeHtml(coachName(e.coachId))}</div>
         </div>
         <div style="display:flex;gap:22px;text-align:center">
@@ -12167,11 +12507,17 @@ PAGES.mymembership = (main) => {
 
   // Advice from the member's coach(es).
   const myAdvice = (state.advices || []).filter(a => a.memberId === m.id).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const adviceReplies = myAdvice.reduce((n, a) => n + ((a.comments || []).length), 0);
   const adviceHtml = myAdvice.length
-    ? myAdvice.map(a => `<div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--surface-2)">
-        <div style="font-size:11px;color:var(--text-mute);margin-bottom:3px">${escapeHtml(coachName(a.coachId) || t('Coach', 'المدرب'))} · ${a.date ? fmtDate(a.date) : ''}</div>
-        <div style="font-size:13px;white-space:pre-wrap">${escapeHtml(a.text || '')}</div>
-      </div>`).join('')
+    ? myAdvice.map(a => {
+        const cms = (a.comments || []);
+        const cmHtml = cms.length ? `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;flex-direction:column;gap:6px">${cms.map(c => `<div style="font-size:12px"><b>${escapeHtml(c.name || (c.by === 'student' ? t('You', 'أنت') : t('Coach', 'المدرب')))}:</b> ${escapeHtml(c.text || '')} <span class="text-mute" style="font-size:10px">${c.date ? fmtDate(c.date) : ''}</span></div>`).join('')}</div>` : '';
+        return `<div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--surface-2)">
+          <div style="font-size:11px;color:var(--text-mute);margin-bottom:3px">${escapeHtml(coachName(a.coachId) || t('Coach', 'المدرب'))} · ${a.date ? fmtDate(a.date) : ''}</div>
+          <div style="font-size:13px;white-space:pre-wrap">${escapeHtml(a.text || '')}</div>
+          ${cmHtml}
+        </div>`;
+      }).join('')
     : `<div class="text-mute" style="font-size:12px;padding:6px 0">${t('No advice from your coach yet.', 'لا توجد نصائح من مدربك بعد.')}</div>`;
 
   // Next class from the weekly schedule (their enrolled sports).
@@ -12254,6 +12600,16 @@ PAGES.mymembership = (main) => {
         <button class="btn ghost" onclick="promptPasswordChange(false)">🔐 ${t('Change password', 'تغيير كلمة المرور')}</button>
       </div>
     </div>
+    ${(status === 'Expired' || (dLeft != null && dLeft >= 0 && dLeft <= 7)) ? `
+    <div class="card" style="margin-bottom:16px;border:1px solid ${status === 'Expired' ? 'rgba(239,68,68,.5)' : 'rgba(245,158,11,.5)'};background:${status === 'Expired' ? 'rgba(239,68,68,.08)' : 'rgba(245,158,11,.08)'}">
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <div style="font-size:30px">${status === 'Expired' ? '⛔' : '⏰'}</div>
+        <div style="flex:1;min-width:160px">
+          <div style="font-weight:800;font-size:16px">${status === 'Expired' ? t('Your membership has expired', 'انتهت عضويتك') : t('Your membership is expiring soon', 'عضويتك تنتهي قريباً')}</div>
+          <div class="text-mute" style="font-size:13px">${status === 'Expired' ? t('Please renew at reception to keep attending classes.', 'يرجى التجديد في الاستقبال للاستمرار في حضور الحصص.') : t(`${dLeft} day${dLeft === 1 ? '' : 's'} left — renew to avoid any interruption.`, `باقٍ ${dLeft} يوم — جدّد لتجنّب أي انقطاع.`)}</div>
+        </div>
+      </div>
+    </div>` : ''}
     <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
       <div class="kpi"><div class="kpi-label">${t('Status', 'الحالة')}</div><div class="kpi-value" style="color:${statusColor}">${t(status, { Active: 'نشط', Expired: 'منتهٍ', Frozen: 'مجمّد', Withdrawn: 'منسحب', Completed: 'مكتمل' }[status] || status)}</div><div class="kpi-sub">${m.level || ''}</div></div>
       <div class="kpi"><div class="kpi-label">${t('Membership expiry', 'انتهاء العضوية')}</div><div class="kpi-value" style="font-size:20px">${m.expiryDate ? fmtDate(m.expiryDate) : '—'}</div><div class="kpi-sub">${dLeft == null ? '' : dLeft < 0 ? t(`expired ${-dLeft}d ago`, `انتهت قبل ${-dLeft} يوم`) : t(`${dLeft} day${dLeft === 1 ? '' : 's'} left`, `باقٍ ${dLeft} يوم`)}</div></div>
@@ -12271,7 +12627,9 @@ PAGES.mymembership = (main) => {
     </div>
 
     <div class="card" style="margin-top:14px">
-      <div class="card-header"><div><div class="card-title">💬 ${t('Advice from your coach', 'نصائح من مدربك')}</div><div class="card-subtitle">${t('Personal notes and tips from your coach', 'ملاحظات ونصائح شخصية من مدربك')}</div></div></div>
+      <div class="card-header"><div><div class="card-title">💬 ${t('Advice from your coach', 'نصائح من مدربك')}</div><div class="card-subtitle">${t('Personal notes and tips from your coach', 'ملاحظات ونصائح شخصية من مدربك')}${adviceReplies ? ' · ' + adviceReplies + ' ' + t('replies', 'رد') : ''}</div></div>
+        ${myAdvice.length ? `<button class="btn ghost sm" onclick="navigate('advice')">💬 ${t('Reply', 'رد')}</button>` : ''}
+      </div>
       ${adviceHtml}
     </div>
 
@@ -12447,6 +12805,40 @@ PAGES.coachhome = (main) => {
   const myAdvice = (state.advices || []).filter(a => a.coachId === coach.id).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   const replies = myAdvice.reduce((n, a) => n + (a.comments ? a.comments.length : 0), 0);
 
+  // Next upcoming class for this coach (from the weekly schedule).
+  const DAY_JS = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+  const DAY_LABEL = { sat: t('Saturday', 'السبت'), sun: t('Sunday', 'الأحد'), mon: t('Monday', 'الإثنين'), tue: t('Tuesday', 'الثلاثاء'), wed: t('Wednesday', 'الأربعاء'), thu: t('Thursday', 'الخميس'), fri: t('Friday', 'الجمعة') };
+  const SLOT_LABEL = { 15: '3:00 PM', 16: '4:00 PM', 17: '5:00 PM', 18: '6:00 PM', 19: '7:00 PM', 20: '8:00 PM' };
+  function nextClassFor(cid) {
+    const mine = (state.schedule || []).filter(c => c.coachId === cid);
+    if (!mine.length) return null;
+    const now = new Date();
+    const nowDay = now.getDay();
+    const nowHour = now.getHours() + now.getMinutes() / 60;
+    let best = null;
+    for (const c of mine) {
+      const cd = DAY_JS[c.day]; if (cd == null) continue;
+      let delta = (cd - nowDay + 7) % 7;
+      if (delta === 0 && c.slot <= nowHour) delta = 7;  // already passed today → next week
+      const score = delta * 24 + (c.slot || 0);
+      if (!best || score < best.score) best = { c, delta, score };
+    }
+    return best;
+  }
+  const nx = nextClassFor(coach.id);
+  const nxWhen = nx ? (nx.delta === 0 ? t('Today', 'اليوم') : nx.delta === 1 ? t('Tomorrow', 'غداً') : t('in', 'خلال') + ' ' + nx.delta + ' ' + t('days', 'أيام')) : '';
+  const nextClassCard = nx ? `
+    <div class="card" style="margin-bottom:16px;border:1px solid rgba(91,141,239,.35);background:linear-gradient(135deg,rgba(91,141,239,.12),rgba(91,141,239,.02))">
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <div style="font-size:30px">⏰</div>
+        <div style="flex:1;min-width:160px">
+          <div class="text-mute" style="font-size:11px;text-transform:uppercase;letter-spacing:.5px">${t('Your next class', 'حصتك القادمة')}</div>
+          <div style="font-size:18px;font-weight:800">${escapeHtml(nx.c.sport)} · ${DAY_LABEL[nx.c.day]} ${SLOT_LABEL[nx.c.slot] || ''}</div>
+        </div>
+        <div style="background:var(--blue);color:#fff;border-radius:20px;padding:6px 16px;font-weight:700;font-size:13px">${nxWhen}</div>
+      </div>
+    </div>` : '';
+
   main.innerHTML = `
     <div class="topbar">
       <div>
@@ -12458,6 +12850,8 @@ PAGES.coachhome = (main) => {
         <button class="btn ghost" onclick="window._coachRosterCsv(${coach.id})" title="${t('Export your roster as CSV', 'تصدير قائمتك CSV')}">⬇ ${t('Roster CSV', 'تصدير القائمة')}</button>
       </div>
     </div>
+
+    ${nextClassCard}
 
     <div class="kpi-grid" style="margin-bottom:16px">
       <div class="kpi">
@@ -12639,7 +13033,7 @@ PAGES.advice = (main) => {
       <div class="field"><label>Student</label>
         <select id="adv-student">${students.length ? students.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('') : '<option value="">No students assigned to you</option>'}</select>
       </div>
-      <div class="field"><label>Advice</label><textarea id="adv-text" rows="3" placeholder="Write a note for this student…"></textarea></div>
+      <div class="field"><label>Advice</label><textarea id="adv-text" rows="3" placeholder="Write a note for this student…" style="display:block;width:100%;min-height:84px;resize:vertical;padding:10px 14px;background:var(--surface-2);border:1.5px solid var(--border);border-radius:var(--r-md);color:var(--text);font-size:14px;box-sizing:border-box"></textarea></div>
       <button class="btn primary" id="adv-send" ${students.length ? '' : 'disabled'}>Send advice</button>
     </div>
     <div class="card" style="margin-top:14px">

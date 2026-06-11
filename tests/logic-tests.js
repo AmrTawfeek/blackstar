@@ -1183,6 +1183,24 @@ ${seed}
   var _perClass = (_fee * _rate / 100) / _planned; // 22.5
   eq(Math.round(_perClass * 3 * 100) / 100, 67.5, 'attendance-commission: 3 attended classes earn 3x the per-class amount');
   eq(Math.round((_perClass * 3 + _perClass * 5) * 100) / 100, Math.round(_fee * _rate / 100 * 100) / 100, 'attendance-commission: attended + expiry true-up equals the full commission');
+  ok(ROUTES.renewaldetail && ROUTES.renewaldetail.hidden && ROUTES.renewaldetail.adminOnly, 'routes: renewaldetail is a hidden admin-only page');
+  ok(typeof (typeof window !== 'undefined' ? window.downloadBackup : globalThis.downloadBackup) === 'function', 'backup: downloadBackup is defined globally (works from any page, incl. Dashboard)');
+  ok(ROUTES.campschedule.section === 'Summer Camp' && ROUTES.campmembers.section === 'Summer Camp', 'nav: camp pages grouped under a Summer Camp section');
+  ok(ROUTES.coaches.section === 'Team & Sports' && ROUTES.sports.section === 'Team & Sports', 'nav: Team and Sports grouped into one section');
+  ok(!Object.values(ROUTES).some(r => r.section === 'Settings'), 'nav: Settings section merged into System');
+  ok(ROUTES.members.section === 'Membership' && ROUTES.families.section === 'Membership' && ROUTES.trials.section === 'Membership', 'nav: member-lifecycle pages grouped under Membership');
+  ok(ROUTES.schedule.section === 'Activities' && ROUTES.attendance.section === 'Activities', 'nav: class operations grouped under Activities');
+  ok(ROUTES.campdrivers && ROUTES.campdrivers.section === 'Summer Camp', 'nav: Drivers / Transport page is under Summer Camp');
+  ok(ROUTES.camproutes && ROUTES.camproutes.section === 'Summer Camp', 'nav: Driver Students page is under Summer Camp');
+  ok(isPrivateSport('Kick Boxing (Private)') && !isPrivateSport('Kick Boxing'), 'private: isPrivateSport detects the (Private) suffix');
+  eq(baseSportName('Kick Boxing (Private)'), 'Kick Boxing', 'private: baseSportName strips the (Private) suffix for icon sharing');
+  ok(!fuzzyMatch('Best Almaha', 'Test'), 'search: short query "Test" no longer false-matches "Best" (QC fix)');
+  ok(fuzzyMatch('Madanee Khalil', 'madani'), 'search: longer queries keep typo tolerance (madani ~ madanee)');
+  ok(coachTeachesSport({ sports: ['Kick Boxing'] }, 'Kick Boxing (Private)'), 'private: a Kick Boxing coach can be booked for the Kick Boxing (Private) variant');
+  if (!Array.isArray(state.drivers)) state.drivers = [];
+  state.drivers.push({ id: 990001, name: 'TestDrv', phone: '+9745' });
+  eq(driverName(990001), 'TestDrv', 'drivers: driverName resolves the driver name');
+  state.drivers = state.drivers.filter(d => d.id !== 990001);
   eq(ageToBirthdate(''), '', 'age-field: blank age yields no birthdate');
   eq(ageToBirthdate(0), '', 'age-field: zero/invalid age yields no birthdate');
   // Renewal value falls back to the latest real invoice when enrolment prices are blank

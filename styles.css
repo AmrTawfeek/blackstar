@@ -263,6 +263,12 @@ a { color: var(--blue); text-decoration: none; }
   font-weight: 500;
   transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease;
 }
+.field textarea {
+  min-height: 84px;
+  resize: vertical;
+  line-height: 1.5;
+  display: block;
+}
 
 /* Radios & checkboxes must never be full-width (they are sometimes placed inside
    .field, which would otherwise stretch and pad them, breaking option layouts). */
