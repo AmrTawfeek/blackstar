@@ -1062,7 +1062,7 @@ PAGES.members = (main) => {
       <div class="topbar-actions">
         <button class="btn ghost" id="find-duplicates" title="Scan all members for duplicate phone numbers">🔍 Find Duplicates</button>
         <button class="btn ghost" id="member-columns" title="Show / hide table columns">🧩 ${t('Columns', 'الأعمدة')}</button>
-        <button class="btn ghost" id="export-members">📥 Export CSV</button>
+        ${isViewerRole() ? '' : '<button class="btn ghost" id="export-members">📥 Export CSV</button>'}
         <button class="btn primary" id="add-member">+ Add Member</button>
       </div>
     </div>
@@ -1394,8 +1394,10 @@ function viewMember(id) {
           ${(m.invoiceLinks && m.invoiceLinks.length) ? `<div class="text-mute" style="font-size:11px;margin-top:4px">🧾 ${m.invoiceLinks.length} invoice${m.invoiceLinks.length>1?'s':''} · ${fmt(m.invoiceLinks.reduce((a,x)=>a+(x.amount||0),0))} QAR paid${m.invoiceLinks.filter(x=>x.ref).length?' · '+m.invoiceLinks.filter(x=>x.ref).map(x=>x.ref).join(', '):''}</div>` : ''}
           <div class="mt-1"><span class="badge ${memberStatus(m).toLowerCase()}">${memberStatus(m)}</span> <span class="badge">${(m.months || []).join(' + ').toUpperCase()}</span>${(() => {
             const ob = memberOutstanding(m.id);
-            return ob > 0.001 ? ` <span class="badge" style="background:rgba(242,163,60,.18);color:var(--accent-2)" title="Outstanding balance across this member's invoices">💰 ${fmt(ob)} due</span>` : '';
+            const editable = currentRole() === 'admin' || currentRole() === 'receptionist';
+            return ob > 0.001 ? ` <span class="badge" ${editable ? `onclick="event.stopPropagation();editMemberPricing(${m.id})" style="background:rgba(242,163,60,.18);color:var(--accent-2);cursor:pointer" title="Click to record a payment / edit pricing"` : `style="background:rgba(242,163,60,.18);color:var(--accent-2)" title="Outstanding balance across this member's invoices"`}>💰 ${fmt(ob)} due</span>` : '';
           })()}</div>
+          ${(currentRole() === 'admin' || currentRole() === 'receptionist') ? `<div style="margin-top:8px"><button class="btn primary sm" onclick="editMemberPricing(${m.id})" title="Edit price / discount / paid for each enrolled sport" style="font-weight:700">💰 ${t('Edit pricing / record payment', 'تعديل السعر / تسجيل دفعة')}</button></div>` : ''}
         </div>
       </div>
       <div class="row row-2 mb-3">
@@ -1889,6 +1891,7 @@ function renderEnrollRows() {
         const i = parseInt(e.target.dataset.i);
         const key = e.target.dataset.en;
         window._enrollRows[i][key] = key === 'coachId' ? parseInt(e.target.value) : e.target.value;
+        if (key === 'price') updatePaidNowHint();
       }
     });
   });
@@ -1924,18 +1927,29 @@ function renderEnrollRows() {
   });
 }
 
-// Live "Paid now (deposit)" hint: shows the balance that will be due.
+// Live payment summary: shows Total / Paid / Due as big numbers + a hint line.
+// Recomputed on every price or paid-now keystroke.
 function updatePaidNowHint() {
-  const hint = document.getElementById('f-paidnow-hint');
-  const inp = document.getElementById('f-paidnow');
-  if (!hint || !inp) return;
+  const totalEl = document.getElementById('f-pay-total');
+  const paidEl  = document.getElementById('f-pay-paid');
+  const dueEl   = document.getElementById('f-pay-due');
+  const dueCard = document.getElementById('f-pay-due-card');
+  const hint    = document.getElementById('f-paidnow-hint');
+  const inp     = document.getElementById('f-paidnow');
+  if (!inp) return;
   const total = (window._enrollRows || []).reduce((s, r) => s + (parseFloat(r.price) || 0), 0);
   const raw = inp.value;
-  if (raw === '' || raw == null) { hint.textContent = `Full payment: ${fmt(total)} QAR`; hint.style.color = 'var(--text-mute)'; return; }
-  const paid = Math.max(0, Math.min(parseFloat(raw) || 0, total));
-  const bal = Math.max(0, total - paid);
-  if (bal > 0.001) { hint.textContent = `Paid ${fmt(paid)} · ${fmt(bal)} due`; hint.style.color = 'var(--accent-2)'; }
-  else { hint.textContent = `Paid in full: ${fmt(total)} QAR`; hint.style.color = 'var(--green)'; }
+  const blankMeansFull = (raw === '' || raw == null);
+  const paid = blankMeansFull ? total : Math.max(0, Math.min(parseFloat(raw) || 0, total));
+  const due = Math.max(0, total - paid);
+  if (totalEl) totalEl.textContent = fmt(total);
+  if (paidEl)  paidEl.textContent  = fmt(paid);
+  if (dueEl)   dueEl.textContent   = fmt(due);
+  if (dueCard) dueCard.style.opacity = due > 0.001 ? '1' : '.55';
+  if (!hint) return;
+  if (blankMeansFull) { hint.textContent = `✓ ${fmt(total)} QAR — paying in full`; hint.style.color = 'var(--green)'; }
+  else if (due > 0.001) { hint.textContent = `${fmt(paid)} QAR collected · ${fmt(due)} QAR will be marked as due`; hint.style.color = 'var(--accent-2)'; }
+  else { hint.textContent = `✓ Paid in full: ${fmt(total)} QAR`; hint.style.color = 'var(--green)'; }
 }
 
 function addEnrollRow() {  const last = window._enrollRows[window._enrollRows.length - 1];
@@ -2104,13 +2118,30 @@ function showMemberForm(m) {
         <div class="field"><label>Membership expiry <span class="text-mute" style="font-size:10px;font-weight:400">(auto · editable)</span></label><input id="f-expiry" type="date" value="${_expInit}" onchange="window._expiryManual=true;renderEnrollRows()" /><div id="f-expiry-hint" class="text-mute" style="font-size:10px;margin-top:4px"></div></div>
       </div>
       ${isNew ? `
-      <div style="margin-top:6px;padding:12px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px">
-        <div style="font-size:11px;color:var(--green);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:8px">💳 First payment (auto-creates invoice)</div>
+      <div style="margin-top:6px;padding:14px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.30);border-radius:10px">
+        <div style="font-size:11px;color:var(--green);text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin-bottom:10px">💳 ${t('First payment (auto-creates invoice)', 'الدفعة الأولى (تنشئ فاتورة تلقائياً)')}</div>
         <div class="form-row">
-          <div class="field"><label>Method</label><select id="f-method"><option value="cash">Cash</option><option value="card">Card</option></select></div>
-          <div class="field"><label>Paid now (deposit) <span class="text-mute" style="font-size:10px">(blank = pay full)</span></label><input id="f-paidnow" type="number" min="0" step="0.01" placeholder="full amount" /><div id="f-paidnow-hint" class="text-mute" style="font-size:10px;margin-top:3px"></div></div>
+          <div class="field"><label>${t('Payment method', 'طريقة الدفع')}</label><select id="f-method"><option value="cash">${t('Cash', 'نقداً')}</option><option value="card">${t('Card', 'بطاقة')}</option></select></div>
+          <div class="field"><label>💵 ${t('Paid now (QAR)', 'المدفوع الآن (ر.ق)')} <span class="text-mute" style="font-size:10px">${t('blank = pay full', 'فارغ = دفع كامل')}</span></label><input id="f-paidnow" type="number" min="0" step="0.01" placeholder="${t('e.g. 100', 'مثال: 100')}" style="font-size:16px;font-weight:600" /></div>
         </div>
-        <div class="text-dim" style="font-size:11px">Invoice total is taken from the sport prices above (one invoice covering all enrolled sports). Enter a deposit to record a partial payment — the balance shows as due.</div>
+        <div id="f-payment-summary" style="margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">
+          <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:8px">
+            <div class="text-mute" style="font-size:10px;text-transform:uppercase;letter-spacing:.5px">${t('Total', 'الإجمالي')}</div>
+            <div id="f-pay-total" style="font-weight:800;font-size:18px;font-family:monospace">0</div>
+            <div class="text-mute" style="font-size:9px">QAR</div>
+          </div>
+          <div style="background:rgba(16,185,129,.10);border:1px solid rgba(16,185,129,.30);border-radius:8px;padding:8px">
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--green)">💵 ${t('Paid', 'المدفوع')}</div>
+            <div id="f-pay-paid" style="font-weight:800;font-size:18px;font-family:monospace;color:var(--green)">0</div>
+            <div class="text-mute" style="font-size:9px">QAR</div>
+          </div>
+          <div id="f-pay-due-card" style="background:rgba(242,163,60,.10);border:1px solid rgba(242,163,60,.30);border-radius:8px;padding:8px">
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent-2)">⚠ ${t('Due', 'المستحق')}</div>
+            <div id="f-pay-due" style="font-weight:800;font-size:18px;font-family:monospace;color:var(--accent-2)">0</div>
+            <div class="text-mute" style="font-size:9px">QAR</div>
+          </div>
+        </div>
+        <div id="f-paidnow-hint" style="font-size:11px;margin-top:8px;text-align:center"></div>
       </div>
       ` : ''}
     `,
@@ -3380,6 +3411,137 @@ window.toggleCampTransport = function(id) {
   save(); render();
 };
 
+// Universal member pricing/payment editor — one row per sport (regular sports +
+// Summer Camp). Edits the matching Membership invoice (price / discount / paid)
+// for that sport and reconciles the payments log. Admins AND receptionists can
+// use it (front-desk collects money). Reached from the Members table, the
+// member profile, the Expiring page Due flag, or anywhere viewMember is shown.
+window.editMemberPricing = function(memberId) {
+  if (currentRole() !== 'admin' && currentRole() !== 'receptionist') { toast('Admins or receptionists only', 'error'); return; }
+  const m = state.members.find(x => x.id === memberId);
+  if (!m) { toast('Member not found', 'error'); return; }
+
+  // Collect every active sport: from enrollments + the legacy m.sport.
+  const sportSet = new Set();
+  for (const e of (m.enrollments || [])) if (e.sport) sportSet.add(e.sport);
+  if (m.sport) sportSet.add(m.sport);
+  const sports = [...sportSet];
+  if (!sports.length) { toast('This member has no sports enrolled yet', 'error'); return; }
+
+  // For each sport, find the most recent matching Membership invoice. Either by
+  // i.sport (single-sport invoice) or by a lineItem.sport match (multi-sport).
+  function invForSport(sp) {
+    return (state.invoices || [])
+      .filter(i => !i.deleted && i.customerId === m.id && (i.category || 'Membership') === 'Membership')
+      .filter(i => i.sport === sp || (Array.isArray(i.lineItems) && i.lineItems.some(li => li.sport === sp)))
+      .sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0] || null;
+  }
+
+  const rows = sports.map((sp, idx) => {
+    const enr = (m.enrollments || []).find(e => e.sport === sp);
+    const inv = invForSport(sp);
+    const price = inv ? (inv.amount || 0) : ((enr && enr.price) || (m.price || 0) || 0);
+    const disc  = inv ? (inv.discount || 0) : 0;
+    const paid  = inv ? invoicePaid(inv) : 0;
+    const due   = Math.max(0, price - disc - paid);
+    return { idx, sport: sp, enr, inv, price, disc, paid, due };
+  });
+
+  const rowHtml = rows.map(r => `
+    <div class="card" data-pri-sport="${escapeHtml(r.sport)}" style="background:var(--surface-2);padding:10px 12px;margin-bottom:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+        <div style="font-weight:700">${escapeHtml(r.sport)}${r.enr && r.enr.coachId ? ` <span class="text-mute" style="font-size:11px;font-weight:400">· ${escapeHtml(coachName(r.enr.coachId) || '')}</span>` : ''}</div>
+        ${r.inv ? `<span class="text-mute" style="font-size:10px">invoice #${r.inv.id}</span>` : `<span class="text-mute" style="font-size:10px">no invoice yet — Save creates one</span>`}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div class="field" style="margin:0"><label style="font-size:10px">Price (QAR)</label><input class="pri-price" data-i="${r.idx}" type="number" min="0" step="1" value="${r.price}" /></div>
+        <div class="field" style="margin:0"><label style="font-size:10px">Discount</label><input class="pri-disc" data-i="${r.idx}" type="number" min="0" step="1" value="${r.disc}" /></div>
+        <div class="field" style="margin:0"><label style="font-size:10px">Paid so far</label><input class="pri-paid" data-i="${r.idx}" type="number" min="0" step="1" value="${r.paid}" /></div>
+      </div>
+      <div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;font-size:12px">
+        <span class="text-mute">Outstanding</span>
+        <span class="pri-due" data-i="${r.idx}" style="font-weight:800;color:${r.due > 0 ? 'var(--red)' : 'var(--green)'}">${fmt(r.due)} QAR</span>
+      </div>
+    </div>`).join('');
+
+  showModal({
+    title: '💰 ' + t('Edit pricing & payment', 'تعديل السعر والدفع'),
+    wide: true,
+    body: `
+      <div class="text-mute" style="font-size:12px;margin-bottom:10px">${escapeHtml(m.name)}${m.nameArabic ? ` · <span dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}${m.phone ? ' · ' + phoneCell(m.phone) : ''}</div>
+      ${rowHtml}
+      <div class="text-mute" style="font-size:11px;margin-top:4px">${t('Each row updates the membership invoice for that sport. The matching line item, discount, paid total and payments log all reconcile.', 'كل صف يحدّث فاتورة العضوية لتلك الرياضة. يتم مزامنة بند الفاتورة والخصم والمدفوع وسجل الدفعات.')}</div>`,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
+        const updates = rows.map(r => ({
+          r,
+          price: Math.max(0, parseFloat(document.querySelector(`.pri-price[data-i="${r.idx}"]`).value) || 0),
+          disc:  Math.max(0, parseFloat(document.querySelector(`.pri-disc[data-i="${r.idx}"]`).value) || 0),
+          paid:  Math.max(0, parseFloat(document.querySelector(`.pri-paid[data-i="${r.idx}"]`).value) || 0),
+        }));
+        for (const u of updates) {
+          if (u.paid > Math.max(0, u.price - u.disc)) { toast(`${u.r.sport}: paid cannot exceed price minus discount`, 'error'); return; }
+        }
+        for (const u of updates) {
+          const { r, price, disc, paid } = u;
+          const net = Math.max(0, price - disc);
+          let inv = r.inv;
+          if (!inv) {
+            inv = {
+              id: nextId(state.invoices),
+              customerId: m.id,
+              customerType: 'member',
+              category: 'Membership',
+              sport: r.sport,
+              description: r.sport,
+              date: TODAY,
+              month: TODAY.slice(0, 7),
+              amount: net,
+              discount: disc,
+              amountPaid: paid,
+              method: paid > 0 ? 'Cash' : '',
+              coachId: (r.enr && r.enr.coachId) || null,
+              lineItems: [{ sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net }],
+              payments: paid > 0 ? [{ amount: paid, date: TODAY, month: TODAY.slice(0, 7), method: 'Cash' }] : [],
+            };
+            state.invoices.push(inv);
+          } else {
+            inv.amount = net;
+            inv.discount = disc;
+            inv.amountPaid = paid;
+            if (!Array.isArray(inv.payments)) inv.payments = [];
+            const currentLogged = inv.payments.reduce((s, p) => s + (p.amount || 0), 0);
+            const delta = paid - currentLogged;
+            if (Math.abs(delta) > 0.001) inv.payments.push({ amount: delta, date: TODAY, month: TODAY.slice(0, 7), method: 'Cash', note: 'Adjusted via Edit pricing' });
+            if (Array.isArray(inv.lineItems)) {
+              const li = inv.lineItems.find(x => x.sport === r.sport) || inv.lineItems[0];
+              if (li) li.price = net;
+            }
+          }
+          // Also reflect on the enrollment so member view + reports show the new price.
+          if (r.enr) r.enr.price = net;
+        }
+        if (typeof audit === 'function') audit('member.update', 'member:' + m.id, 'edit pricing & payment');
+        save(); closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
+      } },
+    ],
+  });
+
+  // Live recompute of the Outstanding row per sport
+  document.querySelectorAll('.pri-price, .pri-disc, .pri-paid').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const i = inp.dataset.i;
+      const p = parseFloat(document.querySelector(`.pri-price[data-i="${i}"]`).value) || 0;
+      const d = parseFloat(document.querySelector(`.pri-disc[data-i="${i}"]`).value) || 0;
+      const pd = parseFloat(document.querySelector(`.pri-paid[data-i="${i}"]`).value) || 0;
+      const due = Math.max(0, p - d - pd);
+      const el = document.querySelector(`.pri-due[data-i="${i}"]`);
+      if (el) { el.textContent = fmt(due) + ' QAR'; el.style.color = due > 0 ? 'var(--red)' : 'var(--green)'; }
+    });
+  });
+};
+
 // Edit a camp member: update transport flag + camp duration (2/3/6 weeks, etc.)
 // in one focused dialog. Adjusts the camp enrolment, its subscription end date,
 // and the member's expiry when the camp is their membership.
@@ -3392,33 +3554,175 @@ window.editCampMember = function(id) {
   const days = (campEnr && (campEnr.classes || campEnr.days)) || (campSub && campSub.totalClasses) || null;
   const curLabel = (campEnr && campEnr.durationLabel) || (campSub && campSub.durationLabel)
     || (days && (campPrices.find(p => p.days === days) || {}).label) || '';
+  // Latest Summer-Camp invoice for this member — that is where price/paid live,
+  // so editing them here keeps the books and the outstanding balance in sync.
+  const campInv = (state.invoices || [])
+    .filter(i => i.customerId === m.id && !i.deleted && ((i.sport === SUMMER_CAMP) || (i.lineItems || []).some(li => li.sport === SUMMER_CAMP)))
+    .sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0];
+  const driverList = (state.drivers || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const curPrice = campInv ? (campInv.amount || 0) : (campEnr && campEnr.price) || (m.price || 0);
+  const curDiscount = campInv ? (campInv.discount || 0) : 0;
+  const curPaid = campInv ? invoicePaid(campInv) : 0;
+  const curDue = Math.max(0, curPrice - curDiscount - curPaid);
+
   showModal({
     title: '🌞 ' + t('Edit camp member', 'تعديل عضو المعسكر'),
+    wide: true,
     body: `
-      <div class="text-mute" style="font-size:12px;margin-bottom:10px">${escapeHtml(m.name)}</div>
-      <div class="field"><label>${t('Camp duration', 'مدة المعسكر')}</label>
-        <select id="ecm-duration">${campPrices.map(p => `<option value="${escapeHtml(p.label)}" ${curLabel === p.label ? 'selected' : ''}>${escapeHtml(p.label)} · ${fmt(p.price)} QAR</option>`).join('')}</select>
+      <div class="text-mute" style="font-size:12px;margin-bottom:10px">${escapeHtml(m.name)}${m.nameArabic ? ` · <span dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}</div>
+      <div class="form-row">
+        <div class="field"><label>${t('Camp duration', 'مدة المعسكر')}</label>
+          <select id="ecm-duration">${campPrices.map(p => `<option value="${escapeHtml(p.label)}" data-price="${p.price}" ${curLabel === p.label ? 'selected' : ''}>${escapeHtml(p.label)} · ${fmt(p.price)} QAR</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>${t('Price (QAR)', 'السعر (ر.ق)')}</label><input id="ecm-price" type="number" min="0" step="1" value="${curPrice}" /></div>
       </div>
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px">
-        <input type="checkbox" id="ecm-transport" ${m.campTransport ? 'checked' : ''}> 🚌 ${t('Needs transportation', 'يحتاج النقل')}
-      </label>
-      <div class="text-mute" style="font-size:11px;margin-top:8px">${t('Changing the duration updates the camp end date. The original invoice is not changed automatically.', 'تغيير المدة يحدّث تاريخ نهاية المعسكر. لا يتم تعديل الفاتورة الأصلية تلقائياً.')}</div>`,
+      <div class="form-row">
+        <div class="field"><label>${t('Discount (QAR)', 'الخصم (ر.ق)')}</label><input id="ecm-disc" type="number" min="0" step="1" value="${curDiscount}" /></div>
+        <div class="field"><label>${t('Paid so far (QAR)', 'المدفوع (ر.ق)')}</label><input id="ecm-paid" type="number" min="0" step="1" value="${curPaid}" /></div>
+      </div>
+      <div id="ecm-summary" style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13px;display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <span>${t('Outstanding balance', 'الرصيد المستحق')}</span>
+        <span id="ecm-due" style="font-weight:800;color:${curDue > 0 ? 'var(--red)' : 'var(--green)'}">${fmt(curDue)} QAR</span>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>${t('Gender', 'الجنس')}</label>
+          <select id="ecm-gender">
+            <option value="" ${!m.gender ? 'selected' : ''}>— ${t('not set', 'غير محدد')} —</option>
+            <option value="Male" ${m.gender === 'Male' ? 'selected' : ''}>♂ ${t('Male', 'ذكر')}</option>
+            <option value="Female" ${m.gender === 'Female' ? 'selected' : ''}>♀ ${t('Female', 'أنثى')}</option>
+          </select>
+        </div>
+        <div class="field"><label>${t('Birthdate', 'تاريخ الميلاد')} <span class="text-mute" style="font-size:10px">${t('determines Kids vs Boys/Girls group', 'يحدد مجموعة الصغار أو الأولاد/البنات')}</span></label>
+          <input id="ecm-bday" type="date" value="${m.birthdate || ''}" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>${t('Camp group', 'مجموعة المعسكر')} <span class="text-mute" style="font-size:10px">${t('auto from age + gender', 'تلقائي من العمر والجنس')}</span></label>
+          <div id="ecm-group-display" style="padding:10px 12px;background:var(--surface-2);border:1px dashed var(--border);border-radius:8px;font-weight:700">—</div>
+        </div>
+        <div class="field" style="display:flex;align-items:flex-end">
+          <div class="text-mute" style="font-size:11px;line-height:1.5;padding-bottom:8px">${t('Rule: under 7 = Kids · Male 7+ = Boys · Female 7+ = Girls. To change the group, edit the birthdate or gender above.', 'القاعدة: أقل من 7 = الصغار · ذكر من 7+ = الأولاد · أنثى من 7+ = البنات. لتغيير المجموعة عدّل تاريخ الميلاد أو الجنس بالأعلى.')}</div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>🚐 ${t('Driver', 'السائق')}</label>
+          <select id="ecm-driver">
+            <option value="">${t('— no driver —', '— بدون سائق —')}</option>
+            ${driverList.map(d => `<option value="${d.id}" ${m.campDriverId === d.id ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="display:flex;align-items:flex-end">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:4px">
+            <input type="checkbox" id="ecm-transport" ${m.campTransport ? 'checked' : ''}> 🚌 ${t('Needs transportation', 'يحتاج النقل')}
+          </label>
+        </div>
+      </div>
+      ${campInv ? '' : `<div class="text-mute" style="font-size:11px;margin-top:4px">${t('No invoice on file for this camp enrolment — saving will create one.', 'لا توجد فاتورة للمعسكر — سيتم إنشاء فاتورة عند الحفظ.')}</div>`}
+      <div class="text-mute" style="font-size:11px;margin-top:4px">${t('Changing the duration updates the camp end date. Price / discount / paid update the camp invoice and the outstanding balance.', 'تغيير المدة يحدّث تاريخ الانتهاء. السعر/الخصم/المدفوع يحدّثون فاتورة المعسكر والرصيد المستحق.')}</div>`,
     actions: [
       { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
       { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
         m.campTransport = $('#ecm-transport').checked;
+        const drvVal = $('#ecm-driver').value;
+        m.campDriverId = drvVal ? parseInt(drvVal) : null;
+        if (m.campDriverId) m.campTransport = true;
+        // Gender + birthdate (used for the camp-group derivation).
+        const gVal = $('#ecm-gender')?.value;
+        m.gender = gVal || null;
+        const bVal = $('#ecm-bday')?.value;
+        if (bVal) m.birthdate = bVal;
+        // Group is computed automatically from gender + age — clear any stale
+        // manual override from older builds so the computation always wins.
+        if (m.campGroup) delete m.campGroup;
         const label = $('#ecm-duration').value;
         const picked = campPrices.find(p => p.label === label);
+        const price = Math.max(0, parseFloat($('#ecm-price').value) || 0);
+        const disc = Math.max(0, parseFloat($('#ecm-disc').value) || 0);
+        const paid = Math.max(0, parseFloat($('#ecm-paid').value) || 0);
+        const net = Math.max(0, price - disc);
+        if (paid > net) { toast(t('Paid amount cannot exceed price minus discount', 'المبلغ المدفوع لا يمكن أن يتجاوز السعر بعد الخصم'), 'error'); return; }
         if (picked) {
           const start = (campSub && campSub.start) || (campEnr && campEnr.start) || m.startDate || TODAY;
-          if (campEnr) { campEnr.durationLabel = picked.label; campEnr.classes = picked.days; campEnr.price = picked.price; campEnr.start = campEnr.start || start; }
+          if (campEnr) { campEnr.durationLabel = picked.label; campEnr.classes = picked.days; campEnr.price = price; campEnr.start = campEnr.start || start; }
           if (campSub) { campSub.durationLabel = picked.label; campSub.totalClasses = picked.days; campSub.start = campSub.start || start; campSub.end = addDays(start, picked.days); }
-          if (m.sport === SUMMER_CAMP) { m.expiryDate = addDays(start, picked.days); m.price = picked.price; }
+          if (m.sport === SUMMER_CAMP) { m.expiryDate = addDays(start, picked.days); m.price = price; }
         }
-        if (typeof audit === 'function') audit('member.update', 'member:' + m.id, 'camp edit: ' + label + ', transport ' + (m.campTransport ? 'on' : 'off'));
+        // Update or create the camp invoice so the outstanding balance reflects.
+        let inv = campInv;
+        if (!inv) {
+          inv = {
+            id: nextId(state.invoices),
+            customerId: m.id,
+            customerType: 'member',
+            category: 'Membership',
+            sport: SUMMER_CAMP,
+            description: SUMMER_CAMP + (picked ? ' · ' + picked.label : ''),
+            date: TODAY,
+            month: TODAY.slice(0, 7),
+            amount: net,
+            discount: disc,
+            amountPaid: paid,
+            method: paid > 0 ? 'Cash' : '',
+            lineItems: [{ sport: SUMMER_CAMP, price: net, classes: picked ? picked.days : null }],
+            payments: paid > 0 ? [{ amount: paid, date: TODAY, month: TODAY.slice(0, 7), method: 'Cash' }] : [],
+          };
+          state.invoices.push(inv);
+        } else {
+          inv.amount = net;
+          inv.discount = disc;
+          inv.amountPaid = paid;
+          if (!Array.isArray(inv.payments)) inv.payments = [];
+          // Reconcile the payments log to match the new paid total.
+          const currentLogged = inv.payments.reduce((s, p) => s + (p.amount || 0), 0);
+          const delta = paid - currentLogged;
+          if (Math.abs(delta) > 0.001) inv.payments.push({ amount: delta, date: TODAY, month: TODAY.slice(0, 7), method: 'Cash', note: 'Adjusted via Camp edit' });
+          // Keep the matching camp line item priced in sync.
+          if (Array.isArray(inv.lineItems)) {
+            const li = inv.lineItems.find(x => x.sport === SUMMER_CAMP) || inv.lineItems[0];
+            if (li) li.price = net;
+          }
+        }
+        if (typeof audit === 'function') audit('member.update', 'member:' + m.id, 'camp edit: ' + label + ', price ' + price + ', paid ' + paid + ', due ' + (net - paid));
         save(); closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
       } },
     ],
+  });
+  // Live "due" recompute
+  const recomputeDue = () => {
+    const p = parseFloat($('#ecm-price').value) || 0;
+    const d = parseFloat($('#ecm-disc').value) || 0;
+    const pd = parseFloat($('#ecm-paid').value) || 0;
+    const due = Math.max(0, p - d - pd);
+    const el = $('#ecm-due');
+    if (el) { el.textContent = fmt(due) + ' QAR'; el.style.color = due > 0 ? 'var(--red)' : 'var(--green)'; }
+  };
+  $('#ecm-price')?.addEventListener('input', recomputeDue);
+  $('#ecm-disc')?.addEventListener('input', recomputeDue);
+  $('#ecm-paid')?.addEventListener('input', recomputeDue);
+  // Live group recompute: changing gender / birthdate updates the read-only
+  // Camp group display immediately so the admin can see the rule in action.
+  const recomputeGroup = () => {
+    const el = $('#ecm-group-display'); if (!el) return;
+    const g = $('#ecm-gender')?.value || '';
+    const bd = $('#ecm-bday')?.value || '';
+    let age = null;
+    if (bd && typeof memberAge === 'function') age = memberAge(bd);
+    let grp = 'Unknown', icon = '⚠', color = 'var(--text-mute)', label = t('Unknown — set gender + birthdate', 'غير محدد — أدخل الجنس وتاريخ الميلاد');
+    if (age != null && age < 7) { grp = 'Kids'; icon = '👶'; color = 'var(--green)'; label = t('Kids (4-7)', 'الصغار (4-7)'); }
+    else if (g === 'Female')   { grp = 'Girls'; icon = '♀'; color = '#ec4899';      label = t('Girls (7-12)', 'البنات (7-12)'); }
+    else if (g === 'Male')     { grp = 'Boys';  icon = '♂'; color = 'var(--blue)';  label = t('Boys (7-12)', 'الأولاد (7-12)'); }
+    el.style.color = color;
+    el.style.borderColor = color;
+    el.innerHTML = `${icon} ${label}`;
+  };
+  $('#ecm-gender')?.addEventListener('change', recomputeGroup);
+  $('#ecm-bday')?.addEventListener('change', recomputeGroup);
+  recomputeGroup();
+  // Auto-fill price when picking a preset duration (only if admin hasn't overridden).
+  $('#ecm-duration')?.addEventListener('change', e => {
+    const opt = e.target.selectedOptions[0];
+    const presetPrice = parseFloat(opt && opt.dataset.price) || 0;
+    if (presetPrice) { $('#ecm-price').value = presetPrice; recomputeDue(); }
   });
 };
 
@@ -3741,9 +4045,35 @@ PAGES.campmembers = (main) => {
       || (days && (campPrices.find(p => p.days === days) || {}).label) || (days ? days + ' ' + t('days', 'يوم') : '—');
   };
 
+  // Camp group is computed automatically from gender + age, matching the printed
+  // schedule poster:
+  //   age < 7              -> Kids
+  //   age >= 7, Male        -> Boys
+  //   age >= 7, Female      -> Girls
+  // Missing birthdate or gender lands the member in "Unknown" so admins can
+  // chase them up via the "Need info" KPI card. There is no manual override —
+  // fix the member's birthdate/gender to fix the group.
+  const campGroup = m => {
+    const age = (m.birthdate && typeof memberAge === 'function') ? memberAge(m.birthdate) : null;
+    if (age != null && age < 7) return 'Kids';
+    if (m.gender === 'Female') return 'Girls';
+    if (m.gender === 'Male') return 'Boys';
+    return 'Unknown';
+  };
+  const groupColor = g => g === 'Kids' ? 'var(--green)' : g === 'Boys' ? 'var(--blue)' : g === 'Girls' ? '#ec4899' : 'var(--text-mute)';
+  const groupArabic = g => g === 'Kids' ? t('Kids', 'الصغار') : g === 'Boys' ? t('Boys', 'الأولاد') : g === 'Girls' ? t('Girls', 'البنات') : t('Unknown', 'غير محدد');
+  const genderChip = m => {
+    if (m.gender === 'Female') return `<span class="badge" style="background:rgba(236,72,153,.15);color:#ec4899;font-size:10px">♀ ${t('Female', 'أنثى')}</span>`;
+    if (m.gender === 'Male')   return `<span class="badge" style="background:rgba(59,130,246,.15);color:var(--blue);font-size:10px">♂ ${t('Male', 'ذكر')}</span>`;
+    return `<span class="badge" style="background:rgba(107,114,128,.15);color:var(--text-mute);font-size:10px" title="${t('Set gender on the member profile', 'حدّد الجنس من ملف العضو')}">— ${t('not set', 'غير محدد')}</span>`;
+  };
+
   // Filters — preserved across renders so toggling transport/driver doesn't reset them.
-  if (!window._campFilter) window._campFilter = { search: '', status: 'all', duration: 'all', transport: 'all', driver: 'all' };
+  if (!window._campFilter) window._campFilter = { search: '', status: 'all', duration: 'all', transport: 'all', driver: 'all', gender: 'all', group: 'all' };
   const f = window._campFilter;
+  // Back-compat for older saved filter shapes
+  if (f.gender == null) f.gender = 'all';
+  if (f.group == null) f.group = 'all';
   const list = allCamp.filter(m => {
     if (f.status !== 'all' && memberStatus(m) !== f.status) return false;
     if (f.duration !== 'all' && campDurationLabel(m) !== f.duration) return false;
@@ -3751,6 +4081,11 @@ PAGES.campmembers = (main) => {
     if (f.transport === 'no' && m.campTransport) return false;
     if (f.driver === '__none' && m.campDriverId) return false;
     if (f.driver !== 'all' && f.driver !== '__none' && parseInt(f.driver) !== (m.campDriverId || 0)) return false;
+    if (f.gender !== 'all') {
+      if (f.gender === '__missing' && m.gender) return false;
+      if (f.gender !== '__missing' && m.gender !== f.gender) return false;
+    }
+    if (f.group !== 'all' && campGroup(m) !== f.group) return false;
     if (f.search) {
       const q = f.search.toLowerCase();
       const hay = ((m.name || '') + ' ' + (m.nameArabic || '') + ' ' + (m.phone || '')).toLowerCase();
@@ -3761,11 +4096,17 @@ PAGES.campmembers = (main) => {
   const withTransport = list.filter(m => m.campTransport).length;
   const durations = [...new Set(allCamp.map(campDurationLabel).filter(x => x && x !== '—'))].sort();
   const statuses = [...new Set(allCamp.map(memberStatus))].sort();
-  const filtersOn = f.search || f.status !== 'all' || f.duration !== 'all' || f.transport !== 'all' || f.driver !== 'all';
+  const filtersOn = f.search || f.status !== 'all' || f.duration !== 'all' || f.transport !== 'all' || f.driver !== 'all' || f.gender !== 'all' || f.group !== 'all';
+  // Group breakdown for KPI cards (over the FILTERED list so they reflect what's shown).
+  const gKids  = list.filter(m => campGroup(m) === 'Kids').length;
+  const gBoys  = list.filter(m => campGroup(m) === 'Boys').length;
+  const gGirls = list.filter(m => campGroup(m) === 'Girls').length;
+  const gUnk   = list.filter(m => campGroup(m) === 'Unknown').length;
 
   const rows = list.length ? list.map((m, i) => {
     const st = memberStatus(m);
     const on = !!m.campTransport;
+    const grp = campGroup(m);
     return `<tr style="border-top:1px solid var(--border)">
       <td style="padding:9px 10px;color:var(--text-mute)">${i + 1}</td>
       <td style="padding:9px 10px">
@@ -3774,6 +4115,8 @@ PAGES.campmembers = (main) => {
       </td>
       <td style="padding:9px 10px;font-size:12px">${phoneCell(m.phone)}</td>
       <td style="padding:9px 10px;font-size:12px" class="text-mute">${(typeof memberAge === 'function' && m.birthdate && memberAge(m.birthdate) != null) ? memberAge(m.birthdate) + ' yrs' : '—'}</td>
+      <td style="padding:9px 10px;font-size:12px">${genderChip(m)}</td>
+      <td style="padding:9px 10px;font-size:12px"><span class="badge" style="background:${groupColor(grp)}22;color:${groupColor(grp)};font-size:10px;font-weight:700" title="${t('Auto from gender + age', 'تلقائي من الجنس والعمر')}">${groupArabic(grp)}</span></td>
       <td style="padding:9px 10px;font-size:12px"><span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-2);font-size:10px">🌞 ${escapeHtml(campDurationLabel(m))}</span></td>
       <td style="padding:9px 10px;font-size:12px"><span class="badge ${st.toLowerCase()}" style="font-size:10px">${st}</span></td>
       <td style="padding:9px 10px;text-align:center">
@@ -3789,7 +4132,7 @@ PAGES.campmembers = (main) => {
         <button class="btn ghost sm" onclick="viewMember(${m.id})">👁 ${t('View', 'عرض')}</button>
       </td>
     </tr>`;
-  }).join('') : `<tr><td colspan="9" style="padding:20px;text-align:center" class="text-mute">${filtersOn ? t('No members match the filters', 'لا يوجد أعضاء يطابقون المرشحات') : 'No members are enrolled in Summer Camp yet.'}</td></tr>`;
+  }).join('') : `<tr><td colspan="11" style="padding:20px;text-align:center" class="text-mute">${filtersOn ? t('No members match the filters', 'لا يوجد أعضاء يطابقون المرشحات') : 'No members are enrolled in Summer Camp yet.'}</td></tr>`;
 
   main.innerHTML = `
     <div class="topbar">
@@ -3798,17 +4141,32 @@ PAGES.campmembers = (main) => {
         <div class="subtitle">${list.length} ${t('of', 'من')} ${allCamp.length} ${t('Everyone enrolled in Summer Camp', 'كل المسجّلين في المعسكر الصيفي')}</div>
       </div>
       <div class="topbar-actions">
-        <button class="btn ghost" id="campmem-export">⬇ ${t('Export CSV', 'تصدير CSV')}</button>
+        ${isViewerRole() ? '' : `<button class="btn ghost" id="campmem-export">⬇ ${t('Export CSV', 'تصدير CSV')}</button>`}
       </div>
     </div>
-    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
-      <div class="kpi"><div class="kpi-label">${t('Camp members', 'أعضاء المعسكر')}</div><div class="kpi-value num">${list.length}</div></div>
-      <div class="kpi green"><div class="kpi-label">🚌 ${t('Need transport', 'يحتاجون النقل')}</div><div class="kpi-value num">${withTransport}</div></div>
-      <div class="kpi"><div class="kpi-label">${t('No transport', 'بدون نقل')}</div><div class="kpi-value num">${list.length - withTransport}</div></div>
+    <div class="kpi-grid" style="grid-template-columns:repeat(${gUnk > 0 ? 5 : 4},1fr);gap:10px;margin-bottom:16px">
+      <div class="kpi"><div class="kpi-label">${t('Camp members', 'أعضاء المعسكر')}</div><div class="kpi-value num">${list.length}</div><div class="kpi-sub">🚌 ${withTransport} ${t('with transport', 'مع نقل')}</div></div>
+      <div class="kpi" style="border-color:var(--green);background:rgba(16,185,129,.06);cursor:pointer" onclick="window._campFilter={...window._campFilter,group:window._campFilter.group==='Kids'?'all':'Kids'};render()"><div class="kpi-label" style="color:var(--green)">👶 ${t('Kids (4-7)', 'الصغار (4-7)')}</div><div class="kpi-value num" style="color:var(--green)">${gKids}</div><div class="kpi-sub">${t('click to filter', 'اضغط للتصفية')}</div></div>
+      <div class="kpi" style="border-color:var(--blue);background:rgba(59,130,246,.06);cursor:pointer" onclick="window._campFilter={...window._campFilter,group:window._campFilter.group==='Boys'?'all':'Boys'};render()"><div class="kpi-label" style="color:var(--blue)">♂ ${t('Boys (7-12)', 'الأولاد (7-12)')}</div><div class="kpi-value num" style="color:var(--blue)">${gBoys}</div><div class="kpi-sub">${t('click to filter', 'اضغط للتصفية')}</div></div>
+      <div class="kpi" style="border-color:#ec4899;background:rgba(236,72,153,.06);cursor:pointer" onclick="window._campFilter={...window._campFilter,group:window._campFilter.group==='Girls'?'all':'Girls'};render()"><div class="kpi-label" style="color:#ec4899">♀ ${t('Girls (7-12)', 'البنات (7-12)')}</div><div class="kpi-value num" style="color:#ec4899">${gGirls}</div><div class="kpi-sub">${t('click to filter', 'اضغط للتصفية')}</div></div>
+      ${gUnk > 0 ? `<div class="kpi" style="border-color:var(--accent-2);background:rgba(242,163,60,.06);cursor:pointer" onclick="window._campFilter={...window._campFilter,gender:'__missing'};render()" title="${t('Members with missing gender/age — group cannot be determined', 'أعضاء بدون جنس/عمر — المجموعة غير محددة')}"><div class="kpi-label" style="color:var(--accent-2)">⚠ ${t('Need info', 'بحاجة لبيانات')}</div><div class="kpi-value num" style="color:var(--accent-2)">${gUnk}</div><div class="kpi-sub">${t('set gender/birthdate', 'أدخل الجنس/تاريخ الميلاد')}</div></div>` : ''}
     </div>
     <div class="card">
       <div class="filter-bar" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">
         <input id="cm-search" class="btn ghost" type="text" placeholder="${t('Search name or phone…', 'ابحث بالاسم أو الهاتف…')}" value="${escapeHtml(f.search)}" style="flex:1;min-width:180px" />
+        <select id="cm-group" class="btn ghost">
+          <option value="all">${t('All groups', 'كل المجموعات')}</option>
+          <option value="Kids" ${f.group === 'Kids' ? 'selected' : ''}>👶 ${t('Kids (4-7)', 'الصغار (4-7)')}</option>
+          <option value="Boys" ${f.group === 'Boys' ? 'selected' : ''}>♂ ${t('Boys (7-12)', 'الأولاد (7-12)')}</option>
+          <option value="Girls" ${f.group === 'Girls' ? 'selected' : ''}>♀ ${t('Girls (7-12)', 'البنات (7-12)')}</option>
+          <option value="Unknown" ${f.group === 'Unknown' ? 'selected' : ''}>⚠ ${t('Need info', 'بحاجة لبيانات')}</option>
+        </select>
+        <select id="cm-gender" class="btn ghost">
+          <option value="all">${t('All genders', 'كل الأجناس')}</option>
+          <option value="Male" ${f.gender === 'Male' ? 'selected' : ''}>♂ ${t('Male', 'ذكر')}</option>
+          <option value="Female" ${f.gender === 'Female' ? 'selected' : ''}>♀ ${t('Female', 'أنثى')}</option>
+          <option value="__missing" ${f.gender === '__missing' ? 'selected' : ''}>— ${t('Not set', 'غير محدد')}</option>
+        </select>
         <select id="cm-status" class="btn ghost">
           <option value="all">${t('All statuses', 'كل الحالات')}</option>
           ${statuses.map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s}</option>`).join('')}
@@ -3835,6 +4193,8 @@ PAGES.campmembers = (main) => {
           <th style="padding:6px 10px">${t('Member', 'العضو')}</th>
           <th style="padding:6px 10px">${t('Phone', 'الهاتف')}</th>
           <th style="padding:6px 10px">${t('Age', 'العمر')}</th>
+          <th style="padding:6px 10px">${t('Gender', 'الجنس')}</th>
+          <th style="padding:6px 10px">${t('Group', 'المجموعة')}</th>
           <th style="padding:6px 10px">🌞 ${t('Duration', 'المدة')}</th>
           <th style="padding:6px 10px">${t('Status', 'الحالة')}</th>
           <th style="padding:6px 10px;text-align:center">🚌 ${t('Transportation', 'النقل')}</th>
@@ -3852,17 +4212,19 @@ PAGES.campmembers = (main) => {
   $('#cm-duration')?.addEventListener('change', e => { f.duration = e.target.value; render(); });
   $('#cm-transport')?.addEventListener('change', e => { f.transport = e.target.value; render(); });
   $('#cm-driver')?.addEventListener('change', e => { f.driver = e.target.value; render(); });
+  $('#cm-gender')?.addEventListener('change', e => { f.gender = e.target.value; render(); });
+  $('#cm-group')?.addEventListener('change', e => { f.group = e.target.value; render(); });
   $('#cm-clear')?.addEventListener('click', () => { window._campFilter = null; render(); });
 
   const expBtn = $('#campmem-export');
   if (expBtn) expBtn.addEventListener('click', () => {
     const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
-    const header = ['Name', 'Arabic name', 'Phone', 'Age', 'Duration', 'Status', 'Transportation', 'Driver'];
+    const header = ['Name', 'Arabic name', 'Phone', 'Age', 'Gender', 'Group', 'Duration', 'Status', 'Transportation', 'Driver'];
     const lines = [header.join(',')];
     for (const m of list) {
       const age = (typeof memberAge === 'function' && m.birthdate && memberAge(m.birthdate) != null) ? memberAge(m.birthdate) : '';
       const drv = (state.drivers || []).find(d => d.id === m.campDriverId);
-      lines.push([m.name, m.nameArabic || '', m.phone || '', age, campDurationLabel(m), memberStatus(m), m.campTransport ? 'Yes' : 'No', drv ? drv.name : ''].map(esc).join(','));
+      lines.push([m.name, m.nameArabic || '', m.phone || '', age, m.gender || '', campGroup(m), campDurationLabel(m), memberStatus(m), m.campTransport ? 'Yes' : 'No', drv ? drv.name : ''].map(esc).join(','));
     }
     downloadFile('summer-camp-members.csv', lines.join('\n'), 'text/csv');
     toast('Exported summer-camp-members.csv');
@@ -4020,7 +4382,7 @@ PAGES.camproutes = (main) => {
         <div class="subtitle">${t('Each driver and the students they pick up', 'كل سائق والطلاب الذين ينقلهم')}</div>
       </div>
       <div class="topbar-actions">
-        <button class="btn ghost" onclick="_driverRosterCSV()">⬇ ${t('Export CSV', 'تصدير CSV')}</button>
+        ${isViewerRole() ? '' : `<button class="btn ghost" onclick="_driverRosterCSV()">⬇ ${t('Export CSV', 'تصدير CSV')}</button>`}
         <button class="btn ghost" onclick="window.print()">🖨 ${t('Print', 'طباعة')}</button>
       </div>
     </div>
@@ -4029,6 +4391,178 @@ PAGES.camproutes = (main) => {
       <div class="card-header"><div><div class="card-title" style="color:var(--accent-2)">⏳ ${t('Not assigned to a driver', 'غير مرتبطين بسائق')} <span class="badge" style="font-size:10px">${unassigned.length}</span></div><div class="card-subtitle">${t('Assign them from Camp Members', 'اربطهم من أعضاء المعسكر')}</div></div></div>
       ${unassigned.map(studentRow).join('')}
     </div>` : ''}`;
+};
+
+// ─── Summer Camp · Import Schedule ─────────────────────────────────
+// Build/replace a whole day's camp schedule from a pasted-in list. The user
+// pastes one line per slot in the format "TIME | KIDS | BOYS | GIRLS" — each
+// cell can include the activity and (optionally) a coach in parentheses,
+// e.g. "Swimming (Coach Jahad)". Image OCR is intentionally NOT done in-app
+// (no AI service, no server) — the user runs the image through any external
+// OCR/AI in seconds and pastes the result here.
+window._campImport = window._campImport || { day: 'sunday', text: '', preview: [] };
+
+// Parse a cell like "Swimming (Coach Jahad)" → { activity: 'Swimming', coach: 'Jahad' }
+function _parseCampCell(s) {
+  if (!s) return { activity: '', coach: '' };
+  const txt = String(s).trim();
+  if (!txt) return { activity: '', coach: '' };
+  const m = txt.match(/^(.*?)\s*\(\s*(?:coach\s+)?([^)]+?)\s*\)\s*$/i);
+  if (m) return { activity: m[1].trim(), coach: m[2].trim() };
+  return { activity: txt, coach: '' };
+}
+
+// Parse pasted block. Splits each non-empty line by | / TAB / 2+ spaces, then
+// takes 4 cells: [time, kids, boys, girls]. Header rows (TIME / KIDS / BOYS /
+// GIRLS) are skipped. Returns an array of slot rows ready for state.
+function _parseCampPaste(text) {
+  const out = [];
+  for (const raw of (text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    let cells = line.split(/\s*[|\t]\s*/);
+    if (cells.length < 2) cells = line.split(/\s{2,}/);
+    if (cells.length < 2) continue;
+    if (/^(time|kids|boys|girls)\b/i.test(cells[0]) && /^(kids|boys|girls)\b/i.test(cells[1] || '')) continue;
+    while (cells.length < 4) cells.push('');
+    const [time, kids, boys, girls] = cells.slice(0, 4).map(c => c.trim());
+    out.push({ time, kids: _parseCampCell(kids), boys: _parseCampCell(boys), girls: _parseCampCell(girls) });
+  }
+  return out;
+}
+
+window._previewCampImport = function() {
+  const txt = document.getElementById('ci-paste')?.value || '';
+  window._campImport.text = txt;
+  window._campImport.preview = _parseCampPaste(txt);
+  const box = document.getElementById('ci-preview');
+  if (!box) return;
+  const rows = window._campImport.preview;
+  if (!rows.length) { box.innerHTML = `<div class="text-mute" style="font-size:12px;padding:8px 0">${t('Nothing parsed yet — paste your day above.', 'لا يوجد ما يتم تحليله بعد — الصق الجدول بالأعلى.')}</div>`; return; }
+  const cell = c => c && c.activity ? `<div>${escapeHtml(c.activity)}${c.coach ? `<div class="text-mute" style="font-size:10px">${escapeHtml(c.coach)}</div>` : ''}</div>` : '<span class="text-mute">—</span>';
+  box.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="text-align:left;color:var(--text-mute);font-size:11px">
+        <th style="padding:6px 8px">${t('Time', 'الوقت')}</th>
+        <th style="padding:6px 8px">${t('Kids 4-7', 'الصغار 4-7')}</th>
+        <th style="padding:6px 8px">${t('Boys 7-12', 'الأولاد 7-12')}</th>
+        <th style="padding:6px 8px">${t('Girls 7-12', 'البنات 7-12')}</th>
+      </tr></thead>
+      <tbody>${rows.map(r => `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:8px;font-weight:600">${escapeHtml(r.time || '—')}</td>
+        <td style="padding:8px">${cell(r.kids)}</td>
+        <td style="padding:8px">${cell(r.boys)}</td>
+        <td style="padding:8px">${cell(r.girls)}</td>
+      </tr>`).join('')}</tbody>
+    </table>
+    <div class="text-mute" style="font-size:11px;margin-top:8px">${rows.length} ${t('slot(s) detected', 'فترة تم اكتشافها')}</div>`;
+};
+
+window._applyCampImport = function() {
+  const rows = window._campImport.preview;
+  if (!rows.length) { toast(t('Paste your schedule and click Preview first', 'الصق الجدول واضغط معاينة أولاً'), 'error'); return; }
+  const day = window._campImport.day || 'sunday';
+  const mode = document.querySelector('input[name="ci-mode"]:checked')?.value || 'replace';
+  if (!confirm(t('Apply this schedule to ', 'تطبيق هذا الجدول على ') + day.toUpperCase() + (mode === 'replace' ? '?\n' + t('This REPLACES the current entries for that day.', 'سيتم استبدال إدخالات ذلك اليوم بالكامل.') : '?\n' + t('Empty slots will be filled; existing entries are kept.', 'سيتم ملء الفترات الفارغة فقط؛ يُحتفظ بالموجود.')))) return;
+  if (!state.campSchedule || !state.campSchedule.days) state.campSchedule = defaultCampSchedule();
+  if (mode === 'replace') {
+    state.campSchedule.days[day] = rows.map(r => ({
+      time: r.time || '',
+      kids: r.kids,
+      boys: r.boys,
+      girls: r.girls,
+    }));
+  } else {
+    const existing = state.campSchedule.days[day] || [];
+    const out = [];
+    const len = Math.max(existing.length, rows.length);
+    for (let i = 0; i < len; i++) {
+      const cur = existing[i] || {};
+      const nu  = rows[i] || {};
+      out.push({
+        time: cur.time || nu.time || '',
+        kids: cur.kids && cur.kids.activity ? cur.kids : (nu.kids || { activity: '', coach: '' }),
+        boys: cur.boys && cur.boys.activity ? cur.boys : (nu.boys || { activity: '', coach: '' }),
+        girls: cur.girls && cur.girls.activity ? cur.girls : (nu.girls || { activity: '', coach: '' }),
+      });
+    }
+    state.campSchedule.days[day] = out;
+  }
+  if (typeof audit === 'function') audit('camp.import', 'campSchedule:' + day, mode + ' ' + rows.length + ' slots');
+  save();
+  toast(`✓ ${rows.length} ${t('slot(s) saved to', 'فترة محفوظة في')} ${day.toUpperCase()}`);
+  navigate('campschedule');
+};
+
+PAGES.campimport = (main) => {
+  if (currentRole() !== 'admin') { main.innerHTML = '<div class="card empty">Admins only</div>'; return; }
+  const days = ['saturday', 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday'];
+  const dayLabel = { saturday: t('Saturday', 'السبت'), sunday: t('Sunday', 'الأحد'), monday: t('Monday', 'الإثنين'), tuesday: t('Tuesday', 'الثلاثاء'), wednesday: t('Wednesday', 'الأربعاء'), thursday: t('Thursday', 'الخميس'), friday: t('Friday', 'الجمعة') };
+
+  const example = `8:00 - 9:00 | Swimming (Coach Jahad)        | Taekwondo (Coach Aymen)       | Swimming (Coach Leena)
+9:00 - 9:30 | Breakfast                     | Breakfast                     | Breakfast
+9:30 - 10:30 | Karate (Coach Mostafa)       | Kickboxing (Coach Iyad)       | Kickboxing (Coach Aya)
+10:30 - 11:30 | Science (Coach Raghad)      | Parkour (Coach Jahad)         | Gymnastics (Coach Jennifer)
+11:30 - 12:00 | Prayer                      | Prayer                        | Prayer
+12:00 - 1:00 | Ninja (Coach Jahad)          | Quran & Arabic (Coach Raghad) | Zumba (Coach Jennifer)
+1:00 - 1:30 | Dismissal                     | Dismissal                     | Dismissal`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>📋 ${t('Import Schedule', 'استيراد الجدول')}</h1>
+        <div class="subtitle">${t('Paste a day from your printable poster — Kids / Boys / Girls — and apply it to the camp schedule', 'الصق جدول يوم من البوستر المطبوع — الصغار / الأولاد / البنات — وطبّقه على جدول المعسكر')}</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="navigate('campschedule')">${t('Open Camp Schedule', 'فتح جدول المعسكر')}</button>
+      </div>
+    </div>
+
+    <div class="card" style="background:rgba(91,141,239,.06);border:1px solid rgba(91,141,239,.30);margin-bottom:14px">
+      <div class="card-header"><div><div class="card-title" style="color:var(--blue)">ℹ️ ${t('How this works', 'طريقة الاستخدام')}</div></div></div>
+      <ol style="margin:0 0 0 18px;font-size:13px;line-height:1.7">
+        <li>${t('Open your printable schedule image (the SUNDAY poster, etc.) in any AI/OCR tool (ChatGPT, Claude, Google Lens). Ask it: "Give me this schedule as text with one line per row, columns separated by |".', 'افتح صورة الجدول في أي أداة ذكاء اصطناعي (مثل شات جي بي تي أو كلود). اطلب: "حوّل الجدول إلى نص، كل سطر فترة، والأعمدة مفصولة بـ |".')}</li>
+        <li>${t('Pick the day below, paste the text, click Preview to check, then Apply.', 'اختر اليوم بالأسفل، الصق النص، اضغط معاينة، ثم تطبيق.')}</li>
+        <li>${t('Lines can use "|", TAB, or 2+ spaces between columns. A coach in parentheses is captured separately, e.g. "Swimming (Coach Jahad)".', 'يمكن استخدام "|" أو زر TAB أو أكثر من مسافة بين الأعمدة. اسم المدرب بين قوسين يُسجّل بشكل منفصل، مثال: "Swimming (Coach Jahad)".')}</li>
+      </ol>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="form-row">
+        <div class="field"><label>${t('Day', 'اليوم')}</label>
+          <select id="ci-day">${days.map(d => `<option value="${d}" ${d === window._campImport.day ? 'selected' : ''}>${dayLabel[d]}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>${t('Apply mode', 'وضع التطبيق')}</label>
+          <div style="display:flex;gap:14px;align-items:center;padding-top:6px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="radio" name="ci-mode" value="replace" checked> ${t('Replace day', 'استبدال اليوم')}</label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="radio" name="ci-mode" value="fill"> ${t('Fill empty slots only', 'ملء الفارغة فقط')}</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="field"><label>📋 ${t('Paste here', 'الصق هنا')}</label>
+        <textarea id="ci-paste" rows="9" placeholder="${escapeHtml(example.replace(/"/g, '&quot;'))}" style="font-family:monospace;font-size:12px;line-height:1.5;width:100%">${escapeHtml(window._campImport.text || '')}</textarea>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn ghost" onclick="document.getElementById('ci-paste').value=''; _previewCampImport()">${t('Clear', 'مسح')}</button>
+        <button class="btn ghost" onclick="document.getElementById('ci-paste').value=${JSON.stringify(example)}; _previewCampImport()" title="${t('Fill the box with a sample so you can see the format', 'تعبئة بنموذج لرؤية التنسيق')}">${t('Load sample', 'تحميل نموذج')}</button>
+        <button class="btn primary" onclick="_previewCampImport()">👁 ${t('Preview', 'معاينة')}</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">${t('Preview', 'معاينة')}</div><div class="card-subtitle">${t('Check the parsed rows before applying', 'تحقق من الصفوف قبل التطبيق')}</div></div></div>
+      <div id="ci-preview"></div>
+      <div style="margin-top:12px;display:flex;justify-content:flex-end">
+        <button class="btn primary" onclick="_applyCampImport()" style="font-weight:700">✓ ${t('Apply to', 'تطبيق على')} <span id="ci-applied-day">${dayLabel[window._campImport.day]}</span></button>
+      </div>
+    </div>`;
+
+  document.getElementById('ci-day')?.addEventListener('change', e => {
+    window._campImport.day = e.target.value;
+    document.getElementById('ci-applied-day').textContent = dayLabel[e.target.value];
+  });
+  _previewCampImport();
 };
 
 PAGES.schedule = (main) => {
@@ -4729,13 +5263,13 @@ PAGES.coaches = (main) => {
               ${isActive ? 'Y · Active' : 'N · Inactive'}
             </button>
           </td>
-          <td><span class="badge blue">${c.rate}%</span></td>
+          ${isViewerRole() ? '' : `<td><span class="badge blue">${c.rate}%</span></td>`}
           <td class="text-right num">${apr.students}</td>
           <td class="text-right num">
             ${may.students}
             ${trendStudents !== 0 ? `<span style="color:${trendStudents>0?'var(--green)':'var(--red)'};font-size:10px;margin-left:4px">${trendStudents>0?'↑':'↓'}${Math.abs(trendStudents)}</span>` : ''}
           </td>
-          <td class="text-right num text-dim">${fmt(apr.revenue)}</td>
+          ${isViewerRole() ? '' : `<td class="text-right num text-dim">${fmt(apr.revenue)}</td>
           <td class="text-right num">
             ${fmt(may.revenue)}
             ${trendRevenue !== 0 ? `<span style="color:${trendRevenue>0?'var(--green)':'var(--red)'};font-size:10px;margin-left:4px">${trendRevenue>0?'+':''}${fmt(trendRevenue)}</span>` : ''}
@@ -4744,16 +5278,23 @@ PAGES.coaches = (main) => {
           <td class="text-right num font-bold" title="Active-member revenue: ${fmt(may.commissionBase ?? may.revenue)} × ${c.rate}%">
             ${fmt(mayComm)}
             ${(may.commissionBase ?? may.revenue) < may.revenue ? `<div style="font-size:9px;color:var(--text-mute);font-weight:400">base ${fmt(may.commissionBase ?? may.revenue)}</div>` : ''}
-          </td>
+          </td>`}
           <td class="text-right num" style="color:${may.attRate >= 75 ? 'var(--green)' : may.attRate >= 40 ? 'var(--accent-2)' : 'var(--red)'}">
             ${may.classesTotal ? Math.round(may.attRate) + '%' : '—'}
           </td>
         </tr>
       `;
-    }).join('') : `<tr><td colspan="10" class="empty">No coaches match this filter</td></tr>`;
+    }).join('') : `<tr><td colspan="${isViewerRole() ? 5 : 10}" class="empty">No coaches match this filter</td></tr>`;
 
-    // Footer totals (only over visible coaches)
-    $('#coach-tfoot').innerHTML = `
+    // Footer totals (only over visible coaches). Money totals hidden for receptionists.
+    $('#coach-tfoot').innerHTML = isViewerRole()
+      ? `<tr style="font-weight:700;background:var(--surface-2)">
+          <td colspan="2">Total (${coaches.length} shown)</td>
+          <td class="text-right num">${coaches.reduce((s,c) => s + aprStats[c.id].students, 0)}</td>
+          <td class="text-right num">${coaches.reduce((s,c) => s + mayStats[c.id].students, 0)}</td>
+          <td></td>
+        </tr>`
+      : `
       <tr style="font-weight:700;background:var(--surface-2)">
         <td colspan="3">Total (${coaches.length} shown)</td>
         <td class="text-right num">${coaches.reduce((s,c) => s + aprStats[c.id].students, 0)}</td>
@@ -4780,13 +5321,13 @@ PAGES.coaches = (main) => {
             <div class="avatar" style="width:36px;height:36px;font-size:13px">${initials(c.name)}</div>
             <div style="flex:1">
               <div style="font-weight:700;font-size:14px">${escapeHtml(c.name)}</div>
-              <div class="text-mute" style="font-size:11px">${c.rate}% · ${(c.sports || [])[0] || '—'}</div>
+              <div class="text-mute" style="font-size:11px">${isViewerRole() ? '' : c.rate + '% · '}${(c.sports || [])[0] || '—'}</div>
             </div>
             <span class="badge ${isActive ? 'active' : 'expired'}" style="font-size:9px">${isActive ? 'Active' : 'Inactive'}</span>
           </div>
           <div class="row row-2" style="gap:8px">
             <div><div class="text-mute" style="font-size:10px;text-transform:uppercase">Students</div><div class="font-bold num">${may.students}</div></div>
-            <div><div class="text-mute" style="font-size:10px;text-transform:uppercase">May Pay</div><div class="font-bold num">${fmt(comm)}</div></div>
+            ${isViewerRole() ? `<div><div class="text-mute" style="font-size:10px;text-transform:uppercase">Att rate</div><div class="font-bold num">${may.classesTotal ? Math.round(may.attRate) : 0}%</div></div>` : `<div><div class="text-mute" style="font-size:10px;text-transform:uppercase">May Pay</div><div class="font-bold num">${fmt(comm)}</div></div>`}
           </div>
           <div class="text-mute mt-2" style="font-size:10px">Att: ${may.classesAttended}/${may.classesTotal} (${may.classesTotal ? Math.round(may.attRate) : 0}%)</div>
         </div>
@@ -4829,13 +5370,13 @@ PAGES.coaches = (main) => {
             <tr>
               <th>Coach</th>
               <th>Active</th>
-              <th>Rate</th>
+              ${isViewerRole() ? '' : '<th>Rate</th>'}
               <th class="text-right">${fmtMonth(prevM).split(' ')[0]} Students</th>
               <th class="text-right">${fmtMonth(currentM).split(' ')[0]} Students</th>
-              <th class="text-right">${fmtMonth(prevM).split(' ')[0]} Revenue</th>
+              ${isViewerRole() ? '' : `<th class="text-right">${fmtMonth(prevM).split(' ')[0]} Revenue</th>
               <th class="text-right">${fmtMonth(currentM).split(' ')[0]} Revenue</th>
               <th class="text-right">${fmtMonth(prevM).split(' ')[0]} Commission</th>
-              <th class="text-right">${fmtMonth(currentM).split(' ')[0]} Commission</th>
+              <th class="text-right">${fmtMonth(currentM).split(' ')[0]} Commission</th>`}
               <th class="text-right">Att Rate (${fmtMonth(currentM).split(' ')[0]})</th>
             </tr>
           </thead>
@@ -4948,7 +5489,7 @@ PAGES.invoices = (main) => {
         </td>
       </tr>`;
     }).join('') : `<tr><td colspan="11" class="empty"><div class="empty-icon">📄</div>No invoices match</td></tr>`;
-    $('#inv-count').textContent = `${allRows.length} invoices · ${fmtMoney(total)}`;
+    $('#inv-count').textContent = isViewerRole() ? `${allRows.length} invoices` : `${allRows.length} invoices · ${fmtMoney(total)}`;
     $('#inv-pagination').innerHTML = paginationBar(pg, allRows.length, 'inv');
     bindPagination('inv', pg, allRows.length, refresh);
 
@@ -4997,7 +5538,7 @@ PAGES.invoices = (main) => {
       <div class="topbar-actions">
         <button class="btn ghost" id="quick-rental-inv" title="Log a court/room rental with auto-invoice">🏟 + Add Rental</button>
         <button class="btn ghost" id="generate-latest-inv" title="Pick a member and auto-create an invoice from their latest enrollment">⚡ Generate latest invoice</button>
-        <button class="btn ghost" id="export-inv">📥 Export</button>
+        ${isViewerRole() ? '' : '<button class="btn ghost" id="export-inv">📥 Export</button>'}
         <button class="btn ghost" onclick="findDuplicateInvoices()" title="Find membership invoices that look like duplicates (same member, sport, month and amount)">🔍 Find duplicates</button>
         <button class="btn primary" id="add-inv">+ New Invoice</button>
       </div>
@@ -7753,24 +8294,24 @@ PAGES.products = (main) => {
     <div class="topbar">
       <div>
         <h1>📦 ${t('Products', 'المنتجات')}</h1>
-        <div class="subtitle"><span id="prod-count">Loading...</span> · ${fmt(totalValue)} ${t('QAR sell value', 'ر.ق قيمة البيع')} · ${fmt(totalCost)} ${t('QAR cost value', 'ر.ق قيمة التكلفة')}</div>
+        <div class="subtitle"><span id="prod-count">Loading...</span>${isViewerRole() ? '' : ` · ${fmt(totalValue)} ${t('QAR sell value', 'ر.ق قيمة البيع')} · ${fmt(totalCost)} ${t('QAR cost value', 'ر.ق قيمة التكلفة')}`}</div>
       </div>
       <div class="topbar-actions">
         <button class="btn primary" id="prod-add">+ ${t('New Product', 'منتج جديد')}</button>
       </div>
     </div>
 
-    <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+    <div class="kpi-grid" style="grid-template-columns:repeat(${isViewerRole() ? 3 : 4},1fr);gap:12px;margin-bottom:16px">
       <div class="kpi green">
         <div class="kpi-label">📦 ${t('Products in catalog', 'المنتجات في الكتالوج')}</div>
         <div class="kpi-value">${(state.products || []).length}</div>
-        <div class="kpi-sub">${fmt(totalValue)} ${t('QAR sell value', 'ر.ق قيمة البيع')}</div>
+        ${isViewerRole() ? '' : `<div class="kpi-sub">${fmt(totalValue)} ${t('QAR sell value', 'ر.ق قيمة البيع')}</div>`}
       </div>
-      <div class="kpi blue">
+      ${isViewerRole() ? '' : `<div class="kpi blue">
         <div class="kpi-label">💰 ${t('Inventory cost (original)', 'تكلفة المخزون (الأصلية)')}</div>
         <div class="kpi-value">${fmt(totalCost)}</div>
         <div class="kpi-sub">${t('amount paid for stock', 'المبلغ المدفوع للمخزون')}${totalCost > 0 ? ` · ${t('margin', 'هامش')} ${fmt(totalValue - totalCost)} ${t('QAR', 'ر.ق')}` : ''}</div>
-      </div>
+      </div>`}
       <div class="kpi orange">
         <div class="kpi-label">⚠️ ${t('Low stock', 'مخزون منخفض')}</div>
         <div class="kpi-value">${lowCount}</div>
@@ -8010,7 +8551,7 @@ PAGES.sales = (main) => {
           </td>
         </tr>`;
     }).join('') : `<tr><td colspan="6" class="empty"><div class="empty-icon">🛒</div>No sales match</td></tr>`;
-    $('#sale-count').textContent = `${all.length} sale${all.length===1?'':'s'} · ${fmt(totalAmt)} total · ${fmt(totalPaid)} collected · ${fmt(totalDue)} outstanding`;
+    $('#sale-count').textContent = isViewerRole() ? `${all.length} sale${all.length===1?'':'s'}` : `${all.length} sale${all.length===1?'':'s'} · ${fmt(totalAmt)} total · ${fmt(totalPaid)} collected · ${fmt(totalDue)} outstanding`;
     renderPagination('sale-pagination', pg, all.length, refresh);
   }
 
@@ -11984,6 +12525,12 @@ PAGES.expiring = (main) => {
         <td><span style="color:${color};font-weight:600">${fmtDate(m.expiryDate)}</span></td>
         <td><span style="color:${color};font-weight:700">${label}</span></td>
         <td class="text-right">${attendedCell(m)}</td>
+        <td class="text-right">${(() => {
+          const due = memberOutstanding(m.id);
+          const editable = currentRole() === 'admin' || currentRole() === 'receptionist';
+          if (due > 0.001) return `<button class="btn ghost sm" ${editable ? `onclick="event.stopPropagation();editMemberPricing(${m.id})"` : 'onclick="event.stopPropagation()"'} title="${editable ? 'Click to record a payment / edit pricing' : 'Outstanding balance'}" style="background:rgba(242,163,60,.15);border:1px solid var(--accent-2);color:var(--accent-2);font-weight:700;padding:4px 10px">⚠ ${fmt(due)}</button>`;
+          return '<span style="color:var(--green);font-weight:600">✓</span>';
+        })()}</td>
         <td class="text-right" style="white-space:nowrap">
           ${phone
             ? `<a class="btn primary sm" href="${reminderHref}" target="_blank" onclick="event.stopPropagation();markReminded(${m.id})" title="Send bilingual reminder via WhatsApp">💬 Remind</a>`
@@ -12022,7 +12569,7 @@ PAGES.expiring = (main) => {
                   <th style="width:32px;text-align:center" onclick="event.stopPropagation()">
                     <input type="checkbox" class="exp-select-all" data-bucket="${bucket}" ${allPhonesSelected ? 'checked' : ''} ${phoneIds.length === 0 ? 'disabled' : ''} title="Select all in this section (with phone)" />
                   </th>
-                  <th>Member</th><th>Mobile</th><th>Last Renewal</th><th>Expiry</th><th>When</th><th class="text-right">Attended</th><th class="text-right">Actions</th>
+                  <th>Member</th><th>Mobile</th><th>Last Renewal</th><th>Expiry</th><th>When</th><th class="text-right">Attended</th><th class="text-right">💰 Due</th><th class="text-right">Actions</th>
                 </tr></thead>
                 <tbody>${list.map(x => rowHtml(x, bucket)).join('')}</tbody>
               </table>
@@ -12041,7 +12588,7 @@ PAGES.expiring = (main) => {
       </div>
       <div class="topbar-actions">
         <button class="btn ghost" title="Show members who expired within the last ${recentDays} days (set in Settings)" onclick="document.getElementById('exp-bucket').value='recent';document.getElementById('exp-bucket').dispatchEvent(new Event('change'))">🔴 Recently expired (≤${recentDays}d) · ${recentCount}</button>
-        <button class="btn ghost" id="export-expiring">📥 Export CSV</button>
+        ${isViewerRole() ? '' : '<button class="btn ghost" id="export-expiring">📥 Export CSV</button>'}
       </div>
     </div>
 
@@ -12064,12 +12611,24 @@ PAGES.expiring = (main) => {
         <div class="kpi-value num">${upcoming.length}</div>
         <div class="kpi-delta flat">On the horizon · click to filter</div>
       </div>
-      <div class="kpi green">
+      ${(() => {
+        const inList = [...expired, ...expiringSoon, ...upcoming];
+        const dueRows = inList.filter(({ m }) => memberOutstanding(m.id) > 0.001);
+        if (!dueRows.length) return '';
+        const total = dueRows.reduce((s, { m }) => s + memberOutstanding(m.id), 0);
+        return `<div class="kpi" style="background:rgba(242,163,60,.10);border:1px solid var(--accent-2)">
+          <div class="kpi-icon">💰</div>
+          <div class="kpi-label" style="color:var(--accent-2)">Money due (from these members)</div>
+          <div class="kpi-value num" style="color:var(--accent-2)">${fmt(total)} <span style="font-size:12px;color:var(--text-dim)">QAR</span></div>
+          <div class="kpi-delta flat">${dueRows.length} member${dueRows.length === 1 ? '' : 's'} owe payment · click 💰 in the table to collect</div>
+        </div>`;
+      })()}
+      ${isViewerRole() ? '' : `<div class="kpi green">
         <div class="kpi-icon">💰</div>
         <div class="kpi-label">Potential Revenue</div>
         <div class="kpi-value num">${fmt((expired.length + expiringSoon.length) * 350)} <span style="font-size:12px;color:var(--text-dim)">QAR</span></div>
         <div class="kpi-delta flat">@ 350 QAR avg/renewal</div>
-      </div>
+      </div>`}
     </div>
 
     <div class="card" style="padding:14px 16px;margin-bottom:14px">
@@ -12382,7 +12941,7 @@ PAGES.trials = (main) => {
         <div class="subtitle">Prospective members who came for a free class — log them and follow up</div>
       </div>
       <div class="topbar-actions">
-        <button class="btn ghost" id="export-trials">📥 Export CSV</button>
+        ${isViewerRole() ? '' : '<button class="btn ghost" id="export-trials">📥 Export CSV</button>'}
         <button class="btn primary" id="add-trial">+ Add Trial</button>
       </div>
     </div>
@@ -13428,6 +13987,7 @@ function userRolesListHtml() {
     let linked;
     if (r.role === 'coach') linked = escapeHtml(coachName(r.coachId) || '— pick a coach —');
     else if (r.role === 'student') { const m = state.members.find(x => x.id === r.memberId); linked = m ? escapeHtml(m.name) : '<span class="text-mute">— pick a member —</span>'; }
+    else if (r.role === 'receptionist') linked = '<span class="text-mute">front-desk, read-only finance</span>';
     else linked = '<span class="text-mute">full access</span>';
     return `<tr style="border-top:1px solid var(--border)${r.disabled ? ';opacity:.55' : ''}">
       <td style="padding:6px 8px;font-family:monospace;font-size:12px">${escapeHtml(e)}</td>
@@ -13445,12 +14005,13 @@ function userRolesListHtml() {
 window.renderUserRolesList = function() { const elx = document.getElementById('user-roles-list'); if (elx) elx.innerHTML = userRolesListHtml(); const s = document.getElementById('user-roles-summary'); if (s) s.innerHTML = userRolesSummaryHtml(); };
 function userRolesSummaryHtml() {
   const map = (state.settings && state.settings.userRoles) || {};
-  let admins = 0, coaches = 0, students = 0, revoked = 0;
-  for (const k in map) { const r = map[k] || {}; if (r.disabled) revoked++; if (r.role === 'admin') admins++; else if (r.role === 'coach') coaches++; else if (r.role === 'student') students++; }
+  let admins = 0, coaches = 0, students = 0, receptionists = 0, revoked = 0;
+  for (const k in map) { const r = map[k] || {}; if (r.disabled) revoked++; if (r.role === 'admin') admins++; else if (r.role === 'coach') coaches++; else if (r.role === 'receptionist') receptionists++; else if (r.role === 'student') students++; }
   const memberCount = (state.members || []).filter(m => !m.deleted).length;
   const pill = (n, label, color) => `<span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:3px 9px;border-radius:20px;background:${color};color:#fff;font-weight:600">${n} ${label}</span>`;
   return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px">
     ${pill(admins, admins === 1 ? 'Admin' : 'Admins', 'var(--accent-2)')}
+    ${receptionists ? pill(receptionists, receptionists === 1 ? 'Receptionist' : 'Receptionists', '#0ea5e9') : ''}
     ${pill(coaches, coaches === 1 ? 'Coach' : 'Coaches', 'var(--blue)')}
     ${pill(students, 'mapped Students', 'var(--purple)')}
     ${pill(memberCount, 'Members → Student', 'var(--green)')}
@@ -13702,6 +14263,7 @@ window.setPreviewRole = function(role, id) {
   if (accountRole() !== 'admin') { toast('Only an admin account can preview roles', 'error'); return; }
   if (role === 'coach') { state.session = { role: 'coach', coachId: id != null ? id : null }; }
   else if (role === 'student') { state.session = { role: 'student', memberId: id != null ? id : null }; }
+  else if (role === 'receptionist') { state.session = { role: 'receptionist' }; }
   else { state.session = { role: 'admin' }; }
   save();
   navigate(roleHome(state.session.role));

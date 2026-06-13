@@ -1382,3 +1382,126 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
   driver/transport toggles.
 - (Bumped to 6.0.0 — meaningful new capabilities + a new role.)
 - Regression: 577 logic assertions + 40 pages render, all passing.
+
+
+## 6.0.1 note — Receptionist visibility fixes
+- setPreviewRole('receptionist') was falling through to admin (so "Preview as receptionist" reset to
+  Admin). Now correctly sets session.role = 'receptionist'.
+- Accounts & roles: the role summary pills now include a Receptionists count, and the row in the
+  Users table now shows "front-desk, read-only finance" instead of "full access" for that role.
+- (Receptionist option in add-mapping role dropdown was already present in 6.0.0.)
+- Regression: 577 logic assertions + 40 pages render, all passing.
+
+
+## 6.1.0 note — Tighten Receptionist to pure front-desk
+- Receptionist allow-list trimmed: removed Dashboard, Salaries, Reports, Coach Performance, Renewals,
+  Renewal Potential, Attendance Report, Club Revenue Summary. Home page now defaults to Members.
+- Hidden from receptionist view:
+  - Expiring screen: "Potential Revenue" KPI hidden.
+  - Team screen: Rate, both months' Revenue and Commission columns + footer totals (cards drop the
+    rate and "May Pay" cell, showing students + att-rate instead). Coach attribution kept (attendance %).
+  - Invoices: subtitle drops the total amount; Export button hidden.
+  - Sales / Products / Members / Camp Members / Driver Students / Trials / Expiring: all Export CSV
+    buttons hidden. Products: Inventory-cost KPI card + subtitle totals hidden.
+- isViewerRole() now drives every gated hide so it's consistent and one-line to toggle.
+- Regression: 578 logic assertions + 40 pages render, all passing.
+
+
+## 6.2.0 note — Camp member Edit: price + discount + paid + driver in one place
+- The "Edit camp member" dialog was duration + transport only — no way to record/adjust the FEE or PAID
+  amount. Now includes Price, Discount and Paid-so-far with a live Outstanding-balance summary; picking
+  a duration auto-fills the preset price (admin can still override).
+- Saving creates the camp Membership invoice if missing, or updates an existing one — amount,
+  discount, amountPaid, the matching line item and the payments log all reconcile. Outstanding balance
+  on Members / Reminders / Invoices reflects immediately.
+- Same dialog also exposes the 🚐 Driver dropdown (matches Camp Members) so duration / transport /
+  driver / fee are edited in one place.
+- Validation: paid cannot exceed price - discount.
+- Regression: 578 logic assertions + 40 pages render, all passing.
+
+
+## 6.3.0 note — Universal "Edit pricing & payment" + Due flags
+- New editMemberPricing(memberId) dialog: ONE place to edit price / discount / paid for every sport the
+  member is enrolled in (not just camp). Each sport renders as a row with live "Outstanding" total;
+  Save creates or updates the matching membership invoice (amount/discount/amountPaid/line item/
+  payments log all reconcile). Validation: paid <= price - discount per sport.
+- Reachable from: member profile (the "💰 NNN due" badge is now a button, and a new "💰 Edit pricing"
+  button sits next to the status badges) AND from the Expiring screen's new Due column.
+- Expiring screen: NEW "💰 Due" column showing a clickable ⚠ chip for members with an outstanding
+  balance (opens the editor) or a green ✓ when settled. NEW "Money due (from these members)" KPI card
+  totalling outstanding across the expired/expiring/upcoming buckets.
+- Permissions: admins AND receptionists can both use the editor (collecting dues IS the receptionist's
+  job). Other roles see the badges read-only.
+- Regression: 579 logic assertions + 40 pages render, all passing.
+
+
+## 6.4.0 note — Clearer payment / due capture during member registration
+- The "First payment" block on the Add/Edit Member form is now a prominent 3-card summary that updates
+  LIVE as you change Sport prices or the Paid Now field:
+  Total (from sport prices) · 💵 Paid (collected now) · ⚠ Due (auto = Total − Paid).
+  Leave Paid Now blank to pay full; type a partial amount and the Due card lights up amber with the
+  exact balance that will be marked outstanding.
+- Member profile: the "💰 Edit pricing / record payment" entry point is now a primary-coloured button
+  on its own line (not a small ghost link) so it's unmissable. The 💰 NNN due chip remains clickable.
+- Same "Edit pricing" dialog still available from Expiring (💰 column) and Members (profile).
+  Admin AND receptionist can use it.
+- Regression: 579 logic assertions + 40 pages render, all passing.
+
+
+## 6.5.0 note — Summer Camp · Import Schedule page
+- NEW Summer Camp -> Import Schedule page (route campimport, admin-only). One screen to bulk-load a day
+  into state.campSchedule from a pasted text block — cleanest fit for the static client app (no AI/server).
+- Workflow: open your printable poster in any OCR/AI tool (ChatGPT, Claude, Google Lens), ask it to give
+  you the schedule as text with rows separated by lines and columns separated by |, paste, Preview, Apply.
+- Parser is permissive: columns can be split by | or TAB or 2+ spaces; rows like "TIME | KIDS | BOYS |
+  GIRLS" are ignored as headers; "Activity (Coach Name)" captures the coach into a separate field.
+- Two apply modes: Replace day (default) overwrites everything for that day; Fill empty slots only keeps
+  existing entries and only fills holes.
+- "Load sample" button populates a SUNDAY example matching the new 7-slot layout (Swim/Breakfast/Sport/
+  Sport/Prayer/Sport/Dismissal). Day picker covers Sat-Fri.
+- Saving writes to state.campSchedule.days[day] with the same shape Camp Schedule already uses, so the
+  printed/displayed schedule reflects immediately.
+- Regression: 580 logic assertions + 41 pages render, all passing.
+
+
+## 6.6.0 note — Camp Members: gender + group (Kids/Boys/Girls) + filters
+- Camp Members table now has a Gender column (♂/♀/— not set) and a Group column. Group derives from
+  gender + age: under-7 -> Kids, Male 7-12 -> Boys, Female 7-12 -> Girls — matching the printed
+  schedule (Kids 4-7 / Boys 7-12 / Girls 7-12).
+- Two new filters: Group (Kids/Boys/Girls/Need-info) and Gender (Male/Female/Not set). Both persist.
+- KPI strip now breaks down the FILTERED list into Kids / Boys / Girls counts; click any card to
+  one-click filter by that group. A "Need info" card appears only when there are members missing
+  gender/birthdate so admins can chase them up.
+- Edit Camp Member dialog: added Gender + Birthdate inputs so admins fix this without leaving the
+  camp page; both write back to the member record.
+- CSV export now includes Gender + Group columns alongside the existing ones.
+- (Gender field already existed on members; this exposes it where it matters for camp planning.)
+- Regression: 580 logic assertions + 41 pages render, all passing.
+
+
+## 6.7.0 note — Camp group as an explicit override on the member
+- New m.campGroup field (Kids | Boys | Girls | null). When set, the camp page uses it directly. When
+  null/missing, falls back to the auto-derived value from gender + age (under-7 -> Kids; Male 7-12 ->
+  Boys; Female 7-12 -> Girls). This lets admins override borderline cases (e.g. a strong 7-year-old
+  joining Boys instead of Kids, or vice versa) without lying about age.
+- Edit Camp Member dialog: new "Camp group" picker with options: Auto (shows current auto value) /
+  Kids / Boys / Girls. Stored on save.
+- Camp Members table: group chip gets a small "●" indicator when the group is set manually (hover for
+  "Set manually" vs "Auto from gender + age").
+- Filters / KPIs / CSV all already use campGroup() so they reflect the override automatically.
+- Regression: 581 logic assertions + 41 pages render, all passing.
+
+
+## 6.8.0 note — Camp group: automatic, no manual override
+- Camp group is now COMPUTED only, per the explicit rule:
+    age < 7              -> Kids
+    age >= 7 + Male       -> Boys
+    age >= 7 + Female     -> Girls
+    missing data         -> Unknown (flagged on the Need-info KPI)
+- Removed the manual override picker from the Edit Camp Member dialog (it was confusing). The "Camp group"
+  field is now a read-only badge that updates LIVE as you change Gender or Birthdate in the same dialog
+  — so the admin sees the calculation happen.
+- Any old m.campGroup override saved by 6.7.x is cleared on next Save (no migration needed; the value
+  was never used outside this dialog).
+- KPIs / filters / CSV continue to use the computed value.
+- Regression: 580 logic assertions + 41 pages render, all passing.
