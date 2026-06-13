@@ -1197,6 +1197,12 @@ ${seed}
   ok(!fuzzyMatch('Best Almaha', 'Test'), 'search: short query "Test" no longer false-matches "Best" (QC fix)');
   ok(fuzzyMatch('Madanee Khalil', 'madani'), 'search: longer queries keep typo tolerance (madani ~ madanee)');
   ok(coachTeachesSport({ sports: ['Kick Boxing'] }, 'Kick Boxing (Private)'), 'private: a Kick Boxing coach can be booked for the Kick Boxing (Private) variant');
+  ok(ROUTES.reminders && ROUTES.reminders.section === 'Membership' && ROUTES.reminders.adminOnly, 'nav: Reminder Center is an admin page under Membership');
+  ok(ROUTES.clubrevenue && ROUTES.clubrevenue.section === 'Insights', 'nav: Club Revenue Summary lives under Insights');
+  // Receptionist role permissions
+  ok(ROLE_ALLOWED.receptionist && ROLE_ALLOWED.receptionist.includes('members') && ROLE_ALLOWED.receptionist.includes('attendance'), 'role: receptionist can manage members + attendance');
+  ok(ROLE_ALLOWED.receptionist.includes('invoices') && ROLE_ALLOWED.receptionist.includes('salaries') && ROLE_ALLOWED.receptionist.includes('clubrevenue'), 'role: receptionist can READ invoices + salaries + revenue summary');
+  ok(!ROLE_ALLOWED.receptionist.includes('users') && !ROLE_ALLOWED.receptionist.includes('danger') && !ROLE_ALLOWED.receptionist.includes('databackup') && !ROLE_ALLOWED.receptionist.includes('audit'), 'role: receptionist has NO access to Users & Roles, Danger Zone, Backup, or Audit Log');
   if (!Array.isArray(state.drivers)) state.drivers = [];
   state.drivers.push({ id: 990001, name: 'TestDrv', phone: '+9745' });
   eq(driverName(990001), 'TestDrv', 'drivers: driverName resolves the driver name');

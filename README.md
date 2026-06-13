@@ -1351,3 +1351,34 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
 - Verified already-fixed QC items: rentals (mandatory start time, no past dates, no archived members,
   overlap block), schedule coach-sport validation + inactive-coach warning + same-slot clash block.
 - Regression: 572 logic assertions + 38 pages render, all passing.
+
+
+## 5.99.0 note — Reminder Center + small pending items
+- New Reminders page (Membership section, admin-only): lists expired + expiring members (3/7/14/30-day
+  window), each with a one-click WhatsApp button that opens chat with a PREFILLED bilingual (AR+EN)
+  renewal message (member name, sport, expiry). Clicking also marks lastRemindedAt; a "Last reminded"
+  column + "Reminded today" KPI track follow-up. Family members use the household contact number when
+  set. Client-side only (WhatsApp click-to-chat) — no fees, no backend; admin just taps Send.
+- Trials CSV export now includes 2nd Sport / 2nd Coach columns.
+- Coach pay-slip "How commission is calculated" box is now bilingual (Arabic in Arabic mode).
+- Regression: 573 logic assertions + 39 pages render, all passing.
+
+
+## 6.0.0 note — Club Revenue Summary + Receptionist role + sortable tables + camp filters
+- NEW Club Revenue Summary page (Insights section, route clubrevenue): per-sport and per-coach revenue
+  for a chosen month (or All time), with commission per coach, member counts, sport share %, totals, and
+  CSV export. Built on invoice line items so it stays correct with switch/split invoices.
+- NEW Receptionist role: front-desk + READ-ONLY finance. Can use Members, Families, Trials,
+  Reminders, Schedule, Attendance, Rentals, Coach Advice, Summer Camp (full), Invoices, Salaries,
+  Products, Sales, all Insights (Reports / Coach Performance / Renewals / Attendance Report /
+  Club Revenue Summary), and the Team list. NO access to Users & Roles, Preferences, Club Setup,
+  Data & Backup, Danger Zone, Audit Log, Sports, Data Import/Export. Added isViewerRole() helper.
+  Available in Settings -> add user (Receptionist) and in Preview-as.
+- Sortable tables EVERYWHERE: every table column header gets a click-to-sort ⇅ icon (numeric, date and
+  currency aware; sticky headers; toggles asc/desc; ↑/↓ when active). Pages with their own sort
+  (Members table) are left untouched via data-sortkey opt-out.
+- Camp Members now has 5 filters: search (name/phone), status, duration, transport (yes/no), driver
+  (incl. "Unassigned"), with "Clear filters" and a "showing N of M" subtitle. State persists across
+  driver/transport toggles.
+- (Bumped to 6.0.0 — meaningful new capabilities + a new role.)
+- Regression: 577 logic assertions + 40 pages render, all passing.

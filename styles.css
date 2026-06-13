@@ -775,6 +775,14 @@ thead th {
 thead th:first-child { border-top-left-radius: var(--r-md); }
 thead th:last-child { border-top-right-radius: var(--r-md); }
 
+/* Sortable headers: a subtle ⇅ icon that becomes ↑ / ↓ when active. */
+thead th.th-sort { cursor: pointer; user-select: none; }
+thead th.th-sort:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
+.th-sort-ic { display:inline-block; margin-left:6px; opacity:.55; font-size:11px; transition: opacity .15s ease; }
+thead th.th-sort:hover .th-sort-ic { opacity: 1; }
+thead th[data-dir] { color: var(--text); }
+thead th[data-dir] .th-sort-ic { opacity: 1; color: var(--accent); }
+
 tbody td {
   padding: 11px 14px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
