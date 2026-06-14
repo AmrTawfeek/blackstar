@@ -1505,3 +1505,66 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
   was never used outside this dialog).
 - KPIs / filters / CSV continue to use the computed value.
 - Regression: 580 logic assertions + 41 pages render, all passing.
+
+
+## 6.9.0 note — Due Payment page
+- NEW Due Payment page (route duepayment, Membership section, accessible to admin AND receptionist —
+  collecting dues is the front-desk job).
+- Lists every member with an outstanding balance, sorted largest-first. Each row shows:
+    - name + Arabic name
+    - phone (clickable)
+    - status badge (Active / Expired / Frozen)
+    - membership expiry
+    - PER-SPORT breakdown chips (e.g. "Kick Boxing · 400" + "Summer Camp · 250") so the receptionist
+      knows WHICH enrollment is unpaid
+    - total due in QAR (red, bold)
+    - last reminded date
+    - actions: 💰 Collect (opens editMemberPricing), 💬 WhatsApp (prefilled bilingual message), 👁 Profile
+- 4 filters: search (name/phone), status, sport (only sports that have an unpaid member appear),
+  amount range (<100 / 100-499 / 500-999 / 1000+).
+- 3 KPI cards: Total due (filtered) · Total due (all) · Big balances ≥1000 QAR (clickable to filter).
+- Footer row with grand total for the visible list. List updates on settle — paying via the Collect
+  dialog removes the row instantly.
+- Regression: 582 logic assertions + 42 pages render, all passing.
+
+
+## 6.10.0 note — Receptionist hardening (no club info leaks)
+- Removed `history` from receptionist allow-list (it is the full club revenue history).
+- Member profile: hidden the Paid KPI card, per-row Paid column in the subscription table, the
+  "🧾 N invoices · X QAR paid" lifetime summary line, the per-enrollment price labels, and the
+  "📜 Full History" button. Receptionist still sees subs/attendance/status and can record payment.
+- Members table: hidden 🗑 Archive, 🗑 Delete forever, ↩ Restore per-row, and the bulk Export-selected
+  + Archive-selected actions in the selection bar.
+- Invoices page: hidden 📜 customer-history, ⬇ Export PDF, ✏ Edit quick, 🗑 Delete per row. The receptionist
+  keeps 💵 Pay (record payment) and 💬 WhatsApp.
+- Team page: hidden + Add Coach / + Add Staff buttons. The Active/Inactive cell is a read-only badge.
+- viewCoach modal: hidden Fixed-salary + commission % badges, May Revenue + May Pay KPI cards, the
+  whole April detail row, and the Deactivate / Transfer / Edit / Delete actions. Receptionist sees
+  only Close.
+- Products page: hidden Cost column, Stock-value column, ✏ Edit, 🗑 Delete, + New Product. Restock kept.
+- Sales: hidden the per-row 📄 invoice PDF and 🗑 delete (POS recording kept).
+- Rentals: hidden ⚙ Rates, 📥 Export, the per-row 📄 invoice PDF and 🗑 Delete. The per-facility "this
+  month" KPI shows booking COUNT instead of revenue value for viewers; total-amount subtitle hidden.
+- Defence-in-depth: every destructive / financial mutation function now checks role first and refuses
+  for non-admin. Covered: deleteInvoice, editInvoiceQuick, deleteMember, editCoach, toggleCoachActive,
+  deleteCoach, transferCoachStudents, restoreMember, permanentlyDeleteMember, editProduct,
+  deleteProduct, deleteSale, deleteRental. Even a crafted URL or console call refuses.
+- All driven by the existing isViewerRole() helper so it stays consistent.
+- Regression: 582 logic assertions + 42 pages render, all passing.
+
+
+## 6.10.1 note — Schedule editable by receptionist
+- The Class Schedule and the Summer Camp Schedule are VIEWABLE by every role (admin, receptionist,
+  coach, student) and EDITABLE by admin + receptionist. Coaches and students get the read-only view.
+- (No allow-list change — Schedule was already in the receptionist allow-list. This fixes the canEdit
+  gate inside the page so receptionists can add / move / delete classes.)
+- Same fix applied to PAGES.campschedule (isAdmin variable was admin-only; now admin OR receptionist).
+- Regression: 586 logic assertions + 42 pages render, all passing.
+
+
+## 6.10.2 note — Removed Summer Camp · Import Schedule page
+- Removed the campimport route, nav entry, Arabic label, page implementation (PAGES.campimport),
+  helpers (_parseCampCell, _parseCampPaste), and window globals (_campImport, _previewCampImport,
+  _applyCampImport). Render harness updated; old test removed.
+- (No data shape change — state.campSchedule is unaffected.)
+- Regression: 585 logic assertions + 41 pages render, all passing.

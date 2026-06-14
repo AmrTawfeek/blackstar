@@ -981,14 +981,14 @@ PAGES.members = (main) => {
         ${cols.map(c => `<td>${c.cell(m)}</td>`).join('')}
         <td class="text-right" style="white-space:nowrap">
           ${m.deleted ? `
-            <button class="btn primary sm" onclick="event.stopPropagation();restoreMember(${m.id})" title="Restore this archived member">↩ Restore</button>
-            <button class="btn ghost sm" onclick="event.stopPropagation();permanentlyDeleteMember(${m.id})" title="Permanently delete — cannot be undone" style="color:var(--red)">🗑 Delete forever</button>
+            ${isViewerRole() ? '<span class="text-mute" style="font-size:11px">archived</span>' : `<button class="btn primary sm" onclick="event.stopPropagation();restoreMember(${m.id})" title="Restore this archived member">↩ Restore</button>
+            <button class="btn ghost sm" onclick="event.stopPropagation();permanentlyDeleteMember(${m.id})" title="Permanently delete — cannot be undone" style="color:var(--red)">🗑 Delete forever</button>`}
           ` : `
             <button class="btn ghost sm" onclick="event.stopPropagation();addRenewal(${m.id})" title="Record renewal">🔄</button>
             <button class="btn ghost sm" onclick="event.stopPropagation();switchSport(${m.id})" title="Switch sport / change coach">🔀</button>
             <button class="btn ghost sm" onclick="event.stopPropagation();duplicateMember(${m.id})" title="Add sibling — copy ALL details to a new member">⧉</button>
             <button class="btn ghost sm" onclick="event.stopPropagation();editMember(${m.id})">✏️</button>
-            <button class="btn ghost sm" onclick="event.stopPropagation();deleteMember(${m.id})" title="Archive (soft delete)">🗑</button>
+            ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="event.stopPropagation();deleteMember(${m.id})" title="Archive (soft delete)">🗑</button>`}
           `}
         </td>
       </tr>`;
@@ -1090,8 +1090,8 @@ PAGES.members = (main) => {
       <div id="members-bulkbar" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px">
         <span style="font-size:16px">☑️</span>
         <div style="flex:1;font-size:13px;font-weight:600"><span id="members-bulk-count">0</span> selected</div>
-        <button class="btn ghost sm" id="members-bulk-export" title="Export the selected members to CSV">📥 Export selected</button>
-        <button class="btn ghost sm" id="members-bulk-archive" title="Archive (soft-delete) the selected members" style="color:var(--red)">🗑 Archive selected</button>
+        ${isViewerRole() ? '' : `<button class="btn ghost sm" id="members-bulk-export" title="Export the selected members to CSV">📥 Export selected</button>
+        <button class="btn ghost sm" id="members-bulk-archive" title="Archive (soft-delete) the selected members" style="color:var(--red)">🗑 Archive selected</button>`}
         <button class="btn ghost sm" id="members-bulk-clear">Clear</button>
       </div>
       <div class="filter-bar">
@@ -1206,12 +1206,12 @@ PAGES.members = (main) => {
     });
   });
 
-  // Bulk action bar (static elements — wired once)
+  // Bulk action bar (static elements — wired once; export/archive only exist for admin)
   $('#members-bulk-clear').addEventListener('click', () => { selected.clear(); refresh(); });
-  $('#members-bulk-export').addEventListener('click', () => {
+  $('#members-bulk-export')?.addEventListener('click', () => {
     exportMembersCSV(state.members.filter(m => selected.has(m.id)));
   });
-  $('#members-bulk-archive').addEventListener('click', () => {
+  $('#members-bulk-archive')?.addEventListener('click', () => {
     const list = state.members.filter(m => selected.has(m.id) && !m.deleted);
     if (!list.length) { toast('No active members selected to archive', 'error'); return; }
     if (!confirm(`Archive ${list.length} member${list.length === 1 ? '' : 's'}?\n\nThis is a soft delete — no data is destroyed. They can be restored anytime from the Members page → status filter "Archived".`)) return;
@@ -1366,7 +1366,7 @@ function viewMember(id) {
         <td>${s.start ? fmtDate(s.start) : '—'}</td>
         <td>${s.end ? fmtDate(s.end) : '—'}</td>
         <td>${attCell}</td>
-        <td class="text-right num">${s.amountPaid ? fmt(s.amountPaid) : '—'}</td>
+        ${isViewerRole() ? '' : `<td class="text-right num">${s.amountPaid ? fmt(s.amountPaid) : '—'}</td>`}
         <td>${s.status ? `<span class="badge ${s.status.toLowerCase()==='expired'?'expired':'active'}">${s.status}</span>` : '—'}</td>
       </tr>
     `;
@@ -1388,10 +1388,10 @@ function viewMember(id) {
           <div style="font-size:18px;font-weight:700">${escapeHtml(m.name)}</div>
           ${m.nameArabic ? `<div style="font-size:14px;color:var(--text-dim)" dir="rtl">${escapeHtml(m.nameArabic)}</div>` : ''}
           <div class="text-dim">${escapeHtml(m.sport)} · ${escapeHtml(coachName(m.coachId))}${m.level ? ` · ${escapeHtml(m.level)}` : ''}${m.nationality ? ` · 🌍 ${escapeHtml(m.nationality)}` : ''}</div>
-          ${(m.enrollments && m.enrollments.length > 1) ? `<div class="mt-1" style="display:flex;flex-wrap:wrap;gap:6px">${m.enrollments.map(e => `<span class="badge blue" title="${escapeHtml(coachName(e.coachId))} · ${e.classes || 0} classes">${escapeHtml(e.sport)} · ${fmt(e.price)} QAR</span>`).join('')}</div>` : ''}
+          ${(m.enrollments && m.enrollments.length > 1) ? `<div class="mt-1" style="display:flex;flex-wrap:wrap;gap:6px">${m.enrollments.map(e => `<span class="badge blue" title="${escapeHtml(coachName(e.coachId))} · ${e.classes || 0} classes">${escapeHtml(e.sport)}${isViewerRole() ? '' : ` · ${fmt(e.price)} QAR`}</span>`).join('')}</div>` : ''}
           ${m.siblingGroup ? `<div class="text-mute" style="font-size:11px;margin-top:4px">👨‍👩‍👧 Split from group registration: "${escapeHtml(m.siblingGroup)}"</div>` : ''}
           ${(m.renewalsBySport && Object.keys(m.renewalsBySport).length) ? `<div class="mt-1" style="display:flex;flex-wrap:wrap;gap:6px">${Object.entries(m.renewalsBySport).map(([sp, c]) => `<span class="badge" style="background:rgba(242,163,60,.15);color:var(--accent-2)" title="Renewed ${c} time${c>1?'s':''}">🔄 ${escapeHtml(sp)}: ${c}</span>`).join('')}</div>` : ''}
-          ${(m.invoiceLinks && m.invoiceLinks.length) ? `<div class="text-mute" style="font-size:11px;margin-top:4px">🧾 ${m.invoiceLinks.length} invoice${m.invoiceLinks.length>1?'s':''} · ${fmt(m.invoiceLinks.reduce((a,x)=>a+(x.amount||0),0))} QAR paid${m.invoiceLinks.filter(x=>x.ref).length?' · '+m.invoiceLinks.filter(x=>x.ref).map(x=>x.ref).join(', '):''}</div>` : ''}
+          ${(m.invoiceLinks && m.invoiceLinks.length && !isViewerRole()) ? `<div class="text-mute" style="font-size:11px;margin-top:4px">🧾 ${m.invoiceLinks.length} invoice${m.invoiceLinks.length>1?'s':''} · ${fmt(m.invoiceLinks.reduce((a,x)=>a+(x.amount||0),0))} QAR paid${m.invoiceLinks.filter(x=>x.ref).length?' · '+m.invoiceLinks.filter(x=>x.ref).map(x=>x.ref).join(', '):''}</div>` : ''}
           <div class="mt-1"><span class="badge ${memberStatus(m).toLowerCase()}">${memberStatus(m)}</span> <span class="badge">${(m.months || []).join(' + ').toUpperCase()}</span>${(() => {
             const ob = memberOutstanding(m.id);
             const editable = currentRole() === 'admin' || currentRole() === 'receptionist';
@@ -1423,22 +1423,22 @@ function viewMember(id) {
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">Level</div><div>${escapeHtml(m.level || '—')}</div></div>
         <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">No. of Renewals</div><div>${m.renewalCount || (m.renewalsBySport ? Object.values(m.renewalsBySport).reduce((a,b)=>a+b,0) : 0) || 0}${(m.renewalsBySport && Object.keys(m.renewalsBySport).length) ? ` <span class="text-mute" style="font-size:10px">(${Object.entries(m.renewalsBySport).map(([s,c])=>`${escapeHtml(s)}:${c}`).join(', ')})</span>` : ''}</div></div>
       </div>
-      <div class="kpi-grid mb-3" style="grid-template-columns:repeat(4,1fr);gap:8px">
+      <div class="kpi-grid mb-3" style="grid-template-columns:repeat(${isViewerRole() ? 3 : 4},1fr);gap:8px">
         <div class="kpi" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Subs</div><div class="kpi-value" style="font-size:18px">${totalSubs}</div></div>
         <div class="kpi blue" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Classes ${liveCount.total ? '· live' : ''}</div><div class="kpi-value" style="font-size:18px">${attendedSum}/${totalClassesSum}</div></div>
-        <div class="kpi green" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Paid</div><div class="kpi-value" style="font-size:18px">${fmt(paidSum)}</div></div>
+        ${isViewerRole() ? '' : `<div class="kpi green" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Paid</div><div class="kpi-value" style="font-size:18px">${fmt(paidSum)}</div></div>`}
         <div class="kpi orange" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Att Rate</div><div class="kpi-value" style="font-size:18px">${totalClassesSum ? Math.round(attendedSum/totalClassesSum*100) : 0}%</div></div>
       </div>
       <h3 style="font-size:13px;font-weight:600;margin-bottom:8px">Subscription History (${totalSubs})</h3>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Month</th><th>Activity</th><th>Coach</th><th>Start</th><th>End</th><th>Attendance</th><th class="text-right">Paid</th><th>Status</th></tr></thead>
-          <tbody>${subs || '<tr><td colspan="8" class="text-mute" style="padding:16px">No subscription records</td></tr>'}</tbody>
+          <thead><tr><th>Month</th><th>Activity</th><th>Coach</th><th>Start</th><th>End</th><th>Attendance</th>${isViewerRole() ? '' : '<th class="text-right">Paid</th>'}<th>Status</th></tr></thead>
+          <tbody>${subs || `<tr><td colspan="${isViewerRole() ? 7 : 8}" class="text-mute" style="padding:16px">No subscription records</td></tr>`}</tbody>
         </table>
       </div>
     `,
     actions: [
-      { label: '📜 Full History', class: 'btn ghost', onclick: () => { closeModal(); openMemberHistory(id); } },
+      ...(isViewerRole() ? [] : [{ label: '📜 Full History', class: 'btn ghost', onclick: () => { closeModal(); openMemberHistory(id); } }]),
       { label: '👨‍👩‍👧 Family', class: 'btn ghost', onclick: () => { closeModal(); assignFamily(id); } },
       { label: 'Edit', class: 'btn ghost', onclick: () => { closeModal(); editMember(id); } },
       { label: 'Close', class: 'btn primary', onclick: closeModal },
@@ -1598,6 +1598,7 @@ window.unfreezeMember = function(id) {
 };
 
 window.deleteMember = function(id) {
+  if (currentRole() !== 'admin') { toast('Only admins can archive or restore members', 'error'); return; }
   const m = state.members.find(x => x.id === id);
   if (!m) return;
   if (m.deleted) {
@@ -1644,6 +1645,7 @@ window.deleteMember = function(id) {
 };
 
 window.restoreMember = function(id) {
+  if (currentRole() !== 'admin') { toast('Only admins can restore archived members', 'error'); return; }
   const m = state.members.find(x => x.id === id);
   if (!m || !m.deleted) return;
   delete m.deleted;
@@ -1658,6 +1660,7 @@ window.restoreMember = function(id) {
 // Hard-delete an ARCHIVED member. Irreversible (unlike restore). Lets the user
 // choose whether to also purge linked invoices/sales/rentals, with a final confirm.
 window.permanentlyDeleteMember = function(id) {
+  if (currentRole() !== 'admin') { toast('Only admins can permanently delete members', 'error'); return; }
   const m = state.members.find(x => x.id === id);
   if (!m) return;
   if (!m.deleted) { toast('Archive the member first, then you can permanently delete.', 'error'); return; }
@@ -2684,8 +2687,8 @@ window.viewCoach = function(id) {
           <div class="mt-1">
             <span class="badge ${active ? 'active' : 'expired'}">${active ? 'Active' : 'Inactive'}</span>
             <span class="badge">${(c.role || 'coach') === 'staff' ? '👔 Staff' : '🥋 Coach'}</span>
-            ${c.fixedSalary > 0 ? `<span class="badge blue">Fixed ${fmt(c.fixedSalary)} QAR</span>` : ''}
-            ${c.rate > 0 ? `<span class="badge blue">${c.rate}% commission</span>` : ''}
+            ${isViewerRole() ? '' : `${c.fixedSalary > 0 ? `<span class="badge blue">Fixed ${fmt(c.fixedSalary)} QAR</span>` : ''}
+            ${c.rate > 0 ? `<span class="badge blue">${c.rate}% commission</span>` : ''}`}
           </div>
         </div>
       </div>
@@ -2704,18 +2707,19 @@ window.viewCoach = function(id) {
       <div style="margin-bottom:16px;padding:10px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;font-size:12px;color:var(--text-dim)">
         ⚠️ Contact details incomplete. Click <b>Edit</b> to add mobile, QID, and other profile info.
       </div>`}
-      <div class="kpi-grid mb-3" style="grid-template-columns:repeat(4,1fr);gap:8px">
+      <div class="kpi-grid mb-3" style="grid-template-columns:repeat(${isViewerRole() ? 3 : 4},1fr);gap:8px">
         <div class="kpi" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">May Students</div><div class="kpi-value" style="font-size:18px">${may.students}</div></div>
-        <div class="kpi green" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">May Revenue</div><div class="kpi-value" style="font-size:18px">${fmt(may.revenue)}</div></div>
-        <div class="kpi blue" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">May Pay</div><div class="kpi-value" style="font-size:18px">${fmt(mayComm)}</div></div>
+        ${isViewerRole() ? '' : `<div class="kpi green" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">May Revenue</div><div class="kpi-value" style="font-size:18px">${fmt(may.revenue)}</div></div>`}
+        ${isViewerRole() ? '' : `<div class="kpi blue" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">May Pay</div><div class="kpi-value" style="font-size:18px">${fmt(mayComm)}</div></div>`}
         <div class="kpi orange" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Att Rate</div><div class="kpi-value" style="font-size:18px">${may.total ? Math.round(may.rate) : 0}%</div></div>
+        ${isViewerRole() ? `<div class="kpi" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">May Classes</div><div class="kpi-value" style="font-size:18px">${may.attended}/${may.total}</div></div>` : ''}
       </div>
-      <div class="row row-2 mb-3" style="font-size:12px">
+      ${isViewerRole() ? '' : `<div class="row row-2 mb-3" style="font-size:12px">
         <div><div class="text-mute" style="font-size:10px;text-transform:uppercase">Apr Students</div><div>${apr.students}</div></div>
         <div><div class="text-mute" style="font-size:10px;text-transform:uppercase">Apr Revenue</div><div>${fmt(apr.revenue)} QAR</div></div>
         <div><div class="text-mute" style="font-size:10px;text-transform:uppercase">Apr Pay</div><div>${fmt(aprComm)} QAR</div></div>
         <div><div class="text-mute" style="font-size:10px;text-transform:uppercase">May Classes</div><div>${may.attended}/${may.total}</div></div>
-      </div>
+      </div>`}
       <h3 style="font-size:13px;font-weight:600;margin-bottom:8px">Students with this coach (${studentRows.length})</h3>
       <div class="table-wrap" style="max-height:240px;overflow:auto">
         <table>
@@ -2725,10 +2729,12 @@ window.viewCoach = function(id) {
       </div>
     `,
     actions: [
-      { label: active ? '🚫 Deactivate' : '✅ Activate', class: 'btn ghost', onclick: () => { toggleCoachActive(id); closeModal(); viewCoach(id); } },
-      { label: '🔁 Transfer students', class: 'btn ghost', onclick: () => { closeModal(); transferCoachStudents(id); } },
-      { label: 'Edit', class: 'btn ghost', onclick: () => { closeModal(); editCoach(id); } },
-      { label: '🗑 Delete', class: 'btn ghost', onclick: () => { closeModal(); deleteCoach(id); } },
+      ...(isViewerRole() ? [] : [
+        { label: active ? '🚫 Deactivate' : '✅ Activate', class: 'btn ghost', onclick: () => { toggleCoachActive(id); closeModal(); viewCoach(id); } },
+        { label: '🔁 Transfer students', class: 'btn ghost', onclick: () => { closeModal(); transferCoachStudents(id); } },
+        { label: 'Edit', class: 'btn ghost', onclick: () => { closeModal(); editCoach(id); } },
+        { label: '🗑 Delete', class: 'btn ghost', onclick: () => { closeModal(); deleteCoach(id); } },
+      ]),
       { label: 'Close', class: 'btn primary', onclick: closeModal },
     ],
   });
@@ -2737,6 +2743,7 @@ window.viewCoach = function(id) {
 // Delete a coach — only when nothing links to them (no students, enrollments,
 // scheduled classes, or invoices). Otherwise explain and point to Transfer.
 window.deleteCoach = function(id) {
+  if (currentRole() !== 'admin') { toast('Only admins can delete coaches', 'error'); return; }
   const c = state.coaches.find(x => x.id === id);
   if (!c) return;
   const students = coachStudents(id).length;
@@ -2775,6 +2782,7 @@ window.deleteCoach = function(id) {
 //  • registration   → past membership invoices are also re-credited to the new
 //    coach, as if they had these students from the start.
 window.transferCoachStudents = function(fromId) {
+  if (currentRole() !== 'admin') { toast('Only admins can transfer students between coaches', 'error'); return; }
   const from = state.coaches.find(c => c.id === fromId);
   if (!from) return;
   const targets = activeCoaches().filter(c => c.id !== fromId);
@@ -2836,6 +2844,7 @@ window.transferCoachStudents = function(fromId) {
 // 'coach' (default) → presets commission=30, fixed=0, sports panel shown
 // 'staff'           → presets commission=0,  fixed=3000, sports panel hidden
 window.editCoach = function(id, defaultRole) {
+  if (currentRole() !== 'admin') { toast('Only admins can edit coach / staff details', 'error'); return; }
   const isNew = !id;
   const startRole = defaultRole || 'coach';
   const c = id ? state.coaches.find(x => x.id === id) : {
@@ -2980,7 +2989,9 @@ PAGES.campschedule = (main) => {
   const groups = CAMP_GROUPS;
 
   const dayNum = (k) => CAMP_DAYS.indexOf(k) + 1;
-  const isAdmin = currentRole() === 'admin';
+  // Camp Schedule is VIEWABLE by everyone, EDITABLE by admin + receptionist (front-desk).
+  // Coaches and students get a read-only view.
+  const isAdmin = currentRole() === 'admin' || currentRole() === 'receptionist';
   // Default the date to today if within the camp window, else the camp start.
   let selDate = window.__campDate || ((TODAY >= cs.startDate && TODAY <= cs.endDate) ? TODAY : cs.startDate);
   let selDay = campDayKeyForDate(selDate) || (window.__campDay && cs.days[window.__campDay] ? window.__campDay : 'sunday');
@@ -3951,6 +3962,153 @@ PAGES.clubrevenue = (main) => {
   $('#crs-month')?.addEventListener('change', e => { window._crsMonth = e.target.value; render(); });
 };
 
+// ─── Due Payment ─────────────────────────────────────────────────────────
+// One screen listing every member who owes money. Pulls from invoice balances
+// (not stored fields) so it's always live: paying via the Edit Pricing dialog
+// removes the row instantly. Admins AND receptionists use this — collecting
+// dues is the front-desk job.
+PAGES.duepayment = (main) => {
+  if (window._dueFilter == null) window._dueFilter = { search: '', status: 'all', sport: 'all', range: 'all' };
+  const f = window._dueFilter;
+
+  // Build one row per member who has any outstanding balance, with a per-sport
+  // breakdown so the receptionist can see *which sport* is unpaid.
+  const all = [];
+  for (const m of state.members) {
+    if (m.deleted) continue;
+    const invs = (state.invoices || []).filter(i => !i.deleted && i.customerId === m.id && (i.category || 'Membership') === 'Membership');
+    if (!invs.length) continue;
+    const total = invs.reduce((s, i) => s + invoiceBalance(i), 0);
+    if (total <= 0.001) continue;
+    // Per-sport split (use the invoice's sport, or its line item's sport).
+    const bySport = {};
+    for (const inv of invs) {
+      const bal = invoiceBalance(inv);
+      if (bal <= 0.001) continue;
+      const sp = inv.sport || (Array.isArray(inv.lineItems) && inv.lineItems[0] && inv.lineItems[0].sport) || (inv.description || 'Other');
+      bySport[sp] = (bySport[sp] || 0) + bal;
+    }
+    all.push({ m, total, bySport, st: memberStatus(m), expiry: m.expiryDate, lastReminded: m.lastRemindedAt || null });
+  }
+
+  // Apply filters
+  const list = all.filter(r => {
+    if (f.status !== 'all' && r.st !== f.status) return false;
+    if (f.sport !== 'all' && !Object.keys(r.bySport).includes(f.sport)) return false;
+    if (f.range !== 'all') {
+      const n = r.total;
+      if (f.range === '<100' && n >= 100) return false;
+      if (f.range === '100-499' && (n < 100 || n >= 500)) return false;
+      if (f.range === '500-999' && (n < 500 || n >= 1000)) return false;
+      if (f.range === '1000+' && n < 1000) return false;
+    }
+    if (f.search) {
+      const q = f.search.toLowerCase();
+      const hay = ((r.m.name || '') + ' ' + (r.m.nameArabic || '') + ' ' + (r.m.phone || '')).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  }).sort((a, b) => b.total - a.total);
+
+  const grandTotal = list.reduce((s, r) => s + r.total, 0);
+  const overallTotal = all.reduce((s, r) => s + r.total, 0);
+  const sportSet = [...new Set(all.flatMap(r => Object.keys(r.bySport)))].sort();
+  const statusSet = [...new Set(all.map(r => r.st))].sort();
+  const filtersOn = f.search || f.status !== 'all' || f.sport !== 'all' || f.range !== 'all';
+  const editable = currentRole() === 'admin' || currentRole() === 'receptionist';
+
+  const waLink = (m, amount) => {
+    const phone = (typeof familyContactPhone === 'function' && m.familyId) ? (familyContactPhone(m.familyId) || m.phone) : m.phone;
+    if (!phone) return null;
+    let digits = String(phone).replace(/\D/g, '');
+    if (digits.startsWith('00')) digits = digits.slice(2);
+    if (digits.length === 8) digits = '974' + digits;
+    const msg = `مرحباً، نودّ تذكيركم بأن المبلغ المستحق لاشتراك ${m.nameArabic || m.name} هو ${fmt(amount)} ر.ق. نسعد بتسوية المبلغ في نادي بلاك ستارز 🖤⭐\n\nHello! A friendly reminder that ${m.name} has an outstanding balance of ${fmt(amount)} QAR at Black Stars Sports Club. Please drop by to settle it whenever convenient.`;
+    return `https://wa.me/${digits}?text=${encodeURIComponent(msg)}`;
+  };
+
+  const rowHtml = list.length ? list.map(r => {
+    const wa = waLink(r.m, r.total);
+    const sportChips = Object.entries(r.bySport).map(([sp, amt]) => `<span class="badge" style="font-size:10px;background:rgba(242,163,60,.15);color:var(--accent-2)" title="${escapeHtml(sp)}: ${fmt(amt)} QAR due">${escapeHtml(sp)} · ${fmt(amt)}</span>`).join(' ');
+    return `<tr>
+      <td><div class="font-bold">${escapeHtml(r.m.name)}</div>${r.m.nameArabic ? `<div class="text-mute" style="font-size:11px" dir="rtl">${escapeHtml(r.m.nameArabic)}</div>` : ''}</td>
+      <td style="font-size:12px">${phoneCell(r.m.phone)}</td>
+      <td><span class="badge ${r.st.toLowerCase()}" style="font-size:10px">${r.st}</span></td>
+      <td>${r.expiry ? fmtDate(r.expiry) : '—'}</td>
+      <td><div style="display:flex;flex-wrap:wrap;gap:4px">${sportChips}</div></td>
+      <td class="text-right num" style="color:var(--red);font-weight:800;font-size:14px">${fmt(r.total)} <span class="text-mute" style="font-size:10px;font-weight:400">QAR</span></td>
+      <td style="font-size:11px">${r.lastReminded ? (r.lastReminded === TODAY ? `<span class="badge active" style="font-size:10px">✓ ${t('today', 'اليوم')}</span>` : fmtDate(r.lastReminded)) : '<span class="text-mute">—</span>'}</td>
+      <td class="text-right" style="white-space:nowrap">
+        ${editable ? `<button class="btn primary sm" onclick="editMemberPricing(${r.m.id})" title="${t('Record a payment / edit pricing', 'تسجيل دفعة / تعديل السعر')}">💰 ${t('Collect', 'تحصيل')}</button>` : ''}
+        ${wa ? `<a class="btn ghost sm" style="text-decoration:none" href="${wa}" target="_blank" rel="noopener" onclick="markReminded(${r.m.id})" title="${t('Send a bilingual WhatsApp reminder', 'إرسال تذكير عبر واتساب')}">💬</a>` : ''}
+        <button class="btn ghost sm" onclick="viewMember(${r.m.id})" title="${t('Open profile', 'فتح الملف')}">👁</button>
+      </td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="8" class="empty"><div class="empty-icon">🎉</div>${filtersOn ? t('No members match these filters', 'لا يوجد أعضاء يطابقون المرشحات') : t('All settled — no outstanding balances', 'كل شيء مسوّى — لا توجد مبالغ مستحقة')}</td></tr>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>💰 ${t('Due Payment', 'المدفوعات المستحقة')}</h1>
+        <div class="subtitle">${list.length} ${t('of', 'من')} ${all.length} ${t('members with an outstanding balance', 'عضواً عليه مبلغ مستحق')}${filtersOn ? '' : ` · ${fmt(grandTotal)} QAR`}</div>
+      </div>
+    </div>
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi" style="border-color:var(--red);background:rgba(239,68,68,.06)"><div class="kpi-label" style="color:var(--red)">⚠ ${t('Total due (shown)', 'إجمالي المستحق (المعروض)')}</div><div class="kpi-value num" style="color:var(--red)">${fmt(grandTotal)}</div><div class="kpi-sub">QAR · ${list.length} ${t('members', 'عضو')}</div></div>
+      <div class="kpi"><div class="kpi-label">${t('Total due (all)', 'إجمالي المستحق (الكل)')}</div><div class="kpi-value num">${fmt(overallTotal)}</div><div class="kpi-sub">QAR · ${all.length} ${t('members', 'عضو')}</div></div>
+      <div class="kpi" style="cursor:pointer" onclick="window._dueFilter={...window._dueFilter,range:window._dueFilter.range==='1000+'?'all':'1000+'};render()" title="${t('Click to show only large balances', 'اضغط لإظهار المبالغ الكبيرة فقط')}"><div class="kpi-label">${t('Big balances (≥1000)', 'مبالغ كبيرة (≥1000)')}</div><div class="kpi-value num">${all.filter(r => r.total >= 1000).length}</div><div class="kpi-sub">${t('members', 'عضو')} · ${fmt(all.filter(r => r.total >= 1000).reduce((s, r) => s + r.total, 0))} QAR</div></div>
+    </div>
+    <div class="card">
+      <div class="filter-bar" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <input id="dp-search" class="btn ghost" type="text" placeholder="${t('Search name or phone…', 'ابحث بالاسم أو الهاتف…')}" value="${escapeHtml(f.search)}" style="flex:1;min-width:180px" />
+        <select id="dp-status" class="btn ghost">
+          <option value="all">${t('All statuses', 'كل الحالات')}</option>
+          ${statusSet.map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+        <select id="dp-sport" class="btn ghost">
+          <option value="all">${t('All sports', 'كل الرياضات')}</option>
+          ${sportSet.map(sp => `<option value="${escapeHtml(sp)}" ${f.sport === sp ? 'selected' : ''}>${escapeHtml(sp)}</option>`).join('')}
+        </select>
+        <select id="dp-range" class="btn ghost" title="${t('Filter by amount range', 'تصفية حسب فئة المبلغ')}">
+          <option value="all">${t('Any amount', 'أي مبلغ')}</option>
+          <option value="<100" ${f.range === '<100' ? 'selected' : ''}>&lt; 100 QAR</option>
+          <option value="100-499" ${f.range === '100-499' ? 'selected' : ''}>100 - 499 QAR</option>
+          <option value="500-999" ${f.range === '500-999' ? 'selected' : ''}>500 - 999 QAR</option>
+          <option value="1000+" ${f.range === '1000+' ? 'selected' : ''}>1000+ QAR</option>
+        </select>
+        ${filtersOn ? `<button class="btn ghost" id="dp-clear">✕ ${t('Clear filters', 'مسح المرشحات')}</button>` : ''}
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>${t('Member', 'العضو')}</th>
+            <th>${t('Phone', 'الهاتف')}</th>
+            <th>${t('Status', 'الحالة')}</th>
+            <th>${t('Expiry', 'الانتهاء')}</th>
+            <th data-sortable="0">${t('Owes for', 'مستحق على')}</th>
+            <th class="text-right">${t('Due (QAR)', 'المستحق (ر.ق)')}</th>
+            <th>${t('Last reminded', 'آخر تذكير')}</th>
+            <th data-sortable="0" class="text-right"></th>
+          </tr></thead>
+          <tbody>${rowHtml}</tbody>
+          ${list.length ? `<tfoot><tr style="border-top:2px solid var(--border);font-weight:800">
+            <td colspan="5">${t('Total', 'الإجمالي')} (${list.length} ${t('members', 'عضو')})</td>
+            <td class="text-right num" style="color:var(--red);font-size:15px">${fmt(grandTotal)} QAR</td>
+            <td colspan="2"></td>
+          </tr></tfoot>` : ''}
+        </table>
+      </div>
+      ${editable ? `<div class="text-mute" style="font-size:11px;margin-top:8px">${t('Click 💰 Collect on any row to record a payment per sport. The list updates automatically — settled members drop off.', 'اضغط 💰 تحصيل على أي صف لتسجيل دفعة لكل رياضة. القائمة تتحدث تلقائياً — العضو المسوّى يختفي من القائمة.')}</div>` : ''}
+    </div>`;
+
+  const debounce = (fn, ms) => { let to; return (...a) => { clearTimeout(to); to = setTimeout(() => fn(...a), ms); }; };
+  $('#dp-search')?.addEventListener('input', debounce(e => { f.search = e.target.value; render(); }, 200));
+  $('#dp-status')?.addEventListener('change', e => { f.status = e.target.value; render(); });
+  $('#dp-sport')?.addEventListener('change', e => { f.sport = e.target.value; render(); });
+  $('#dp-range')?.addEventListener('change', e => { f.range = e.target.value; render(); });
+  $('#dp-clear')?.addEventListener('click', () => { window._dueFilter = null; render(); });
+};
+
 PAGES.reminders = (main) => {
   if (window._remWindow == null) window._remWindow = 7;
   const win = window._remWindow;
@@ -4393,181 +4551,11 @@ PAGES.camproutes = (main) => {
     </div>` : ''}`;
 };
 
-// ─── Summer Camp · Import Schedule ─────────────────────────────────
-// Build/replace a whole day's camp schedule from a pasted-in list. The user
-// pastes one line per slot in the format "TIME | KIDS | BOYS | GIRLS" — each
-// cell can include the activity and (optionally) a coach in parentheses,
-// e.g. "Swimming (Coach Jahad)". Image OCR is intentionally NOT done in-app
-// (no AI service, no server) — the user runs the image through any external
-// OCR/AI in seconds and pastes the result here.
-window._campImport = window._campImport || { day: 'sunday', text: '', preview: [] };
-
-// Parse a cell like "Swimming (Coach Jahad)" → { activity: 'Swimming', coach: 'Jahad' }
-function _parseCampCell(s) {
-  if (!s) return { activity: '', coach: '' };
-  const txt = String(s).trim();
-  if (!txt) return { activity: '', coach: '' };
-  const m = txt.match(/^(.*?)\s*\(\s*(?:coach\s+)?([^)]+?)\s*\)\s*$/i);
-  if (m) return { activity: m[1].trim(), coach: m[2].trim() };
-  return { activity: txt, coach: '' };
-}
-
-// Parse pasted block. Splits each non-empty line by | / TAB / 2+ spaces, then
-// takes 4 cells: [time, kids, boys, girls]. Header rows (TIME / KIDS / BOYS /
-// GIRLS) are skipped. Returns an array of slot rows ready for state.
-function _parseCampPaste(text) {
-  const out = [];
-  for (const raw of (text || '').split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) continue;
-    let cells = line.split(/\s*[|\t]\s*/);
-    if (cells.length < 2) cells = line.split(/\s{2,}/);
-    if (cells.length < 2) continue;
-    if (/^(time|kids|boys|girls)\b/i.test(cells[0]) && /^(kids|boys|girls)\b/i.test(cells[1] || '')) continue;
-    while (cells.length < 4) cells.push('');
-    const [time, kids, boys, girls] = cells.slice(0, 4).map(c => c.trim());
-    out.push({ time, kids: _parseCampCell(kids), boys: _parseCampCell(boys), girls: _parseCampCell(girls) });
-  }
-  return out;
-}
-
-window._previewCampImport = function() {
-  const txt = document.getElementById('ci-paste')?.value || '';
-  window._campImport.text = txt;
-  window._campImport.preview = _parseCampPaste(txt);
-  const box = document.getElementById('ci-preview');
-  if (!box) return;
-  const rows = window._campImport.preview;
-  if (!rows.length) { box.innerHTML = `<div class="text-mute" style="font-size:12px;padding:8px 0">${t('Nothing parsed yet — paste your day above.', 'لا يوجد ما يتم تحليله بعد — الصق الجدول بالأعلى.')}</div>`; return; }
-  const cell = c => c && c.activity ? `<div>${escapeHtml(c.activity)}${c.coach ? `<div class="text-mute" style="font-size:10px">${escapeHtml(c.coach)}</div>` : ''}</div>` : '<span class="text-mute">—</span>';
-  box.innerHTML = `
-    <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <thead><tr style="text-align:left;color:var(--text-mute);font-size:11px">
-        <th style="padding:6px 8px">${t('Time', 'الوقت')}</th>
-        <th style="padding:6px 8px">${t('Kids 4-7', 'الصغار 4-7')}</th>
-        <th style="padding:6px 8px">${t('Boys 7-12', 'الأولاد 7-12')}</th>
-        <th style="padding:6px 8px">${t('Girls 7-12', 'البنات 7-12')}</th>
-      </tr></thead>
-      <tbody>${rows.map(r => `<tr style="border-top:1px solid var(--border)">
-        <td style="padding:8px;font-weight:600">${escapeHtml(r.time || '—')}</td>
-        <td style="padding:8px">${cell(r.kids)}</td>
-        <td style="padding:8px">${cell(r.boys)}</td>
-        <td style="padding:8px">${cell(r.girls)}</td>
-      </tr>`).join('')}</tbody>
-    </table>
-    <div class="text-mute" style="font-size:11px;margin-top:8px">${rows.length} ${t('slot(s) detected', 'فترة تم اكتشافها')}</div>`;
-};
-
-window._applyCampImport = function() {
-  const rows = window._campImport.preview;
-  if (!rows.length) { toast(t('Paste your schedule and click Preview first', 'الصق الجدول واضغط معاينة أولاً'), 'error'); return; }
-  const day = window._campImport.day || 'sunday';
-  const mode = document.querySelector('input[name="ci-mode"]:checked')?.value || 'replace';
-  if (!confirm(t('Apply this schedule to ', 'تطبيق هذا الجدول على ') + day.toUpperCase() + (mode === 'replace' ? '?\n' + t('This REPLACES the current entries for that day.', 'سيتم استبدال إدخالات ذلك اليوم بالكامل.') : '?\n' + t('Empty slots will be filled; existing entries are kept.', 'سيتم ملء الفترات الفارغة فقط؛ يُحتفظ بالموجود.')))) return;
-  if (!state.campSchedule || !state.campSchedule.days) state.campSchedule = defaultCampSchedule();
-  if (mode === 'replace') {
-    state.campSchedule.days[day] = rows.map(r => ({
-      time: r.time || '',
-      kids: r.kids,
-      boys: r.boys,
-      girls: r.girls,
-    }));
-  } else {
-    const existing = state.campSchedule.days[day] || [];
-    const out = [];
-    const len = Math.max(existing.length, rows.length);
-    for (let i = 0; i < len; i++) {
-      const cur = existing[i] || {};
-      const nu  = rows[i] || {};
-      out.push({
-        time: cur.time || nu.time || '',
-        kids: cur.kids && cur.kids.activity ? cur.kids : (nu.kids || { activity: '', coach: '' }),
-        boys: cur.boys && cur.boys.activity ? cur.boys : (nu.boys || { activity: '', coach: '' }),
-        girls: cur.girls && cur.girls.activity ? cur.girls : (nu.girls || { activity: '', coach: '' }),
-      });
-    }
-    state.campSchedule.days[day] = out;
-  }
-  if (typeof audit === 'function') audit('camp.import', 'campSchedule:' + day, mode + ' ' + rows.length + ' slots');
-  save();
-  toast(`✓ ${rows.length} ${t('slot(s) saved to', 'فترة محفوظة في')} ${day.toUpperCase()}`);
-  navigate('campschedule');
-};
-
-PAGES.campimport = (main) => {
-  if (currentRole() !== 'admin') { main.innerHTML = '<div class="card empty">Admins only</div>'; return; }
-  const days = ['saturday', 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday'];
-  const dayLabel = { saturday: t('Saturday', 'السبت'), sunday: t('Sunday', 'الأحد'), monday: t('Monday', 'الإثنين'), tuesday: t('Tuesday', 'الثلاثاء'), wednesday: t('Wednesday', 'الأربعاء'), thursday: t('Thursday', 'الخميس'), friday: t('Friday', 'الجمعة') };
-
-  const example = `8:00 - 9:00 | Swimming (Coach Jahad)        | Taekwondo (Coach Aymen)       | Swimming (Coach Leena)
-9:00 - 9:30 | Breakfast                     | Breakfast                     | Breakfast
-9:30 - 10:30 | Karate (Coach Mostafa)       | Kickboxing (Coach Iyad)       | Kickboxing (Coach Aya)
-10:30 - 11:30 | Science (Coach Raghad)      | Parkour (Coach Jahad)         | Gymnastics (Coach Jennifer)
-11:30 - 12:00 | Prayer                      | Prayer                        | Prayer
-12:00 - 1:00 | Ninja (Coach Jahad)          | Quran & Arabic (Coach Raghad) | Zumba (Coach Jennifer)
-1:00 - 1:30 | Dismissal                     | Dismissal                     | Dismissal`;
-
-  main.innerHTML = `
-    <div class="topbar">
-      <div>
-        <h1>📋 ${t('Import Schedule', 'استيراد الجدول')}</h1>
-        <div class="subtitle">${t('Paste a day from your printable poster — Kids / Boys / Girls — and apply it to the camp schedule', 'الصق جدول يوم من البوستر المطبوع — الصغار / الأولاد / البنات — وطبّقه على جدول المعسكر')}</div>
-      </div>
-      <div class="topbar-actions">
-        <button class="btn ghost" onclick="navigate('campschedule')">${t('Open Camp Schedule', 'فتح جدول المعسكر')}</button>
-      </div>
-    </div>
-
-    <div class="card" style="background:rgba(91,141,239,.06);border:1px solid rgba(91,141,239,.30);margin-bottom:14px">
-      <div class="card-header"><div><div class="card-title" style="color:var(--blue)">ℹ️ ${t('How this works', 'طريقة الاستخدام')}</div></div></div>
-      <ol style="margin:0 0 0 18px;font-size:13px;line-height:1.7">
-        <li>${t('Open your printable schedule image (the SUNDAY poster, etc.) in any AI/OCR tool (ChatGPT, Claude, Google Lens). Ask it: "Give me this schedule as text with one line per row, columns separated by |".', 'افتح صورة الجدول في أي أداة ذكاء اصطناعي (مثل شات جي بي تي أو كلود). اطلب: "حوّل الجدول إلى نص، كل سطر فترة، والأعمدة مفصولة بـ |".')}</li>
-        <li>${t('Pick the day below, paste the text, click Preview to check, then Apply.', 'اختر اليوم بالأسفل، الصق النص، اضغط معاينة، ثم تطبيق.')}</li>
-        <li>${t('Lines can use "|", TAB, or 2+ spaces between columns. A coach in parentheses is captured separately, e.g. "Swimming (Coach Jahad)".', 'يمكن استخدام "|" أو زر TAB أو أكثر من مسافة بين الأعمدة. اسم المدرب بين قوسين يُسجّل بشكل منفصل، مثال: "Swimming (Coach Jahad)".')}</li>
-      </ol>
-    </div>
-
-    <div class="card" style="margin-bottom:14px">
-      <div class="form-row">
-        <div class="field"><label>${t('Day', 'اليوم')}</label>
-          <select id="ci-day">${days.map(d => `<option value="${d}" ${d === window._campImport.day ? 'selected' : ''}>${dayLabel[d]}</option>`).join('')}</select>
-        </div>
-        <div class="field"><label>${t('Apply mode', 'وضع التطبيق')}</label>
-          <div style="display:flex;gap:14px;align-items:center;padding-top:6px">
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="radio" name="ci-mode" value="replace" checked> ${t('Replace day', 'استبدال اليوم')}</label>
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="radio" name="ci-mode" value="fill"> ${t('Fill empty slots only', 'ملء الفارغة فقط')}</label>
-          </div>
-        </div>
-      </div>
-
-      <div class="field"><label>📋 ${t('Paste here', 'الصق هنا')}</label>
-        <textarea id="ci-paste" rows="9" placeholder="${escapeHtml(example.replace(/"/g, '&quot;'))}" style="font-family:monospace;font-size:12px;line-height:1.5;width:100%">${escapeHtml(window._campImport.text || '')}</textarea>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-        <button class="btn ghost" onclick="document.getElementById('ci-paste').value=''; _previewCampImport()">${t('Clear', 'مسح')}</button>
-        <button class="btn ghost" onclick="document.getElementById('ci-paste').value=${JSON.stringify(example)}; _previewCampImport()" title="${t('Fill the box with a sample so you can see the format', 'تعبئة بنموذج لرؤية التنسيق')}">${t('Load sample', 'تحميل نموذج')}</button>
-        <button class="btn primary" onclick="_previewCampImport()">👁 ${t('Preview', 'معاينة')}</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-header"><div><div class="card-title">${t('Preview', 'معاينة')}</div><div class="card-subtitle">${t('Check the parsed rows before applying', 'تحقق من الصفوف قبل التطبيق')}</div></div></div>
-      <div id="ci-preview"></div>
-      <div style="margin-top:12px;display:flex;justify-content:flex-end">
-        <button class="btn primary" onclick="_applyCampImport()" style="font-weight:700">✓ ${t('Apply to', 'تطبيق على')} <span id="ci-applied-day">${dayLabel[window._campImport.day]}</span></button>
-      </div>
-    </div>`;
-
-  document.getElementById('ci-day')?.addEventListener('change', e => {
-    window._campImport.day = e.target.value;
-    document.getElementById('ci-applied-day').textContent = dayLabel[e.target.value];
-  });
-  _previewCampImport();
-};
-
 PAGES.schedule = (main) => {
-  // Coaches and students get a read-only schedule (view + export). Only admins edit.
-  const canEdit = currentRole() === 'admin';
+  // The class schedule is VIEWABLE by everyone (admin, receptionist, coach, student)
+  // and EDITABLE by admin + receptionist (the front-desk team manages bookings).
+  // Coaches and students get a read-only view; coaches see only their own classes.
+  const canEdit = currentRole() === 'admin' || currentRole() === 'receptionist';
   // A signed-in coach sees ONLY their own classes.
   const myCoachId = (currentRole() === 'coach') ? effectiveCoachId() : null;
   const DAYS = [
@@ -5258,10 +5246,12 @@ PAGES.coaches = (main) => {
             </div>
           </td>
           <td>
-            <button class="btn ghost sm" onclick="toggleCoachActive(${c.id})" title="Click to toggle"
-              style="font-weight:700;color:${isActive ? 'var(--green)' : 'var(--red)'};border:1px solid ${isActive ? 'var(--green)' : 'var(--red)'}">
-              ${isActive ? 'Y · Active' : 'N · Inactive'}
-            </button>
+            ${isViewerRole()
+              ? `<span class="badge ${isActive ? 'active' : 'expired'}" style="font-size:10px;font-weight:700">${isActive ? 'Y · Active' : 'N · Inactive'}</span>`
+              : `<button class="btn ghost sm" onclick="toggleCoachActive(${c.id})" title="Click to toggle"
+                  style="font-weight:700;color:${isActive ? 'var(--green)' : 'var(--red)'};border:1px solid ${isActive ? 'var(--green)' : 'var(--red)'}">
+                  ${isActive ? 'Y · Active' : 'N · Inactive'}
+                </button>`}
           </td>
           ${isViewerRole() ? '' : `<td><span class="badge blue">${c.rate}%</span></td>`}
           <td class="text-right num">${apr.students}</td>
@@ -5341,10 +5331,10 @@ PAGES.coaches = (main) => {
         <h1>Team</h1>
         <div class="subtitle"><span id="coach-subtitle"></span></div>
       </div>
-      <div style="display:flex;gap:8px">
+      ${isViewerRole() ? '' : `<div style="display:flex;gap:8px">
         <button class="btn ghost" onclick="editCoach(null, 'staff')" title="For admin, reception, cleaner, etc. — fixed monthly salary, no commission">+ Add Staff</button>
         <button class="btn primary" onclick="editCoach(null, 'coach')" title="For coaches who teach classes — commission-based">+ Add Coach</button>
-      </div>
+      </div>`}
     </div>
 
     <div class="card">
@@ -5400,6 +5390,7 @@ PAGES.coaches = (main) => {
 
 // Toggle a coach's active flag (Y <-> N)
 window.toggleCoachActive = function(coachId) {
+  if (currentRole() !== 'admin') { toast('Only admins can change coach status', 'error'); return; }
   const c = state.coaches.find(x => x.id === coachId);
   if (!c) return;
   c.active = (c.active || 'Y') === 'Y' ? 'N' : 'Y';
@@ -5481,11 +5472,11 @@ PAGES.invoices = (main) => {
         })()}</td>
         <td class="text-right" style="white-space:nowrap">
           ${invoiceStatus(i) !== 'Paid' ? `<button class="btn ghost sm" onclick="recordPaymentUI(${i.id})" title="Record a payment toward the balance" style="color:var(--green)">💵 Pay</button>` : ''}
-          ${i.customerId ? `<button class="btn ghost sm" onclick="showInvoiceHistory(${i.customerId})" title="See all invoices for this customer">📜</button>` : ''}
-          <button class="btn ghost sm" onclick="printInvoicePDF(${i.id})" title="Export invoice as PDF (filename = customer name)">⬇ Export</button>
+          ${i.customerId && !isViewerRole() ? `<button class="btn ghost sm" onclick="showInvoiceHistory(${i.customerId})" title="See all invoices for this customer">📜</button>` : ''}
+          ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="printInvoicePDF(${i.id})" title="Export invoice as PDF (filename = customer name)">⬇ Export</button>`}
           <button class="btn ghost sm" onclick="sendInvoiceWhatsApp(${i.id})" title="Send invoice as WhatsApp message" style="color:#25D366">💬</button>
-          <button class="btn ghost sm" onclick="editInvoiceQuick(${i.id})" title="Edit coach/sport">✏️</button>
-          <button class="btn ghost sm" onclick="deleteInvoice(${i.id})" title="Delete">🗑</button>
+          ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="editInvoiceQuick(${i.id})" title="Edit coach/sport">✏️</button>`}
+          ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="deleteInvoice(${i.id})" title="Delete">🗑</button>`}
         </td>
       </tr>`;
     }).join('') : `<tr><td colspan="11" class="empty"><div class="empty-icon">📄</div>No invoices match</td></tr>`;
@@ -6246,6 +6237,7 @@ window.recordPaymentUI = function(id) {
 };
 
 window.editInvoiceQuick = function(id) {
+  if (currentRole() !== 'admin') { toast('Only admins can edit invoices', 'error'); return; }
   const inv = state.invoices.find(i => i.id === id);
   if (!inv) return;
   const sports = ['MMA','Boxing','Kick Boxing','Karate','Taekwondo','Gymnastic','Football','Swimming','Zumba','Court Rental','Merchandise'];
@@ -6374,6 +6366,7 @@ window.editInvoiceQuick = function(id) {
 };
 
 window.deleteInvoice = function(id) {
+  if (currentRole() !== 'admin') { toast('Only admins can delete invoices', 'error'); return; }
   if (!confirm('Delete this invoice?')) return;
   state.invoices = state.invoices.filter(i => i.id !== id);
   save();
@@ -8265,18 +8258,18 @@ PAGES.products = (main) => {
         <tr>
           <td><div class="font-bold">${escapeHtml(p.name)}</div>${p.sku ? `<div class="text-mute" style="font-size:11px">SKU: ${escapeHtml(p.sku)}</div>` : ''}</td>
           <td><span class="badge">${escapeHtml(p.category || '—')}</span></td>
-          <td class="text-right num">${p.cost ? fmt(p.cost) : '<span class="text-mute">—</span>'}</td>
+          ${isViewerRole() ? '' : `<td class="text-right num">${p.cost ? fmt(p.cost) : '<span class="text-mute">—</span>'}</td>`}
           <td class="text-right num font-bold">${fmt(p.price || 0)}</td>
           <td class="text-right" style="color:${stockColor};font-weight:700">${stock}</td>
-          <td class="text-right num">${fmt(stock * (p.price || 0))}</td>
+          ${isViewerRole() ? '' : `<td class="text-right num">${fmt(stock * (p.price || 0))}</td>`}
           <td><span class="badge" style="background:${stockColor==='var(--red)'?'rgba(239,68,68,.15)':stockColor==='var(--accent-2)'?'rgba(242,163,60,.15)':'rgba(16,185,129,.15)'};color:${stockColor};font-size:10px">${stockLabel}</span></td>
           <td class="text-right" style="white-space:nowrap">
             <button class="btn ghost sm" onclick="restockProduct(${p.id})" title="Restock (add inventory)">➕ ${t('Restock', 'إعادة تخزين')}</button>
-            <button class="btn ghost sm" onclick="editProduct(${p.id})" title="${t('Edit', 'تعديل')}">✏️</button>
-            <button class="btn ghost sm" onclick="deleteProduct(${p.id})" title="${t('Delete', 'حذف')}">🗑</button>
+            ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="editProduct(${p.id})" title="${t('Edit', 'تعديل')}">✏️</button>
+            <button class="btn ghost sm" onclick="deleteProduct(${p.id})" title="${t('Delete', 'حذف')}">🗑</button>`}
           </td>
         </tr>`;
-    }).join('') : `<tr><td colspan="8" class="empty"><div class="empty-icon">📦</div>${t('No products match', 'لا توجد منتجات مطابقة')}</td></tr>`;
+    }).join('') : `<tr><td colspan="${isViewerRole() ? 6 : 8}" class="empty"><div class="empty-icon">📦</div>${t('No products match', 'لا توجد منتجات مطابقة')}</td></tr>`;
     $('#prod-count').textContent = `${all.length} ${t('products', 'منتج')}`;
     renderPagination('prod-pagination', pg, all.length, refresh);
   }
@@ -8297,7 +8290,7 @@ PAGES.products = (main) => {
         <div class="subtitle"><span id="prod-count">Loading...</span>${isViewerRole() ? '' : ` · ${fmt(totalValue)} ${t('QAR sell value', 'ر.ق قيمة البيع')} · ${fmt(totalCost)} ${t('QAR cost value', 'ر.ق قيمة التكلفة')}`}</div>
       </div>
       <div class="topbar-actions">
-        <button class="btn primary" id="prod-add">+ ${t('New Product', 'منتج جديد')}</button>
+        ${isViewerRole() ? '' : `<button class="btn primary" id="prod-add">+ ${t('New Product', 'منتج جديد')}</button>`}
       </div>
     </div>
 
@@ -8340,7 +8333,7 @@ PAGES.products = (main) => {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>${t('Product', 'المنتج')}</th><th>${t('Category', 'الفئة')}</th><th class="text-right">${t('Cost', 'التكلفة')}</th><th class="text-right">${t('Sell price', 'سعر البيع')}</th><th class="text-right">${t('Stock', 'المخزون')}</th><th class="text-right">${t('Stock value', 'قيمة المخزون')}</th><th>${t('Status', 'الحالة')}</th><th></th></tr></thead>
+          <thead><tr><th>${t('Product', 'المنتج')}</th><th>${t('Category', 'الفئة')}</th>${isViewerRole() ? '' : `<th class="text-right">${t('Cost', 'التكلفة')}</th>`}<th class="text-right">${t('Sell price', 'سعر البيع')}</th><th class="text-right">${t('Stock', 'المخزون')}</th>${isViewerRole() ? '' : `<th class="text-right">${t('Stock value', 'قيمة المخزون')}</th>`}<th>${t('Status', 'الحالة')}</th><th></th></tr></thead>
           <tbody id="prod-tbody"></tbody>
         </table>
       </div>
@@ -8351,7 +8344,7 @@ PAGES.products = (main) => {
   $('#prod-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   $('#prod-cat').addEventListener('change', e => { filter.category = e.target.value; pg.page = 1; refresh(); });
   $('#prod-stock').addEventListener('change', e => { filter.stock = e.target.value; pg.page = 1; refresh(); });
-  $('#prod-add').addEventListener('click', addProduct);
+  $('#prod-add')?.addEventListener('click', addProduct);
 
   refresh();
 };
@@ -8393,6 +8386,7 @@ function addProduct() {
 }
 
 window.editProduct = function(id) {
+  if (currentRole() !== 'admin') { toast('Only admins can edit product details', 'error'); return; }
   const p = (state.products || []).find(x => x.id === id);
   if (!p) return;
   showModal({
@@ -8434,6 +8428,7 @@ function saveProduct(existingId) {
 }
 
 window.deleteProduct = function(id) {
+  if (currentRole() !== 'admin') { toast('Only admins can delete products', 'error'); return; }
   const p = (state.products || []).find(x => x.id === id);
   if (!p) return;
   // Check if used in sales
@@ -8545,9 +8540,9 @@ PAGES.sales = (main) => {
           <td class="text-right num font-bold">${fmt(s.total || 0)}${balanceLabel}</td>
           <td><span class="badge ${s.method === 'card' ? 'blue' : ''}">${s.method || 'cash'}</span></td>
           <td class="text-right" style="white-space:nowrap">
-            ${s.invoiceId ? `<button class="btn ghost sm" onclick="printInvoicePDF(${s.invoiceId})" title="Print invoice">📄</button>` : ''}
+            ${s.invoiceId && !isViewerRole() ? `<button class="btn ghost sm" onclick="printInvoicePDF(${s.invoiceId})" title="Print invoice">📄</button>` : ''}
             <button class="btn ghost sm" onclick="viewSaleDetail(${s.id})" title="Details">👁</button>
-            <button class="btn ghost sm" onclick="deleteSale(${s.id})" title="Delete">🗑</button>
+            ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="deleteSale(${s.id})" title="Delete">🗑</button>`}
           </td>
         </tr>`;
     }).join('') : `<tr><td colspan="6" class="empty"><div class="empty-icon">🛒</div>No sales match</td></tr>`;
@@ -8957,6 +8952,7 @@ window.viewSaleDetail = function(id) {
 };
 
 window.deleteSale = function(id) {
+  if (currentRole() !== 'admin') { toast('Only admins can delete sales', 'error'); return; }
   const s = (state.sales || []).find(x => x.id === id);
   if (!s) return;
   const label = s.historical ? 'historical sale' : 'sale transaction';
@@ -16628,13 +16624,13 @@ PAGES.rentals = (main) => {
         <td><span class="badge ${r.method === 'card' ? 'blue' : ''}">${r.method || 'cash'}</span></td>
         <td class="text-mute" style="font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(r.notes || '')}</td>
         <td class="text-right" style="white-space:nowrap">
-          ${r.invoiceId ? `<button class="btn ghost sm" onclick="printInvoicePDF(${r.invoiceId})" title="Linked invoice PDF">📄</button>` : ''}
+          ${r.invoiceId && !isViewerRole() ? `<button class="btn ghost sm" onclick="printInvoicePDF(${r.invoiceId})" title="Linked invoice PDF">📄</button>` : ''}
           ${r.customerRentalId ? `<button class="btn ghost sm" onclick="viewRentalCustomerHistory(${r.customerRentalId})" title="See all bookings for this customer">📜</button>` : ''}
           <button class="btn ghost sm" onclick="editRental(${r.id})" title="Edit">✏️</button>
-          <button class="btn ghost sm" onclick="deleteRental(${r.id})" title="Delete">🗑</button>
+          ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="deleteRental(${r.id})" title="Delete">🗑</button>`}
         </td>
       </tr>`).join('') : `<tr><td colspan="9" class="empty"><div class="empty-icon">🏟</div>No rentals match the filter</td></tr>`;
-    $('#rent-count').textContent = `${all.length} booking${all.length===1?'':'s'} · ${totalHrs}h · ${fmt(totalAmt)} QAR`;
+    $('#rent-count').textContent = isViewerRole() ? `${all.length} booking${all.length===1?'':'s'} · ${totalHrs}h` : `${all.length} booking${all.length===1?'':'s'} · ${totalHrs}h · ${fmt(totalAmt)} QAR`;
     renderPagination('rent-pagination', pg, all.length, () => refresh());
   }
 
@@ -16649,8 +16645,8 @@ PAGES.rentals = (main) => {
       </div>
       <div class="topbar-actions">
         <button class="btn ghost" id="rentals-customers" title="View all rental customers with booking history">👥 Customers (${(state.rentalCustomers || []).length})</button>
-        <button class="btn ghost" id="rentals-rates" title="Edit default hourly rates per facility">⚙ Rates</button>
-        <button class="btn ghost" id="rentals-export" title="Export filtered rentals to CSV">📥 Export</button>
+        ${isViewerRole() ? '' : `<button class="btn ghost" id="rentals-rates" title="Edit default hourly rates per facility">⚙ Rates</button>
+        <button class="btn ghost" id="rentals-export" title="Export filtered rentals to CSV">📥 Export</button>`}
         <button class="btn primary" id="rentals-add">+ New Booking</button>
       </div>
     </div>
@@ -16667,8 +16663,8 @@ PAGES.rentals = (main) => {
         const monthShort = new Date(curMonth + '-01T00:00:00').toLocaleString('en', { month: 'short' });
         return `<div class="kpi ${color}">
           <div class="kpi-label">${icon} ${escapeHtml(f)} — ${monthShort}</div>
-          <div class="kpi-value">${fmt(amt)}</div>
-          <div class="kpi-sub">${thisMonth.length} booking${thisMonth.length===1?'':'s'} · ${hrs}h · ${fmt(state.settings.facilityRates[f] || 0)}/hr</div>
+          <div class="kpi-value">${isViewerRole() ? thisMonth.length : fmt(amt)}</div>
+          <div class="kpi-sub">${isViewerRole() ? `${thisMonth.length} booking${thisMonth.length===1?'':'s'} · ${hrs}h` : `${thisMonth.length} booking${thisMonth.length===1?'':'s'} · ${hrs}h · ${fmt(state.settings.facilityRates[f] || 0)}/hr`}</div>
         </div>`;
       }).join('')}
     </div>
@@ -16711,9 +16707,9 @@ PAGES.rentals = (main) => {
   $('#rent-facility').addEventListener('change', e => { filter.facility = e.target.value; pg.page = 1; refresh(); });
   $('#rent-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
   $('#rentals-add').addEventListener('click', () => addRental(refresh));
-  $('#rentals-rates').addEventListener('click', editFacilityRates);
+  $('#rentals-rates')?.addEventListener('click', editFacilityRates);
   $('#rentals-customers').addEventListener('click', () => showRentalCustomersList());
-  $('#rentals-export').addEventListener('click', () => {
+  $('#rentals-export')?.addEventListener('click', () => {
     // Export the CURRENT filtered set (not the whole table)
     const all = applyFilter().sort((a,b) => (b.date || '').localeCompare(a.date || ''));
     if (!all.length) { toast('No rentals to export', 'error'); return; }
@@ -17176,6 +17172,7 @@ window.viewRentalCustomerHistory = function(rcustId) {
 };
 
 window.deleteRental = function(id) {
+  if (currentRole() !== 'admin') { toast('Only admins can delete rentals', 'error'); return; }
   const r = (state.rentals || []).find(x => x.id === id);
   if (!r) return;
   if (!confirm(`Delete the ${r.facility} booking for ${r.customerName} on ${fmtDate(r.date)}?\n\nThe linked invoice (if any) will also be deleted.`)) return;

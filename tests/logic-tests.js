@@ -1206,9 +1206,15 @@ ${seed}
   ok(!ROLE_ALLOWED.receptionist.includes('users') && !ROLE_ALLOWED.receptionist.includes('danger') && !ROLE_ALLOWED.receptionist.includes('databackup') && !ROLE_ALLOWED.receptionist.includes('audit'), 'role: receptionist has NO access to Users & Roles, Danger Zone, Backup, or Audit Log');
   // Receptionist can manage members + edit pricing (so they can collect dues at the front desk).
   ok(ROLE_ALLOWED.receptionist.includes('members') && ROLE_ALLOWED.receptionist.includes('invoices'), 'role: receptionist can manage Members + view Invoices (for collecting payments)');
-  ok(ROUTES.campimport && ROUTES.campimport.section === 'Summer Camp' && ROUTES.campimport.adminOnly, 'nav: Import Schedule under Summer Camp, admin-only');
   // Camp group is auto-computed from gender + age: <7 -> Kids; Male 7+ -> Boys; Female 7+ -> Girls.
   // No manual override — the group follows the member's actual data.
+  ok(ROUTES.duepayment && ROUTES.duepayment.section === 'Membership' && !ROUTES.duepayment.adminOnly, 'nav: Due Payment under Membership, accessible to receptionist');
+  ok(ROLE_ALLOWED.receptionist.includes('duepayment'), 'role: receptionist can access Due Payment (collecting dues is the front-desk job)');
+  ok(ROLE_ALLOWED.receptionist.includes('schedule') && ROLE_ALLOWED.receptionist.includes('attendance'), 'role: receptionist can access Schedule + Attendance (front-desk needs to see classes)');
+  ok(roleCanAccess('receptionist', 'schedule'), 'role: roleCanAccess() returns true for receptionist + schedule');
+  // Schedule visibility: every role sees it (admin, receptionist, coach, student).
+  ok(roleCanAccess('admin', 'schedule') && roleCanAccess('receptionist', 'schedule') && roleCanAccess('coach', 'schedule') && roleCanAccess('student', 'schedule'), 'schedule: visible to admin, receptionist, coach, and student');
+  ok(roleCanAccess('admin', 'campschedule') && roleCanAccess('receptionist', 'campschedule') && roleCanAccess('coach', 'campschedule') && roleCanAccess('student', 'campschedule'), 'camp schedule: visible to admin, receptionist, coach, and student');
   if (!Array.isArray(state.drivers)) state.drivers = [];
   state.drivers.push({ id: 990001, name: 'TestDrv', phone: '+9745' });
   eq(driverName(990001), 'TestDrv', 'drivers: driverName resolves the driver name');
