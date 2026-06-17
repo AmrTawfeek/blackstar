@@ -1238,7 +1238,20 @@ PAGES.members = (main) => {
 function showDuplicatesModal() {
   const clusters = findAllDuplicateMembers();
   const similar = findSimilarNameClusters();
-  if (!clusters.length && !similar.length) {
+  // Shared-phone groups: 2+ members on the same number — skip groups already
+  // fully covered by the exact same-name-and-phone scan (no need to show twice).
+  const exactKeys = new Set();
+  for (const c of clusters) {
+    if (!c.length) continue;
+    const d = normalizePhoneForCompare(c[0].phone);
+    if (d && d.length >= 8) exactKeys.add(d.slice(-8) + ':' + c.map(m => m.id).sort().join(','));
+  }
+  const sharedRaw = findSharedPhoneClusters();
+  const shared = sharedRaw.filter(g => {
+    const k = g.key + ':' + g.members.map(m => m.id).sort().join(',');
+    return !exactKeys.has(k);
+  });
+  if (!clusters.length && !similar.length && !shared.length) {
     showModal({
       title: '🔍 Duplicate Scan',
       body: `
@@ -1301,6 +1314,15 @@ function showDuplicatesModal() {
     cluster.map(memberRow).join('')
   )).join('');
 
+  // Shared-phone groups: same number, different names — could be siblings
+  // (legitimate, but consider grouping them as a Family) or a wrong-number bug.
+  const sharedTotal = shared.reduce((s, g) => s + g.members.length, 0);
+  const sharedHtml = shared.map((g, idx) => clusterCard(
+    `<div style="font-weight:700;font-size:13px">Group ${idx + 1} · ${g.members.length} members share phone <code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:12px">${escapeHtml(g.members[0].phone || '—')}</code></div>
+     <div class="text-mute" style="font-size:11px;margin-top:2px">Different names on the same number — often siblings on a family phone. Group them under a Family to keep their balances together, or fix the phone if it is wrong.</div>`,
+    g.members.map(memberRow).join('')
+  )).join('');
+
   showModal({
     title: `🔍 Duplicate & Similar-Name Scan`,
     wide: true,
@@ -1316,6 +1338,10 @@ function showDuplicatesModal() {
         <div style="font-weight:700;font-size:13px;margin:${clusters.length ? '20px' : '0'} 0 8px">✍️ Similar names <span class="text-mute" style="font-weight:normal">(${similarTotal} members in ${similar.length} group${similar.length === 1 ? '' : 's'})</span></div>
         <div class="text-mute" style="font-size:12px;margin-bottom:10px">Names that look alike (typos, different spellings, or reordered words) — possibly the same person. These may have <b>different phone numbers</b>, so check carefully.</div>
         ${similarHtml}` : ''}
+      ${shared.length ? `
+        <div style="font-weight:700;font-size:13px;margin:${clusters.length || similar.length ? '20px' : '0'} 0 8px">📞 Same mobile, different names <span class="text-mute" style="font-weight:normal">(${sharedTotal} members in ${shared.length} group${shared.length === 1 ? '' : 's'})</span></div>
+        <div class="text-mute" style="font-size:12px;margin-bottom:10px">Multiple members registered with the same phone but different names. Often legitimate siblings — consider grouping them under a Family. If a name is wrong, fix the phone or archive the bad record.</div>
+        ${sharedHtml}` : ''}
     `,
     actions: [
       { label: 'Close', class: 'btn primary', onclick: closeModal },
@@ -3833,35 +3859,56 @@ window.markReminded = function(id) {
 // time". Reads from invoice line items so it stays correct with switch/split
 // invoices and historical handovers.
 PAGES.clubrevenue = (main) => {
-  // Available months from invoice dates (newest first), plus "all" sentinel.
-  const months = (() => {
-    const set = new Set();
-    for (const inv of (state.invoices || [])) {
-      if (inv.deleted) continue;
-      const mk = (inv.month) || (inv.date || '').slice(0, 7);
-      if (mk) set.add(mk);
+  // Period filter: a preset (today / yesterday / this_week / this_month / last_month / all)
+  // or a custom date range. Both resolve to startDate + endDate (YYYY-MM-DD, inclusive).
+  // Payments are filtered by invoice date — same convention as the rest of the CRM.
+  if (!window._crsPeriod) window._crsPeriod = { preset: 'this_month', from: '', to: '' };
+  const p = window._crsPeriod;
+  // Resolve preset → from / to
+  function resolveRange(preset, fromIn, toIn) {
+    const today = TODAY;
+    const d = new Date(today + 'T00:00:00');
+    const iso = x => x.toISOString().slice(0, 10);
+    if (preset === 'today') return { from: today, to: today };
+    if (preset === 'yesterday') { const y = new Date(d); y.setDate(d.getDate() - 1); return { from: iso(y), to: iso(y) }; }
+    if (preset === 'this_week') {
+      // Week starts Saturday in Qatar; back up to most recent Saturday.
+      const dow = d.getDay(); // 0=Sun..6=Sat
+      const back = (dow + 1) % 7; // Sat=6 → 0, Sun=0 → 1, ... Fri=5 → 6
+      const s = new Date(d); s.setDate(d.getDate() - back);
+      return { from: iso(s), to: today };
     }
-    return ['all', ...[...set].sort().reverse()];
-  })();
-  if (!window._crsMonth || (window._crsMonth !== 'all' && !months.includes(window._crsMonth))) {
-    window._crsMonth = months.find(m => m === currentMonth()) || months[1] || 'all';
+    if (preset === 'this_month') return { from: today.slice(0, 7) + '-01', to: today };
+    if (preset === 'last_month') {
+      const y = parseInt(today.slice(0, 4)), m = parseInt(today.slice(5, 7));
+      const prevY = m === 1 ? y - 1 : y, prevM = m === 1 ? 12 : m - 1;
+      const last = new Date(prevY, prevM, 0).getDate();
+      const mm = String(prevM).padStart(2, '0');
+      return { from: `${prevY}-${mm}-01`, to: `${prevY}-${mm}-${String(last).padStart(2, '0')}` };
+    }
+    if (preset === 'custom') return { from: fromIn || '', to: toIn || today };
+    return { from: '', to: '' };  // all-time
   }
-  const sel = window._crsMonth;
+  const range = resolveRange(p.preset, p.from, p.to);
 
-  const inMonth = inv => {
-    if (sel === 'all') return true;
-    const mk = inv.month || (inv.date || '').slice(0, 7);
-    return mk === sel;
+  const inRange = inv => {
+    if (!range.from && !range.to) return true;
+    const d = (inv.date || '').slice(0, 10);
+    if (!d) return false;
+    if (range.from && d < range.from) return false;
+    if (range.to && d > range.to) return false;
+    return true;
   };
 
-  // Aggregate by sport AND by coach. Negative lines (refunds / switch credits)
-  // subtract correctly so the totals reconcile to the books.
+  // Aggregate by sport AND by coach.
   const bySport = {};
   const byCoach = {};
   let grandRevenue = 0;
+  let invoiceCount = 0;
   for (const inv of (state.invoices || [])) {
     if (inv.deleted) continue;
-    if (!inMonth(inv)) continue;
+    if (!inRange(inv)) continue;
+    invoiceCount++;
     const items = (inv.lineItems && inv.lineItems.length) ? inv.lineItems
       : [{ sport: inv.sport || null, coachId: inv.coachId || null, price: inv.amount || 0 }];
     for (const li of items) {
@@ -3889,16 +3936,37 @@ PAGES.clubrevenue = (main) => {
 
   const sportRows = Object.entries(bySport).sort((a, b) => b[1].revenue - a[1].revenue);
   const coachRows = Object.values(byCoach).sort((a, b) => b.revenue - a.revenue);
-  const monthLabel = sel === 'all' ? t('All time', 'منذ البداية') : fmtMonth(sel);
+  // Human-readable label for the chosen period
+  const presetLabel = {
+    today: t('Today', 'اليوم'),
+    yesterday: t('Yesterday', 'أمس'),
+    this_week: t('This week', 'هذا الأسبوع'),
+    this_month: t('This month', 'هذا الشهر'),
+    last_month: t('Last month', 'الشهر الماضي'),
+    all: t('All time', 'منذ البداية'),
+    custom: t('Custom range', 'فترة مخصّصة'),
+  }[p.preset] || '';
+  const monthLabel = p.preset === 'custom'
+    ? `${range.from ? fmtDate(range.from) : '…'} → ${range.to ? fmtDate(range.to) : '…'}`
+    : (range.from && range.to && range.from === range.to)
+      ? `${presetLabel} (${fmtDate(range.from)})`
+      : (range.from || range.to)
+        ? `${presetLabel} · ${range.from ? fmtDate(range.from) : '…'} → ${range.to ? fmtDate(range.to) : '…'}`
+        : presetLabel;
+  const fileSlug = p.preset === 'custom'
+    ? `${range.from || 'all'}_to_${range.to || 'today'}`
+    : p.preset;
 
   window._crsCSV = () => {
     const lines = [];
+    lines.push(`Period,${monthLabel.replace(/,/g, ' ')}`);
+    lines.push('');
     lines.push('SPORT,Revenue (QAR),Members,Invoices');
     sportRows.forEach(([sp, v]) => lines.push([sp, v.revenue.toFixed(2), v.members.size, v.invoices].map(x => `"${String(x).replace(/"/g, '""')}"`).join(',')));
     lines.push('');
     lines.push('COACH,Revenue (QAR),Commission (QAR),Members,Sports');
     coachRows.forEach(c => lines.push([c.name, c.revenue.toFixed(2), c.commission.toFixed(2), c.members.size, [...c.sports].join(' / ')].map(x => `"${String(x).replace(/"/g, '""')}"`).join(',')));
-    downloadFile(`club-revenue-${sel}-${TODAY}.csv`, lines.join('\n'), 'text/csv');
+    downloadFile(`club-revenue-${fileSlug}-${TODAY}.csv`, lines.join('\n'), 'text/csv');
     toast('Exported club-revenue.csv');
   };
 
@@ -3935,16 +4003,28 @@ PAGES.clubrevenue = (main) => {
         <h1>💼 ${t('Club Revenue Summary', 'ملخص إيرادات النادي')}</h1>
         <div class="subtitle">${t('Revenue per sport and per coach', 'الإيرادات لكل رياضة ولكل مدرب')} · ${monthLabel}</div>
       </div>
-      <div class="topbar-actions">
-        <select id="crs-month" class="btn ghost">
-          ${months.map(mk => `<option value="${mk}" ${mk === sel ? 'selected' : ''}>${mk === 'all' ? t('All time', 'منذ البداية') : fmtMonth(mk)}</option>`).join('')}
+      <div class="topbar-actions" style="flex-wrap:wrap;align-items:center">
+        <select id="crs-preset" class="btn ghost" title="Pick a period">
+          <option value="today" ${p.preset === 'today' ? 'selected' : ''}>📅 ${t('Today', 'اليوم')}</option>
+          <option value="yesterday" ${p.preset === 'yesterday' ? 'selected' : ''}>📅 ${t('Yesterday', 'أمس')}</option>
+          <option value="this_week" ${p.preset === 'this_week' ? 'selected' : ''}>📅 ${t('This week', 'هذا الأسبوع')}</option>
+          <option value="this_month" ${p.preset === 'this_month' ? 'selected' : ''}>📅 ${t('This month', 'هذا الشهر')}</option>
+          <option value="last_month" ${p.preset === 'last_month' ? 'selected' : ''}>📅 ${t('Last month', 'الشهر الماضي')}</option>
+          <option value="all" ${p.preset === 'all' ? 'selected' : ''}>📅 ${t('All time', 'منذ البداية')}</option>
+          <option value="custom" ${p.preset === 'custom' ? 'selected' : ''}>🗓 ${t('Custom range…', 'فترة مخصّصة…')}</option>
         </select>
+        <div id="crs-custom" style="display:${p.preset === 'custom' ? 'inline-flex' : 'none'};align-items:center;gap:6px">
+          <input id="crs-from" type="date" class="btn ghost" value="${p.from || range.from || ''}" max="${TODAY}" />
+          <span class="text-mute" style="font-size:11px">→</span>
+          <input id="crs-to" type="date" class="btn ghost" value="${p.to || range.to || TODAY}" max="${TODAY}" />
+        </div>
         <button class="btn ghost" onclick="_crsCSV()">⬇ ${t('Export CSV', 'تصدير CSV')}</button>
       </div>
     </div>
 
-    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+    <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
       <div class="kpi green"><div class="kpi-label">💰 ${t('Total revenue', 'إجمالي الإيرادات')}</div><div class="kpi-value num">${fmt(grandRevenue)}</div><div class="kpi-sub">QAR · ${monthLabel}</div></div>
+      <div class="kpi blue"><div class="kpi-label">🧾 ${t('Invoices', 'الفواتير')}</div><div class="kpi-value num">${invoiceCount}</div><div class="kpi-sub">${invoiceCount && grandRevenue ? t('avg', 'متوسط') + ' ' + fmt(grandRevenue / invoiceCount) + ' QAR' : t('in this period', 'في هذه الفترة')}</div></div>
       <div class="kpi"><div class="kpi-label">🥋 ${t('Active sports', 'الرياضات النشطة')}</div><div class="kpi-value num">${sportRows.length}</div><div class="kpi-sub">${t('contributing to revenue', 'تساهم في الإيرادات')}</div></div>
       <div class="kpi"><div class="kpi-label">🧑‍🏫 ${t('Earning coaches', 'المدربون الذين كسبوا')}</div><div class="kpi-value num">${coachRows.length}</div><div class="kpi-sub">${t('with attributed revenue', 'بإيرادات منسوبة')}</div></div>
     </div>
@@ -3959,7 +4039,17 @@ PAGES.clubrevenue = (main) => {
       <div class="table-wrap">${coachTable}</div>
     </div>`;
 
-  $('#crs-month')?.addEventListener('change', e => { window._crsMonth = e.target.value; render(); });
+  $('#crs-preset')?.addEventListener('change', e => {
+    window._crsPeriod.preset = e.target.value;
+    if (e.target.value === 'custom') {
+      // Seed custom inputs from the current resolved range so the user starts from a sensible place.
+      if (!window._crsPeriod.from) window._crsPeriod.from = range.from || TODAY;
+      if (!window._crsPeriod.to) window._crsPeriod.to = range.to || TODAY;
+    }
+    render();
+  });
+  $('#crs-from')?.addEventListener('change', e => { window._crsPeriod.preset = 'custom'; window._crsPeriod.from = e.target.value; render(); });
+  $('#crs-to')?.addEventListener('change', e => { window._crsPeriod.preset = 'custom'; window._crsPeriod.to = e.target.value; render(); });
 };
 
 // ─── Due Payment ─────────────────────────────────────────────────────────
@@ -4591,7 +4681,11 @@ PAGES.schedule = (main) => {
   const sportColor = sp => (SPORT_THEME[baseSportName(sp)] || SPORT_THEME[sp] || { color: '#5b8def', emoji: '🏃' }).color;
   const sportEmoji = sp => { const e = (SPORT_THEME[baseSportName(sp)] || SPORT_THEME[sp] || { emoji: '🏃' }).emoji; return isPrivateSport(sp) ? e + '🔒' : e; };
 
-  let filter = { coachId: myCoachId != null ? myCoachId : 'all', sport: 'all' };
+  // Filter holds ARRAYS of selected coach ids and sport names (empty = "all").
+  // For coaches: empty means all; otherwise only listed coach ids match.
+  // For sports: empty means all; otherwise only listed sport names match.
+  // A signed-in coach is pre-locked to themselves (and the picker is hidden).
+  let filter = { coaches: myCoachId != null ? [myCoachId] : [], sports: [] };
 
   // Find classes for a given day + slot
   function classesAt(day, hour) {
@@ -4599,8 +4693,8 @@ PAGES.schedule = (main) => {
   }
 
   function isFiltered(c) {
-    if (filter.coachId !== 'all' && c.coachId !== parseInt(filter.coachId)) return false;
-    if (filter.sport !== 'all' && c.sport !== filter.sport) return false;
+    if (filter.coaches.length && !filter.coaches.includes(c.coachId)) return false;
+    if (filter.sports.length && !filter.sports.includes(c.sport)) return false;
     return true;
   }
 
@@ -4778,7 +4872,7 @@ PAGES.schedule = (main) => {
     // Stats
     const total = (state.schedule || []).length;
     const matching = (state.schedule || []).filter(isFiltered).length;
-    $('#sch-count').textContent = filter.coachId !== 'all' || filter.sport !== 'all'
+    $('#sch-count').textContent = (filter.coaches.length || filter.sports.length)
       ? `${matching} of ${total} classes match the filter`
       : `${total} classes scheduled · drag a sport tile onto a cell to add`;
   }
@@ -5013,8 +5107,6 @@ PAGES.schedule = (main) => {
     ? state.settings.sports.filter(s => s.enabled !== false && s.name !== SUMMER_CAMP)
         .slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map(s => s.name)
     : Object.keys(SPORT_THEME);
-  const coachOpts = state.coaches.map(c => `<option value="${c.id}">${escapeHtml(c.name)}${isCoachActive(c) ? '' : ' (inactive)'}</option>`).join('');
-  const sportOpts = scheduleSports.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
   // Sport palette (draggable tiles) — admins only
   const sportTiles = !canEdit ? '' : scheduleSports.map(sport => `
     <div class="sport-tile" draggable="true" data-sport="${escapeHtml(sport)}"
@@ -5083,14 +5175,33 @@ PAGES.schedule = (main) => {
     <div class="card" style="padding:14px;margin-bottom:14px">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <div style="font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.6px;font-weight:700">Filters</div>
-        <select id="sch-filter-coach" class="btn ghost">
-          <option value="all">All coaches</option>
-          ${coachOpts}
-        </select>
-        <select id="sch-filter-sport" class="btn ghost">
-          <option value="all">All sports</option>
-          ${sportOpts}
-        </select>
+        ${myCoachId != null ? '' : `
+        <div style="position:relative">
+          <button type="button" id="sch-filter-coach-btn" class="btn ghost" style="min-width:160px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more coaches">
+            <span id="sch-filter-coach-label">${filter.coaches.length ? (filter.coaches.length === 1 ? escapeHtml(coachName(filter.coaches[0]) || 'Coach') : filter.coaches.length + ' coaches') : 'All coaches'}</span>
+            <span style="opacity:.6;font-size:10px">▾</span>
+          </button>
+          <div id="sch-filter-coach-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            ${(() => {
+              const active = state.coaches.filter(c => isCoachActive(c));
+              const inactive = state.coaches.filter(c => !isCoachActive(c));
+              const row = (c, faded) => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px${faded ? ';opacity:.72' : ''}"><input type="checkbox" class="sch-coach-cb" value="${c.id}" ${filter.coaches.includes(c.id) ? 'checked' : ''} /> ${escapeHtml(c.name)}${faded ? ' <span class="text-mute" style="font-size:10px">(inactive)</span>' : ''}</label>`;
+              return active.map(c => row(c, false)).join('') + (inactive.length ? '<div style="height:1px;background:var(--border);margin:6px 0"></div>' + inactive.map(c => row(c, true)).join('') : '');
+            })()}
+            <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:flex-end"><button type="button" class="btn ghost sm" id="sch-filter-coach-clear">Clear</button></div>
+          </div>
+        </div>`}
+        <div style="position:relative">
+          <button type="button" id="sch-filter-sport-btn" class="btn ghost" style="min-width:160px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more sports">
+            <span id="sch-filter-sport-label">${filter.sports.length ? (filter.sports.length === 1 ? escapeHtml(filter.sports[0]) : filter.sports.length + ' sports') : 'All sports'}</span>
+            <span style="opacity:.6;font-size:10px">▾</span>
+          </button>
+          <div id="sch-filter-sport-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            ${scheduleSports.map(s => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="sch-sport-cb" value="${escapeHtml(s)}" ${filter.sports.includes(s) ? 'checked' : ''} /> ${sportEmoji(s)} ${escapeHtml(s)}</label>`).join('')}
+            <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:flex-end"><button type="button" class="btn ghost sm" id="sch-filter-sport-clear">Clear</button></div>
+          </div>
+        </div>
+        ${(filter.coaches.length || filter.sports.length) ? `<button type="button" class="btn ghost sm" id="sch-filter-reset">✕ Clear all</button>` : ''}
         <div style="font-size:11px;color:var(--text-mute);margin-left:auto">Filters dim non-matching classes; export honors the filter</div>
       </div>
     </div>
@@ -5114,8 +5225,50 @@ PAGES.schedule = (main) => {
   });
 
   // Filter wiring
-  $('#sch-filter-coach').addEventListener('change', e => { filter.coachId = e.target.value; refresh(); });
-  $('#sch-filter-sport').addEventListener('change', e => { filter.sport = e.target.value; refresh(); });
+  // Multi-select filter menus (open/close + checkbox handlers)
+  function toggleMenu(btnId, menuId) {
+    const btn = $(`#${btnId}`); const menu = $(`#${menuId}`);
+    if (!btn || !menu) return;
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const open = menu.style.display === 'block';
+      // Close any other open menus first
+      $$('#sch-filter-coach-menu, #sch-filter-sport-menu').forEach(m => { if (m !== menu) m.style.display = 'none'; });
+      menu.style.display = open ? 'none' : 'block';
+    });
+  }
+  toggleMenu('sch-filter-coach-btn', 'sch-filter-coach-menu');
+  toggleMenu('sch-filter-sport-btn', 'sch-filter-sport-menu');
+  // Click outside closes both menus
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#sch-filter-coach-menu, #sch-filter-coach-btn, #sch-filter-sport-menu, #sch-filter-sport-btn')) {
+      $$('#sch-filter-coach-menu, #sch-filter-sport-menu').forEach(m => { if (m) m.style.display = 'none'; });
+    }
+  }, { once: true });
+  function updateFilterLabels() {
+    const cL = $('#sch-filter-coach-label');
+    if (cL) cL.textContent = filter.coaches.length ? (filter.coaches.length === 1 ? (coachName(filter.coaches[0]) || 'Coach') : filter.coaches.length + ' coaches') : 'All coaches';
+    const sL = $('#sch-filter-sport-label');
+    if (sL) sL.textContent = filter.sports.length ? (filter.sports.length === 1 ? filter.sports[0] : filter.sports.length + ' sports') : 'All sports';
+  }
+  // Coach checkboxes
+  $$('.sch-coach-cb').forEach(cb => cb.addEventListener('change', e => {
+    const id = parseInt(e.target.value);
+    if (e.target.checked) { if (!filter.coaches.includes(id)) filter.coaches.push(id); }
+    else { filter.coaches = filter.coaches.filter(x => x !== id); }
+    updateFilterLabels(); refresh();
+  }));
+  $('#sch-filter-coach-clear')?.addEventListener('click', () => { filter.coaches = []; $$('.sch-coach-cb').forEach(cb => cb.checked = false); updateFilterLabels(); refresh(); });
+  // Sport checkboxes
+  $$('.sch-sport-cb').forEach(cb => cb.addEventListener('change', e => {
+    const sp = e.target.value;
+    if (e.target.checked) { if (!filter.sports.includes(sp)) filter.sports.push(sp); }
+    else { filter.sports = filter.sports.filter(x => x !== sp); }
+    updateFilterLabels(); refresh();
+  }));
+  $('#sch-filter-sport-clear')?.addEventListener('click', () => { filter.sports = []; $$('.sch-sport-cb').forEach(cb => cb.checked = false); updateFilterLabels(); refresh(); });
+  // Reset all
+  $('#sch-filter-reset')?.addEventListener('click', () => { filter.coaches = []; filter.sports = []; $$('.sch-coach-cb, .sch-sport-cb').forEach(cb => cb.checked = false); updateFilterLabels(); refresh(); });
 
   // Export PNG
   $('#sch-png').addEventListener('click', () => exportPng('en'));
@@ -6209,23 +6362,75 @@ window.recordPaymentUI = function(id) {
         </div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Payment amount (QAR)</label><input id="pay-amt" type="number" min="0" step="0.01" value="${bal.toFixed(2)}" /></div>
         <div class="field"><label>Date</label><input id="pay-date" type="date" value="${TODAY}" /></div>
-        <div class="field"><label>Method</label><select id="pay-method"><option value="cash">Cash</option><option value="card">Card</option></select></div>
+        <div class="field" style="display:flex;align-items:flex-end">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+            <input type="checkbox" id="pay-split" /> ${t('Split between cash + card', 'تقسيم بين النقد والبطاقة')}
+          </label>
+        </div>
       </div>
-      <div class="text-mute" style="font-size:11px;margin-top:4px">Counts as revenue in the month of the payment date.</div>
+      <div id="pay-single" style="margin-top:8px">
+        <div class="form-row">
+          <div class="field"><label>${t('Amount (QAR)', 'المبلغ (ر.ق)')}</label><input id="pay-amt" type="number" min="0" step="0.01" value="${bal.toFixed(2)}" /></div>
+          <div class="field"><label>${t('Method', 'الطريقة')}</label><select id="pay-method"><option value="cash">${t('Cash', 'نقداً')}</option><option value="card">${t('Card', 'بطاقة')}</option></select></div>
+        </div>
+      </div>
+      <div id="pay-split-rows" style="display:none;margin-top:8px">
+        <div class="form-row">
+          <div class="field"><label>💵 ${t('Cash (QAR)', 'النقد (ر.ق)')}</label><input id="pay-cash" type="number" min="0" step="0.01" value="" placeholder="0.00" /></div>
+          <div class="field"><label>💳 ${t('Card (QAR)', 'البطاقة (ر.ق)')}</label><input id="pay-card" type="number" min="0" step="0.01" value="" placeholder="0.00" /></div>
+        </div>
+        <div id="pay-split-summary" style="margin-top:8px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">
+          <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:8px">
+            <div class="text-mute" style="font-size:10px;text-transform:uppercase">${t('Balance', 'الرصيد')}</div>
+            <div style="font-weight:800;font-size:16px">${fmt(bal)}</div>
+          </div>
+          <div style="background:rgba(16,185,129,.10);border:1px solid rgba(16,185,129,.30);border-radius:8px;padding:8px">
+            <div style="font-size:10px;text-transform:uppercase;color:var(--green)">${t('Collecting', 'جاري التحصيل')}</div>
+            <div id="pay-split-sum" style="font-weight:800;font-size:16px;color:var(--green)">0</div>
+          </div>
+          <div id="pay-split-rem-card" style="background:rgba(242,163,60,.10);border:1px solid rgba(242,163,60,.30);border-radius:8px;padding:8px">
+            <div style="font-size:10px;text-transform:uppercase;color:var(--accent-2)">${t('Remaining', 'المتبقي')}</div>
+            <div id="pay-split-rem" style="font-weight:800;font-size:16px;color:var(--accent-2)">${fmt(bal)}</div>
+          </div>
+        </div>
+        <div class="text-mute" style="font-size:11px;margin-top:6px">${t('Each part is logged as its own payment row, so reports show how much was cash vs card.', 'كل جزء يُسجّل كدفعة منفصلة لتظهر التقارير التوزيع بين النقد والبطاقة.')}</div>
+      </div>
+      <div class="text-mute" style="font-size:11px;margin-top:6px">${t('Counts as revenue in the month of the payment date.', 'تُحتسب كإيرادات في شهر تاريخ الدفع.')}</div>
     `,
     actions: [
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
       { label: '💵 Record payment', class: 'btn primary', onclick: () => {
-        const amt = parseFloat($('#pay-amt').value) || 0;
-        if (amt <= 0) { toast('Enter a payment amount', 'error'); return; }
-        let pay = amt;
-        if (amt > bal + 0.001) {
-          if (!confirm(`That's more than the ${fmt(bal)} balance — record only the ${fmt(bal)} balance?`)) return;
-          pay = bal;   // never collect more than is owed
+        const date = $('#pay-date').value || TODAY;
+        const isSplit = $('#pay-split').checked;
+        if (isSplit) {
+          const cash = parseFloat($('#pay-cash').value) || 0;
+          const card = parseFloat($('#pay-card').value) || 0;
+          if (cash <= 0 && card <= 0) { toast('Enter at least one of cash or card', 'error'); return; }
+          let totalSplit = cash + card;
+          if (totalSplit > bal + 0.001) {
+            if (!confirm(`That's more than the ${fmt(bal)} balance — only record up to the ${fmt(bal)} balance?`)) return;
+            // Trim card first (cash is usually the exact change), then cash if still over.
+            let over = totalSplit - bal;
+            let cardAdj = card, cashAdj = cash;
+            if (over > 0 && cardAdj > 0) { const cut = Math.min(over, cardAdj); cardAdj -= cut; over -= cut; }
+            if (over > 0) cashAdj = Math.max(0, cashAdj - over);
+            if (cardAdj > 0) recordInvoicePayment(inv, cardAdj, { date, method: 'card' });
+            if (cashAdj > 0) recordInvoicePayment(inv, cashAdj, { date, method: 'cash' });
+          } else {
+            if (card > 0) recordInvoicePayment(inv, card, { date, method: 'card' });
+            if (cash > 0) recordInvoicePayment(inv, cash, { date, method: 'cash' });
+          }
+        } else {
+          const amt = parseFloat($('#pay-amt').value) || 0;
+          if (amt <= 0) { toast('Enter a payment amount', 'error'); return; }
+          let pay = amt;
+          if (amt > bal + 0.001) {
+            if (!confirm(`That's more than the ${fmt(bal)} balance — record only the ${fmt(bal)} balance?`)) return;
+            pay = bal;   // never collect more than is owed
+          }
+          recordInvoicePayment(inv, pay, { date, method: $('#pay-method').value || 'cash' });
         }
-        recordInvoicePayment(inv, pay, { date: $('#pay-date').value || TODAY, method: $('#pay-method').value || 'cash' });
         save();
         closeModal();
         render();
@@ -6234,6 +6439,43 @@ window.recordPaymentUI = function(id) {
       }},
     ],
   });
+  // Wire the split toggle + live sum
+  function recomputeSplit() {
+    const cash = parseFloat($('#pay-cash')?.value) || 0;
+    const card = parseFloat($('#pay-card')?.value) || 0;
+    const sum = cash + card;
+    const rem = bal - sum;
+    if ($('#pay-split-sum')) $('#pay-split-sum').textContent = fmt(sum);
+    const remEl = $('#pay-split-rem');
+    const remCard = $('#pay-split-rem-card');
+    if (remEl) remEl.textContent = fmt(Math.max(0, rem));
+    if (remCard) {
+      if (rem < -0.001) {
+        // over-collecting — flag in red
+        remCard.style.background = 'rgba(239,68,68,.10)';
+        remCard.style.borderColor = 'rgba(239,68,68,.30)';
+        remEl.style.color = 'var(--red)';
+        remEl.textContent = '+' + fmt(-rem) + ' over';
+      } else if (Math.abs(rem) < 0.001) {
+        remCard.style.background = 'rgba(16,185,129,.10)';
+        remCard.style.borderColor = 'rgba(16,185,129,.30)';
+        remEl.style.color = 'var(--green)';
+        remEl.textContent = '✓ ' + t('exact', 'مطابق');
+      } else {
+        remCard.style.background = 'rgba(242,163,60,.10)';
+        remCard.style.borderColor = 'rgba(242,163,60,.30)';
+        remEl.style.color = 'var(--accent-2)';
+      }
+    }
+  }
+  $('#pay-split')?.addEventListener('change', e => {
+    const split = e.target.checked;
+    $('#pay-single').style.display = split ? 'none' : '';
+    $('#pay-split-rows').style.display = split ? '' : 'none';
+    if (split) recomputeSplit();
+  });
+  $('#pay-cash')?.addEventListener('input', recomputeSplit);
+  $('#pay-card')?.addEventListener('input', recomputeSplit);
 };
 
 window.editInvoiceQuick = function(id) {

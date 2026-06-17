@@ -1568,3 +1568,58 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
   _applyCampImport). Render harness updated; old test removed.
 - (No data shape change — state.campSchedule is unaffected.)
 - Regression: 585 logic assertions + 41 pages render, all passing.
+
+
+## 6.11.0 note — Schedule filters now multi-select (coaches + sports)
+- The two single-select dropdowns on the Schedule filter bar are replaced with checkbox menus matching
+  the Members page pattern. Pick any combination of coaches AND any combination of sports — the grid
+  highlights matches and dims the rest in real time.
+- Empty selection = "All" (no filter). Each menu has a Clear button; a global "Clear all" appears next
+  to the filters when anything is active.
+- Labels show "All coaches" / "Coach X" / "N coaches" (same for sports), and update live on every tick.
+- Coach view unchanged: a signed-in coach is still locked to their own classes (coach picker hidden).
+- Count subtitle and export honour the multi-select filter automatically (they use the same
+  isFiltered() function).
+- Regression: 585 logic assertions + 41 pages render, all passing.
+
+
+## 6.12.0 note — Club Revenue Summary: date-range filter + Invoices KPI
+- The month-only dropdown is replaced with a richer period filter on Insights -> Club Revenue Summary:
+  presets Today / Yesterday / This week / This month / Last month / All time, plus a Custom range with
+  from + to date inputs (max = today).
+- "This week" follows the Qatar week (Saturday start).
+- New 4th KPI card "Invoices" shows the receipt count for the chosen period + the average invoice value
+  alongside Total revenue. So a "daily report" reads: Total revenue today (X QAR) · Invoices today
+  (N) · avg invoice (Y QAR) · plus the by-sport and by-coach breakdowns.
+- CSV export now writes the period as a header line and uses a clear filename suffix
+  (e.g. club-revenue-today-2026-06-13.csv or club-revenue-2026-06-01_to_2026-06-13-2026-06-13.csv).
+- Filter persists in window._crsPeriod so the screen remembers it during the session.
+- (No second screen needed — kept everything on one page.)
+- Regression: 585 logic assertions + 41 pages render, all passing.
+
+
+## 6.13.0 note — Find duplicates by mobile number
+- New findSharedPhoneClusters() helper groups members who share a mobile number (last 8 digits)
+  REGARDLESS of name — catches siblings on a parent phone, or wrong-number bugs missed by the
+  same-name+phone scan.
+- The Members -> Find Duplicates dialog now has a third section: "📞 Same mobile, different names".
+  Each group shows the shared number prominently and lists the members with their status + sport
+  + actions (👁 View / 📦 Archive). Groups already covered by the exact name+phone scan are NOT
+  re-shown (no duplicate noise).
+- Test added that locks the behaviour: two members with the same phone but different names form one
+  shared-phone group.
+- Regression: 586 logic assertions + 41 pages render, all passing.
+
+
+## 6.14.0 note — Split-tender payments (cash + card on one transaction)
+- The 💵 Record payment dialog (Invoices page, Due Payment page, Expiring page) now has a "Split between
+  cash + card" checkbox. Tick it to swap the single Amount + Method controls for two side-by-side
+  inputs (💵 Cash QAR / 💳 Card QAR) with a live "Collecting / Remaining" summary.
+- Each part is recorded as its OWN payment row on the invoice (correct method preserved on each), so
+  daily cash-vs-card reports show the right split.
+- Over-collection guard: if cash + card > balance, asks before trimming the excess (trims card first
+  since cash is usually the exact change). Single-payment flow is unchanged.
+- recordInvoicePayment() already supported a payments[] array — this is purely a UI change.
+- Test added: posting 100 cash + 200 card to a 300-balance invoice produces 2 payment rows, sums to
+  300 paid, and preserves both methods.
+- Regression: 589 logic assertions + 41 pages render, all passing.

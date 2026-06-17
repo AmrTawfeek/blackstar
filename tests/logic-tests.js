@@ -1215,6 +1215,28 @@ ${seed}
   // Schedule visibility: every role sees it (admin, receptionist, coach, student).
   ok(roleCanAccess('admin', 'schedule') && roleCanAccess('receptionist', 'schedule') && roleCanAccess('coach', 'schedule') && roleCanAccess('student', 'schedule'), 'schedule: visible to admin, receptionist, coach, and student');
   ok(roleCanAccess('admin', 'campschedule') && roleCanAccess('receptionist', 'campschedule') && roleCanAccess('coach', 'campschedule') && roleCanAccess('student', 'campschedule'), 'camp schedule: visible to admin, receptionist, coach, and student');
+  // Split-tender payment: cash + card on the same invoice should produce two
+  // payment rows, the amountPaid sum reflects both, and methods are preserved.
+  (() => {
+    const inv = { id: 9991, amount: 300, payments: [] };
+    recordInvoicePayment(inv, 100, { date: '2026-06-13', method: 'cash' });
+    recordInvoicePayment(inv, 200, { date: '2026-06-13', method: 'card' });
+    eq(inv.payments.length, 2, 'split tender: two payment rows recorded on one invoice');
+    eq(inv.amountPaid, 300, 'split tender: amountPaid equals cash + card');
+    ok(inv.payments.some(p => p.method === 'cash') && inv.payments.some(p => p.method === 'card'), 'split tender: both methods (cash + card) preserved');
+  })();
+  // Shared-phone scan: two members with the SAME phone but different names form a group, exact (name+phone) dups don't appear there twice.
+  (() => {
+    const before = state.members.slice();
+    state.members = [
+      { id: 9001, name: 'Ali Mohamed',   phone: '55512345', deleted: false },
+      { id: 9002, name: 'Yara Mohamed',  phone: '55512345', deleted: false },
+      { id: 9003, name: 'Different Person', phone: '99988877', deleted: false },
+    ];
+    const shared = findSharedPhoneClusters();
+    ok(shared.length === 1 && shared[0].members.length === 2, 'duplicates: same-mobile scan groups Ali + Yara (different names, shared phone)');
+    state.members = before;
+  })();
   if (!Array.isArray(state.drivers)) state.drivers = [];
   state.drivers.push({ id: 990001, name: 'TestDrv', phone: '+9745' });
   eq(driverName(990001), 'TestDrv', 'drivers: driverName resolves the driver name');
