@@ -152,7 +152,7 @@ PAGES.dashboard = (main) => {
     // finished all classes but still active (likely needs renewal)
     for (const sub of (m.subscriptions || [])) {
       const tot = sub.totalClasses || 0;
-      const liveSp = liveAttendanceCount(m, sub.activity);
+      const liveSp = liveAttendanceCount(m, sub.activity, sub.start || null, sub.end || null);
       const att = liveSp.total > 0 ? liveSp.y : (sub.attendedClasses || 0);
       if (tot > 0 && att >= tot && st === 'Active') {
         finishedList.push({ m, sport: sub.activity || m.sport });
@@ -727,16 +727,16 @@ PAGES.members = (main) => {
   function attPctVal(m) {
     const mr = (m.subscriptions || []).filter(s => s.totalClasses).slice(-1)[0];
     if (!mr) return -1;
-    const live = liveAttendanceCount(m, mr.activity);
+    const live = liveAttendanceCount(m, mr.activity, mr.start || null, mr.end || null);
     const att = live.total > 0 ? live.y : (mr.attendedClasses || 0);
-    return mr.totalClasses ? att / mr.totalClasses : -1;
+    return mr.totalClasses ? Math.min(1, att / mr.totalClasses) : -1;
   }
   function attCellHtml(m) {
     const mr = (m.subscriptions || []).filter(s => s.totalClasses).slice(-1)[0];
     if (!mr) return dash;
-    const live = liveAttendanceCount(m, mr.activity);
+    const live = liveAttendanceCount(m, mr.activity, mr.start || null, mr.end || null);
     const att = live.total > 0 ? live.y : (mr.attendedClasses || 0);
-    const pct = mr.totalClasses ? Math.round(att / mr.totalClasses * 100) : null;
+    const pct = mr.totalClasses ? Math.min(100, Math.round(att / mr.totalClasses * 100)) : null;
     const color = pct == null ? 'var(--text-mute)' : pct >= 75 ? 'var(--green)' : pct >= 40 ? 'var(--accent-2)' : 'var(--red)';
     // If the member has several sports, say WHICH sport this count belongs to —
     // the number is for the most recent subscription, which may not be the
@@ -1369,11 +1369,13 @@ function viewMember(id) {
 
   const subs = allSubs.map(s => {
     const total = s.totalClasses;
-    // Live count for this sport — falls back to static field if no marks yet
-    const liveForSport = liveAttendanceCount(m, s.activity);
+    // Live count for THIS subscription period only — classes attended on/after
+    // this row's start date (and on/before its end), so a renewal doesn't carry
+    // the previous period's attendance forward. Falls back to the static field.
+    const liveForSport = liveAttendanceCount(m, s.activity, s.start || null, s.end || null);
     const attended = liveForSport.total > 0 ? liveForSport.y : s.attendedClasses;
     const isLive = liveForSport.total > 0;
-    const pct = total && attended != null ? Math.round((attended / total) * 100) : null;
+    const pct = total && attended != null ? Math.min(100, Math.round((attended / total) * 100)) : null;
     const attCell = total ? `
       <div style="min-width:140px">
         <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px">
@@ -1398,12 +1400,20 @@ function viewMember(id) {
     `;
   }).join('');
 
-  // Aggregate stats — live attendance count if any cells marked, fallback to subscription rows
+  // Aggregate stats — attendance is counted PER subscription period (windowed
+  // by each row's start–end), then summed, so renewals don't double-count and
+  // the headline matches the per-row figures. Falls back to the static field
+  // for rows with no live marks.
   const totalSubs = allSubs.length;
   const totalClassesSum = allSubs.reduce((s,x) => s + (x.totalClasses || 0), 0);
-  const attendedSum = attendedClassesFor(m);
+  const attendedSum = allSubs.reduce((acc, x) => {
+    const lw = liveAttendanceCount(m, x.activity, x.start || null, x.end || null);
+    return acc + (lw.total > 0 ? lw.y : (x.attendedClasses || 0));
+  }, 0);
   const paidSum = allSubs.reduce((s,x) => s + (x.amountPaid || 0), 0);
-  const liveCount = liveAttendanceCount(m);   // for display: show breakdown if marks exist
+  const anyLiveMarks = allSubs.some(x => liveAttendanceCount(m, x.activity, x.start || null, x.end || null).total > 0);
+  const liveCount = { total: anyLiveMarks ? 1 : 0 };   // flag for the "· live" label
+  const attRatePct = totalClassesSum ? Math.min(100, Math.round(attendedSum / totalClassesSum * 100)) : 0;
 
   showModal({
     title: `Member: ${escapeHtml(m.name)}`,
@@ -1461,7 +1471,7 @@ function viewMember(id) {
         <div class="kpi" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Subs</div><div class="kpi-value" style="font-size:18px">${totalSubs}</div></div>
         <div class="kpi blue" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Classes ${liveCount.total ? '· live' : ''}</div><div class="kpi-value" style="font-size:18px">${attendedSum}/${totalClassesSum}</div></div>
         ${isViewerRole() ? '' : `<div class="kpi green" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Paid</div><div class="kpi-value" style="font-size:18px">${fmt(paidSum)}</div></div>`}
-        <div class="kpi orange" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Att Rate</div><div class="kpi-value" style="font-size:18px">${totalClassesSum ? Math.round(attendedSum/totalClassesSum*100) : 0}%</div></div>
+        <div class="kpi orange" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Att Rate</div><div class="kpi-value" style="font-size:18px">${attRatePct}%</div></div>
       </div>
       <h3 style="font-size:13px;font-weight:600;margin-bottom:8px">Subscription History (${totalSubs})</h3>
       <div class="table-wrap">
@@ -1880,7 +1890,7 @@ function enrollRowHtml(row, idx) {
   return `
     <div class="enroll-block" data-enroll-idx="${idx}" style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;background:rgba(59,130,246,.045)">
       <div style="display:grid;grid-template-columns:1.3fr 1.3fr .8fr .9fr auto;gap:8px;align-items:end">
-        <div class="field" style="margin:0"><label style="font-size:10px">Sport <span style="color:var(--accent)">*</span></label><select data-en="sport" data-i="${idx}" ${row.paid ? 'disabled title="Already paid — use Switch Sport instead to change"' : ''}>${sportOpts}</select></div>
+        <div class="field" style="margin:0"><label style="font-size:10px">Sport <span style="color:var(--accent)">*</span></label><select data-en="sport" data-i="${idx}" ${(row.paid && (row.attended || 0) > 0) ? `disabled data-sport-locked="${idx}" title="${escapeHtml(row.sport)} — member already attended ${row.attended} class${(row.attended) === 1 ? '' : 's'}. Use Switch Sport / Withdraw to change."` : (row.paid ? 'title="Paid but no attendance yet — you can still change the sport; the linked invoice and commission move with it."' : '')}>${sportOpts}</select>${(row.paid && (row.attended || 0) > 0) ? `<span data-sport-lock-hint="${idx}" style="display:inline-block;margin-top:3px;font-size:10px;color:var(--accent-2);cursor:pointer;text-decoration:underline">🟠 attended ${row.attended} — why locked?</span>` : ''}</div>
         ${coachField}
         ${classesField}
         <div class="field" style="margin:0"><label style="font-size:10px">Price (QAR) <span style="color:var(--accent)">*</span></label><input data-en="price" data-i="${idx}" type="number" min="0" step="0.01" value="${row.price ?? ''}" placeholder="350" style="${priceStyle}" ${row.paid ? 'title="Editing this updates the linked invoice (revenue + commission)"' : ''} /></div>
@@ -1890,7 +1900,7 @@ function enrollRowHtml(row, idx) {
         <div class="field" style="margin:0"><label style="font-size:10px">📅 Start date <span style="color:var(--accent)">*</span></label><input data-en="start" data-i="${idx}" type="date" value="${row.start || ''}" /></div>
         ${validityField}
       </div>
-      ${expiryHint ? `<div style="font-size:10px;color:var(--blue);margin-top:7px;padding-left:2px">${expiryHint}</div>` : ''}${isCamp ? `<div style="font-size:10px;color:var(--blue);margin-top:5px;padding-left:2px">🌞 Summer Camp · revenue goes to club, no coach commission</div>` : ''}${row.paid ? `<div style="font-size:10px;color:var(--text-mute);margin-top:5px;padding-left:2px">🔒 Paid — editing the <b>price</b> adjusts the linked invoice (revenue + commission update too); editing start/validity adjusts this sport's window. For a refund use <b style="color:var(--accent-2)">↩ Withdraw</b>, <b style="color:var(--red)">🗑</b> to delete a mistake, or <b style="color:var(--blue)">Switch Sport</b> from the member profile.</div>` : ''}
+      ${expiryHint ? `<div style="font-size:10px;color:var(--blue);margin-top:7px;padding-left:2px">${expiryHint}</div>` : ''}${isCamp ? `<div style="font-size:10px;color:var(--blue);margin-top:5px;padding-left:2px">🌞 Summer Camp · revenue goes to club, no coach commission</div>` : ''}${row.paid ? `<div style="font-size:10px;color:var(--text-mute);margin-top:5px;padding-left:2px">🔒 Paid — editing the <b>price</b> adjusts the linked invoice (revenue + commission update too); editing start/validity adjusts this sport's window. ${(row.attended || 0) > 0 ? `The sport is <b>locked</b> because the member already attended <b>${row.attended}</b> class${(row.attended) === 1 ? '' : 's'} — use <b style="color:var(--accent-2)">↩ Withdraw</b> or <b style="color:var(--blue)">Switch Sport</b> to change it.` : `No classes attended yet, so you can still <b>change the sport directly</b> here — the linked invoice and commission move with it.`} <b style="color:var(--red)">🗑</b> deletes a mistake (no refund).</div>` : ''}
     </div>`;
 }
 
@@ -2006,6 +2016,31 @@ function renderEnrollRows() {
         window._enrollRows[i][key] = key === 'coachId' ? parseInt(e.target.value) : e.target.value;
         if (key === 'price') updatePaidNowHint();
       }
+    });
+  });
+  // "Why locked?" hint on a paid + attended sport — explain and offer the right tools.
+  wrap.querySelectorAll('[data-sport-lock-hint]').forEach(span => {
+    span.addEventListener('click', e => {
+      const i = parseInt(e.currentTarget.dataset.sportLockHint);
+      const row = window._enrollRows[i];
+      const memberId = window._editingMemberId;
+      if (!row) return;
+      showModal({
+        title: '🔒 ' + t('Sport locked — already attended', 'الرياضة مقفلة — تم الحضور'),
+        body: `<div style="font-size:13px;line-height:1.8">
+          <div>${t('This member has already attended', 'لقد حضر هذا العضو بالفعل')} <b>${row.attended}</b> ${t('class', 'حصة')}${(row.attended) === 1 ? '' : (t('es','')) } ${t('of', 'من')} <b>${escapeHtml(row.sport)}</b>.</div>
+          <div class="text-mute" style="font-size:12px;margin-top:8px">${t('Because real classes were attended, the sport can\u2019t simply be changed here — the coach earned commission for those classes. Choose the correct tool:', '\u0644\u0623\u0646 \u0627\u0644\u0639\u0636\u0648 \u062d\u0636\u0631 \u062d\u0635\u0635\u0627\u064b \u0641\u0639\u0644\u064a\u0629\u060c \u0644\u0627 \u064a\u0645\u0643\u0646 \u062a\u063a\u064a\u064a\u0631 \u0627\u0644\u0631\u064a\u0627\u0636\u0629 \u0645\u0646 \u0647\u0646\u0627 \u0645\u0628\u0627\u0634\u0631\u0629.')}</div>
+          <ul style="font-size:12px;margin:10px 0 0;padding-left:18px;line-height:1.9">
+            <li><b style="color:var(--accent-2)">↩ ${t('Withdraw', 'سحب')}</b> — ${t('refund the member based on classes attended.', 'استرداد بناءً على الحصص المحضورة.')}</li>
+            <li><b style="color:var(--blue)">🔄 ${t('Switch Sport', 'تبديل الرياضة')}</b> — ${t('move them to a different sport from the member profile.', 'نقله إلى رياضة أخرى من ملف العضو.')}</li>
+          </ul>
+        </div>`,
+        actions: [
+          { label: t('Close', 'إغلاق'), class: 'btn ghost', onclick: closeModal },
+          { label: '↩ ' + t('Withdraw', 'سحب'), class: 'btn ghost', style: 'color:var(--accent-2);border-color:var(--accent-2)', onclick: () => { closeModal(); if (memberId) withdrawSport(memberId, row.originalSport || row.sport); } },
+          { label: '🔄 ' + t('Switch Sport', 'تبديل'), class: 'btn primary', onclick: () => { closeModal(); if (memberId) switchSport(memberId); } },
+        ],
+      });
     });
   });
   wrap.querySelectorAll('[data-en-remove]').forEach(btn => {
@@ -2133,6 +2168,7 @@ function showMemberForm(m) {
         // × delete button is replaced with a "Withdraw" action that creates a
         // refund invoice + coach commission deduction (see withdrawSport()).
         paid: isEnrollmentPaid(m.id, e.sport),
+        attended: (typeof liveAttendanceCount === 'function' ? (liveAttendanceCount(m, e.sport).y || 0) : 0),
         originalSport: e.sport,  // remember original sport for paid-row lookup if user edits
       };
     });
@@ -2149,6 +2185,7 @@ function showMemberForm(m) {
       start: s.start || m.startDate || TODAY,
       validity: s.validity || daysBetween(s.start, s.end) || m.validity || DEFAULT_VALIDITY,
       paid: isEnrollmentPaid(m.id, s.activity),
+      attended: (typeof liveAttendanceCount === 'function' ? (liveAttendanceCount(m, s.activity).y || 0) : 0),
       originalSport: s.activity,
     }));
     if (!window._enrollRows.length) {
@@ -2315,6 +2352,21 @@ function showMemberForm(m) {
           else if (typeof viewMember === 'function') viewMember(nameDup.id);
           return;
         }
+        // (a2) Same mobile but a DIFFERENT name → a distinct person sharing one
+        //      family phone. This is explicitly ALLOWED. We surface a one-tap
+        //      confirmation (only on a brand-new member) so the admin knows the
+        //      number is shared, then proceed — never block.
+        if (isNew && phone) {
+          const sharer = state.members.find(x =>
+            x.id !== m.id && !x.deleted && phonesMatch(x.phone, phone) && !namesMatch(x, { name: nameEn, nameArabic: nameAr })
+          );
+          if (sharer) {
+            if (!confirm(`📱 Mobile ${phone} already belongs to "${sharer.name || sharer.nameArabic}".\n\nYou're adding "${nameEn || nameAr}" as a SEPARATE member on the same number — this is fine for siblings/family.\n\nOK = add as a new member · Cancel = go back`)) {
+              return;
+            }
+            // admin confirmed — fall through and create the new family member
+          }
+        }
         // (b) QID match — a national ID can't belong to two people. Behaviour is
         //     configurable in Settings: 'block' (default, open the existing
         //     record) or 'warn' (confirm and allow if admin insists).
@@ -2414,6 +2466,9 @@ function showMemberForm(m) {
           // Each sport carries its OWN start date + validity (its own expiry)
           start: r.start || null,
           validity: r.sport === SUMMER_CAMP ? (parseInt(r.classes) || DEFAULT_VALIDITY) : (parseInt(r.validity) || DEFAULT_VALIDITY),
+          _originalSport: r.originalSport || null,   // for paid-but-unattended sport rename
+          _paid: !!r.paid,
+          _attended: r.attended || 0,
         }));
         // Block duplicate sports — a member can hold only one active enrollment per sport.
         const dupSport = duplicateEnrollmentSport(enrollments);
@@ -2453,7 +2508,7 @@ function showMemberForm(m) {
           subscriptions: m.subscriptions || [],
           renewals: m.renewals || [],
           months: m.months || [],
-          enrollments,                        // <-- all concurrent sports stored here
+          enrollments: enrollments.map(({ _originalSport, _paid, _attended, ...e }) => e),                        // <-- all concurrent sports stored here
         };
 
         if (isNew) {
@@ -2561,6 +2616,42 @@ function showMemberForm(m) {
         // Sync enrollment edits and detect new sports added during edit.
         const subs = (existing.subscriptions || []).slice();
         const newSubs = [];          // newly-added enrollments to invoice
+
+        // ─── Paid-but-unattended sport RENAME ───────────────────────────────
+        // If the user changed the Sport on a paid row that has NO attendance,
+        // carry the existing subscription + invoice line over to the new sport
+        // (a rename), instead of orphaning the old one and double-charging.
+        // Locked rows (attended > 0) never reach here — the select is disabled.
+        for (const e of enrollments) {
+          const from = e._originalSport;
+          if (!e._paid || !from || from === e.sport) continue;
+          if ((e._attended || 0) > 0) { e.sport = from; continue; }   // safety: never rename an attended sport
+          // Rename the subscription record(s)
+          for (const s of subs) {
+            if ((s.activity || '') === from) {
+              s.activity = e.sport;
+              s.coachId = e.coachId; s.coach = coachName(e.coachId);
+            }
+          }
+          // Rename the invoice line item(s) for this member's membership invoices
+          for (const inv of (state.invoices || [])) {
+            if (inv.deleted || inv.customerId !== existing.id) continue;
+            if ((inv.category || 'Membership') !== 'Membership' || inv.switchCredit) continue;
+            let touched = false;
+            for (const li of (inv.lineItems || [])) {
+              if (li.sport === from) { li.sport = e.sport; li.coachId = e.coachId; li.coach = coachName(e.coachId); touched = true; }
+            }
+            if (inv.sport === from) inv.sport = e.sport;
+            if (touched) {
+              const label = (typeof sportListWithDuration === 'function' && sportListWithDuration(inv.lineItems)) || null;
+              if (label) { inv.sport = label; inv.description = `${existing.name} — ${label} subscription`; }
+            }
+          }
+          if (typeof audit === 'function') audit('member.sport_change', `member:${existing.id}`,
+            `Changed sport ${from} → ${e.sport} (no attendance — invoice & commission moved)`,
+            { memberId: existing.id, from, to: e.sport });
+        }
+
         for (const e of enrollments) {
           // Find this sport's existing subscription (by SPORT — one per sport).
           // Changing the coach updates that sub instead of creating a duplicate.
@@ -6272,6 +6363,7 @@ function addInvoice() {
         <div class="field"><label>Paid now (QAR) <span class="text-mute" style="font-size:10px;font-weight:400">(blank = full)</span></label><input id="f-paid" type="number" min="0" step="0.01" placeholder="full amount" /></div>
       </div>
       <div class="field"><label>Match member (optional)</label>${memberPickerHtml('f-cust', { placeholder: '— none —' })}</div>
+      <div style="margin-top:8px">${phoneInputHtml('f-cust-phone', '', { label: 'Customer mobile (optional, for walk-ins)', required: false, fieldStyle: 'margin:0' })}</div>
     `;
     bindMemberPicker('f-cust', { placeholder: '— none —' });
   }
@@ -6342,6 +6434,9 @@ function addInvoice() {
     if (!desc || !amt || !date) { toast('Description, amount and date required', 'error'); return; }
     const custId = parseInt($('#f-cust')?.value) || null;
     const custMember = custId ? state.members.find(m => m.id === custId) : null;
+    // Customer mobile: a linked member's own phone wins; else the typed walk-in mobile.
+    const typedPhone = (typeof readPhoneInput === 'function') ? (readPhoneInput('f-cust-phone').phone || null) : null;
+    const customerPhone = (custMember && custMember.phone) || typedPhone || null;
     const category = $('#f-category').value;
     const mth = date.slice(0, 7);
     const sport = $('#f-sport').value || null;
@@ -6374,6 +6469,7 @@ function addInvoice() {
       coachId: custMember ? custMember.coachId : null,
       customerId: custId,
       customerName: custMember ? custMember.name : null,
+      customerPhone,
     });
     save();
     closeModal();
@@ -17213,8 +17309,8 @@ function buildMembersWorkbook() {
       const subs = (m.subscriptions || []).filter(s => s.coachId === c.id);
       if (!subs.length) continue;
       for (const s of subs) {
-        // Use live attendance count if available; otherwise the static field
-        const liveSp = liveAttendanceCount(m, s.activity);
+        // Live attendance for THIS subscription period only; else the static field
+        const liveSp = liveAttendanceCount(m, s.activity, s.start || null, s.end || null);
         const attended = liveSp.total > 0 ? liveSp.y : (s.attendedClasses || 0);
         const total = s.totalClasses || 0;
         const classesCell = total ? `${total} / ${attended}` : '';

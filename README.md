@@ -1,5 +1,58 @@
 # Black Stars CRM
-Version 6.23.0 — Transfer Membership (member → member, one-time per membership).
+Version 6.27.0 — Attendance counts the current period only (since renewal).
+
+## 6.27.0 note — attendance is per-subscription-period (CRITICAL fix)
+Attendance now counts classes attended WITHIN each subscription's own window
+(start → end), instead of every class the member ever attended. Previously a
+renewed member carried their old attendance forward — e.g. a fresh 8-class
+renewal could show 6/8 from the previous period. Now each Subscription History
+row, the headline Classes/Att-Rate KPIs, the Members-list attendance column, the
+needs-renewal detection, and the per-coach export all window by the row's start
+and end dates. Attendance rate is also clamped to 100% (no more >100% from data
+where attended exceeded planned classes). Falls back to the imported static field
+for rows with no live marks. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.26.0 — Same mobile allowed for different family members.
+
+## 6.26.0 note — share one mobile across family members
+Registering two members on the same mobile number is now explicitly smooth.
+Same phone + DIFFERENT name (siblings/family on one number) is allowed: on a new
+member you get a one-tap confirmation naming who else uses that number, then it
+saves as a separate member. Only a TRUE duplicate — same phone AND same name —
+is blocked and opens the existing record. (QID stays unique per person, since a
+national ID can't belong to two people; that rule is configurable in Settings.)
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.25.0 — Customer mobile on the invoice screen.
+
+## 6.25.0 note — capture customer mobile on invoices
+The invoice screen (Membership / Other categories) now has an optional
+**Customer mobile** field, so a walk-in customer's phone is recorded the same way
+the Product/POS screen already does. If you link a member, that member's own phone
+is used automatically; otherwise the typed mobile is saved. The number flows
+straight into the invoices CSV export (Mobile column) and the customer info shown
+on receipts. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.24.0 — Edit a paid sport directly when no class was attended.
+
+## 6.24.0 note — change a paid sport when there's no attendance yet
+In Edit Member, the Sport dropdown on a paid enrollment used to be fully locked
+(you had to use Switch Sport). Now it depends on attendance:
+- **No classes attended yet** → the sport is **editable directly**. Changing it
+  renames the existing subscription and moves the linked invoice line **and the
+  coach commission** to the new sport/coach. Revenue is unchanged (it's the same
+  payment, just reassigned) — no orphaned record, no double charge.
+- **Already attended ≥ 1 class** → the sport stays **locked**, with a 🟠 "attended
+  N — why locked?" hint. Clicking it opens a popup explaining that the coach
+  earned commission for the attended classes, and offering the correct tools:
+  **↩ Withdraw** (refund by attendance) or **🔄 Switch Sport**.
+
+The paid-row helper text now reflects this ("No classes attended yet, so you can
+still change the sport directly here"). Coach, price, classes, start and validity
+remain editable as before. No schema change (SCHEMA_VERSION stays 9).
 
 ## 6.23.0 note — transfer a membership from one member to another
 New **🔁 Transfer Membership** screen (Membership section, admin only). Pick the
