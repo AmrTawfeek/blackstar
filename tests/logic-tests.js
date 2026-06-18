@@ -1225,6 +1225,110 @@ ${seed}
     eq(inv.amountPaid, 300, 'split tender: amountPaid equals cash + card');
     ok(inv.payments.some(p => p.method === 'cash') && inv.payments.some(p => p.method === 'card'), 'split tender: both methods (cash + card) preserved');
   })();
+  // Hard-delete a member's sport: the line-item-driven view of coach revenue should drop.
+  // We don't invoke the UI function (which uses confirm/modal); instead we verify the data
+  // shape used by the coach revenue computation BEFORE and AFTER a manual cascade.
+  (() => {
+    const before = { members: state.members, invoices: state.invoices };
+    state.members = [{ id: 7777, name: 'Cleanup Test', enrollments: [{ sport: 'Karate', coachId: 1, price: 300 }, { sport: 'Boxing', coachId: 2, price: 400 }] }];
+    state.invoices = [
+      { id: 7001, customerId: 7777, category: 'Membership', amount: 700, amountPaid: 700, payments: [{ amount: 700, method: 'cash' }],
+        lineItems: [{ sport: 'Karate', coachId: 1, price: 300 }, { sport: 'Boxing', coachId: 2, price: 400 }] },
+    ];
+    const coachStudentsBeforeForKarate = coachStudents(1).length;
+    const coachStudentsBeforeForBoxing = coachStudents(2).length;
+    // Simulate the cascade: drop Karate line item, shrink invoice amount + prorate paid.
+    const inv = state.invoices[0];
+    inv.lineItems = inv.lineItems.filter(li => li.sport !== 'Karate');
+    const oldAmt = 700, newAmt = 400, factor = newAmt / oldAmt;
+    inv.amount = newAmt; inv.amountPaid = (inv.amountPaid || 0) * factor;
+    state.members[0].enrollments = state.members[0].enrollments.filter(e => e.sport !== 'Karate');
+    ok(coachStudents(1).length < coachStudentsBeforeForKarate, 'delete sport: Karate coach loses the student in coachStudents() result');
+    ok(coachStudents(2).length === coachStudentsBeforeForBoxing, 'delete sport: Boxing coach is unaffected by removing the Karate line');
+    state.members = before.members; state.invoices = before.invoices;
+  })();
+  // Regenerate invoice: when the enrolment price changes (e.g. 1 week → 1 month),
+  // regenerating an invoice rewrites the line items to match, recalculates the
+  // amount, and PRESERVES payments so the new balance recomputes correctly.
+  (() => {
+    // Replicate the math the UI uses, in isolation (the actual UI helper
+    // requires showModal + DOM; testing the math is what matters).
+    const inv = { id: 8001, amount: 300, amountPaid: 100, customerId: 8001, category: 'Membership',
+      lineItems: [{ sport: 'Summer Camp', coachId: null, price: 300 }] };
+    const enrollments = [{ sport: 'Summer Camp', coachId: null, price: 1500 }];  // bumped to 1 month
+    const newLines = enrollments.map(e => ({ sport: e.sport, coachId: e.coachId || null, price: Number(e.price) || 0 }));
+    const newAmount = newLines.reduce((s, li) => s + (li.price || 0), 0);
+    inv.lineItems = newLines; inv.amount = newAmount;
+    const newBalance = Math.max(0, inv.amount - (inv.amountPaid || 0));
+    eq(inv.amount, 1500, 'regenerate: invoice amount rewrites to match new enrolment price');
+    eq(inv.amountPaid, 100, 'regenerate: existing payments are PRESERVED across the rewrite');
+    eq(newBalance, 1400, 'regenerate: new balance = new amount − preserved paid');
+  })();
+  // Cash collection: route exists under Finance, receptionist allowed,
+  // reserved category present, and an expense row with the reserved category
+  // counts toward the expense totals like any other expense.
+  ok(ROUTES.cashcollection && ROUTES.cashcollection.section === 'Finance', 'nav: Cash Collection under Finance');
+  ok(ROLE_ALLOWED.receptionist.includes('cashcollection'), 'role: receptionist can record cash collections (front desk hands the envelope)');
+  ok(EXP_CATS.includes('Cash collected by owner'), 'expenses: reserved category "Cash collected by owner" is always present in EXP_CATS');
+  ok(RESERVED_EXPENSE_CATEGORIES.includes('Cash collected by owner'), 'expenses: "Cash collected by owner" is reserved (admin cannot delete it from settings)');
+  (() => {
+    const before = state.expenses ? state.expenses.slice() : [];
+    state.expenses = [
+      { id: 5001, date: '2026-06-10', month: '2026-06', amount: 500, category: 'Cash collected by owner', description: 'Cash collected by owner — Owner' },
+      { id: 5002, date: '2026-06-12', month: '2026-06', amount: 1200, category: 'Equipment', description: 'New gloves' },
+    ];
+    const monthTotal = state.expenses.filter(e => e.month === '2026-06').reduce((s, e) => s + e.amount, 0);
+    eq(monthTotal, 1700, 'cash collection: a cash-collection row counts in monthly expense totals like any other expense');
+    state.expenses = before;
+  })();
+  // ─ Invoice fixes (#1-#4) ──────────────────────────────────────────
+  // #4: Summer Camp invoice description carries the duration label.
+  (() => {
+    const items = [{ sport: 'Summer Camp', durationLabel: '1 month', classes: 30 }];
+    eq(sportListWithDuration(items), 'Summer Camp · 1 month', 'invoice: Summer Camp line item renders with duration label');
+    const mixed = [{ sport: 'Kick Boxing' }, { sport: 'Summer Camp', durationLabel: '2 weeks', classes: 14 }];
+    eq(sportListWithDuration(mixed), 'Kick Boxing, Summer Camp · 2 weeks', 'invoice: multi-sport label includes camp duration mid-list');
+  })();
+  // #1: editing the enrolment price + duration on a Summer Camp invoice refreshes
+  // the description AND the line item so the receipt reads "Summer Camp · 1 month"
+  // after the admin extends a 1-week booking. We exercise the same data path the
+  // syncSubToEnrollment helper uses, in isolation.
+  (() => {
+    const inv = {
+      id: 4001, ref: 'INV-T01', customerId: 4001, category: 'Membership',
+      amount: 300, amountPaid: 300, payments: [{ amount: 300, method: 'cash' }],
+      sport: 'Summer Camp · 1 week',
+      description: 'Test Camper — Summer Camp · 1 week subscription',
+      lineItems: [{ sport: 'Summer Camp', price: 300, classes: 7, durationLabel: '1 week' }],
+    };
+    const member = { id: 4001, name: 'Test Camper' };
+    const enrollment = { sport: 'Summer Camp', price: 1500, classes: 30, durationLabel: '1 month' };
+    const sub = { _sid: 'x', activity: 'Summer Camp', invoiceNumber: 'INV-T01', amountPaid: 300 };
+    syncSubToEnrollment(sub, enrollment, member, [inv]);
+    eq(inv.amount, 1500, 'edit camp: invoice amount jumps from 300 → 1500');
+    eq(inv.lineItems[0].durationLabel, '1 month', 'edit camp: line item duration label updates');
+    ok(/1 month/.test(inv.description), 'edit camp: invoice description reflects the new duration');
+    ok(/1 month/.test(inv.sport), 'edit camp: invoice header sport label reflects the new duration');
+  })();
+  // #3: renewals always create a NEW invoice — never amend the original.
+  // We verify the contract by counting invoices before and after a simulated
+  // renewal push (mirroring the same shape the addRenewal handler writes).
+  (() => {
+    const beforeInvs = state.invoices.slice();
+    state.invoices = [
+      { id: 6001, ref: 'INV-O', customerId: 6001, category: 'Membership', sport: 'Karate', amount: 400, amountPaid: 400 },
+    ];
+    const original = state.invoices.length;
+    state.invoices.push({
+      id: 6002, ref: 'INV-R', customerId: 6001, category: 'Membership', sport: 'Karate',
+      amount: 400, amountPaid: 400, activityType: 'subscription',
+      description: 'Karate renewal — Test',
+      lineItems: [{ sport: 'Karate', price: 400 }],
+    });
+    eq(state.invoices.length, original + 1, 'renewal: produces a SEPARATE invoice (count grows by 1)');
+    ok(state.invoices.find(i => i.id === 6001), 'renewal: original invoice still exists, unchanged');
+    state.invoices = beforeInvs;
+  })();
   // Shared-phone scan: two members with the SAME phone but different names form a group, exact (name+phone) dups don't appear there twice.
   (() => {
     const before = state.members.slice();

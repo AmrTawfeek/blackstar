@@ -1,4 +1,82 @@
 # Black Stars CRM
+Version 6.23.0 — Transfer Membership (member → member, one-time per membership).
+
+## 6.23.0 note — transfer a membership from one member to another
+New **🔁 Transfer Membership** screen (Membership section, admin only). Pick the
+member to transfer FROM — only members with a transferable membership are listed,
+each showing their sport(s) and coach — choose which sport, then pick the member
+to transfer TO, and confirm.
+
+Rules (as configured):
+- The receiver gets a **full reset**: all classes, fresh expiry counted from the
+  transfer date, same coach.
+- The **payment moves to the receiver** — revenue and coach commission now count
+  under them. (If the sender's invoice covered several sports, only the
+  transferred sport's value is split out and moved; the rest stays with the
+  sender.)
+- **One transfer per membership.** A membership that was received via transfer is
+  locked and can't be passed on again.
+
+The screen also shows a live list of **members with transferable memberships**
+(member · sport · coach · classes) and a full **transfer history** (date, from,
+to, sport, coach, classes, amount). Every transfer is written to the Audit Log.
+No schema change (SCHEMA_VERSION stays 9); transfers are stored in a new
+state.membershipTransfers[] array that older data simply won't have until the
+first transfer is made.
+
+## 6.22.0 note — see every transaction behind the revenue total
+Club Revenue Summary now has a **🧾 Transactions** view. Click the green
+**Total revenue** card (or the new Transactions button in the toolbar) to open a
+pop-up listing every invoice counted in the selected period — newest first —
+showing **date, category, customer, sport, ref and amount**. The top of the
+pop-up summarises totals **by category** (Membership / Product / Court Rental /
+etc.), and the footer shows the **grand total** and transaction count. It uses
+exactly the same numbers that feed the KPIs and respects the current period
+filter (today / this month / custom range…). Deleted and out-of-period invoices
+are excluded, same as the totals. An Export CSV button is available from inside
+the pop-up too. No schema change (SCHEMA_VERSION stays 9).
+
+## 6.21.0 note — attendance guard before deleting a sport
+Removing a sport from a member's history now checks **attendance first**. If the
+member actually attended classes in that sport, the confirmation dialog shows a
+loud amber warning: **"attended X classes of [Sport] with [Coach]"**, and the
+delete button changes to **"🗑 Delete anyway (X attended)"** — so you decide to
+proceed or stop instead of wiping real attendance silently. The reason: attended
+classes are real, and the coach earned commission for them; deleting reverses
+that. If the member genuinely trained in the sport, the dialog points you to
+**↩ Withdraw** instead. When there's no attendance, it shows a quiet "safe to
+remove" note. The 🧹 Manage sport history panel also tags each obsolete sport
+that has attendance with a **🟠 X attended** badge, so you can tell at a glance
+before opening the dialog. No schema change (SCHEMA_VERSION stays 9).
+
+## 6.20.0 note — remove obsolete sports from a member's history
+The member profile now has a **🧹 Manage sport history** panel (admin only), shown
+under the Subscription History table. It lists any sport the member has records
+for that is **no longer active** — for example a sport they were switched away
+from, or one entered by mistake as a separate paid subscription.
+
+Each obsolete sport shows how many records it has and how much of the member's
+**Paid** total it accounts for, with a **🗑 Remove** button. Removing a sport:
+- deletes its subscription record(s) and its share of the linked invoice, so the
+  member's **Paid** figure drops accordingly (e.g. a member showing 1,500 across
+  four sports who really only paid for two now reads 750),
+- reverses the coach commission automatically (Revenue Detail, Coach Performance
+  and the Team page all read live from the remaining invoice line items),
+- creates **NO refund record** — it's a data correction, treated as if the sport
+  was never entered.
+
+This reuses the existing, tested `deleteMemberSport()` cleanup (same confirmation
+dialog showing exactly how much revenue + payment will be removed, same audit-log
+entry). For an **actual refund** where money was returned, keep using **↩ Withdraw**
+on the active sport — that intentionally leaves a refund trail. The new panel is
+only for switches/mistakes where no money moved.
+
+No schema change (SCHEMA_VERSION stays 9) — existing data is read as-is, never
+migrated or wiped. After loading, confirm the footer reads **v6.20.0**.
+
+---
+
+# Black Stars CRM (previous notes)
 Version 5.4.0 — Summer Camp: Day Off for Fri/Sat, coach dropdown, activity icons, admin drag-and-drop.
 
 ## 1. Salaries — settle up to a date (NEW)
@@ -1623,3 +1701,112 @@ stats, CSV/search, low-stock, refresh) and all Low (cosmetic) items are still op
 - Test added: posting 100 cash + 200 card to a 300-balance invoice produces 2 payment rows, sums to
   300 paid, and preserves both methods.
 - Regression: 589 logic assertions + 41 pages render, all passing.
+
+
+## 6.15.0 note — Permanently delete a member's sport (history cleanup)
+- New admin-only deleteMemberSport(memberId, sport) function with a confirmation modal that previews
+  exactly what will be removed before the admin commits:
+  * subscription rows for that sport
+  * invoices affected — split into "deleted entirely" (only sport on the invoice) vs "shrunk"
+    (other sports remain)
+  * revenue removed from reports (QAR)
+  * payments removed (QAR)
+- The cascade reconciles everything:
+  * removes the enrolment from m.enrollments + the matching subscription rows + any legacy renewal[]
+    entry
+  * for each affected invoice: strips matching lineItems, recalculates inv.amount,
+    PRORATES inv.amountPaid + each payments[] row, and DROPS the invoice if no lines remain
+  * falls back the headline m.sport to the next enrolment if the deleted one was it
+- Coach commission / Club Revenue Summary / Coach Performance / Team page update automatically
+  because they all read live from invoice lineItems (no cached totals).
+- UI: a small 🗑 button is now embedded inside each sport chip on the member profile (admin only).
+  Receptionists and coaches do not see it.
+- Audit trail entry: "Deleted sport <name> — removed <X> QAR revenue, <Y> invoices dropped, <Z> shrunk".
+- Test added: removing one sport from an invoice drops the matching coach's coachStudents() count but
+  leaves the other coach unaffected.
+- Regression: 591 logic assertions + 41 pages render, all passing.
+
+
+## 6.16.0 note — Delete invoice (admin) with rich preview + history-modal access
+- Delete invoice was already on the Invoices page (admin-only 🗑 button). Upgraded the confirmation:
+  the bare "Delete this invoice?" prompt now becomes a full preview modal showing customer, ref, date,
+  category, total / paid / balance, every line item with sport + coach + amount, payment rows that will
+  vanish, and for each coach attributed in the line items the EXACT commission deduction (revenue ×
+  coach rate %). A warning is shown if the invoice is linked to a Sale record (the sale row stays but
+  its invoice link is cleared cleanly).
+- Same delete action is now also reachable from the member profile -> "Invoice history" modal: every
+  invoice row gets a 🗑 button for admins (next to the existing ⬇ Export PDF button). Receptionists +
+  coaches do not see it.
+- Audit log entry: "Deleted <ref> for <customer> — <total> QAR, <paid> paid".
+- Coach revenue / Club Revenue Summary / Coach Performance update automatically because they read live
+  from invoice line items — no extra recompute step.
+- Regression: 591 logic assertions + 41 pages render, all passing.
+
+
+## 6.17.0 note — 🔄 Regenerate invoice from current enrollment (admin)
+- Real workflow: customer signs up for 1 week of Summer Camp, you issue the invoice, then they extend
+  to 1 month. Bump the price on their enrolment, then click 🔄 on the existing invoice — it rewrites
+  the line items / amount / description to match the live enrolment state. Payments STAY ON THE
+  INVOICE so the new balance auto-recalculates (new amount − paid).
+- Smart scope: if the original invoice was a single-sport one, regenerate narrows the rewrite to JUST
+  that sport (so we never merge two separate invoices). Multi-sport invoices regenerate all matching
+  enrolments.
+- Preview modal before commit shows: per-sport diff (added / removed / unchanged / changed with
+  before→after price), old vs new amount with delta, paid (unchanged), old vs new balance. Disabled
+  if nothing would change.
+- Reach it from TWO places: 🔄 button on each Membership invoice row (Invoices page), AND on each
+  row in the member profile -> "Invoice history" modal.
+- Admin only. Receptionists + coaches do NOT see the button (already locked by isViewerRole). Audit
+  trail entry written: "Regenerated <ref> for <name> — old → new QAR".
+- Coach revenue / Club Revenue Summary / Coach Performance reflect the change automatically because
+  they read live from line items.
+- Test: a 300 QAR invoice with 100 QAR paid, after regenerating from a 1500 QAR enrolment, ends up
+  with amount=1500, paid=100 preserved, and balance=1400.
+- Regression: 594 logic assertions + render harness all passing.
+
+
+## 6.18.0 note — Cash Collection page (owner withdrawal from till)
+- NEW Finance -> Cash Collection page (route cashcollection, accessible to admin AND receptionist —
+  front-desk often hands the envelope).
+- Records the cash the owner / partner takes from the till. Each row stores: amount, date, who
+  collected, optional note, and writes to state.expenses with the reserved category "Cash collected
+  by owner".
+- Because it's stored as a normal expense, Reports / Net profit / Club Revenue Summary all
+  automatically subtract it from earnings (it's money leaving the club). Because it has its own
+  reserved category, it stays filterable and auditable separately from operating expenses.
+- Page layout: 3 KPI cards (Total shown · Total all-time · This month), filter bar (search by
+  collector / note + month dropdown), table with date, collected-by + note, month, amount, actions.
+  Admin-only edit / delete buttons; receptionist can record but not modify history.
+- Recording flow: "Record collection" modal asks for Amount (required), Date (default today),
+  Collected by (free text), Notes (optional). Saves as one expense row.
+- Category management: "Cash collected by owner" is now in DEFAULT_EXPENSE_CATEGORIES and in
+  RESERVED_EXPENSE_CATEGORIES. EXP_CATS getter ensures reserved categories are ALWAYS present, so
+  older installs auto-gain this category without a schema bump.
+- Audit log entries: cash.collection.create / cash.collection.update / cash.collection.delete.
+- Tests added: route registration, role permission, category presence, and that a cash-collection
+  row counts toward monthly expense totals.
+- Regression: 599 logic assertions + 26 pages render, all passing.
+
+
+## 6.19.0 note — Invoice suite (auto-regenerate, Get Invoice, renewals, camp duration)
+- (#1) Editing a member's sports / prices in the Edit Member form now AUTO-REGENERATES the linked
+  membership invoice: line items, header sport, amount and description all refresh from the new
+  enrolment state. Coach commission + Club Revenue Summary follow automatically because they read
+  live from line items. This was already partly true (syncSubToEnrollment updated the line item
+  price); now it also updates the description, the inv.sport label and the duration label.
+- (#2) New "🧾 Get Invoice" button on the member profile (admin + receptionist). One click exports
+  the LATEST Membership invoice PDF for that member — for handing the customer a receipt without
+  leaving the profile. Hidden when the member has no invoice yet. (Bulk export across all invoices
+  stays admin-only on the Invoices page.)
+- (#3) Renewals already created a SEPARATE invoice (each with a unique ref). Confirmed and locked in
+  a regression test so future refactors cannot regress it.
+- (#4) Summer Camp invoices now display the duration label everywhere: line item carries
+  durationLabel, the inv.sport header and the inv.description read e.g. "Summer Camp · 1 month"
+  instead of plain "Summer Camp". Applied to: new member registration, add-sport-during-edit,
+  Edit Camp Member dialog (new invoice + updates), Regenerate Invoice flow, and renewal invoices.
+- NEW helper sportListWithDuration(items) renders the standard label across all paths.
+- Receipts / PDF / Club Revenue Summary now read the duration suffix without any extra work.
+- Tests added (8 new assertions): sportListWithDuration() output shape, edit-camp invoice updates
+  amount + description + lineItem duration label, renewal produces a separate invoice without
+  modifying the original.
+- Regression: 607 logic assertions + 26 pages render, all passing.
