@@ -1,58 +1,114 @@
 # Black Stars CRM
-Version 6.27.0 — Attendance counts the current period only (since renewal).
+Version 6.35.0 - Camp group: manual override for siblings.
 
-## 6.27.0 note — attendance is per-subscription-period (CRITICAL fix)
-Attendance now counts classes attended WITHIN each subscription's own window
-(start → end), instead of every class the member ever attended. Previously a
-renewed member carried their old attendance forward — e.g. a fresh 8-class
-renewal could show 6/8 from the previous period. Now each Subscription History
-row, the headline Classes/Att-Rate KPIs, the Members-list attendance column, the
-needs-renewal detection, and the per-coach export all window by the row's start
-and end dates. Attendance rate is also clamped to 100% (no more >100% from data
-where attended exceeded planned classes). Falls back to the imported static field
-for rows with no live marks. No schema change (SCHEMA_VERSION stays 9).
+## 6.35.0 note - assign a camp member to a different group
+The Camp group on the Edit camp member dialog is now a dropdown: "Auto (from age
++ gender)" by default, or pick Kids / Boys / Girls to override it. This keeps
+siblings of different ages/genders together when a family asks. The override wins
+over the automatic rule everywhere groups are used (member list, group KPI cards
+and filters, CSV export). Members on a manual override show a small pencil mark on
+their group badge; leaving the dropdown on Auto restores the age+gender rule. The
+live preview in the dialog shows what Auto would resolve to vs the chosen override.
+No schema change (the override reuses the existing m.campGroup field).
 
 # Black Stars CRM
-Version 6.26.0 — Same mobile allowed for different family members.
+Version 6.34.0 - Camp Members: expiring-soon card + filter.
 
-## 6.26.0 note — share one mobile across family members
-Registering two members on the same mobile number is now explicitly smooth.
-Same phone + DIFFERENT name (siblings/family on one number) is allowed: on a new
-member you get a one-tap confirmation naming who else uses that number, then it
-saves as a separate member. Only a TRUE duplicate — same phone AND same name —
-is blocked and opens the existing record. (QID stays unique per person, since a
-national ID can't belong to two people; that rule is configurable in Settings.)
+## 6.34.0 note - see Summer Camp members expiring soon
+The Camp Members screen has a new red "Expiring soon" KPI card showing how many
+ACTIVE camp members expire within the next 7 days (same window as the main
+Expiring page). Click it to filter the list to just those members; click again to
+clear. There's also an "Expiring <= 7 days" option in the filter bar. Already-
+expired and withdrawn members are excluded from this count. No schema change.
+
+# Black Stars CRM
+Version 6.33.0 - Transactions screen (Insights) with rich filters.
+
+## 6.33.0 note - dedicated Transactions screen
+The transaction list that was a pop-up inside Club Revenue Summary is now a full
+screen under Insights -> Transactions. It uses the same numbers (one row per
+non-deleted invoice) and adds filters: period (Today / Yesterday / This week /
+This month / Last month / This year / All time / Custom range), category, payment
+method, coach, and a free-text search (customer / ref / sport). It shows a
+by-category summary, a paginated table, a grand-total footer, and CSV export. The
+Club Revenue Summary "Total revenue" card and Transactions button now open this
+screen. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.32.0 - Expenses: payment-method filter + footer totals.
+
+## 6.32.0 note - filter expenses by payment method, see totals
+The Expenses screen has a new "All methods" filter (Cash / Card / Bank transfer)
+alongside the existing month and category filters. The table now has a footer
+showing the filtered total (red), and when any filter is active it also shows the
+all-expenses (unfiltered) total beneath it, so you can compare the slice to the
+whole. The header count line shows "filtered of total" too. No schema change.
+
+# Black Stars CRM
+Version 6.31.0 - Remove active sports that have no attendance yet.
+
+## 6.31.0 note - delete a paid sport that was never attended
+The "Manage sport history" panel on the member profile used to list only sports
+that were no longer active (switched away). It now ALSO lists active sports that
+have ZERO attendance, tagged "active - 0 attended", with a Remove button - so a
+duplicate or mistakenly-added paid sport the member never attended can be removed
+directly from the profile. Removing it deletes the subscription record and its
+share of the linked invoice (Paid drops, commission reversed; no refund record).
+Active sports that DO have attendance are still excluded - use Withdraw for those.
 No schema change (SCHEMA_VERSION stays 9).
 
 # Black Stars CRM
-Version 6.25.0 — Customer mobile on the invoice screen.
+Version 6.30.0 - Stronger duplicate-invoice finder (all categories).
 
-## 6.25.0 note — capture customer mobile on invoices
-The invoice screen (Membership / Other categories) now has an optional
-**Customer mobile** field, so a walk-in customer's phone is recorded the same way
-the Product/POS screen already does. If you link a member, that member's own phone
-is used automatically; otherwise the typed mobile is saved. The number flows
-straight into the invoices CSV export (Mobile column) and the customer info shown
-on receipts. No schema change (SCHEMA_VERSION stays 9).
+## 6.30.0 note - find duplicate invoices across every category
+The Invoices page "Find duplicates" tool was Membership-only and required an exact
+same-month + same-amount match. It now scans ALL categories (Membership, Product,
+Rental, Other) and reports two tiers: Exact (same customer, items, month AND amount)
+and Possible (same customer, items and amount dated within 7 days - catches copies
+that straddle a month boundary or near-identical re-entries; review before deleting).
+Deleted, switch-credit and refund/credit invoices are excluded. The first invoice in
+each group is kept; you delete the extras (with a confirm). No schema change.
+
+## 6.29.0 note - Batch A correctness fixes
+1. Transfer no longer leaves stale headline fields on the sender. When a sport is
+   transferred away, if it was the member's primary sport their headline sport/coach
+   repoints to a remaining enrollment (or clears if none), and start/expiry are
+   recomputed from what's left - matching Delete sport / Switch Sport. No phantom
+   sport with a wrong expiry.
+2. Withdrawn members are excluded as a transfer source (UI list + engine guard).
+   They can still RECEIVE a transfer (it reactivates them).
+
+## 6.28.0 note - separate payment date from membership start date
+The new-member form has a Payment date field (defaults to today) in the First-payment
+box, separate from each sport's Start date. Use it when a member pays now but starts
+later: the invoice/payment is dated to when cash was collected (revenue counts in the
+right month) while the membership window/expiry runs from the Start date. Adding a
+sport to an existing member likewise dates the invoice today.
+
+## 6.27.0 note - attendance is per-subscription-period (CRITICAL fix)
+Attendance now counts classes attended WITHIN each subscription's own window
+(start -> end) instead of every class ever attended, so a renewal does not carry the
+previous period forward. Applied to the Subscription History rows, headline KPIs, the
+Members-list attendance column, needs-renewal detection, and the per-coach export.
+Attendance rate is clamped to 100%. Falls back to the static field when no live marks.
+
+## 6.26.0 note - same mobile allowed for different family members
+Same phone + DIFFERENT name (siblings/family) is allowed: a new member gets a one-tap
+confirmation naming who else uses that number, then saves as a separate member. Only a
+TRUE duplicate (same phone AND same name) is blocked. QID stays unique per person.
+
+## 6.25.0 note - capture customer mobile on invoices
+The invoice screen (Membership / Other) has an optional Customer mobile field, like
+the POS screen. A linked member's own phone is used automatically; otherwise the typed
+mobile is saved. It flows into the invoices CSV export and receipts.
+
+## 6.24.0 note - change a paid sport when there's no attendance yet
+In Edit Member, a paid sport with NO attendance can be changed directly (the linked
+invoice line and coach commission move with it; revenue unchanged). A paid sport with
+>=1 attended class stays locked with a "why locked?" hint offering Withdraw / Switch.
 
 # Black Stars CRM
-Version 6.24.0 — Edit a paid sport directly when no class was attended.
-
-## 6.24.0 note — change a paid sport when there's no attendance yet
-In Edit Member, the Sport dropdown on a paid enrollment used to be fully locked
-(you had to use Switch Sport). Now it depends on attendance:
-- **No classes attended yet** → the sport is **editable directly**. Changing it
-  renames the existing subscription and moves the linked invoice line **and the
-  coach commission** to the new sport/coach. Revenue is unchanged (it's the same
-  payment, just reassigned) — no orphaned record, no double charge.
-- **Already attended ≥ 1 class** → the sport stays **locked**, with a 🟠 "attended
-  N — why locked?" hint. Clicking it opens a popup explaining that the coach
-  earned commission for the attended classes, and offering the correct tools:
-  **↩ Withdraw** (refund by attendance) or **🔄 Switch Sport**.
-
-The paid-row helper text now reflects this ("No classes attended yet, so you can
-still change the sport directly here"). Coach, price, classes, start and validity
-remain editable as before. No schema change (SCHEMA_VERSION stays 9).
+Version 6.23.0 — Transfer Membership (member → member, one-time per membership).
 
 ## 6.23.0 note — transfer a membership from one member to another
 New **🔁 Transfer Membership** screen (Membership section, admin only). Pick the

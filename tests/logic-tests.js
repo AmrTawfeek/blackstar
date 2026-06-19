@@ -407,8 +407,8 @@ ${seed}
   eq(Math.round(computeMonthlyPay(15, '2026-06').commissionPendingBase), 500, 'deleted/archived member excluded (attendance): only live member contributes pending');
   state.settings.commissionBasis = 'payment';
   const dupGroups = detectDuplicateInvoices();
-  ok(dupGroups.some(g => g.length === 2 && g.every(r => r.inv.customerId === 80)), 'dup finder: flags the two identical invoices for member 80');
-  ok(!dupGroups.some(g => g.some(r => r.inv.id === 705) && g.some(r => r.inv.id === 706)), 'dup finder: same member but different amounts are NOT flagged');
+  ok(dupGroups.some(g => g.rows.length === 2 && g.rows.every(r => r.inv.customerId === 80)), 'dup finder: flags the two identical invoices for member 80');
+  ok(!dupGroups.some(g => g.rows.some(r => r.inv.id === 705) && g.rows.some(r => r.inv.id === 706)), 'dup finder: same member but different amounts are NOT flagged');
   ok(findDuplicateInvoiceOf(80, 'Boxing', '2026-06', 450, null), 'pre-save guard: detects an existing matching invoice');
   ok(!findDuplicateInvoiceOf(80, 'Boxing', '2026-06', 999, null), 'pre-save guard: different amount is not a match');
   ok(!findDuplicateInvoiceOf(80, 'MMA', '2026-06', 450, null), 'pre-save guard: different sport is not a match');

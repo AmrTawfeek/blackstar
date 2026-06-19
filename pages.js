@@ -1515,22 +1515,32 @@ function viewMember(id) {
             sportInfo.set(li.sport, info);
           }
         }
-        // Show only sports with NO active enrollment (the obsolete ones). Active
-        // sports are managed via Edit / Switch Sport / Withdraw already.
-        const obsolete = [...sportInfo.entries()].filter(([sp]) => !activeSports.has(sp));
-        if (!obsolete.length) return '';
-        const rows = obsolete.map(([sp, info]) => {
+        // Build the removable list:
+        //   • OBSOLETE sports (no active enrollment) — switched away / mistakes.
+        //   • ACTIVE sports that have ZERO attendance — entered by mistake or a
+        //     duplicate the member never actually attended, so safe to remove.
+        // Active sports WITH attendance are intentionally excluded (use Withdraw /
+        // Switch Sport for those — real classes were attended).
+        const removable = [...sportInfo.entries()].map(([sp, info]) => {
+          const isActive = activeSports.has(sp);
           const a = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(m, sp) : { y: 0 };
           const attended = a.y || 0;
+          return { sp, info, isActive, attended };
+        }).filter(x => !x.isActive || x.attended === 0);
+        if (!removable.length) return '';
+        const rows = removable.map(({ sp, info, isActive, attended }) => {
+          const statusBadge = isActive
+            ? `<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(34,197,94,.16);color:var(--green)">active · 0 attended</span>`
+            : `<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(148,163,184,.18)">past</span>${attended > 0 ? ` <span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(245,158,11,.18);color:var(--accent-2)" title="Member attended ${attended} class${attended === 1 ? '' : 'es'} in this sport">🟠 ${attended} attended</span>` : ''}`;
           return `
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">
             <div style="min-width:0">
-              <div style="font-weight:600">${escapeHtml(sp)} <span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(148,163,184,.18)">past</span>${attended > 0 ? ` <span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(245,158,11,.18);color:var(--accent-2)" title="Member attended ${attended} class${attended === 1 ? '' : 'es'} in this sport">🟠 ${attended} attended</span>` : ''}</div>
+              <div style="font-weight:600">${escapeHtml(sp)} ${statusBadge}</div>
               <div class="text-mute" style="font-size:11px">${info.subs} record${info.subs === 1 ? '' : 's'}${info.paid > 0.001 ? ` · ${fmt(info.paid)} QAR counted in Paid` : ''}</div>
             </div>
             <button class="btn ghost sm" style="color:var(--red);border-color:var(--red);flex-shrink:0"
               onclick="event.stopPropagation();closeModal();deleteMemberSport(${id}, ${JSON.stringify(sp).replace(/"/g, '&quot;')})"
-              title="Permanently remove this sport from this member's history (reduces Paid, reverses commission — no refund record)">🗑 Remove</button>
+              title="Permanently remove this sport from this member (reduces Paid, reverses commission — no refund record)">🗑 Remove</button>
           </div>
         `;
         }).join('');
@@ -1538,9 +1548,10 @@ function viewMember(id) {
           <div style="margin-top:16px">
             <h3 style="font-size:13px;font-weight:600;margin-bottom:4px">🧹 Manage sport history</h3>
             <div class="text-mute" style="font-size:11px;margin-bottom:8px;line-height:1.5">
-              Sports below are in this member's history but are <b>no longer active</b> (e.g. switched away, or entered by mistake as a separate paid subscription).
-              Removing one deletes its subscription records and its share of the linked invoice — so <b>Paid drops</b> and coach commission is reversed.
-              This is a correction, not a refund; for an actual refund use <b style="color:var(--accent-2)">↩ Withdraw</b> on the active sport instead.
+              Remove a sport entered by mistake or no longer wanted. This lists sports that are <b>no longer active</b> (switched away)
+              <b>and active sports with no attendance yet</b> (safe to undo). Removing one deletes its subscription records and its
+              share of the linked invoice — so <b>Paid drops</b> and coach commission is reversed. This is a correction, not a refund;
+              for a member who already attended, use <b style="color:var(--accent-2)">↩ Withdraw</b> on the active sport instead.
             </div>
             <div style="display:flex;flex-direction:column;gap:6px">${rows}</div>
           </div>
@@ -2274,6 +2285,7 @@ function showMemberForm(m) {
           <div class="field"><label>${t('Payment method', 'طريقة الدفع')}</label><select id="f-method"><option value="cash">${t('Cash', 'نقداً')}</option><option value="card">${t('Card', 'بطاقة')}</option></select></div>
           <div class="field"><label>💵 ${t('Paid now (QAR)', 'المدفوع الآن (ر.ق)')} <span class="text-mute" style="font-size:10px">${t('blank = pay full', 'فارغ = دفع كامل')}</span></label><input id="f-paidnow" type="number" min="0" step="0.01" placeholder="${t('e.g. 100', 'مثال: 100')}" style="font-size:16px;font-weight:600" /></div>
         </div>
+        <div class="field" style="margin-top:8px"><label>📅 ${t('Payment date', 'تاريخ الدفع')} <span class="text-mute" style="font-size:10px;font-weight:400">${t('when cash was collected — can differ from the start date', 'وقت تحصيل المبلغ — قد يختلف عن تاريخ البداية')}</span></label><input id="f-paydate" type="date" value="${TODAY}" /><div class="text-mute" style="font-size:10px;margin-top:4px">${t('Revenue is counted in this date\u2019s month. The membership window still starts from each sport\u2019s Start date above.', 'تُحتسب الإيرادات في شهر هذا التاريخ. تبدأ مدة الاشتراك من تاريخ بداية كل رياضة بالأعلى.')}</div></div>
         <div id="f-payment-summary" style="margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">
           <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:8px">
             <div class="text-mute" style="font-size:10px;text-transform:uppercase;letter-spacing:.5px">${t('Total', 'الإجمالي')}</div>
@@ -2521,7 +2533,11 @@ function showMemberForm(m) {
           const totalPay = enrollments.reduce((s, e) => s + e.price, 0);
           if (totalPay > 0) {
             const method = $('#f-method')?.value || 'cash';
-            const activityDate = data.startDate || data.joinDate;
+            // Invoice/payment date = when cash was collected (defaults to today).
+            // This is SEPARATE from the membership start date, which drives the
+            // expiry window. Revenue is cash-basis → counted in the payment month.
+            const payDateRaw = $('#f-paydate')?.value;
+            const activityDate = payDateRaw || TODAY || data.startDate || data.joinDate;
             const monthKey = activityDate.slice(0, 7);
             const ref = nextInvoiceRef();
             const sportList = enrollments.map(e => e.sport).join(', ');
@@ -2673,11 +2689,14 @@ function showMemberForm(m) {
 
         // Create one combined invoice for ALL newly-added sports (if any)
         if (newSubs.length > 0) {
-          // Each newly-added sport can carry its OWN start date (a member who
-          // adds a sport a week later). Defaults to the member's start date.
+          // Each newly-added sport carries its OWN start date (membership window).
+          // The invoice/payment date, however, is when cash is collected = today
+          // (cash-basis revenue), which may differ from a future start date.
           const startOf = (e) => enrollmentStartDate(e, existing);
-          const startDate = newSubs.map(startOf).sort()[0];   // earliest new-sport start (invoice date)
-          const monthKey = startDate.slice(0, 7);
+          const earliestStart = newSubs.map(startOf).sort()[0];   // earliest new-sport start (window)
+          const payDate = TODAY;                                  // payment/invoice date
+          const startDate = payDate;                              // invoice date field
+          const monthKey = payDate.slice(0, 7);
           const totalNew = newSubs.reduce((s, e) => s + e.price, 0);
           const ref = nextInvoiceRef();
           const sportList = newSubs.map(e => e.sport).join(', ');
@@ -3945,11 +3964,17 @@ window.editCampMember = function(id) {
         </div>
       </div>
       <div class="form-row">
-        <div class="field"><label>${t('Camp group', 'مجموعة المعسكر')} <span class="text-mute" style="font-size:10px">${t('auto from age + gender', 'تلقائي من العمر والجنس')}</span></label>
-          <div id="ecm-group-display" style="padding:10px 12px;background:var(--surface-2);border:1px dashed var(--border);border-radius:8px;font-weight:700">—</div>
+        <div class="field"><label>${t('Camp group', 'مجموعة المعسكر')} <span class="text-mute" style="font-size:10px">${t('auto, or override for siblings', 'تلقائي، أو تجاوز للإخوة')}</span></label>
+          <select id="ecm-group">
+            <option value="">${t('Auto (from age + gender)', 'تلقائي (من العمر والجنس)')}</option>
+            <option value="Kids" ${m.campGroup === 'Kids' ? 'selected' : ''}>👶 ${t('Kids (4-7)', 'الصغار (4-7)')}</option>
+            <option value="Boys" ${m.campGroup === 'Boys' ? 'selected' : ''}>♂ ${t('Boys (7-12)', 'الأولاد (7-12)')}</option>
+            <option value="Girls" ${m.campGroup === 'Girls' ? 'selected' : ''}>♀ ${t('Girls (7-12)', 'البنات (7-12)')}</option>
+          </select>
+          <div id="ecm-group-display" class="text-mute" style="font-size:11px;margin-top:4px">—</div>
         </div>
         <div class="field" style="display:flex;align-items:flex-end">
-          <div class="text-mute" style="font-size:11px;line-height:1.5;padding-bottom:8px">${t('Rule: under 7 = Kids · Male 7+ = Boys · Female 7+ = Girls. To change the group, edit the birthdate or gender above.', 'القاعدة: أقل من 7 = الصغار · ذكر من 7+ = الأولاد · أنثى من 7+ = البنات. لتغيير المجموعة عدّل تاريخ الميلاد أو الجنس بالأعلى.')}</div>
+          <div class="text-mute" style="font-size:11px;line-height:1.5;padding-bottom:8px">${t('Auto rule: under 7 = Kids · Male 7+ = Boys · Female 7+ = Girls. Pick a group above only to keep siblings together — it overrides the auto rule for this member.', 'القاعدة التلقائية: أقل من 7 = الصغار · ذكر 7+ = أولاد · أنثى 7+ = بنات. اختر مجموعة بالأعلى فقط لإبقاء الإخوة معاً — يتجاوز ذلك القاعدة التلقائية لهذا العضو.')}</div>
         </div>
       </div>
       <div class="form-row">
@@ -3979,9 +4004,11 @@ window.editCampMember = function(id) {
         m.gender = gVal || null;
         const bVal = $('#ecm-bday')?.value;
         if (bVal) m.birthdate = bVal;
-        // Group is computed automatically from gender + age — clear any stale
-        // manual override from older builds so the computation always wins.
-        if (m.campGroup) delete m.campGroup;
+        // Camp group: defaults to auto (age + gender). A manual pick overrides
+        // it — used to keep siblings of different ages/genders in one group.
+        const groupVal = $('#ecm-group')?.value || '';
+        if (groupVal) m.campGroup = groupVal;
+        else if (m.campGroup) delete m.campGroup;
         const label = $('#ecm-duration').value;
         const picked = campPrices.find(p => p.label === label);
         const price = Math.max(0, parseFloat($('#ecm-price').value) || 0);
@@ -4056,24 +4083,32 @@ window.editCampMember = function(id) {
   $('#ecm-price')?.addEventListener('input', recomputeDue);
   $('#ecm-disc')?.addEventListener('input', recomputeDue);
   $('#ecm-paid')?.addEventListener('input', recomputeDue);
-  // Live group recompute: changing gender / birthdate updates the read-only
-  // Camp group display immediately so the admin can see the rule in action.
+  // Live group preview: if "Auto" is chosen, show what the rule resolves to from
+  // gender + birthdate; if an override is chosen, confirm it.
   const recomputeGroup = () => {
     const el = $('#ecm-group-display'); if (!el) return;
+    const override = $('#ecm-group')?.value || '';
+    if (override) {
+      const map = { Kids: ['👶', t('Kids (4-7)', 'الصغار (4-7)'), 'var(--green)'], Boys: ['♂', t('Boys (7-12)', 'الأولاد (7-12)'), 'var(--blue)'], Girls: ['♀', t('Girls (7-12)', 'البنات (7-12)'), '#ec4899'] };
+      const [icon, label, color] = map[override] || ['', override, 'var(--text-mute)'];
+      el.style.color = color;
+      el.innerHTML = `${icon} ${label} · <b>${t('manual override', 'تجاوز يدوي')}</b>`;
+      return;
+    }
     const g = $('#ecm-gender')?.value || '';
     const bd = $('#ecm-bday')?.value || '';
     let age = null;
     if (bd && typeof memberAge === 'function') age = memberAge(bd);
-    let grp = 'Unknown', icon = '⚠', color = 'var(--text-mute)', label = t('Unknown — set gender + birthdate', 'غير محدد — أدخل الجنس وتاريخ الميلاد');
-    if (age != null && age < 7) { grp = 'Kids'; icon = '👶'; color = 'var(--green)'; label = t('Kids (4-7)', 'الصغار (4-7)'); }
-    else if (g === 'Female')   { grp = 'Girls'; icon = '♀'; color = '#ec4899';      label = t('Girls (7-12)', 'البنات (7-12)'); }
-    else if (g === 'Male')     { grp = 'Boys';  icon = '♂'; color = 'var(--blue)';  label = t('Boys (7-12)', 'الأولاد (7-12)'); }
+    let icon = '⚠', color = 'var(--text-mute)', label = t('Unknown — set gender + birthdate', 'غير محدد — أدخل الجنس وتاريخ الميلاد');
+    if (age != null && age < 7) { icon = '👶'; color = 'var(--green)'; label = t('Kids (4-7)', 'الصغار (4-7)'); }
+    else if (g === 'Female')   { icon = '♀'; color = '#ec4899';      label = t('Girls (7-12)', 'البنات (7-12)'); }
+    else if (g === 'Male')     { icon = '♂'; color = 'var(--blue)';  label = t('Boys (7-12)', 'الأولاد (7-12)'); }
     el.style.color = color;
-    el.style.borderColor = color;
-    el.innerHTML = `${icon} ${label}`;
+    el.innerHTML = `${t('Auto', 'تلقائي')}: ${icon} ${label}`;
   };
   $('#ecm-gender')?.addEventListener('change', recomputeGroup);
   $('#ecm-bday')?.addEventListener('change', recomputeGroup);
+  $('#ecm-group')?.addEventListener('change', recomputeGroup);
   recomputeGroup();
   // Auto-fill price when picking a preset duration (only if admin hasn't overridden).
   $('#ecm-duration')?.addEventListener('change', e => {
@@ -4405,13 +4440,13 @@ PAGES.clubrevenue = (main) => {
           <span class="text-mute" style="font-size:11px">→</span>
           <input id="crs-to" type="date" class="btn ghost" value="${p.to || range.to || TODAY}" max="${TODAY}" />
         </div>
-        <button class="btn ghost" onclick="_crsTxns()">🧾 ${t('Transactions', 'العمليات')}</button>
+        <button class="btn ghost" onclick="navigate('transactions')">🧾 ${t('Transactions', 'العمليات')}</button>
         <button class="btn ghost" onclick="_crsCSV()">⬇ ${t('Export CSV', 'تصدير CSV')}</button>
       </div>
     </div>
 
     <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
-      <div class="kpi green" style="cursor:pointer" onclick="_crsTxns()" title="${t('Click to see every transaction', 'اضغط لرؤية كل العمليات')}"><div class="kpi-label">💰 ${t('Total revenue', 'إجمالي الإيرادات')}</div><div class="kpi-value num">${fmt(grandRevenue)}</div><div class="kpi-sub">QAR · ${monthLabel} · 🧾 ${t('view', 'عرض')}</div></div>
+      <div class="kpi green" style="cursor:pointer" onclick="navigate('transactions')" title="${t('Click to see every transaction', 'اضغط لرؤية كل العمليات')}"><div class="kpi-label">💰 ${t('Total revenue', 'إجمالي الإيرادات')}</div><div class="kpi-value num">${fmt(grandRevenue)}</div><div class="kpi-sub">QAR · ${monthLabel} · 🧾 ${t('view', 'عرض')}</div></div>
       <div class="kpi blue"><div class="kpi-label">🧾 ${t('Invoices', 'الفواتير')}</div><div class="kpi-value num">${invoiceCount}</div><div class="kpi-sub">${invoiceCount && grandRevenue ? t('avg', 'متوسط') + ' ' + fmt(grandRevenue / invoiceCount) + ' QAR' : t('in this period', 'في هذه الفترة')}</div></div>
       <div class="kpi"><div class="kpi-label">🥋 ${t('Active sports', 'الرياضات النشطة')}</div><div class="kpi-value num">${sportRows.length}</div><div class="kpi-sub">${t('contributing to revenue', 'تساهم في الإيرادات')}</div></div>
       <div class="kpi"><div class="kpi-label">🧑‍🏫 ${t('Earning coaches', 'المدربون الذين كسبوا')}</div><div class="kpi-value num">${coachRows.length}</div><div class="kpi-sub">${t('with attributed revenue', 'بإيرادات منسوبة')}</div></div>
@@ -4681,15 +4716,14 @@ PAGES.campmembers = (main) => {
       || (days && (campPrices.find(p => p.days === days) || {}).label) || (days ? days + ' ' + t('days', 'يوم') : '—');
   };
 
-  // Camp group is computed automatically from gender + age, matching the printed
-  // schedule poster:
+  // Camp group: a manual override (m.campGroup, set to keep siblings together)
+  // wins; otherwise it's computed from gender + age, matching the printed poster:
   //   age < 7              -> Kids
   //   age >= 7, Male        -> Boys
   //   age >= 7, Female      -> Girls
-  // Missing birthdate or gender lands the member in "Unknown" so admins can
-  // chase them up via the "Need info" KPI card. There is no manual override —
-  // fix the member's birthdate/gender to fix the group.
+  // Missing birthdate or gender (and no override) lands the member in "Unknown".
   const campGroup = m => {
+    if (m.campGroup === 'Kids' || m.campGroup === 'Boys' || m.campGroup === 'Girls') return m.campGroup;
     const age = (m.birthdate && typeof memberAge === 'function') ? memberAge(m.birthdate) : null;
     if (age != null && age < 7) return 'Kids';
     if (m.gender === 'Female') return 'Girls';
@@ -4705,11 +4739,20 @@ PAGES.campmembers = (main) => {
   };
 
   // Filters — preserved across renders so toggling transport/driver doesn't reset them.
-  if (!window._campFilter) window._campFilter = { search: '', status: 'all', duration: 'all', transport: 'all', driver: 'all', gender: 'all', group: 'all' };
+  if (!window._campFilter) window._campFilter = { search: '', status: 'all', duration: 'all', transport: 'all', driver: 'all', gender: 'all', group: 'all', expiring: 'all' };
   const f = window._campFilter;
   // Back-compat for older saved filter shapes
   if (f.gender == null) f.gender = 'all';
   if (f.group == null) f.group = 'all';
+  if (f.expiring == null) f.expiring = 'all';
+  // "Expiring soon" = active camp member whose expiry is within the next 7 days
+  // (matches the main Expiring page). Already-expired members are excluded here
+  // (they show under status filters instead).
+  const isExpiringSoon = m => {
+    if (memberStatus(m) === 'Withdrawn') return false;
+    const d = m.expiryDate ? daysUntil(m.expiryDate) : null;
+    return d != null && d >= 0 && d <= 7;
+  };
   const list = allCamp.filter(m => {
     if (f.status !== 'all' && memberStatus(m) !== f.status) return false;
     if (f.duration !== 'all' && campDurationLabel(m) !== f.duration) return false;
@@ -4722,6 +4765,7 @@ PAGES.campmembers = (main) => {
       if (f.gender !== '__missing' && m.gender !== f.gender) return false;
     }
     if (f.group !== 'all' && campGroup(m) !== f.group) return false;
+    if (f.expiring === 'soon' && !isExpiringSoon(m)) return false;
     if (f.search) {
       const q = f.search.toLowerCase();
       const hay = ((m.name || '') + ' ' + (m.nameArabic || '') + ' ' + (m.phone || '')).toLowerCase();
@@ -4732,7 +4776,8 @@ PAGES.campmembers = (main) => {
   const withTransport = list.filter(m => m.campTransport).length;
   const durations = [...new Set(allCamp.map(campDurationLabel).filter(x => x && x !== '—'))].sort();
   const statuses = [...new Set(allCamp.map(memberStatus))].sort();
-  const filtersOn = f.search || f.status !== 'all' || f.duration !== 'all' || f.transport !== 'all' || f.driver !== 'all' || f.gender !== 'all' || f.group !== 'all';
+  const filtersOn = f.search || f.status !== 'all' || f.duration !== 'all' || f.transport !== 'all' || f.driver !== 'all' || f.gender !== 'all' || f.group !== 'all' || f.expiring !== 'all';
+  const expiringSoonCount = allCamp.filter(isExpiringSoon).length;
   // Group breakdown for KPI cards (over the FILTERED list so they reflect what's shown).
   const gKids  = list.filter(m => campGroup(m) === 'Kids').length;
   const gBoys  = list.filter(m => campGroup(m) === 'Boys').length;
@@ -4752,7 +4797,7 @@ PAGES.campmembers = (main) => {
       <td style="padding:9px 10px;font-size:12px">${phoneCell(m.phone)}</td>
       <td style="padding:9px 10px;font-size:12px" class="text-mute">${(typeof memberAge === 'function' && m.birthdate && memberAge(m.birthdate) != null) ? memberAge(m.birthdate) + ' yrs' : '—'}</td>
       <td style="padding:9px 10px;font-size:12px">${genderChip(m)}</td>
-      <td style="padding:9px 10px;font-size:12px"><span class="badge" style="background:${groupColor(grp)}22;color:${groupColor(grp)};font-size:10px;font-weight:700" title="${t('Auto from gender + age', 'تلقائي من الجنس والعمر')}">${groupArabic(grp)}</span></td>
+      <td style="padding:9px 10px;font-size:12px"><span class="badge" style="background:${groupColor(grp)}22;color:${groupColor(grp)};font-size:10px;font-weight:700" title="${m.campGroup ? t('Manual override (kept with siblings)', 'تجاوز يدوي (مع الإخوة)') : t('Auto from gender + age', 'تلقائي من الجنس والعمر')}">${groupArabic(grp)}${m.campGroup ? ' ✎' : ''}</span></td>
       <td style="padding:9px 10px;font-size:12px"><span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-2);font-size:10px">🌞 ${escapeHtml(campDurationLabel(m))}</span></td>
       <td style="padding:9px 10px;font-size:12px"><span class="badge ${st.toLowerCase()}" style="font-size:10px">${st}</span></td>
       <td style="padding:9px 10px;text-align:center">
@@ -4780,8 +4825,9 @@ PAGES.campmembers = (main) => {
         ${isViewerRole() ? '' : `<button class="btn ghost" id="campmem-export">⬇ ${t('Export CSV', 'تصدير CSV')}</button>`}
       </div>
     </div>
-    <div class="kpi-grid" style="grid-template-columns:repeat(${gUnk > 0 ? 5 : 4},1fr);gap:10px;margin-bottom:16px">
+    <div class="kpi-grid" style="grid-template-columns:repeat(${(gUnk > 0 ? 5 : 4) + 1},1fr);gap:10px;margin-bottom:16px">
       <div class="kpi"><div class="kpi-label">${t('Camp members', 'أعضاء المعسكر')}</div><div class="kpi-value num">${list.length}</div><div class="kpi-sub">🚌 ${withTransport} ${t('with transport', 'مع نقل')}</div></div>
+      <div class="kpi" style="border-color:var(--red);background:rgba(239,68,68,.06);cursor:pointer" onclick="window._campFilter={...window._campFilter,expiring:window._campFilter.expiring==='soon'?'all':'soon'};render()" title="${t('Active camp members expiring within 7 days', 'أعضاء المعسكر النشطون الذين ينتهي اشتراكهم خلال 7 أيام')}"><div class="kpi-label" style="color:var(--red)">⏳ ${t('Expiring soon', 'ينتهي قريباً')}</div><div class="kpi-value num" style="color:var(--red)">${expiringSoonCount}</div><div class="kpi-sub">${f.expiring === 'soon' ? '✓ ' + t('filtered', 'مُصفّى') : t('≤ 7 days · click to filter', '≤ 7 أيام · اضغط للتصفية')}</div></div>
       <div class="kpi" style="border-color:var(--green);background:rgba(16,185,129,.06);cursor:pointer" onclick="window._campFilter={...window._campFilter,group:window._campFilter.group==='Kids'?'all':'Kids'};render()"><div class="kpi-label" style="color:var(--green)">👶 ${t('Kids (4-7)', 'الصغار (4-7)')}</div><div class="kpi-value num" style="color:var(--green)">${gKids}</div><div class="kpi-sub">${t('click to filter', 'اضغط للتصفية')}</div></div>
       <div class="kpi" style="border-color:var(--blue);background:rgba(59,130,246,.06);cursor:pointer" onclick="window._campFilter={...window._campFilter,group:window._campFilter.group==='Boys'?'all':'Boys'};render()"><div class="kpi-label" style="color:var(--blue)">♂ ${t('Boys (7-12)', 'الأولاد (7-12)')}</div><div class="kpi-value num" style="color:var(--blue)">${gBoys}</div><div class="kpi-sub">${t('click to filter', 'اضغط للتصفية')}</div></div>
       <div class="kpi" style="border-color:#ec4899;background:rgba(236,72,153,.06);cursor:pointer" onclick="window._campFilter={...window._campFilter,group:window._campFilter.group==='Girls'?'all':'Girls'};render()"><div class="kpi-label" style="color:#ec4899">♀ ${t('Girls (7-12)', 'البنات (7-12)')}</div><div class="kpi-value num" style="color:#ec4899">${gGirls}</div><div class="kpi-sub">${t('click to filter', 'اضغط للتصفية')}</div></div>
@@ -4806,6 +4852,10 @@ PAGES.campmembers = (main) => {
         <select id="cm-status" class="btn ghost">
           <option value="all">${t('All statuses', 'كل الحالات')}</option>
           ${statuses.map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+        <select id="cm-expiring" class="btn ghost">
+          <option value="all">${t('Any expiry', 'أي انتهاء')}</option>
+          <option value="soon" ${f.expiring === 'soon' ? 'selected' : ''}>⏳ ${t('Expiring ≤ 7 days', 'ينتهي خلال 7 أيام')}</option>
         </select>
         <select id="cm-duration" class="btn ghost">
           <option value="all">${t('All durations', 'كل المدد')}</option>
@@ -4845,6 +4895,7 @@ PAGES.campmembers = (main) => {
   const debounce = (fn, ms) => { let to; return (...a) => { clearTimeout(to); to = setTimeout(() => fn(...a), ms); }; };
   $('#cm-search')?.addEventListener('input', debounce(e => { f.search = e.target.value; render(); }, 200));
   $('#cm-status')?.addEventListener('change', e => { f.status = e.target.value; render(); });
+  $('#cm-expiring')?.addEventListener('change', e => { f.expiring = e.target.value; render(); });
   $('#cm-duration')?.addEventListener('change', e => { f.duration = e.target.value; render(); });
   $('#cm-transport')?.addEventListener('change', e => { f.transport = e.target.value; render(); });
   $('#cm-driver')?.addEventListener('change', e => { f.driver = e.target.value; render(); });
@@ -7172,31 +7223,46 @@ window.regenerateInvoice = function(id) {
   });
 };
 
-// Find likely-duplicate Membership invoices: more than one with the same member,
-// sport, month and amount. Switch-credit invoices are ignored (intentional).
+// Find likely-duplicate invoices across all categories (see detectDuplicateInvoices).
+// Switch-credit and refund/credit invoices are ignored.
 window.findDuplicateInvoices = function() {
-  const dups = detectDuplicateInvoices();
-  if (!dups.length) {
+  const groups = detectDuplicateInvoices();
+  if (!groups.length) {
     showModal({ title: '🔍 Find duplicate invoices',
-      body: '<p>No duplicate membership invoices found. 🎉</p><p class="text-mute" style="font-size:12px">Checks for more than one Membership invoice with the same member, sport, month and amount.</p>',
+      body: '<p>No duplicate invoices found. 🎉</p><p class="text-mute" style="font-size:12px">Checks every category for more than one invoice with the same customer, items and amount (exact = same month too; possible = within 7 days).</p>',
       actions: [{ label: 'Close', class: 'btn ghost', onclick: closeModal }] });
     return;
   }
-  const extra = dups.reduce((s, g) => s + (g.length - 1), 0);
+  const extra = groups.reduce((s, g) => s + (g.rows.length - 1), 0);
+  const exactN = groups.filter(g => g.tier === 'exact').length;
+  const possN = groups.filter(g => g.tier === 'possible').length;
+  const tierBadge = (tier) => tier === 'exact'
+    ? '<span class="badge" style="background:rgba(239,68,68,.15);color:var(--red)">exact</span>'
+    : '<span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-2)">possible</span>';
   const body = `
-    <p class="text-mute" style="font-size:12px;margin-bottom:10px">${dups.length} group${dups.length === 1 ? '' : 's'} found — same member, sport, month and amount. That's <b>${extra}</b> extra invoice${extra === 1 ? '' : 's'} likely double-counting commission. The first in each group is kept; delete the others.</p>
-    ${dups.map(g => `
+    <p class="text-mute" style="font-size:12px;margin-bottom:10px">
+      ${groups.length} group${groups.length === 1 ? '' : 's'} (${exactN} exact, ${possN} possible) — about <b>${extra}</b> extra invoice${extra === 1 ? '' : 's'} that may be double-counting revenue & commission.
+      <b style="color:var(--red)">Exact</b> = same customer, items, month and amount. <b style="color:var(--accent-2)">Possible</b> = same customer, items and amount within 7 days (review before deleting). The first in each group is kept.
+    </p>
+    <div style="max-height:55vh;overflow:auto">
+    ${groups.map(g => {
+      const r0 = g.rows[0];
+      return `
       <div style="border:1px solid var(--border);border-radius:8px;margin-bottom:10px;overflow:hidden">
-        <div style="background:var(--surface-2);padding:8px 10px;font-weight:600;font-size:13px">${escapeHtml(g[0].memName)} · ${escapeHtml(g[0].sport)} · ${fmtMonth(g[0].inv.month || '')} · ${fmt(g[0].inv.amount || 0)} QAR <span class="text-mute" style="font-weight:400">(${g.length} copies)</span></div>
+        <div style="background:var(--surface-2);padding:8px 10px;font-weight:600;font-size:13px;display:flex;justify-content:space-between;gap:8px;align-items:center">
+          <div>${tierBadge(g.tier)} ${escapeHtml(r0.memName)} · ${escapeHtml(r0.cat)} · ${escapeHtml(r0.sport)} · ${fmt(r0.inv.amount || 0)} QAR <span class="text-mute" style="font-weight:400">(${g.rows.length} copies)</span></div>
+        </div>
         <table style="width:100%;font-size:13px"><tbody>
-          ${g.map((row, idx) => `<tr>
-            <td style="padding:6px 10px;border-top:1px solid var(--border)">${escapeHtml(row.inv.ref || ('INV' + row.inv.id))} · ${fmtDate(row.inv.date)}${idx === 0 ? ' <span class="badge">keep</span>' : ''}</td>
+          ${g.rows.map((row, idx) => `<tr>
+            <td style="padding:6px 10px;border-top:1px solid var(--border)">${escapeHtml(row.inv.ref || ('INV' + row.inv.id))} · ${fmtDate(row.inv.date)} · ${escapeHtml(row.inv.month || (row.inv.date || '').slice(0,7))}${idx === 0 ? ' <span class="badge">keep</span>' : ''}</td>
             <td style="padding:6px 10px;border-top:1px solid var(--border);text-align:right">${idx === 0 ? '' : `<button class="btn ghost sm" onclick="deleteDuplicateInvoice(${row.inv.id})" title="Delete this duplicate">🗑 Delete</button>`}</td>
           </tr>`).join('')}
         </tbody></table>
-      </div>`).join('')}
+      </div>`;
+    }).join('')}
+    </div>
   `;
-  showModal({ title: '🔍 Duplicate invoices found', body, actions: [{ label: 'Close', class: 'btn ghost', onclick: closeModal }] });
+  showModal({ title: '🔍 Duplicate invoices found', body, wide: true, actions: [{ label: 'Close', class: 'btn ghost', onclick: closeModal }] });
 };
 
 window.deleteDuplicateInvoice = function(id) {
@@ -8183,7 +8249,7 @@ PAGES.cashcollection = (main) => {
 
 // ─── EXPENSES ──────────────────────────────────────────────────
 PAGES.expenses = (main) => {
-  let filter = { search: '', month: 'all', category: 'all' };
+  let filter = { search: '', month: 'all', category: 'all', method: 'all' };
   const pg = makePager(10);
 
   function refresh() {
@@ -8191,11 +8257,14 @@ PAGES.expenses = (main) => {
       if (filter.search && !e.description.toLowerCase().includes(filter.search.toLowerCase())) return false;
       if (filter.month !== 'all' && e.month !== filter.month) return false;
       if (filter.category !== 'all' && e.category !== filter.category) return false;
+      if (filter.method !== 'all' && (e.method || '') !== filter.method) return false;
       return true;
     }).sort((a,b) => b.date.localeCompare(a.date));
     const rows = paginate(allRows, pg);
 
-    const total = allRows.reduce((s,r) => s + (r.amount || 0), 0);
+    const total = allRows.reduce((s,r) => s + (r.amount || 0), 0);          // filtered total
+    const grandTotal = state.expenses.reduce((s,r) => s + (r.amount || 0), 0); // all expenses
+    const anyFilter = filter.search || filter.month !== 'all' || filter.category !== 'all' || filter.method !== 'all';
     // Per-category totals — replaces old monthly/equipment split since the
     // Type field is removed. Top 3 categories shown in the subtitle.
     const byCat = {};
@@ -8216,7 +8285,19 @@ PAGES.expenses = (main) => {
         <td class="text-right" style="white-space:nowrap"><button class="btn ghost sm" onclick="editExpense(${e.id})" title="Edit">✏️</button> <button class="btn ghost sm" onclick="deleteExpense(${e.id})" title="Delete">🗑</button></td>
       </tr>
     `).join('') : `<tr><td colspan="6" class="empty"><div class="empty-icon">💸</div>No expenses match</td></tr>`;
-    $('#exp-count').textContent = `${allRows.length} entries · ${fmtMoney(total)}${topStr ? ' · ' + topStr : ''}`;
+    const footEl = $('#exp-tfoot');
+    if (footEl) {
+      footEl.innerHTML = `<tr style="border-top:2px solid var(--border);font-weight:800">
+        <td colspan="4">${anyFilter ? 'Filtered total' : 'Total'} · ${allRows.length} ${allRows.length === 1 ? 'entry' : 'entries'}</td>
+        <td class="text-right num" style="color:var(--red)">${fmt(total)}</td>
+        <td></td>
+      </tr>${anyFilter ? `<tr style="font-weight:600;color:var(--text-mute)">
+        <td colspan="4" style="font-size:12px">All expenses (unfiltered)</td>
+        <td class="text-right num" style="font-size:12px">${fmt(grandTotal)}</td>
+        <td></td>
+      </tr>` : ''}`;
+    }
+    $('#exp-count').textContent = `${allRows.length} entries · ${fmtMoney(total)}${anyFilter ? ` of ${fmtMoney(grandTotal)} total` : ''}${topStr ? ' · ' + topStr : ''}`;
     $('#exp-pagination').innerHTML = paginationBar(pg, allRows.length, 'exp');
     bindPagination('exp', pg, allRows.length, refresh);
   }
@@ -8242,11 +8323,18 @@ PAGES.expenses = (main) => {
           <option value="all">All categories</option>
           ${EXP_CATS.map(c => `<option>${escapeHtml(c)}</option>`).join('')}
         </select>
+        <select id="exp-method" class="btn ghost">
+          <option value="all">All methods</option>
+          <option value="cash">Cash</option>
+          <option value="card">Card</option>
+          <option value="transfer">Bank transfer</option>
+        </select>
       </div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Method</th><th class="text-right">Amount</th><th></th></tr></thead>
           <tbody id="exp-tbody"></tbody>
+          <tfoot id="exp-tfoot"></tfoot>
         </table>
       </div>
       <div id="exp-pagination"></div>
@@ -8255,6 +8343,7 @@ PAGES.expenses = (main) => {
   $('#exp-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   $('#exp-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
   $('#exp-cat').addEventListener('change', e => { filter.category = e.target.value; pg.page = 1; refresh(); });
+  $('#exp-method').addEventListener('change', e => { filter.method = e.target.value; pg.page = 1; refresh(); });
   $('#add-exp').addEventListener('click', addExpense);
   refresh();
 };
@@ -18384,6 +18473,7 @@ window.transferMembership = function(fromId, sport, toId) {
 
   const enr = (A.enrollments || []).find(e => e.sport === sport);
   if (!enr) { toast(`${A.name} has no active "${sport}" enrollment`, 'error'); return false; }
+  if (memberStatus(A) === 'Withdrawn') { toast(`${A.name} is withdrawn — their membership can't be transferred.`, 'error'); return false; }
   if (enr.transferLocked) { toast(`This ${sport} membership was already transferred once — it can't be transferred again.`, 'error'); return false; }
   if (sport === SUMMER_CAMP) { toast('Summer Camp memberships can\'t be transferred.', 'error'); return false; }
   // B can hold only one active enrollment per sport.
@@ -18404,6 +18494,22 @@ window.transferMembership = function(fromId, sport, toId) {
   A.enrollments = (A.enrollments || []).filter(e => e.sport !== sport);
   // 2) Remove A's subscription history rows for this sport (the membership moves out).
   A.subscriptions = (A.subscriptions || []).filter(s => (s.activity || '') !== sport);
+  // 2b) Repair A's headline fields if the transferred sport was their primary
+  //     one (same pattern as deleteMemberSport / switchSport) so the profile and
+  //     members list don't keep showing the moved sport with a stale expiry.
+  if (A.sport === sport) {
+    const nextEnr = (A.enrollments || [])[0] || null;
+    A.sport = nextEnr ? nextEnr.sport : '';
+    A.coachId = nextEnr ? nextEnr.coachId : null;
+  }
+  if (A.enrollments && A.enrollments.length) {
+    const d = deriveMemberDates(A.enrollments, A.firstRegistration);
+    A.startDate = d.startDate;
+    A.expiryDate = d.expiryDate;
+  } else {
+    // No sports left — clear the window so they don't show a phantom expiry.
+    A.expiryDate = null;
+  }
   // 3) Re-point the money to B.
   let invId = null;
   if (found && found.inv) {
@@ -18490,8 +18596,11 @@ PAGES.transfers = (main) => {
   const st = window._trState || (window._trState = { fromId: null, sport: null, toId: null, fromQ: '', toQ: '' });
 
   const members = (state.members || []).filter(m => !m.deleted);
-  // Members who CAN transfer something out (have ≥1 transferable enrollment).
+  // Members who CAN transfer something out: have ≥1 transferable enrollment AND
+  // are not Withdrawn (a withdrawn member has left/been refunded — their leftover
+  // enrollment shouldn't be transferable to someone else).
   const eligible = members
+    .filter(m => memberStatus(m) !== 'Withdrawn')
     .map(m => ({ m, enrs: transferableEnrollments(m) }))
     .filter(x => x.enrs.length);
 
@@ -18633,4 +18742,187 @@ PAGES.transfers = (main) => {
       ],
     });
   });
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TRANSACTIONS  (Insights) — standalone version of the Club-Revenue txn popup,
+// with richer filters: period (presets + custom range), category, payment
+// method, coach, and a free-text search (customer / ref / sport). Shows a
+// by-category summary, a paginated table, a grand-total footer, and CSV export.
+// Same numbers that feed Club Revenue Summary (one row per non-deleted invoice).
+// ═══════════════════════════════════════════════════════════════════════════
+PAGES.transactions = (main) => {
+  const isoOf = x => x.toISOString().slice(0, 10);
+  if (!window._txnState) window._txnState = { preset: 'this_month', from: '', to: '', category: 'all', method: 'all', coachId: 'all', search: '' };
+  const st = window._txnState;
+  const pg = (window._txnPager = window._txnPager || makePager(25));
+
+  function resolveRange(preset, fromIn, toIn) {
+    const today = TODAY;
+    const d = new Date(today + 'T00:00:00');
+    if (preset === 'today') return { from: today, to: today };
+    if (preset === 'yesterday') { const y = new Date(d); y.setDate(d.getDate() - 1); return { from: isoOf(y), to: isoOf(y) }; }
+    if (preset === 'this_week') { const s = new Date(d); s.setDate(d.getDate() - d.getDay()); return { from: isoOf(s), to: today }; }
+    if (preset === 'this_month') return { from: today.slice(0, 7) + '-01', to: today };
+    if (preset === 'last_month') {
+      const y = parseInt(today.slice(0, 4)), m = parseInt(today.slice(5, 7));
+      const lm = m === 1 ? 12 : m - 1, ly = m === 1 ? y - 1 : y;
+      const last = new Date(ly, lm, 0).getDate();
+      const mm = String(lm).padStart(2, '0');
+      return { from: `${ly}-${mm}-01`, to: `${ly}-${mm}-${String(last).padStart(2, '0')}` };
+    }
+    if (preset === 'this_year') return { from: today.slice(0, 4) + '-01-01', to: today };
+    if (preset === 'custom') return { from: fromIn || '', to: toIn || today };
+    return { from: '', to: '' };   // all
+  }
+
+  function build() {
+    const range = resolveRange(st.preset, st.from, st.to);
+    const inRange = inv => {
+      const d = (inv.date || '').slice(0, 10);
+      if (range.from && d < range.from) return false;
+      if (range.to && d > range.to) return false;
+      return true;
+    };
+    const txns = [];
+    const byCategory = {};
+    let grand = 0;
+    for (const inv of (state.invoices || [])) {
+      if (inv.deleted) continue;
+      if (!inRange(inv)) continue;
+      const items = (inv.lineItems && inv.lineItems.length) ? inv.lineItems : [{ sport: inv.sport || null, coachId: inv.coachId || null, price: inv.amount || 0 }];
+      const invAmount = items.reduce((s, li) => s + (Number(li.price) || 0), 0);
+      const cat = inv.category || 'Membership';
+      const coachId = inv.coachId || (items.find(li => li.coachId)?.coachId) || null;
+      const customer = inv.customerName || inv.customer || (() => { const mm = (state.members || []).find(x => x.id === inv.customerId); return mm ? (mm.name || mm.nameArabic || '') : ''; })() || '—';
+      const sport = items.map(li => li.sport).filter(Boolean).join(', ') || (cat !== 'Membership' ? cat : '—');
+      const ref = inv.ref || ('#' + inv.id);
+      // Apply filters
+      if (st.category !== 'all' && cat !== st.category) continue;
+      if (st.method !== 'all' && (inv.method || '') !== st.method) continue;
+      if (st.coachId !== 'all' && String(coachId || '') !== String(st.coachId)) continue;
+      if (st.search) {
+        const q = st.search.toLowerCase();
+        if (!(customer.toLowerCase().includes(q) || ref.toLowerCase().includes(q) || sport.toLowerCase().includes(q))) continue;
+      }
+      txns.push({ id: inv.id, ref, date: (inv.date || '').slice(0, 10), category: cat, customer, sport, coach: coachName(coachId) || '—', amount: invAmount, method: inv.method || '' });
+      byCategory[cat] = byCategory[cat] || { total: 0, count: 0 };
+      byCategory[cat].total += invAmount; byCategory[cat].count += 1;
+      grand += invAmount;
+    }
+    txns.sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id - a.id);
+    return { txns, byCategory, grand, range };
+  }
+
+  function refresh() {
+    const { txns, byCategory, grand } = build();
+    const rows = paginate(txns, pg);
+    const catRows = Object.entries(byCategory).sort((a, b) => b[1].total - a[1].total);
+
+    $('#txn-summary').innerHTML = catRows.length ? catRows.map(([c, v]) => `
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">
+        <span class="badge" style="font-size:10px">${escapeHtml(c)}</span>
+        <span class="text-mute" style="font-size:11px">${v.count}</span>
+        <span class="num font-bold" style="margin-left:auto">${fmt(v.total)}</span>
+      </div>`).join('') : `<span class="text-mute" style="font-size:12px">${t('No transactions', 'لا توجد عمليات')}</span>`;
+
+    $('#txn-tbody').innerHTML = rows.length ? rows.map(tx => `
+      <tr>
+        <td class="text-dim" style="white-space:nowrap">${tx.date ? fmtDate(tx.date) : '—'}</td>
+        <td><span class="badge" style="font-size:9px">${escapeHtml(tx.category)}</span></td>
+        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(tx.customer)}">${escapeHtml(tx.customer)}</td>
+        <td class="text-mute" style="font-size:12px;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(tx.sport)}">${escapeHtml(tx.sport)}</td>
+        <td class="text-mute" style="font-size:12px">${escapeHtml(tx.coach)}</td>
+        <td>${tx.method ? `<span class="badge ${tx.method === 'card' ? 'blue' : tx.method === 'transfer' ? 'cyan' : ''}">${escapeHtml(tx.method)}</span>` : '—'}</td>
+        <td class="text-mute font-mono" style="font-size:11px">${escapeHtml(tx.ref)}</td>
+        <td class="text-right num font-bold">${fmt(tx.amount)}</td>
+      </tr>`).join('') : `<tr><td colspan="8" class="empty"><div class="empty-icon">🧾</div>${t('No transactions match', 'لا توجد عمليات مطابقة')}</td></tr>`;
+
+    $('#txn-tfoot').innerHTML = `<tr style="border-top:2px solid var(--border);font-weight:800">
+      <td colspan="7">${t('Total', 'الإجمالي')} · ${txns.length} ${t('transactions', 'عملية')}</td>
+      <td class="text-right num" style="color:var(--green)">${fmt(grand)} QAR</td>
+    </tr>`;
+    $('#txn-count').textContent = `${txns.length} ${t('transactions', 'عملية')} · ${fmt(grand)} QAR`;
+    $('#txn-pagination').innerHTML = paginationBar(pg, txns.length, 'txn');
+    bindPagination('txn', pg, txns.length, refresh);
+    // custom range visibility
+    const cr = $('#txn-customrange');
+    if (cr) cr.style.display = st.preset === 'custom' ? 'flex' : 'none';
+  }
+
+  window._txnExportCSV = () => {
+    const { txns, grand } = build();
+    const head = ['Date', 'Category', 'Customer', 'Sport', 'Coach', 'Method', 'Ref', 'Amount'];
+    const lines = [head.join(',')];
+    for (const tx of txns) lines.push([tx.date, tx.category, tx.customer, tx.sport, tx.coach, tx.method, tx.ref, tx.amount].map(c => `"${String(c).replace(/"/g, '""')}"`).join(','));
+    lines.push(['', '', '', '', '', '', 'TOTAL', grand].map(c => `"${c}"`).join(','));
+    downloadFile(`transactions-${TODAY}.csv`, lines.join('\n'), 'text/csv');
+    toast('Exported transactions.csv');
+  };
+
+  const presetOpt = (v, label) => `<option value="${v}" ${st.preset === v ? 'selected' : ''}>${label}</option>`;
+  const coaches = (state.coaches || []).filter(c => !c.deleted);
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🧾 ${t('Transactions', 'العمليات')}</h1>
+        <div class="subtitle"><span id="txn-count">${t('Loading…', 'جارٍ التحميل…')}</span></div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="_txnExportCSV()">⬇ ${t('Export CSV', 'تصدير CSV')}</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="filter-bar" style="flex-wrap:wrap;gap:8px">
+        <select id="txn-preset" class="btn ghost">
+          ${presetOpt('today', t('Today', 'اليوم'))}
+          ${presetOpt('yesterday', t('Yesterday', 'أمس'))}
+          ${presetOpt('this_week', t('This week', 'هذا الأسبوع'))}
+          ${presetOpt('this_month', t('This month', 'هذا الشهر'))}
+          ${presetOpt('last_month', t('Last month', 'الشهر الماضي'))}
+          ${presetOpt('this_year', t('This year', 'هذا العام'))}
+          ${presetOpt('all', t('All time', 'كل الوقت'))}
+          ${presetOpt('custom', t('Custom range', 'فترة مخصصة'))}
+        </select>
+        <div id="txn-customrange" style="display:${st.preset === 'custom' ? 'flex' : 'none'};gap:6px;align-items:center">
+          <input id="txn-from" type="date" class="btn ghost" value="${st.from}" />
+          <span class="text-mute">→</span>
+          <input id="txn-to" type="date" class="btn ghost" value="${st.to}" />
+        </div>
+        <select id="txn-cat" class="btn ghost">
+          <option value="all">${t('All categories', 'كل الفئات')}</option>
+          ${[...new Set((state.invoices || []).map(i => i.category || 'Membership'))].sort().map(c => `<option value="${escapeHtml(c)}" ${st.category === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+        </select>
+        <select id="txn-method" class="btn ghost">
+          <option value="all">${t('All methods', 'كل الطرق')}</option>
+          <option value="cash" ${st.method === 'cash' ? 'selected' : ''}>${t('Cash', 'نقداً')}</option>
+          <option value="card" ${st.method === 'card' ? 'selected' : ''}>${t('Card', 'بطاقة')}</option>
+          <option value="transfer" ${st.method === 'transfer' ? 'selected' : ''}>${t('Transfer', 'تحويل')}</option>
+        </select>
+        <select id="txn-coach" class="btn ghost">
+          <option value="all">${t('All coaches', 'كل المدربين')}</option>
+          ${coaches.map(c => `<option value="${c.id}" ${String(st.coachId) === String(c.id) ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+        <div class="search"><input id="txn-search" type="text" placeholder="${t('Search customer / ref / sport…', 'بحث عميل / مرجع / رياضة…')}" value="${escapeHtml(st.search)}" /></div>
+      </div>
+      <div id="txn-summary" style="display:flex;flex-wrap:wrap;gap:6px;padding:0 2px 12px"></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>${t('Date', 'التاريخ')}</th><th>${t('Category', 'الفئة')}</th><th>${t('Customer', 'العميل')}</th><th>${t('Sport', 'الرياضة')}</th><th>${t('Coach', 'المدرب')}</th><th>${t('Method', 'الطريقة')}</th><th>${t('Ref', 'مرجع')}</th><th class="text-right">${t('Amount', 'المبلغ')}</th></tr></thead>
+          <tbody id="txn-tbody"></tbody>
+          <tfoot id="txn-tfoot"></tfoot>
+        </table>
+      </div>
+      <div id="txn-pagination"></div>
+    </div>
+  `;
+  $('#txn-preset').addEventListener('change', e => { st.preset = e.target.value; pg.page = 1; refresh(); });
+  $('#txn-from')?.addEventListener('change', e => { st.from = e.target.value; pg.page = 1; refresh(); });
+  $('#txn-to')?.addEventListener('change', e => { st.to = e.target.value; pg.page = 1; refresh(); });
+  $('#txn-cat').addEventListener('change', e => { st.category = e.target.value; pg.page = 1; refresh(); });
+  $('#txn-method').addEventListener('change', e => { st.method = e.target.value; pg.page = 1; refresh(); });
+  $('#txn-coach').addEventListener('change', e => { st.coachId = e.target.value; pg.page = 1; refresh(); });
+  $('#txn-search').addEventListener('input', e => { st.search = e.target.value; pg.page = 1; refresh(); });
+  refresh();
 };
