@@ -870,6 +870,18 @@ PAGES.members = (main) => {
     });
   };
 
+  // When the "similar names" filter is on, pre-compute the set of member IDs
+  // that have at least one same/near-identical-named twin (likely duplicates).
+  const dupNameInfo = filter.dupNames
+    ? (() => {
+        const groups = findSimilarNameMembers(state.members.filter(m => !m.deleted));
+        const ids = new Set();
+        const reasonById = {};
+        for (const g of groups) for (const m of g.members) { ids.add(m.id); reasonById[m.id] = g.reason; }
+        return { ids, reasonById, groupCount: groups.length };
+      })()
+    : null;
+
   function applyFilter(f = filter) {
     return state.members.filter(m => {
       // Archived (soft-deleted) members show only when 'Archived' is selected.
@@ -877,6 +889,8 @@ PAGES.members = (main) => {
       const statusSel = (f.statuses || []).filter(s => s !== 'Archived');
       if (m.deleted && !wantArchived) return false;
       if (!m.deleted && wantArchived && statusSel.length === 0) return false; // only Archived chosen
+      // Similar-name filter: keep only members flagged as a likely duplicate.
+      if (f.dupNames && dupNameInfo && !dupNameInfo.ids.has(m.id)) return false;
       if (f.search) {
         const raw = f.search.trim();
         const q = raw.toLowerCase();
@@ -1010,6 +1024,9 @@ PAGES.members = (main) => {
       if (cnt) cnt.textContent = String(selected.size);
       const bar = $('#members-bulkbar');
       if (bar) bar.style.display = selected.size ? 'flex' : 'none';
+      // "Add to family" only makes sense for 2+ members — hide it for a single selection.
+      const famBtn = $('#members-bulk-family');
+      if (famBtn) famBtn.style.display = selected.size >= 2 ? '' : 'none';
       const pageIds = rows.map(m => m.id);
       const sa = $('#members-select-all');
       if (sa) {
@@ -1090,7 +1107,8 @@ PAGES.members = (main) => {
       <div id="members-bulkbar" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px">
         <span style="font-size:16px">☑️</span>
         <div style="flex:1;font-size:13px;font-weight:600"><span id="members-bulk-count">0</span> selected</div>
-        ${isViewerRole() ? '' : `<button class="btn ghost sm" id="members-bulk-export" title="Export the selected members to CSV">📥 Export selected</button>
+        ${isViewerRole() ? '' : `<button class="btn ghost sm" id="members-bulk-family" title="Group the selected members under one family/household">👨‍👩‍👧 Add to family</button>
+        <button class="btn ghost sm" id="members-bulk-export" title="Export the selected members to CSV">📥 Export selected</button>
         <button class="btn ghost sm" id="members-bulk-archive" title="Archive (soft-delete) the selected members" style="color:var(--red)">🗑 Archive selected</button>`}
         <button class="btn ghost sm" id="members-bulk-clear">Clear</button>
       </div>
@@ -1148,7 +1166,9 @@ PAGES.members = (main) => {
           <option value="birthdate" ${filter.incomplete === 'birthdate' ? 'selected' : ''}>⚠️ No birthdate</option>
           <option value="nationality" ${filter.incomplete === 'nationality' ? 'selected' : ''}>⚠️ No nationality</option>
         </select>
+        <button type="button" id="filter-dupnames" class="btn ${filter.dupNames ? 'primary' : 'ghost'}" title="Find members whose names are the same or very similar (likely duplicates)">🔁 ${filter.dupNames ? 'Similar names ✓' : 'Similar names'}</button>
       </div>
+      ${filter.dupNames && dupNameInfo ? `<div class="text-mute" style="font-size:12px;padding:0 2px 10px">${t('Showing members with same / near-identical names', 'عرض الأعضاء ذوي الأسماء المتطابقة أو المتشابهة')} · ${dupNameInfo.groupCount} ${t('groups', 'مجموعة')} · ${dupNameInfo.ids.size} ${t('members', 'عضو')}. ${t('Open each to compare and merge/archive duplicates.', 'افتح كل عضو للمقارنة ودمج/أرشفة المكررين.')}</div>` : ''}
 
       <div class="table-wrap">
         <table>
@@ -1192,6 +1212,7 @@ PAGES.members = (main) => {
   wireMultiFilter('coaches', 'filter-coach-cb', 'filter-coach-btn', 'filter-coach-menu', 'filter-coach-label', 'All coaches', v => coachName(parseInt(v)));
   wireMultiFilter('nationalities', 'filter-nat-cb', 'filter-nat-btn', 'filter-nat-menu', 'filter-nat-label', 'All nationalities', v => v);
   $('#filter-incomplete').addEventListener('change', e => { filter.incomplete = e.target.value; pg.page = 1; refreshAndSave(); });
+  $('#filter-dupnames')?.addEventListener('click', () => { filter.dupNames = !filter.dupNames; pg.page = 1; refreshAndSave(); });
   $('#add-member').addEventListener('click', () => addMember());
   $('#export-members').addEventListener('click', () => exportMembersChoice());
   const colBtn = $('#member-columns'); if (colBtn) colBtn.addEventListener('click', () => openMemberColumns());
@@ -1210,6 +1231,11 @@ PAGES.members = (main) => {
   $('#members-bulk-clear').addEventListener('click', () => { selected.clear(); refresh(); });
   $('#members-bulk-export')?.addEventListener('click', () => {
     exportMembersCSV(state.members.filter(m => selected.has(m.id)));
+  });
+  $('#members-bulk-family')?.addEventListener('click', () => {
+    const ids = state.members.filter(m => selected.has(m.id) && !m.deleted).map(m => m.id);
+    if (!ids.length) { toast('No active members selected', 'error'); return; }
+    assignFamilyBulk(ids);
   });
   $('#members-bulk-archive')?.addEventListener('click', () => {
     const list = state.members.filter(m => selected.has(m.id) && !m.deleted);
@@ -1599,12 +1625,24 @@ function buildMemberDuplicateStub(src, newId) {
     'id', 'subscriptions', 'attendance', 'attendanceGrid', 'expiryDate', 'startDate',
     'validity', 'renewals', 'sportSwitches', 'payments', 'paymentHistory',
     'currentFreezeUntil', 'freeze', 'freezes', 'freezeHistory', 'deleted', 'deletedAt',
-    'deletedReason', 'lastRemindedAt', 'createdAt', 'updatedAt', 'recentAt',
+    'deletedReason', 'lastRemindedAt', 'reminderDates', 'createdAt', 'updatedAt', 'recentAt',
+    // QID is a personal national ID — must NOT carry to a sibling (would block on
+    // the QID-duplicate guard, and it isn't theirs).
+    'qid',
   ];
   EXCLUDE.forEach(k => { delete clone[k]; });
   clone.id = newId;
   clone.status = 'Active';
-  clone._duplicatedFrom = src.name || null;
+  // A sibling shares the family phone + plan but is a DIFFERENT person: clear the
+  // name and birthdate so the admin must enter the sibling's own (and so the
+  // copy doesn't trip the same-name+same-phone duplicate guard on save). All the
+  // shared data — phone, second phone, nationality, level, sports, coaches,
+  // classes, prices — is kept.
+  clone.name = '';
+  clone.nameArabic = '';
+  clone.birthdate = '';
+  clone.gender = '';
+  clone._duplicatedFrom = src.name || src.nameArabic || null;
   return clone;
 }
 
@@ -1616,35 +1654,52 @@ window.duplicateMember = function(id) {
   if (!src) return;
   closeModal();
   showMemberForm(buildMemberDuplicateStub(src, nextId(state.members)));
-  toast(`Copied all details from ${src.name || 'member'} — update the name/QID, then save to register the sibling`);
+  toast(`Copied ${src.name || 'member'}'s phone, plan & sports — now enter the sibling's name and birthdate, then save`);
 };
 
 window.freezeMember = function(id) {
   const m = state.members.find(x => x.id === id);
   if (!m) return;
+  const allow = freezeAllowance(m);
   const isFrozen = m.currentFreezeUntil && TODAY <= m.currentFreezeUntil;
   if (isFrozen) {
     showModal({
       title: `Already Frozen: ${escapeHtml(m.name)}`,
       body: `<div style="text-align:center;padding:20px"><div style="font-size:40px;margin-bottom:10px">❄️</div>
         <p>${escapeHtml(m.name)} is already frozen until <b>${fmtDate(m.currentFreezeUntil)}</b>.</p>
-        <p class="text-mute" style="font-size:12px">You can end the freeze early using the Unfreeze button on the profile, or wait until it ends automatically.</p></div>`,
+        <p class="text-mute" style="font-size:12px">End it early with Unfreeze on the profile, or wait until it ends — then you can freeze again if any allowance remains (${allow.remainingDays} of ${allow.allowanceDays} days left).</p></div>`,
       actions: [{ label: 'Close', primary: true, onclick: closeModal }],
     });
     return;
   }
+  if (allow.remainingDays <= 0) {
+    showModal({
+      title: `No freeze allowance left: ${escapeHtml(m.name)}`,
+      body: `<div style="text-align:center;padding:20px"><div style="font-size:40px;margin-bottom:10px">⛔</div>
+        <p>${escapeHtml(m.name)} has used all <b>${allow.allowanceDays} days</b> of freeze allowance for this membership cycle${allow.freezeCount ? ` (across ${allow.freezeCount} freeze${allow.freezeCount === 1 ? '' : 's'})` : ''}.</p>
+        <p class="text-mute" style="font-size:12px">The allowance is one week per month of membership and resets when they renew.</p></div>`,
+      actions: [{ label: 'Close', primary: true, onclick: closeModal }],
+    });
+    return;
+  }
+  const defaultDays = Math.min(7, allow.remainingDays);
+  const presetDays = [1, 3, 7, 14, 30].filter(d => d <= allow.remainingDays);
   showModal({
     title: `❄️ Freeze membership: ${escapeHtml(m.name)}`,
     body: `
       <div style="display:flex;flex-direction:column;gap:14px">
-        <div class="text-mute" style="font-size:13px">A freeze pauses the membership for the chosen number of days. The expiry date will automatically shift forward by the same number of days.</div>
+        <div class="text-mute" style="font-size:13px">A freeze pauses the membership for the chosen number of days. The expiry date shifts forward by the same number of days. Allowance is <b>one week per month</b> of membership, and can be split across several freezes.</div>
+        <div style="background:rgba(91,141,239,.08);border:1px solid rgba(91,141,239,.25);border-radius:8px;padding:10px;font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px">
+          <span>❄️ ${t('Freeze allowance', 'رصيد التجميد')}: <b>${allow.allowanceDays} ${t('days', 'يوم')}</b> (${allow.months} ${t('month(s)', 'شهر')} × 7)</span>
+          <span>${t('Used', 'مستخدم')}: <b>${allow.usedDays}</b>${allow.freezeCount ? ` (${allow.freezeCount}×)` : ''} · ${t('Remaining', 'متبقٍ')}: <b style="color:var(--blue)">${allow.remainingDays} ${t('days', 'يوم')}</b></span>
+        </div>
         <div>
-          <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px">Freeze duration</label>
+          <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px">Freeze duration <span class="text-mute" style="font-weight:400">(max ${allow.remainingDays} days)</span></label>
           <div id="freeze-presets" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
-            ${[1,3,7,14,30,60,90].map(d => `<button type="button" class="btn ghost sm freeze-preset" data-days="${d}" style="padding:6px 14px;font-size:12px">${d} day${d===1?'':'s'}</button>`).join('')}
+            ${presetDays.map(d => `<button type="button" class="btn ghost sm freeze-preset" data-days="${d}" style="padding:6px 14px;font-size:12px">${d} day${d===1?'':'s'}</button>`).join('')}
           </div>
           <div style="display:flex;align-items:center;gap:10px">
-            <input type="number" id="freeze-days" min="1" max="365" value="7" style="flex:1;padding:10px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)" />
+            <input type="number" id="freeze-days" min="1" max="${allow.remainingDays}" value="${defaultDays}" style="flex:1;padding:10px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)" />
             <span class="text-mute" style="font-size:12px">days</span>
           </div>
         </div>
@@ -1663,11 +1718,11 @@ window.freezeMember = function(id) {
           </div>
           <div style="display:flex;justify-content:space-between;margin-bottom:4px">
             <span class="text-mute">Resume on:</span>
-            <span class="font-bold" id="freeze-resume">${fmtDate(addDays(TODAY, 7))}</span>
+            <span class="font-bold" id="freeze-resume">${fmtDate(addDays(TODAY, defaultDays))}</span>
           </div>
           <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:space-between">
             <span class="text-mute">New expiry:</span>
-            <span class="font-bold" style="color:var(--blue)" id="freeze-new-expiry">${m.expiryDate ? fmtDate(addDays(m.expiryDate, 7)) : '—'}</span>
+            <span class="font-bold" style="color:var(--blue)" id="freeze-new-expiry">${m.expiryDate ? fmtDate(addDays(m.expiryDate, defaultDays)) : '—'}</span>
           </div>
         </div>
       </div>
@@ -1677,6 +1732,7 @@ window.freezeMember = function(id) {
       { label: '❄️ Apply Freeze', primary: true, onclick: () => {
         const days = parseInt(document.getElementById('freeze-days').value);
         if (!days || days < 1) { toast('Enter a duration of at least 1 day', 'error'); return; }
+        if (days > allow.remainingDays) { toast(`Only ${allow.remainingDays} freeze day${allow.remainingDays === 1 ? '' : 's'} remaining for this membership cycle.`, 'error'); return; }
         const reason = document.getElementById('freeze-reason').value.trim();
         applyFreeze(m, days, reason);
         save();
@@ -1871,7 +1927,7 @@ function enrollRowHtml(row, idx) {
            ${campPrices.map(p => `<option value="${escapeHtml(p.label)}" ${matchedLabel === p.label ? 'selected' : ''}>${escapeHtml(p.label)} · ${fmt(p.price)} QAR</option>`).join('')}
          </select>
        </div>`
-    : `<div class="field" style="margin:0"><label style="font-size:10px">Classes <span style="color:var(--accent)">*</span></label><input data-en="classes" data-i="${idx}" type="number" min="0" step="1" value="${row.classes ?? ''}" placeholder="6" style="${classesStyle}" /></div>`;
+    : `<div class="field" style="margin:0"><label style="font-size:10px">Classes <span style="color:var(--accent)">*</span></label><input data-en="classes" data-i="${idx}" type="number" min="0" max="${MAX_CLASSES_HARD}" step="1" value="${row.classes ?? ''}" placeholder="6" style="${classesStyle}" /></div>`;
 
   // For Summer Camp: no coach assignment, no commission. Show a disabled
   // placeholder so the row layout stays aligned.
@@ -2129,6 +2185,7 @@ window.removeEnrollmentMistake = function(memberId, sport) {
 };
 
 function showMemberForm(m) {
+  window._classesConfirmed = false;   // reset fat-finger confirmation per form open
   const isNew = !state.members.find(x => x.id === m.id);
   // Make memberId available to handlers (e.g. withdraw button) defined in
   // enrollRowHtml — they need to know which member is being edited.
@@ -2218,7 +2275,7 @@ function showMemberForm(m) {
   showModal({
     title: isNew ? (m._duplicatedFrom ? `Add Sibling (copied from ${escapeHtml(m._duplicatedFrom)})` : 'Add Member') : 'Edit Member',
     body: `
-      ${m._duplicatedFrom ? `<div style="margin-bottom:12px;padding:9px 12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px;font-size:12px;color:var(--text-dim)">⧉ All details copied from <b>${escapeHtml(m._duplicatedFrom)}</b>. Update this sibling's <b>name</b>, <b>QID</b> and <b>birthdate</b>. Nothing financial or attendance was copied — saving registers them fresh.</div>` : ''}
+      ${m._duplicatedFrom ? `<div style="margin-bottom:12px;padding:9px 12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px;font-size:12px;color:var(--text-dim)">⧉ Copied the family phone, nationality, level and all sports/coaches/prices from <b>${escapeHtml(m._duplicatedFrom)}</b>. Enter this sibling's own <b>name</b> and <b>birthdate</b> (and QID if any). Nothing financial or attendance was copied — saving registers them fresh on the shared phone.</div>` : ''}
       <div style="margin-bottom:14px;padding:10px 12px;background:rgba(245,158,11,.08);border:1px dashed var(--accent-2);border-radius:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <button type="button" class="btn ghost sm" id="id-scan-btn" style="color:var(--accent-2);border:1px solid var(--accent-2);white-space:nowrap">📷 Scan Qatar ID</button>
         <input type="file" id="id-scan-file" accept="image/*" capture="environment" style="display:none" />
@@ -2443,6 +2500,20 @@ function showMemberForm(m) {
           return true;
         };
         const completeRows = allRows.filter(rowComplete);
+        // Guard against fat-finger Classes entries (e.g. "2026"). Hard-reject
+        // anything absurd; ask for confirmation on merely-unusual counts.
+        const badRow = completeRows.find(r => (parseInt(r.classes) || 0) > MAX_CLASSES_HARD);
+        if (badRow) {
+          toast(`"${badRow.sport}" has ${parseInt(badRow.classes)} classes — that looks like a typo. Please enter a realistic number (max ${MAX_CLASSES_HARD}).`, 'error');
+          return;
+        }
+        const highRow = completeRows.find(r => (parseInt(r.classes) || 0) > MAX_CLASSES_SOFT);
+        if (highRow && !window._classesConfirmed) {
+          if (!confirm(`${highRow.sport} has ${parseInt(highRow.classes)} classes — that's unusually high. Most plans are 4–12 classes.\n\nSave it as entered?`)) {
+            return;
+          }
+          window._classesConfirmed = true;   // don't re-ask within this save attempt
+        }
         const partialRows = allRows.filter(r =>
           (r.sport || r.coachId || r.classes || r.price) && !rowComplete(r)
         );
@@ -2693,42 +2764,72 @@ function showMemberForm(m) {
           // The invoice/payment date, however, is when cash is collected = today
           // (cash-basis revenue), which may differ from a future start date.
           const startOf = (e) => enrollmentStartDate(e, existing);
-          const earliestStart = newSubs.map(startOf).sort()[0];   // earliest new-sport start (window)
           const payDate = TODAY;                                  // payment/invoice date
-          const startDate = payDate;                              // invoice date field
           const monthKey = payDate.slice(0, 7);
           const totalNew = newSubs.reduce((s, e) => s + e.price, 0);
-          const ref = nextInvoiceRef();
           const sportList = newSubs.map(e => e.sport).join(', ');
           const sportListLabel = sportListWithDuration(newSubs) || sportList;
           const primaryNew = newSubs[0];
+          const newLines = newSubs.map(e => ({
+            sport: e.sport,
+            coach: coachName(e.coachId),
+            coachId: e.coachId,
+            classes: e.classes,
+            price: e.price,
+            durationLabel: e.durationLabel || null,
+          }));
 
-          state.invoices.push({
-            id: nextId(state.invoices),
-            date: startDate,
-            description: `${existing.name} — ${sportListLabel} added`,
-            amount: totalNew,
-            amountPaid: totalNew,
-            payments: [{ date: startDate, month: monthKey, amount: totalNew, method: 'cash' }],
-            method: 'cash',
-            month: monthKey,
-            ref,
-            sport: sportListLabel,
-            coach: coachName(primaryNew.coachId),
-            coachId: primaryNew.coachId,
-            customerId: existing.id,
-            customerName: existing.name,
-            category: 'Membership',
-            activityType: 'subscription',
-            lineItems: newSubs.map(e => ({
-              sport: e.sport,
-              coach: coachName(e.coachId),
-              coachId: e.coachId,
-              classes: e.classes,
-              price: e.price,
-              durationLabel: e.durationLabel || null,
-            })),
-          });
+          // ONE invoice per member: merge the added sport(s) into the member's
+          // existing membership invoice rather than creating a second one. The
+          // money is added as a fresh PAYMENT dated today, so revenue is still
+          // counted in the month it was actually collected even though the
+          // invoice document stays single.
+          const existingInv = (state.invoices || [])
+            .filter(iv => !iv.deleted && iv.customerId === existing.id
+              && (iv.category || 'Membership') === 'Membership' && !iv.switchCredit && (iv.amount || 0) >= 0)
+            .sort((a, b) => (a.date || '').localeCompare(b.date || ''))[0];   // oldest = the member's main invoice
+
+          let ref;
+          if (existingInv) {
+            ref = existingInv.ref;
+            existingInv.lineItems = [...(existingInv.lineItems || []), ...newLines];
+            existingInv.amount = (existingInv.amount || 0) + totalNew;
+            if (!Array.isArray(existingInv.payments)) {
+              // Back-fill a payment record for any previously-paid amount.
+              const prior = existingInv.amountPaid != null ? existingInv.amountPaid : (existingInv.amount - totalNew);
+              existingInv.payments = prior > 0 ? [{ date: existingInv.date || payDate, month: existingInv.month || (existingInv.date || payDate).slice(0, 7), amount: prior, method: existingInv.method || 'cash' }] : [];
+            }
+            existingInv.payments.push({ date: payDate, month: monthKey, amount: totalNew, method: 'cash' });
+            existingInv.amountPaid = existingInv.payments.reduce((s, p) => s + (p.amount || 0), 0);
+            // Refresh the headline sport label + description to include all sports.
+            const allLabel = sportListWithDuration(existingInv.lineItems) || existingInv.lineItems.map(li => li.sport).join(', ');
+            existingInv.sport = allLabel;
+            existingInv.description = `${existing.name} — ${allLabel} subscription`;
+            if (typeof audit === 'function') audit('invoice.merge_sport', 'invoice:' + existingInv.id,
+              `Merged ${sportList} into ${ref} (+${fmt(totalNew)})`, { memberId: existing.id });
+          } else {
+            // Fallback: member has no membership invoice yet → create one.
+            ref = nextInvoiceRef();
+            state.invoices.push({
+              id: nextId(state.invoices),
+              date: payDate,
+              description: `${existing.name} — ${sportListLabel} subscription`,
+              amount: totalNew,
+              amountPaid: totalNew,
+              payments: [{ date: payDate, month: monthKey, amount: totalNew, method: 'cash' }],
+              method: 'cash',
+              month: monthKey,
+              ref,
+              sport: sportListLabel,
+              coach: coachName(primaryNew.coachId),
+              coachId: primaryNew.coachId,
+              customerId: existing.id,
+              customerName: existing.name,
+              category: 'Membership',
+              activityType: 'subscription',
+              lineItems: newLines,
+            });
+          }
 
           // Push subscription rows for each new sport. Summer Camp uses
           // its own duration; others share the form's validity.
@@ -2773,6 +2874,13 @@ function showMemberForm(m) {
         const subEnds = subs.map(s => s.end).filter(Boolean).sort();
         if (subEnds.length) data.expiryDate = subEnds[subEnds.length - 1];
         state.members[idx] = Object.assign({}, existing, data);
+        // Keep the member's invoice snapshot in sync when their details change —
+        // no new invoice, just update the existing linked ones' name/phone.
+        for (const iv of (state.invoices || [])) {
+          if (iv.deleted || iv.customerId !== data.id) continue;
+          iv.customerName = data.name;
+          if (data.phone) iv.customerPhone = data.phone;
+        }
         pushRecentMember(data.id);
         audit('member.update', `member:${data.id}`,
           `Updated ${data.name || data.nameArabic}`,
@@ -3478,6 +3586,69 @@ PAGES.campschedule = (main) => {
 };
 
 // ─── Family / household ──────────────────────────────────────────────────────
+// Assign MANY selected members to one household at once (existing or new). Great
+// for grouping siblings who share a family phone.
+window.assignFamilyBulk = function(memberIds) {
+  const ids = (memberIds || []).filter(id => state.members.some(m => m.id === id && !m.deleted));
+  if (!ids.length) { toast(t('No members selected', 'لم يتم اختيار أعضاء'), 'error'); return; }
+  const members = ids.map(id => state.members.find(m => m.id === id));
+  const fams = (state.families || []).slice().sort((a, b) => familyName(a.id).localeCompare(familyName(b.id)));
+  // Suggest a family name + phone from the selection (most common phone, a shared surname).
+  const phones = members.map(m => m.phone).filter(Boolean);
+  const commonPhone = phones.sort((a, b) =>
+    phones.filter(p => p === b).length - phones.filter(p => p === a).length)[0] || '';
+  const surnameOf = (n) => { const parts = String(n || '').trim().split(/\s+/); return parts.length > 1 ? parts[parts.length - 1] : ''; };
+  const surnames = members.map(m => surnameOf(m.name)).filter(Boolean);
+  const commonSurname = surnames.sort((a, b) =>
+    surnames.filter(s => s === b).length - surnames.filter(s => s === a).length)[0] || '';
+  const suggestName = commonSurname ? `${commonSurname} family` : '';
+
+  showModal({
+    title: '👨‍👩‍👧 ' + t('Add to family', 'إضافة إلى عائلة'),
+    body: `
+      <div style="font-size:13px;margin-bottom:12px">${t('Group these', 'اجمع هؤلاء')} <b>${members.length}</b> ${t('members under one household:', 'الأعضاء في عائلة واحدة:')}</div>
+      <div style="max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:12px">
+        ${members.map(m => `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:3px 0">
+          <span>${escapeHtml(m.name)}${m.nameArabic ? ` <span class="text-mute" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}</span>
+          <span class="text-mute">${m.familyId ? '↪ ' + escapeHtml(familyName(m.familyId)) : (m.phone ? escapeHtml(String(m.phone)) : '')}</span>
+        </div>`).join('')}
+      </div>
+      <div class="field"><label>${t('Add to existing household', 'إضافة إلى عائلة قائمة')}</label>
+        <select id="famb-pick">
+          <option value="">— ${t('select', 'اختر')} —</option>
+          ${fams.map(f => `<option value="${f.id}">${escapeHtml(familyName(f.id))} · ${familyMembers(f.id).length} ${t('members', 'عضو')}</option>`).join('')}
+        </select>
+      </div>
+      <div style="text-align:center;color:var(--text-mute);font-size:12px;margin:6px 0">— ${t('or', 'أو')} —</div>
+      <div class="field"><label>${t('Create a new household', 'إنشاء عائلة جديدة')}</label>
+        <input id="famb-new-name" placeholder="${t('e.g. Al-Marri family', 'مثال: عائلة المري')}" value="${escapeHtml(suggestName)}" />
+        <input id="famb-new-phone" placeholder="${t('Shared contact phone (optional)', 'هاتف التواصل المشترك (اختياري)')}" style="margin-top:6px" value="${escapeHtml(commonPhone)}" />
+      </div>`,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: t('Add to family', 'إضافة'), class: 'btn primary', onclick: () => {
+        const pick = $('#famb-pick').value;
+        const newName = $('#famb-new-name').value.trim();
+        const newPhone = $('#famb-new-phone').value.trim();
+        let famId;
+        if (newName) {
+          const fam = { id: nextId(state.families), name: newName, phone: newPhone || null, createdAt: new Date().toISOString() };
+          state.families.push(fam);
+          famId = fam.id;
+        } else if (pick) {
+          famId = parseInt(pick);
+        } else {
+          toast(t('Pick a household or enter a new name', 'اختر عائلة أو أدخل اسماً جديداً'), 'error'); return;
+        }
+        for (const m of members) m.familyId = famId;
+        if (typeof audit === 'function') audit('family.bulk_assign', 'family:' + famId, `Added ${members.length} members to ${familyName(famId)}`, { ids });
+        save(); closeModal(); render();
+        toast(`${members.length} ${t('members added to', 'عضو أُضيف إلى')} ${familyName(famId)}`);
+      } },
+    ],
+  });
+};
+
 // Assign a member to a household (existing or new), or remove from one.
 window.assignFamily = function(memberId) {
   const m = state.members.find(x => x.id === memberId);
@@ -3597,40 +3768,73 @@ PAGES.families = (main) => {
   const totalHouseholds = rows.length;
   const totalKids = rows.reduce((s, x) => s + x.members.length, 0);
   const totalOut = rows.reduce((s, x) => s + familyOutstanding(x.f.id), 0);
+  const totalPaid = rows.reduce((s, x) => s + familyPaidTotal(x.f.id), 0);
 
   const cards = rows.length ? rows.map(({ f, members }) => {
     const out = familyOutstanding(f.id);
+    const paid = familyPaidTotal(f.id);
     const phone = familyContactPhone(f.id);
-    const expiringSoon = members.filter(m => { const d = m.expiryDate ? daysUntil(m.expiryDate) : null; return d != null && d <= 7; }).length;
-    const chips = members.map(m => `<span class="badge ${memberStatus(m).toLowerCase()}" style="font-size:10px;margin:2px" title="${escapeHtml(memberStatus(m))}">${escapeHtml(m.name)}</span>`).join(' ');
+    const expiringSoon = members.filter(m => { const d = m.expiryDate ? daysUntil(m.expiryDate) : null; return d != null && d >= 0 && d <= 7; }).length;
+    // Per-member breakdown rows: name, sport(s), status, paid, outstanding.
+    const memberRows = members.map(m => {
+      const sports = [m.sport, ...((m.enrollments || []).map(e => e.sport))].filter(Boolean);
+      const sportStr = [...new Set(sports)].join(', ') || '—';
+      const mPaid = memberPaidTotal(m.id);
+      const mOut = memberOutstanding(m.id);
+      const stt = memberStatus(m);
+      return `<tr style="cursor:pointer" onclick="viewMember(${m.id})">
+        <td style="padding:6px 8px">
+          <div style="font-weight:600;font-size:13px">${escapeHtml(m.name)}${m.nameArabic ? ` <span class="text-mute" style="font-weight:400" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}</div>
+          ${m.phone ? `<div class="text-mute" style="font-size:10px">${escapeHtml(String(m.phone))}</div>` : ''}
+        </td>
+        <td style="padding:6px 8px;font-size:12px" class="text-mute">${escapeHtml(sportStr)}</td>
+        <td style="padding:6px 8px"><span class="badge ${stt.toLowerCase()}" style="font-size:9px">${escapeHtml(stt)}</span></td>
+        <td style="padding:6px 8px;text-align:right" class="num">${fmt(mPaid)}</td>
+        <td style="padding:6px 8px;text-align:right" class="num" style="color:${mOut > 0 ? 'var(--red)' : 'var(--text-mute)'}">${mOut > 0 ? fmt(mOut) : '—'}</td>
+      </tr>`;
+    }).join('');
     return `<div class="card" style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:10px">
         <div style="flex:1;min-width:200px">
           <div style="font-weight:800;font-size:16px;cursor:pointer" onclick="viewFamily(${f.id})">👨‍👩‍👧 ${escapeHtml(familyName(f.id))}</div>
-          <div style="margin-top:6px">${chips}</div>
+          <div class="text-mute" style="font-size:12px;margin-top:2px">${members.length} ${t('members', 'عضو')}${expiringSoon ? ` · <span style="color:var(--accent-2)">${expiringSoon} ${t('expiring soon', 'قرب الانتهاء')}</span>` : ''}${phone ? ` · ${escapeHtml(String(phone))}` : ''}</div>
         </div>
-        <div style="text-align:right">
-          <div style="font-size:12px;color:var(--text-mute)">${members.length} ${t('members', 'عضو')}${expiringSoon ? ` · <span style="color:var(--accent-2)">${expiringSoon} ${t('expiring', 'قرب الانتهاء')}</span>` : ''}</div>
-          <div style="font-weight:700;color:${out > 0 ? 'var(--red)' : 'var(--green)'};margin-top:2px">${t('Balance', 'الرصيد')}: ${fmt(out)}</div>
-          <div style="margin-top:6px;display:flex;gap:6px;justify-content:flex-end">
-            ${phone && isRealPhone(phone) ? `<a class="btn ghost sm" href="${waLink(phone)}" target="_blank" title="WhatsApp the family">💬 ${t('Message', 'مراسلة')}</a>` : ''}
-            <button class="btn ghost sm" onclick="viewFamily(${f.id})">👁 ${t('View', 'عرض')}</button>
-            <button class="btn ghost sm" onclick="editFamily(${f.id})" title="${t('Rename / edit', 'تعديل الاسم')}">✏️</button>
-          </div>
+        <div style="display:flex;gap:6px;align-items:flex-start">
+          ${phone && isRealPhone(phone) ? `<a class="btn ghost sm" href="${waLink(phone)}" target="_blank" title="WhatsApp the family">💬</a>` : ''}
+          <button class="btn ghost sm" onclick="viewFamily(${f.id})">👁 ${t('View', 'عرض')}</button>
+          <button class="btn ghost sm" onclick="editFamily(${f.id})" title="${t('Rename / edit', 'تعديل الاسم')}">✏️</button>
         </div>
       </div>
+      <div class="table-wrap">
+        <table style="width:100%">
+          <thead><tr>
+            <th style="padding:5px 8px;font-size:10px">${t('Member', 'العضو')}</th>
+            <th style="padding:5px 8px;font-size:10px">${t('Sport', 'الرياضة')}</th>
+            <th style="padding:5px 8px;font-size:10px">${t('Status', 'الحالة')}</th>
+            <th style="padding:5px 8px;font-size:10px;text-align:right">${t('Paid', 'المدفوع')}</th>
+            <th style="padding:5px 8px;font-size:10px;text-align:right">${t('Owes', 'مستحق')}</th>
+          </tr></thead>
+          <tbody>${memberRows}</tbody>
+          <tfoot><tr style="border-top:2px solid var(--border);font-weight:800">
+            <td style="padding:7px 8px" colspan="3">${t('Family total', 'إجمالي العائلة')}</td>
+            <td style="padding:7px 8px;text-align:right" class="num" style="color:var(--green)">${fmt(paid)}</td>
+            <td style="padding:7px 8px;text-align:right" class="num" style="color:${out > 0 ? 'var(--red)' : 'var(--text-mute)'}">${out > 0 ? fmt(out) : '—'}</td>
+          </tr></tfoot>
+        </table>
+      </div>
     </div>`;
-  }).join('') : `<div class="card text-mute" style="text-align:center;padding:30px">${t('No households yet. Open a member, tap', 'لا توجد عائلات بعد. افتح عضواً واضغط')} <b>👨‍👩‍👧 ${t('Family', 'العائلة')}</b> ${t('to group siblings together.', 'لجمع الإخوة معاً.')}</div>`;
+  }).join('') : `<div class="card text-mute" style="text-align:center;padding:30px">${t('No households yet. Open a member, tap', 'لا توجد عائلات بعد. افتح عضواً واضغط')} <b>👨‍👩‍👧 ${t('Family', 'العائلة')}</b> ${t('to group siblings together, or select members and use Add to family.', 'لجمع الإخوة معاً، أو اختر أعضاء واستخدم إضافة إلى عائلة.')}</div>`;
 
   main.innerHTML = `
     <div class="topbar">
       <div><h1>👨‍👩‍👧 ${t('Families', 'العائلات')}</h1>
         <div class="subtitle">${t('Households — siblings & parents grouped together', 'العائلات — الإخوة وأولياء الأمور معاً')}</div></div>
     </div>
-    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+    <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
       <div class="kpi"><div class="kpi-label">${t('Households', 'العائلات')}</div><div class="kpi-value num">${totalHouseholds}</div></div>
       <div class="kpi blue"><div class="kpi-label">${t('Members in families', 'أعضاء ضمن عائلات')}</div><div class="kpi-value num">${totalKids}</div></div>
-      <div class="kpi ${totalOut > 0 ? 'red' : 'green'}"><div class="kpi-label">${t('Combined balance', 'إجمالي الأرصدة')}</div><div class="kpi-value num">${fmt(totalOut)}</div></div>
+      <div class="kpi green"><div class="kpi-label">${t('Total paid', 'إجمالي المدفوع')}</div><div class="kpi-value num">${fmt(totalPaid)}</div></div>
+      <div class="kpi ${totalOut > 0 ? 'red' : 'green'}"><div class="kpi-label">${t('Combined balance', 'إجمالي المستحق')}</div><div class="kpi-value num">${fmt(totalOut)}</div></div>
     </div>
     ${cards}`;
 };
@@ -4201,11 +4405,31 @@ PAGES.renewaldetail = (main) => {
 // ─── Reminder Center ────────────────────────────────────────────────
 // One screen to chase renewals: expired / expiring members, one-click
 // WhatsApp with a prefilled bilingual message, and reminded-tracking.
-// (Client-side only: WhatsApp click-to-chat — the admin taps Send.)
+// Members may be reminded up to TWICE per membership cycle; the 2nd time asks for
+// confirmation, and a 3rd is blocked (avoids pestering). Tracks count + dates.
+const MAX_REMINDERS = 2;
+function reminderInfo(m) {
+  const cycleStart = m?.startDate || m?.firstRegistration || '0000-00-00';
+  // Back-compat: a legacy lastRemindedAt with no count = 1 reminder.
+  let dates = Array.isArray(m?.reminderDates) ? m.reminderDates.slice() : [];
+  if (!dates.length && m?.lastRemindedAt) dates = [m.lastRemindedAt];
+  const inCycle = dates.filter(d => (d || '') >= cycleStart);
+  return { count: inCycle.length, dates: inCycle, last: inCycle[inCycle.length - 1] || null, remaining: Math.max(0, MAX_REMINDERS - inCycle.length) };
+}
 window.markReminded = function(id) {
   const m = state.members.find(x => x.id === id); if (!m) return;
-  m.lastRemindedAt = TODAY;
-  if (typeof audit === 'function') audit('member.remind', 'member:' + id, 'renewal reminder sent');
+  const info = reminderInfo(m);
+  if (info.count >= MAX_REMINDERS) {
+    toast(`${m.name} has already been reminded ${MAX_REMINDERS} times this cycle.`, 'info');
+    return;
+  }
+  if (info.count >= 1) {
+    if (!confirm(`${m.name} was already reminded${info.last ? ' on ' + fmtDate(info.last) : ''}.\n\nSend a second (final) reminder?`)) return;
+  }
+  if (!Array.isArray(m.reminderDates)) m.reminderDates = info.dates.slice();
+  m.reminderDates.push(TODAY);
+  m.lastRemindedAt = TODAY;   // keep legacy field in sync
+  if (typeof audit === 'function') audit('member.remind', 'member:' + id, `renewal reminder #${info.count + 1} sent`);
   save(); render();
 };
 
@@ -4501,7 +4725,7 @@ PAGES.duepayment = (main) => {
       const sp = inv.sport || (Array.isArray(inv.lineItems) && inv.lineItems[0] && inv.lineItems[0].sport) || (inv.description || 'Other');
       bySport[sp] = (bySport[sp] || 0) + bal;
     }
-    all.push({ m, total, bySport, st: memberStatus(m), expiry: m.expiryDate, lastReminded: m.lastRemindedAt || null });
+    all.push({ m, total, bySport, st: memberStatus(m), expiry: m.expiryDate, lastReminded: m.lastRemindedAt || null, remind: reminderInfo(m) });
   }
 
   // Apply filters
@@ -4550,7 +4774,7 @@ PAGES.duepayment = (main) => {
       <td>${r.expiry ? fmtDate(r.expiry) : '—'}</td>
       <td><div style="display:flex;flex-wrap:wrap;gap:4px">${sportChips}</div></td>
       <td class="text-right num" style="color:var(--red);font-weight:800;font-size:14px">${fmt(r.total)} <span class="text-mute" style="font-size:10px;font-weight:400">QAR</span></td>
-      <td style="font-size:11px">${r.lastReminded ? (r.lastReminded === TODAY ? `<span class="badge active" style="font-size:10px">✓ ${t('today', 'اليوم')}</span>` : fmtDate(r.lastReminded)) : '<span class="text-mute">—</span>'}</td>
+      <td style="font-size:11px">${r.remind.count ? `<span class="badge ${r.remind.count >= 2 ? '' : 'active'}" style="font-size:10px;${r.remind.count >= 2 ? 'background:rgba(120,120,140,.15);color:var(--text-mute)' : ''}">✓ ${r.remind.count}/2${r.remind.last === TODAY ? ' · ' + t('today', 'اليوم') : r.remind.last ? ' · ' + fmtDate(r.remind.last) : ''}</span>` : '<span class="text-mute">—</span>'}</td>
       <td class="text-right" style="white-space:nowrap">
         ${editable ? `<button class="btn primary sm" onclick="editMemberPricing(${r.m.id})" title="${t('Record a payment / edit pricing', 'تسجيل دفعة / تعديل السعر')}">💰 ${t('Collect', 'تحصيل')}</button>` : ''}
         ${wa ? `<a class="btn ghost sm" style="text-decoration:none" href="${wa}" target="_blank" rel="noopener" onclick="markReminded(${r.m.id})" title="${t('Send a bilingual WhatsApp reminder', 'إرسال تذكير عبر واتساب')}">💬</a>` : ''}
@@ -4653,7 +4877,8 @@ PAGES.reminders = (main) => {
 
   const rowHtml = rows.length ? rows.map(({ m, d, kind }) => {
     const wa = waLink(m);
-    const reminded = m.lastRemindedAt ? (m.lastRemindedAt === TODAY ? t('today', 'اليوم') : fmtDate(m.lastRemindedAt)) : null;
+    const rInfo = reminderInfo(m);
+    const remindedLabel = rInfo.count ? `${rInfo.count}/2${rInfo.last === TODAY ? ' · ' + t('today', 'اليوم') : rInfo.last ? ' · ' + fmtDate(rInfo.last) : ''}` : null;
     const out = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0;
     return `<tr>
       <td><div class="font-bold">${escapeHtml(m.name)}</div>${m.nameArabic ? `<div class="text-mute" style="font-size:11px" dir="rtl">${escapeHtml(m.nameArabic)}</div>` : ''}</td>
@@ -4662,10 +4887,12 @@ PAGES.reminders = (main) => {
         : `<span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-2)">⏰ ${d === 0 ? t('today', 'اليوم') : d + t('d left', ' يوم')}</span>`}</td>
       <td>${m.expiryDate ? fmtDate(m.expiryDate) : '—'}</td>
       <td class="text-right num ${out > 0 ? '' : 'text-mute'}" style="${out > 0 ? 'color:var(--red);font-weight:700' : ''}">${out > 0 ? fmt(out) : '—'}</td>
-      <td>${reminded ? `<span class="badge active" style="font-size:10px">✓ ${reminded}</span>` : `<span class="text-mute" style="font-size:11px">—</span>`}</td>
+      <td>${remindedLabel ? `<span class="badge ${rInfo.count >= 2 ? '' : 'active'}" style="font-size:10px;${rInfo.count >= 2 ? 'background:rgba(120,120,140,.15);color:var(--text-mute)' : ''}">✓ ${remindedLabel}</span>` : `<span class="text-mute" style="font-size:11px">—</span>`}</td>
       <td class="text-right" style="white-space:nowrap">
-        ${wa ? `<a class="btn ghost sm" style="text-decoration:none" href="${wa}" target="_blank" rel="noopener" onclick="markReminded(${m.id})">💬 ${t('WhatsApp', 'واتساب')}</a>` : `<span class="text-mute" style="font-size:11px">${t('no phone', 'لا يوجد هاتف')}</span>`}
-        <button class="btn ghost sm" onclick="markReminded(${m.id})" title="${t('Mark as reminded without sending', 'وضع علامة تم التذكير دون إرسال')}">✓</button>
+        ${rInfo.count >= 2
+          ? `<span class="text-mute" style="font-size:11px" title="${t('Reminded twice already', 'تم التذكير مرتين')}">✓ ${t('done', 'تم')}</span>`
+          : `${wa ? `<a class="btn ghost sm" style="text-decoration:none" href="${wa}" target="_blank" rel="noopener" onclick="markReminded(${m.id})">💬 ${t('WhatsApp', 'واتساب')}</a>` : `<span class="text-mute" style="font-size:11px">${t('no phone', 'لا يوجد هاتف')}</span>`}
+        <button class="btn ghost sm" onclick="markReminded(${m.id})" title="${t('Mark as reminded without sending', 'وضع علامة تم التذكير دون إرسال')}">✓</button>`}
         <button class="btn ghost sm" onclick="viewMember(${m.id})">👁</button>
       </td>
     </tr>`;
@@ -4699,6 +4926,102 @@ PAGES.reminders = (main) => {
     </div>`;
   const sel = $('#rem-window');
   if (sel) sel.addEventListener('change', () => { window._remWindow = parseInt(sel.value); render(); });
+};
+
+// Friendly Summer-Camp renewal message (bilingual, Arabic first). Warmer than the
+// standard renewal reminder — "we'll miss {name}, hope they renew for more fun".
+function campRenewalMessage(m) {
+  const nameEn = m.name || '';
+  const nameAr = m.nameArabic || m.name || '';
+  const expiry = m.expiryDate ? fmtDate(m.expiryDate) : '';
+  const ar = `مرحباً 👋\n\nنود تذكيركم بأن اشتراك ${nameAr} في المعسكر الصيفي بنادي بلاك ستارز سينتهي قريباً${expiry ? ` (بتاريخ ${expiry})` : ''}.\n\nسنفتقد ${nameAr} كثيراً في المعسكر! 🌟 نتمنّى تجديد الاشتراك للاستمتاع بالمزيد من الأنشطة والمرح مع أصدقائه.\n\nيسعدنا استقباله من جديد 💚\nنادي بلاك ستارز الرياضي`;
+  const en = `Hello 👋\n\nA friendly reminder that ${nameEn}'s Summer Camp membership at Black Stars Sports Club is ending soon${expiry ? ` (on ${expiry})` : ''}.\n\nWe'll really miss ${nameEn} at camp! 🌟 We'd love for them to renew and enjoy even more activities and fun with their friends.\n\nHope to see them again soon 💚\nBlack Stars Sports Club`;
+  return `${ar}\n\n— — — — — — —\n\n${en}`;
+}
+function campRenewalWaLink(m) {
+  return waLink(m.phone, campRenewalMessage(m));
+}
+window.markCampReminded = function(id) {
+  const m = state.members.find(x => x.id === id);
+  if (!m) return;
+  const info = reminderInfo(m);
+  if (info.count >= MAX_REMINDERS) { toast(`${m.name} already reminded ${MAX_REMINDERS} times.`, 'info'); return; }
+  if (!Array.isArray(m.reminderDates)) m.reminderDates = info.dates.slice();
+  m.reminderDates.push(TODAY);
+  m.lastRemindedAt = TODAY;
+  if (typeof audit === 'function') audit('member.remind', 'member:' + id, `camp renewal reminder #${info.count + 1} sent`);
+  save();
+  // Don't re-render immediately — the WhatsApp link is opening in a new tab.
+};
+
+// Guided "remind all expiring" panel (Option A): one row per expiring-soon camp
+// member, each with its own WhatsApp button. WhatsApp can't open many chats at
+// once, so this lets the admin work down the list — one tap per parent — while
+// tracking who's been messaged. Clicking a member's button stamps them reminded
+// and ticks them off; the panel updates live so nobody is missed or double-sent.
+window.campRemindAll = function() {
+  const isSoon = m => {
+    if (m.deleted || memberStatus(m) === 'Withdrawn') return false;
+    const d = m.expiryDate ? daysUntil(m.expiryDate) : null;
+    return d != null && d >= 0 && d <= 7;
+  };
+  const isCampM = m => m && !m.deleted && (m.sport === SUMMER_CAMP || (m.enrollments || []).some(e => e.sport === SUMMER_CAMP));
+  let list = (state.members || []).filter(m => isCampM(m) && isSoon(m))
+    .sort((a, b) => (a.expiryDate || '').localeCompare(b.expiryDate || ''));
+  if (!list.length) { toast(t('No expiring camp members to remind', 'لا يوجد أعضاء معسكر منتهون'), 'info'); return; }
+
+  const rowHtml = (m) => {
+    const done = m.lastRemindedAt === TODAY;
+    const hasPhone = m.phone && isRealPhone(m.phone);
+    const d = daysUntil(m.expiryDate);
+    const daysTxt = d === 0 ? t('today', 'اليوم') : d === 1 ? t('1 day', 'يوم') : `${d} ${t('days', 'أيام')}`;
+    return `<div id="crow-${m.id}" style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid ${done ? 'rgba(34,197,94,.4)' : 'var(--border)'};border-radius:8px;background:${done ? 'rgba(34,197,94,.07)' : 'var(--surface)'}">
+      <span style="font-size:16px;width:20px;text-align:center">${done ? '✅' : '⏳'}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:13px">${escapeHtml(m.name)}${m.nameArabic ? ` <span class="text-mute" style="font-weight:400" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}</div>
+        <div class="text-mute" style="font-size:11px">${hasPhone ? escapeHtml(String(m.phone)) : t('no phone', 'بدون هاتف')} · ${t('expires', 'ينتهي')} ${fmtDate(m.expiryDate)} (${daysTxt})${done ? ' · <span style="color:var(--green)">' + t('messaged', 'تم الإرسال') + '</span>' : ''}</div>
+      </div>
+      ${hasPhone
+        ? `<a class="btn ${done ? 'ghost' : 'primary'} sm" href="${campRenewalWaLink(m)}" target="_blank" onclick="campRemindOne(${m.id})">📱 ${done ? t('Again', 'إعادة') : t('Message', 'مراسلة')}</a>`
+        : `<span class="text-mute" style="font-size:11px">${t('add a phone first', 'أضف رقماً أولاً')}</span>`}
+    </div>`;
+  };
+
+  const render = () => {
+    const done = list.filter(m => m.lastRemindedAt === TODAY).length;
+    const body = $('#camp-remind-body');
+    if (body) body.innerHTML = `
+      <div style="font-size:13px;margin-bottom:10px">${t('WhatsApp opens one chat at a time, so tap each parent below. We tick them off and won\\u2019t lose your place.', 'واتساب يفتح محادثة واحدة في كل مرة، لذا اضغط على كل ولي أمر بالأسفل. نقوم بتعليمهم حتى لا تفقد مكانك.')}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <div style="flex:1;height:8px;background:var(--surface-2);border-radius:5px;overflow:hidden"><div style="height:100%;width:${Math.round(done / list.length * 100)}%;background:var(--green);transition:width .2s"></div></div>
+        <span class="text-mute" style="font-size:12px;white-space:nowrap">${done} / ${list.length} ${t('messaged', 'تم')}</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;max-height:50vh;overflow:auto">${list.map(rowHtml).join('')}</div>`;
+  };
+
+  // Per-member click: stamp reminded + re-render just the panel (the WA link
+  // opens in a new tab regardless).
+  window.campRemindOne = function(id) {
+    const m = state.members.find(x => x.id === id);
+    if (!m) return;
+    const info = reminderInfo(m);
+    if (info.count < MAX_REMINDERS) {
+      if (!Array.isArray(m.reminderDates)) m.reminderDates = info.dates.slice();
+      m.reminderDates.push(TODAY);
+      m.lastRemindedAt = TODAY;
+      if (typeof audit === 'function') audit('member.remind', 'member:' + id, `camp renewal reminder #${info.count + 1} sent (bulk panel)`);
+      save();
+    }
+    setTimeout(render, 50);   // let the WA tab open first
+  };
+
+  showModal({
+    title: '📱 ' + t('Remind expiring camp members', 'تذكير أعضاء المعسكر المنتهين'),
+    body: `<div id="camp-remind-body"></div>`,
+    wide: true,
+    actions: [{ label: t('Done', 'تم'), class: 'btn primary', onclick: () => { closeModal(); if (typeof navigate === 'function') navigate('campmembers'); } }],
+  });
+  render();
 };
 
 PAGES.campmembers = (main) => {
@@ -4809,6 +5132,7 @@ PAGES.campmembers = (main) => {
         <select onchange="assignDriver(${m.id}, this.value)" ${drivers.length ? '' : 'disabled'} style="min-width:140px;font-size:12px">${driverOptions(m.campDriverId)}</select>
       </td>
       <td style="padding:9px 10px;text-align:right;white-space:nowrap">
+        ${isExpiringSoon(m) && m.phone && isRealPhone(m.phone) ? `<a class="btn ghost sm" style="color:var(--accent-2);border-color:var(--accent-2)" href="${campRenewalWaLink(m)}" target="_blank" onclick="markCampReminded(${m.id})" title="${t('Send a friendly renewal message', 'إرسال رسالة تجديد ودّية')}">📱 ${t('Remind', 'تذكير')}</a>` : ''}
         <button class="btn ghost sm" onclick="editCampMember(${m.id})" title="${t('Edit duration & transport', 'تعديل المدة والنقل')}">✏️ ${t('Edit', 'تعديل')}</button>
         <button class="btn ghost sm" onclick="viewMember(${m.id})">👁 ${t('View', 'عرض')}</button>
       </td>
@@ -4822,6 +5146,7 @@ PAGES.campmembers = (main) => {
         <div class="subtitle">${list.length} ${t('of', 'من')} ${allCamp.length} ${t('Everyone enrolled in Summer Camp', 'كل المسجّلين في المعسكر الصيفي')}</div>
       </div>
       <div class="topbar-actions">
+        ${!isViewerRole() && expiringSoonCount > 0 ? `<button class="btn ghost" id="campmem-remind-all" style="color:var(--accent-2);border-color:var(--accent-2)">📱 ${t('Remind all expiring', 'تذكير كل المنتهين')} (${expiringSoonCount})</button>` : ''}
         ${isViewerRole() ? '' : `<button class="btn ghost" id="campmem-export">⬇ ${t('Export CSV', 'تصدير CSV')}</button>`}
       </div>
     </div>
@@ -4903,6 +5228,8 @@ PAGES.campmembers = (main) => {
   $('#cm-group')?.addEventListener('change', e => { f.group = e.target.value; render(); });
   $('#cm-clear')?.addEventListener('click', () => { window._campFilter = null; render(); });
 
+  const remindAllBtn = $('#campmem-remind-all');
+  if (remindAllBtn) remindAllBtn.addEventListener('click', () => campRemindAll());
   const expBtn = $('#campmem-export');
   if (expBtn) expBtn.addEventListener('click', () => {
     const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
@@ -6004,7 +6331,10 @@ PAGES.invoices = (main) => {
         const cust = customerInfo(i);   // live name + phone if linked
         const hay = [i.description, cust.name, cust.nameArabic, cust.phone, cust.phone2, cust.qid, i.coach, i.sport, i.ref, i.category]
           .filter(Boolean).join(' ').toLowerCase();
-        if (!hay.includes(q)) return false;
+        let hit = hay.includes(q);
+        // Phone-aware fallback: match by digits, ignoring spaces, +, and 974.
+        if (!hit) hit = phoneQueryMatches(cust.phone, filter.search) || phoneQueryMatches(cust.phone2, filter.search) || phoneQueryMatches(i.customerPhone, filter.search);
+        if (!hit) return false;
       }
       if (filter.month !== 'all' && i.month !== filter.month) return false;
       if (filter.method !== 'all' && i.method !== filter.method) return false;
@@ -6123,7 +6453,7 @@ PAGES.invoices = (main) => {
         <button class="btn ghost" id="quick-rental-inv" title="Log a court/room rental with auto-invoice">🏟 + Add Rental</button>
         <button class="btn ghost" id="generate-latest-inv" title="Pick a member and auto-create an invoice from their latest enrollment">⚡ Generate latest invoice</button>
         ${isViewerRole() ? '' : '<button class="btn ghost" id="export-inv">📥 Export</button>'}
-        <button class="btn ghost" onclick="findDuplicateInvoices()" title="Find membership invoices that look like duplicates (same member, sport, month and amount)">🔍 Find duplicates</button>
+        <button class="btn ghost" onclick="navigate('dupinvoices')" title="Review duplicate invoices side by side before deleting">🔍 Find duplicates</button>
         <button class="btn primary" id="add-inv">+ New Invoice</button>
       </div>
     </div>
@@ -6169,7 +6499,7 @@ PAGES.invoices = (main) => {
               <th>Category</th>
               <th>Activity</th>
               <th>Coach</th>
-              <th>Description</th>
+              <th>Description · البيان</th>
               <th>Method</th>
               <th class="text-right">Amount</th>
               <th></th>
@@ -6596,7 +6926,7 @@ function generateLatestInvoice(onDone) {
       <div class="field"><label>Member</label>${memberPickerHtml('gli-cust', { placeholder: 'Search member by name, mobile, or QID…' })}</div>
       <div id="gli-preview" style="margin-top:12px;display:none;background:var(--surface-2);border-radius:8px;padding:12px;font-size:13px"></div>
       <div class="form-row" style="margin-top:10px">
-        <div class="field"><label>Date</label><input type="date" id="gli-date" value="${TODAY}" /></div>
+        <div class="field"><label>Invoice date <span class="text-mute" style="font-size:10px">(defaults to sport start date)</span></label><input type="date" id="gli-date" value="${TODAY}" oninput="this.dataset.touched='1'" /></div>
         <div class="field"><label>Method</label><select id="gli-method"><option value="cash">Cash</option><option value="card">Card</option></select></div>
       </div>
     `,
@@ -6659,6 +6989,15 @@ function generateLatestInvoice(onDone) {
           coachId: primary.coachId,
           customerId: m.id,
           customerName: m.name,
+          // Per-sport line items so the printed invoice shows EACH sport with its
+          // own coach (not just the primary one).
+          lineItems: enrollments.map(e => ({
+            sport: e.sport,
+            coach: coachName(e.coachId) || (state.coaches.find(c => c.id === e.coachId) || {}).name || '',
+            coachId: e.coachId,
+            classes: e.classes,
+            price: e.price || 0,
+          })),
         };
         state.invoices.push(newInv);
         save();
@@ -6686,6 +7025,13 @@ function generateLatestInvoice(onDone) {
         enrollments = [...bySport.values()].map(s => ({ sport: s.activity, coachId: s.coachId, classes: s.totalClasses, price: s.amountPaid }));
       }
       const total = enrollments.reduce((s, e) => s + (e.price || 0), 0);
+      // Invoice date defaults to the EARLIEST sport start date (the membership
+      // period start), not today — so a retro-generated invoice carries the date
+      // the subscription actually began. Admin can still override the field.
+      const startDates = enrollments.map(e => (typeof enrollmentStartDate === 'function' ? enrollmentStartDate(e, m) : (e.start || m.startDate || TODAY))).filter(Boolean).sort();
+      const earliestStart = startDates[0] || m.startDate || TODAY;
+      const dateInput = document.getElementById('gli-date');
+      if (dateInput && !dateInput.dataset.touched) dateInput.value = earliestStart;
       preview.style.display = 'block';
       preview.innerHTML = enrollments.length ? `
         <div style="font-weight:600;margin-bottom:6px">Will invoice:</div>
@@ -7835,15 +8181,16 @@ window.printInvoicePDF = function(id) {
       </div>
     </div>
     <div class="header-right">
-      <div class="invoice-label">Invoice</div>
+      <div class="invoice-label">Invoice · فاتورة</div>
       <div class="invoice-no">${escapeHtml(ref)}</div>
-      <div class="invoice-date">Issued ${issueDate}</div>
+      <div class="invoice-date">Issued · تاريخ الإصدار: ${issueDate}</div>
+      <div class="invoice-date" style="opacity:.7;font-size:.85em">Printed · الطباعة: ${fmtDate(TODAY)}</div>
     </div>
   </div>
 
   <div class="parties">
     <div>
-      <div class="party-label">From</div>
+      <div class="party-label">From · من</div>
       <div class="party-name">Black Stars Sports Club</div>
       <div class="party-detail">
         Waab — Village Resort, Doha, Qatar<br>
@@ -7852,7 +8199,7 @@ window.printInvoicePDF = function(id) {
       </div>
     </div>
     <div>
-      <div class="party-label">Billed to</div>
+      <div class="party-label">Billed to · فاتورة إلى</div>
       <div class="party-name">${escapeHtml(customerName)}</div>
       <div class="party-detail">
         ${customerPhone && !customerPhone.startsWith('+9747000') ? escapeHtml(customerPhone) + '<br>' : ''}
@@ -7867,16 +8214,16 @@ window.printInvoicePDF = function(id) {
   <div style="display:flex;gap:20px;margin-bottom:24px;padding:14px 20px;background:#f7f7f8;border-radius:10px">
     ${inv.sport ? `
       <div>
-        <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Activity</div>
+        <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Activity · النشاط</div>
         <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escapeHtml(inv.sport)}</div>
       </div>` : ''}
     ${inv.coach ? `
       <div>
-        <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Coach</div>
+        <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Coach · المدرب</div>
         <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escapeHtml(inv.coach)}</div>
       </div>` : ''}
     <div style="margin-left:auto">
-      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Period</div>
+      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Period · الفترة</div>
       <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escapeHtml(fmtMonth(inv.month))}</div>
     </div>
   </div>
@@ -7886,8 +8233,8 @@ window.printInvoicePDF = function(id) {
     <thead>
       <tr>
         <th>Description</th>
-        <th class="right" style="width:90px">Qty</th>
-        <th class="right" style="width:130px">Amount (QAR)</th>
+        <th class="right" style="width:90px">Qty · الكمية</th>
+        <th class="right" style="width:130px">Amount · المبلغ (QAR)</th>
       </tr>
     </thead>
     <tbody>
@@ -7895,7 +8242,7 @@ window.printInvoicePDF = function(id) {
       <tr>
         <td>
           <div class="item-desc">${escapeHtml(li.sport)} subscription</div>
-          <div class="item-sub">Coach: ${escapeHtml(li.coach || '—')} · Issued on ${issueDate}</div>
+          <div class="item-sub">Coach · المدرب: ${escapeHtml(li.coach || '—')} · Issued on ${issueDate}</div>
         </td>
         <td class="right">${li.classes || 1}</td>
         <td class="right">${Number(li.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
@@ -7914,31 +8261,31 @@ window.printInvoicePDF = function(id) {
   <div class="totals">
     <div class="totals-table">
       <div class="totals-row">
-        <span>Subtotal</span>
+        <span>Subtotal · المجموع الفرعي</span>
         <span>${amountStr} QAR</span>
       </div>
       <div class="totals-row">
-        <span>Tax (0%)</span>
+        <span>Tax · الضريبة (0%)</span>
         <span>0.00 QAR</span>
       </div>
       <div class="totals-row grand">
-        <span>Total</span>
+        <span>Total · الإجمالي</span>
         <span class="amount">${amountStr} QAR</span>
       </div>
       ${invoiceBalance(inv) > 0.001 ? `
       <div class="totals-row">
-        <span>Paid${inv.amountPaid > 0 ? '' : ' (deposit)'}</span>
+        <span>Paid · المدفوع${inv.amountPaid > 0 ? '' : ' (deposit)'}</span>
         <span>${Number(invoicePaid(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR</span>
       </div>
       <div class="totals-row grand" style="color:#b45309">
-        <span>Balance due</span>
+        <span>Balance due · المتبقي</span>
         <span class="amount">${Number(invoiceBalance(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR</span>
       </div>` : ''}
     </div>
   </div>
 
   <div class="amount-words">
-    <strong>Amount in words:</strong> ${escapeHtml(amountWords)} Qatari Riyals only.
+    <strong>Amount in words · المبلغ كتابةً:</strong> ${escapeHtml(amountWords)} Qatari Riyals only.
   </div>
 
   <div class="payment-info">
@@ -7951,7 +8298,7 @@ window.printInvoicePDF = function(id) {
       })()}
     </div>
     <div class="payment-method">
-      Payment method: <strong>${escapeHtml(inv.method || 'Cash')}</strong>
+      Payment method · طريقة الدفع: <strong>${escapeHtml(inv.method || 'Cash')}</strong>
     </div>
   </div>
 
@@ -7965,22 +8312,24 @@ window.printInvoicePDF = function(id) {
         <h4>English</h4>
         <ol>
           <li>All payments are non-refundable.</li>
-          <li>Classes must be completed within the package validity period.</li>
+          <li>Classes must be completed within the package validity period; unused classes after expiry are forfeited.</li>
+          <li>The sport may be switched only once per membership.</li>
+          <li>Membership may be frozen up to one week for each month of membership.</li>
           <li>Missed classes without prior notice will be counted.</li>
           <li>Students must arrive on time and follow coach instructions.</li>
           <li>The academy is not responsible for injuries resulting from failure to follow safety instructions.</li>
-          <li>Each participant is entitled to two compensation classes — maximum limit.</li>
         </ol>
       </div>
       <div class="terms-col ar">
         <h4>عربي</h4>
         <ol>
           <li>جميع المدفوعات غير قابلة للاسترداد.</li>
-          <li>يجب إكمال جميع الحصص خلال فترة صلاحية الباقة.</li>
+          <li>يجب إكمال جميع الحصص خلال فترة صلاحية الباقة، وتسقط الحصص غير المستخدمة بعد انتهاء الصلاحية.</li>
+          <li>يُسمح بتغيير الرياضة مرة واحدة فقط لكل اشتراك.</li>
+          <li>يمكن تجميد الاشتراك لمدة أسبوع واحد عن كل شهر من مدة الاشتراك.</li>
           <li>سيتم احتساب الحصص الفائتة دون إشعار مسبق.</li>
           <li>يجب على الطالب الحضور في الوقت المحدد واتباع تعليمات المدرب.</li>
           <li>الأكاديمية غير مسؤولة عن الإصابات الناتجة عن عدم اتباع تعليمات السلامة.</li>
-          <li>لكل مشترك حصتان تعويضيتان كحد أقصى.</li>
         </ol>
       </div>
     </div>
@@ -8307,22 +8656,22 @@ PAGES.cashcollection = (main) => {
 
 // ─── EXPENSES ──────────────────────────────────────────────────
 PAGES.expenses = (main) => {
-  let filter = { search: '', month: 'all', category: 'all', method: 'all' };
+  let filter = { search: '', month: 'all', categories: [], methods: [] };
   const pg = makePager(10);
 
   function refresh() {
     const allRows = state.expenses.filter(e => {
       if (filter.search && !e.description.toLowerCase().includes(filter.search.toLowerCase())) return false;
       if (filter.month !== 'all' && e.month !== filter.month) return false;
-      if (filter.category !== 'all' && e.category !== filter.category) return false;
-      if (filter.method !== 'all' && (e.method || '') !== filter.method) return false;
+      if (filter.categories.length && !filter.categories.includes(e.category || 'Others')) return false;
+      if (filter.methods.length && !filter.methods.includes(e.method || '')) return false;
       return true;
     }).sort((a,b) => b.date.localeCompare(a.date));
     const rows = paginate(allRows, pg);
 
     const total = allRows.reduce((s,r) => s + (r.amount || 0), 0);          // filtered total
     const grandTotal = state.expenses.reduce((s,r) => s + (r.amount || 0), 0); // all expenses
-    const anyFilter = filter.search || filter.month !== 'all' || filter.category !== 'all' || filter.method !== 'all';
+    const anyFilter = filter.search || filter.month !== 'all' || filter.categories.length || filter.methods.length;
     // Per-category totals — replaces old monthly/equipment split since the
     // Type field is removed. Top 3 categories shown in the subtitle.
     const byCat = {};
@@ -8377,16 +8726,22 @@ PAGES.expenses = (main) => {
           <option value="all">All months</option>
           ${[...new Set(state.expenses.map(e => e.month).filter(Boolean))].sort().reverse().map(m => `<option value="${m}">${fmtMonth(m)}</option>`).join('')}
         </select>
-        <select id="exp-cat" class="btn ghost">
-          <option value="all">All categories</option>
-          ${EXP_CATS.map(c => `<option>${escapeHtml(c)}</option>`).join('')}
-        </select>
-        <select id="exp-method" class="btn ghost">
-          <option value="all">All methods</option>
-          <option value="cash">Cash</option>
-          <option value="card">Card</option>
-          <option value="transfer">Bank transfer</option>
-        </select>
+        <div style="position:relative">
+          <button type="button" id="exp-cat-btn" class="btn ghost" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px">
+            <span id="exp-cat-label">All categories</span><span style="opacity:.6">▾</span>
+          </button>
+          <div id="exp-cat-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:190px;max-height:320px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            ${EXP_CATS.map(c => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="exp-cat-cb" value="${escapeHtml(c)}" /> ${escapeHtml(c)}</label>`).join('')}
+          </div>
+        </div>
+        <div style="position:relative">
+          <button type="button" id="exp-method-btn" class="btn ghost" style="min-width:130px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px">
+            <span id="exp-method-label">All methods</span><span style="opacity:.6">▾</span>
+          </button>
+          <div id="exp-method-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:150px;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            ${[['cash', 'Cash'], ['card', 'Card'], ['transfer', 'Bank transfer']].map(([v, lab]) => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="exp-method-cb" value="${v}" /> ${lab}</label>`).join('')}
+          </div>
+        </div>
       </div>
       <div class="table-wrap">
         <table>
@@ -8400,8 +8755,22 @@ PAGES.expenses = (main) => {
   `;
   $('#exp-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   $('#exp-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
-  $('#exp-cat').addEventListener('change', e => { filter.category = e.target.value; pg.page = 1; refresh(); });
-  $('#exp-method').addEventListener('change', e => { filter.method = e.target.value; pg.page = 1; refresh(); });
+  // Multi-select category + method dropdowns (checkbox menus).
+  function wireExpMulti(key, cbClass, btnId, menuId, labelId, allText, oneFmt) {
+    const btn = $('#' + btnId), menu = $('#' + menuId);
+    if (!btn || !menu) return;
+    btn.addEventListener('click', e => { e.stopPropagation(); menu.style.display = menu.style.display === 'none' ? 'block' : 'none'; });
+    document.addEventListener('click', e => { if (!btn.contains(e.target) && !menu.contains(e.target)) menu.style.display = 'none'; });
+    $$('.' + cbClass).forEach(cb => cb.addEventListener('change', () => {
+      filter[key] = $$('.' + cbClass).filter(x => x.checked).map(x => x.value);
+      const n = filter[key].length;
+      const lab = $('#' + labelId);
+      if (lab) lab.textContent = n === 0 ? allText : (n === 1 ? oneFmt(filter[key][0]) : n + ' selected');
+      pg.page = 1; refresh();
+    }));
+  }
+  wireExpMulti('categories', 'exp-cat-cb', 'exp-cat-btn', 'exp-cat-menu', 'exp-cat-label', 'All categories', v => v);
+  wireExpMulti('methods', 'exp-method-cb', 'exp-method-btn', 'exp-method-menu', 'exp-method-label', 'All methods', v => ({ cash: 'Cash', card: 'Card', transfer: 'Bank transfer' }[v] || v));
   $('#add-exp').addEventListener('click', addExpense);
   refresh();
 };
@@ -11270,6 +11639,25 @@ PAGES.attendance = (main) => {
     if (!m.dailyAttendance) m.dailyAttendance = {};
     if (!m.dailyAttendance[mo]) m.dailyAttendance[mo] = {};
     if (!m.dailyAttendance[mo][sport]) m.dailyAttendance[mo][sport] = {};
+    // Cap "present" marks at the subscription's planned classes for the current
+    // period: if this new Y would push attended past the total, warn first so a
+    // member can't be marked present more times than classes they paid for.
+    if (next === 'Y') {
+      const sub = (m.subscriptions || []).filter(s => (s.activity || '') === sport).slice(-1)[0];
+      const planned = sub ? (sub.totalClasses || 0) : 0;
+      if (planned > 0) {
+        const fromDate = sub.start || null, toDate = sub.end || null;
+        const live = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(m, sport, fromDate, toDate) : { y: 0 };
+        const alreadyY = live.y || 0;
+        // Only block if this cell isn't already counted as Y (it's a NEW present).
+        const cellWasY = m.dailyAttendance[mo][sport][String(day)] === 'Y';
+        if (!cellWasY && alreadyY >= planned) {
+          if (!confirm(`${m.name} has already attended all ${planned} ${sport} classes for this subscription period.\n\nMark another present anyway? (They may need to renew.)`)) {
+            return;
+          }
+        }
+      }
+    }
     if (next === null) delete m.dailyAttendance[mo][sport][String(day)];
     else m.dailyAttendance[mo][sport][String(day)] = next;
     save();
@@ -12730,6 +13118,26 @@ window.withdrawSport = function(memberId, sport) {
 window.switchSport = function(memberId) {
   const m = state.members.find(x => x.id === memberId);
   if (!m) return;
+
+  // One switch per membership cycle. Count switches made on/after the current
+  // cycle start (renewing resets the allowance). If they've already switched,
+  // block it — a member can't keep hopping sports on a single paid membership.
+  const cycleStart = m.startDate || m.firstRegistration || '0000-00-00';
+  const switchesThisCycle = (m.sportSwitches || []).filter(sw => (sw.date || '') >= cycleStart);
+  if (switchesThisCycle.length >= 1) {
+    const last = switchesThisCycle[switchesThisCycle.length - 1];
+    const what = last.distributed
+      ? `${last.fromSport} → ${(last.targets || []).map(t => t.sport).join(', ')}`
+      : `${last.fromSport || '—'} → ${last.toSport || '—'}`;
+    showModal({
+      title: `Already switched: ${escapeHtml(m.name)}`,
+      body: `<div style="text-align:center;padding:20px"><div style="font-size:40px;margin-bottom:10px">🔒</div>
+        <p>${escapeHtml(m.name)} has already used their <b>one sport switch</b> for this membership${last.date ? ` (on ${fmtDate(last.date)}: ${escapeHtml(what)})` : ''}.</p>
+        <p class="text-mute" style="font-size:12px">Only one switch is allowed per paid membership. The allowance resets when they renew. For a different correction, use Withdraw or Edit pricing.</p></div>`,
+      actions: [{ label: 'Close', primary: true, onclick: closeModal }],
+    });
+    return;
+  }
 
   // Build the list of CURRENT enrollments (the ones eligible to be switched).
   // Fall back to subscriptions if enrollments[] isn't populated.
@@ -18687,8 +19095,9 @@ PAGES.transfers = (main) => {
   const matchQuery = (m, q) => {
     if (!q) return true;
     const needle = q.trim().toLowerCase();
-    const hay = [m.name, m.nameArabic, m.phone, m.phone2].filter(Boolean).join(' ').toLowerCase();
-    return hay.includes(needle);
+    const hay = [m.name, m.nameArabic].filter(Boolean).join(' ').toLowerCase();
+    if (hay.includes(needle)) return true;
+    return phoneQueryMatches(m.phone, q) || phoneQueryMatches(m.phone2, q);
   };
   // Members who CAN transfer something out: have ≥1 transferable enrollment AND
   // are not Withdrawn (a withdrawn member has left/been refunded — their leftover
@@ -18735,6 +19144,36 @@ PAGES.transfers = (main) => {
     else if ((toMember.enrollments || []).some(e => e.sport === selEnr.sport)) blockMsg = `${toMember.name} ${t('is already enrolled in', 'مسجّل بالفعل في')} ${selEnr.sport}`;
   }
 
+  // Reusable styled control bits
+  const inputStyle = 'width:100%;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px';
+  const selStyle = 'flex:1;padding:9px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px';
+  const stepLabel = (n, txt) => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--blue);color:#fff;font-size:12px;font-weight:700;flex-shrink:0">${n}</span><span style="font-size:13px;font-weight:700;color:var(--text)">${txt}</span></div>`;
+
+  // Compact, clickable member result rows (replaces the bare <select size>).
+  const fromRows = fromFiltered.slice(0, 40).map(x => {
+    const sel = x.m.id === st.fromId;
+    return `<div onclick="window._trState={...window._trState,fromId:${x.m.id},sport:${x.enrs.length === 1 ? JSON.stringify(x.enrs[0].sport).replace(/"/g, '&quot;') : 'null'},toId:null};render()"
+      style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 11px;border:1px solid ${sel ? 'var(--blue)' : 'var(--border)'};border-radius:8px;cursor:pointer;background:${sel ? 'rgba(91,141,239,.10)' : 'var(--surface)'}">
+      <div style="min-width:0">
+        <div style="font-weight:600;font-size:13px">${escapeHtml(x.m.name)}${x.m.nameArabic ? ` <span class="text-mute" style="font-weight:400" dir="rtl">${escapeHtml(x.m.nameArabic)}</span>` : ''}</div>
+        <div class="text-mute" style="font-size:11px">${x.m.phone ? escapeHtml(String(x.m.phone)) + ' · ' : ''}${x.enrs.map(e => escapeHtml(e.sport)).join(', ')}</div>
+      </div>
+      ${sel ? '<span style="color:var(--blue);font-size:16px;flex-shrink:0">✓</span>' : ''}
+    </div>`;
+  }).join('');
+
+  const toRows = toFiltered.slice(0, 40).map(m => {
+    const sel = m.id === st.toId;
+    return `<div onclick="window._trState={...window._trState,toId:${m.id}};render()"
+      style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 11px;border:1px solid ${sel ? 'var(--green)' : 'var(--border)'};border-radius:8px;cursor:pointer;background:${sel ? 'rgba(34,197,94,.10)' : 'var(--surface)'}">
+      <div style="min-width:0">
+        <div style="font-weight:600;font-size:13px">${escapeHtml(m.name)}${m.nameArabic ? ` <span class="text-mute" style="font-weight:400" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}</div>
+        <div class="text-mute" style="font-size:11px">${m.phone ? escapeHtml(String(m.phone)) : t('no phone', 'بدون هاتف')} · ${memberStatus(m)}</div>
+      </div>
+      ${sel ? '<span style="color:var(--green);font-size:16px;flex-shrink:0">✓</span>' : ''}
+    </div>`;
+  }).join('');
+
   main.innerHTML = `
     <div class="topbar">
       <div>
@@ -18743,35 +19182,47 @@ PAGES.transfers = (main) => {
       </div>
     </div>
 
-    <div class="row row-2" style="gap:14px;align-items:flex-start">
+    <div style="max-width:680px;margin:0 auto">
       <div class="card">
-        <div class="card-header"><div class="card-title">➕ ${t('New transfer', 'نقل جديد')}</div></div>
-        <div style="padding:12px;display:flex;flex-direction:column;gap:14px">
+        <div style="padding:16px;display:flex;flex-direction:column;gap:18px">
 
+          <!-- STEP 1 — From member -->
           <div>
-            <label style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--blue);font-weight:600">1 · ${t('From member', 'من العضو')}</label>
-            <div style="display:flex;gap:6px;margin:6px 0">
-              <select id="tr-fsport" style="flex:1;padding:8px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)">
-                <option value="all">${t('All sports', 'كل الرياضات')}</option>
-                ${sportsInList.map(s => `<option value="${escapeHtml(s)}" ${st.fsport === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
-              </select>
-              <select id="tr-fcoach" style="flex:1;padding:8px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)">
-                <option value="all">${t('All coaches', 'كل المدربين')}</option>
-                ${coachIdsInList.map(cid => `<option value="${cid}" ${String(st.fcoach) === String(cid) ? 'selected' : ''}>${escapeHtml(coachName(cid) || '—')}</option>`).join('')}
-              </select>
-            </div>
-            <input id="tr-fromq" placeholder="${t('Search name (EN/AR) or mobile…', 'ابحث بالاسم (عربي/إنجليزي) أو الجوال…')}" value="${escapeHtml(st.fromQ)}" style="width:100%;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);margin:6px 0" />
-            <select id="tr-from" size="${Math.min(6, Math.max(3, fromFiltered.length))}" style="width:100%;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)">
-              ${fromFiltered.length ? fromFiltered.map(x => `<option value="${x.m.id}" ${x.m.id === st.fromId ? 'selected' : ''}>${memberOption(x.m)} — ${x.enrs.map(e => e.sport).join(', ')}</option>`).join('') : `<option disabled>${t('No members with a transferable membership', 'لا يوجد أعضاء لديهم اشتراك قابل للنقل')}</option>`}
-            </select>
+            ${stepLabel('1', t('Who is transferring? (from)', 'من الناقل؟'))}
+            ${fromMember ? `
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--blue);border-radius:8px;background:rgba(91,141,239,.08)">
+                <div style="min-width:0">
+                  <div style="font-weight:700">${escapeHtml(fromMember.name)}${fromMember.nameArabic ? ` <span class="text-mute" style="font-weight:400" dir="rtl">${escapeHtml(fromMember.nameArabic)}</span>` : ''}</div>
+                  <div class="text-mute" style="font-size:11px">${fromMember.phone ? escapeHtml(String(fromMember.phone)) : ''}</div>
+                </div>
+                <button class="btn ghost sm" onclick="window._trState={...window._trState,fromId:null,sport:null,toId:null};render()">↺ ${t('Change', 'تغيير')}</button>
+              </div>
+            ` : `
+              <div style="display:flex;gap:6px;margin-bottom:8px">
+                <select id="tr-fsport" style="${selStyle}">
+                  <option value="all">${t('All sports', 'كل الرياضات')}</option>
+                  ${sportsInList.map(s => `<option value="${escapeHtml(s)}" ${st.fsport === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+                </select>
+                <select id="tr-fcoach" style="${selStyle}">
+                  <option value="all">${t('All coaches', 'كل المدربين')}</option>
+                  ${coachIdsInList.map(cid => `<option value="${cid}" ${String(st.fcoach) === String(cid) ? 'selected' : ''}>${escapeHtml(coachName(cid) || '—')}</option>`).join('')}
+                </select>
+              </div>
+              <input id="tr-fromq" placeholder="🔍 ${t('Search name (EN/AR) or mobile…', 'ابحث بالاسم (عربي/إنجليزي) أو الجوال…')}" value="${escapeHtml(st.fromQ)}" style="${inputStyle};margin-bottom:8px" />
+              <div class="text-mute" style="font-size:11px;margin-bottom:6px">${fromFiltered.length} ${t('of', 'من')} ${eligible.length} ${t('transferable members', 'عضو قابل للنقل')}${fromFiltered.length > 40 ? ' · ' + t('showing first 40', 'أول 40') : ''}</div>
+              <div style="display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto;padding-right:2px">
+                ${fromRows || `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">${t('No members match', 'لا يوجد أعضاء مطابقون')}</div>`}
+              </div>
+            `}
           </div>
 
+          <!-- STEP 2 — Which sport -->
           ${fromMember ? `
-          <div>
-            <label style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--blue);font-weight:600">2 · ${t('Which membership', 'أي اشتراك')}</label>
-            <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
+          <div style="border-top:1px solid var(--border);padding-top:16px">
+            ${stepLabel('2', t('Which membership?', 'أي اشتراك؟'))}
+            <div style="display:flex;flex-direction:column;gap:6px">
               ${fromEnrs.map(e => `
-                <label style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid ${st.sport === e.sport ? 'var(--blue)' : 'var(--border)'};border-radius:8px;cursor:pointer;background:${st.sport === e.sport ? 'rgba(91,141,239,.08)' : 'var(--surface)'}">
+                <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid ${st.sport === e.sport ? 'var(--blue)' : 'var(--border)'};border-radius:8px;cursor:pointer;background:${st.sport === e.sport ? 'rgba(91,141,239,.08)' : 'var(--surface)'}">
                   <input type="radio" name="tr-sport" value="${escapeHtml(e.sport)}" ${st.sport === e.sport ? 'checked' : ''} />
                   <div style="flex:1;min-width:0">
                     <div style="font-weight:600">${escapeHtml(e.sport)}</div>
@@ -18781,60 +19232,57 @@ PAGES.transfers = (main) => {
             </div>
           </div>` : ''}
 
+          <!-- STEP 3 — To member -->
           ${selEnr ? `
-          <div>
-            <label style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--blue);font-weight:600">3 · ${t('To member', 'إلى العضو')}</label>
-            <input id="tr-toq" placeholder="${t('Search name (EN/AR) or mobile…', 'ابحث بالاسم (عربي/إنجليزي) أو الجوال…')}" value="${escapeHtml(st.toQ)}" style="width:100%;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);margin:6px 0" />
-            <select id="tr-to" size="${Math.min(6, Math.max(3, toFiltered.length))}" style="width:100%;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)">
-              ${toFiltered.length ? toFiltered.map(m => `<option value="${m.id}" ${m.id === st.toId ? 'selected' : ''}>${memberOption(m)}</option>`).join('') : `<option disabled>${t('No match', 'لا نتيجة')}</option>`}
-            </select>
+          <div style="border-top:1px solid var(--border);padding-top:16px">
+            ${stepLabel('3', t('Transfer to whom? (receiver)', 'إلى من؟'))}
+            ${toMember ? `
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--green);border-radius:8px;background:rgba(34,197,94,.08)">
+                <div style="min-width:0">
+                  <div style="font-weight:700">${escapeHtml(toMember.name)}${toMember.nameArabic ? ` <span class="text-mute" style="font-weight:400" dir="rtl">${escapeHtml(toMember.nameArabic)}</span>` : ''}</div>
+                  <div class="text-mute" style="font-size:11px">${toMember.phone ? escapeHtml(String(toMember.phone)) : ''}</div>
+                </div>
+                <button class="btn ghost sm" onclick="window._trState={...window._trState,toId:null};render()">↺ ${t('Change', 'تغيير')}</button>
+              </div>
+            ` : `
+              <input id="tr-toq" placeholder="🔍 ${t('Search name (EN/AR) or mobile…', 'ابحث بالاسم (عربي/إنجليزي) أو الجوال…')}" value="${escapeHtml(st.toQ)}" style="${inputStyle};margin-bottom:8px" />
+              <div style="display:flex;flex-direction:column;gap:6px;max-height:240px;overflow:auto;padding-right:2px">
+                ${toRows || `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">${t('No members match', 'لا يوجد أعضاء مطابقون')}</div>`}
+              </div>
+            `}
           </div>` : ''}
 
+          <!-- Preview + action -->
           ${(fromMember && selEnr && toMember) ? `
-          <div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:12px;font-size:13px;line-height:1.7">
-            <div style="font-weight:700;margin-bottom:4px">${t('Preview', 'معاينة')}</div>
+          <div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);border-radius:10px;padding:14px;font-size:13px;line-height:1.7">
+            <div style="font-weight:700;margin-bottom:6px">✅ ${t('Ready to transfer', 'جاهز للنقل')}</div>
             <div>🔁 <b>${escapeHtml(selEnr.sport)}</b> · ${escapeHtml(coachName(selEnr.coachId) || '—')}</div>
-            <div>${escapeHtml(fromMember.name)} → <b>${escapeHtml(toMember.name)}</b></div>
-            <div class="text-mute" style="font-size:11px;margin-top:4px">${toMember.name} ${t('gets', 'يحصل على')} ${selEnr.classes || 0} ${t('classes', 'حصة')}, ${t('fresh expiry', 'انتهاء جديد')} ${fmtDate(addDays(TODAY, selEnr.validity || DEFAULT_VALIDITY))} · ${fmt(selEnr.price || 0)} QAR ${t('moves to', 'ينتقل إلى')} ${toMember.name}</div>
+            <div>${escapeHtml(fromMember.name)} <span style="color:var(--green)">→</span> <b>${escapeHtml(toMember.name)}</b></div>
+            <div class="text-mute" style="font-size:11px;margin-top:4px">${escapeHtml(toMember.name)} ${t('gets', 'يحصل على')} ${selEnr.classes || 0} ${t('classes', 'حصة')}, ${t('fresh expiry', 'انتهاء جديد')} ${fmtDate(addDays(TODAY, selEnr.validity || DEFAULT_VALIDITY))} · ${fmt(selEnr.price || 0)} QAR ${t('moves with it', 'ينتقل معه')}</div>
           </div>` : ''}
 
           ${blockMsg ? `<div style="color:var(--red);font-size:12px;font-weight:600">⛔ ${escapeHtml(blockMsg)}</div>` : ''}
 
-          <button id="tr-go" class="btn primary" ${(fromMember && selEnr && toMember && !blockMsg) ? '' : 'disabled style="opacity:.5;cursor:not-allowed"'}>🔁 ${t('Transfer membership', 'نقل الاشتراك')}</button>
+          <button id="tr-go" class="btn primary" style="padding:12px;font-size:15px" ${(fromMember && selEnr && toMember && !blockMsg) ? '' : 'disabled style="opacity:.45;cursor:not-allowed;padding:12px;font-size:15px"'}>🔁 ${t('Transfer membership', 'نقل الاشتراك')}</button>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header"><div><div class="card-title">📋 ${t('Members with transferable memberships', 'الأعضاء الذين لديهم اشتراك قابل للنقل')}</div><div class="card-subtitle">${fromFiltered.length} ${t('of', 'من')} ${eligible.length} ${t('members', 'عضو')}${(st.fcoach !== 'all' || st.fsport !== 'all' || st.fromQ) ? ' · ' + t('filtered', 'مُصفّى') : ''}</div></div></div>
-        <div class="table-wrap" style="max-height:60vh;overflow:auto">
-          ${fromFiltered.length ? `<table>
-            <thead><tr><th>${t('Member', 'العضو')}</th><th>${t('Sport', 'الرياضة')}</th><th>${t('Coach', 'المدرب')}</th><th class="text-right">${t('Classes', 'الحصص')}</th></tr></thead>
-            <tbody>${fromFiltered.map(x => x.enrs.map((e, i) => `<tr style="cursor:pointer" onclick="window._trState={...window._trState,fromId:${x.m.id},sport:${JSON.stringify(e.sport).replace(/"/g, '&quot;')},toId:null};render()" title="${t('Click to start a transfer from this member', 'اضغط لبدء النقل من هذا العضو')}">
-              ${i === 0 ? `<td rowspan="${x.enrs.length}" style="vertical-align:top"><div class="font-bold">${escapeHtml(x.m.name)}</div>${x.m.nameArabic ? `<div class="text-mute" style="font-size:11px" dir="rtl">${escapeHtml(x.m.nameArabic)}</div>` : ''}${x.m.phone ? `<div class="text-mute" style="font-size:11px">${escapeHtml(String(x.m.phone))}</div>` : ''}</td>` : ''}
-              <td>${escapeHtml(e.sport)}</td>
-              <td class="text-mute">${escapeHtml(coachName(e.coachId) || '—')}</td>
-              <td class="text-right num">${e.classes || 0}</td>
-            </tr>`).join('')).join('')}</tbody>
-          </table>` : `<div class="empty"><div class="empty-icon">📭</div>${(st.fcoach !== 'all' || st.fsport !== 'all' || st.fromQ) ? t('No members match the filters', 'لا يوجد أعضاء يطابقون المرشحات') : t('No transferable memberships right now', 'لا توجد اشتراكات قابلة للنقل حالياً')}</div>`}
+      <div class="card" style="margin-top:14px">
+        <div class="card-header"><div><div class="card-title">🗂 ${t('Transfer history', 'سجل النقل')}</div><div class="card-subtitle">${transfers.length} ${t('transfers', 'عملية نقل')}</div></div></div>
+        <div class="table-wrap">
+          ${transfers.length ? `<table>
+            <thead><tr><th>${t('Date', 'التاريخ')}</th><th>${t('From', 'من')}</th><th>${t('To', 'إلى')}</th><th>${t('Sport', 'الرياضة')}</th><th>${t('Coach', 'المدرب')}</th><th class="text-right">${t('Classes', 'الحصص')}</th><th class="text-right">${t('Amount', 'المبلغ')}</th></tr></thead>
+            <tbody>${transfers.map(tr => `<tr>
+              <td class="text-mute" style="font-size:12px;white-space:nowrap">${tr.date ? fmtDate(tr.date) : '—'}</td>
+              <td>${escapeHtml(tr.fromName || '—')}</td>
+              <td class="font-bold">${escapeHtml(tr.toName || '—')}</td>
+              <td>${escapeHtml(tr.sport || '—')}</td>
+              <td class="text-mute">${escapeHtml(tr.coach || coachName(tr.coachId) || '—')}</td>
+              <td class="text-right num">${tr.classes || 0}</td>
+              <td class="text-right num">${fmt(tr.price || 0)} QAR</td>
+            </tr>`).join('')}</tbody>
+          </table>` : `<div class="empty"><div class="empty-icon">🗂</div>${t('No transfers yet', 'لا توجد عمليات نقل بعد')}</div>`}
         </div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:14px">
-      <div class="card-header"><div><div class="card-title">🗂 ${t('Transfer history', 'سجل النقل')}</div><div class="card-subtitle">${transfers.length} ${t('transfers', 'عملية نقل')}</div></div></div>
-      <div class="table-wrap">
-        ${transfers.length ? `<table>
-          <thead><tr><th>${t('Date', 'التاريخ')}</th><th>${t('From', 'من')}</th><th>${t('To', 'إلى')}</th><th>${t('Sport', 'الرياضة')}</th><th>${t('Coach', 'المدرب')}</th><th class="text-right">${t('Classes', 'الحصص')}</th><th class="text-right">${t('Amount', 'المبلغ')}</th></tr></thead>
-          <tbody>${transfers.map(tr => `<tr>
-            <td class="text-mute" style="font-size:12px;white-space:nowrap">${tr.date ? fmtDate(tr.date) : '—'}</td>
-            <td>${escapeHtml(tr.fromName || '—')}</td>
-            <td class="font-bold">${escapeHtml(tr.toName || '—')}</td>
-            <td>${escapeHtml(tr.sport || '—')}</td>
-            <td class="text-mute">${escapeHtml(tr.coach || coachName(tr.coachId) || '—')}</td>
-            <td class="text-right num">${tr.classes || 0}</td>
-            <td class="text-right num">${fmt(tr.price || 0)} QAR</td>
-          </tr>`).join('')}</tbody>
-        </table>` : `<div class="empty"><div class="empty-icon">🗂</div>${t('No transfers yet', 'لا توجد عمليات نقل بعد')}</div>`}
       </div>
     </div>
   `;
@@ -18843,10 +19291,8 @@ PAGES.transfers = (main) => {
   $('#tr-fsport')?.addEventListener('change', e => { st.fsport = e.target.value; render(); });
   $('#tr-fcoach')?.addEventListener('change', e => { st.fcoach = e.target.value; render(); });
   $('#tr-fromq')?.addEventListener('input', e => { st.fromQ = e.target.value; render(); setTimeout(() => { const el = $('#tr-fromq'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0); });
-  $('#tr-from')?.addEventListener('change', e => { st.fromId = parseInt(e.target.value); st.sport = null; st.toId = null; render(); });
   document.querySelectorAll('input[name="tr-sport"]').forEach(r => r.addEventListener('change', e => { st.sport = e.target.value; st.toId = null; render(); }));
   $('#tr-toq')?.addEventListener('input', e => { st.toQ = e.target.value; render(); setTimeout(() => { const el = $('#tr-toq'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0); });
-  $('#tr-to')?.addEventListener('change', e => { st.toId = parseInt(e.target.value); render(); });
   $('#tr-go')?.addEventListener('click', () => {
     if (!(fromMember && selEnr && toMember)) return;
     showModal({
@@ -18926,7 +19372,9 @@ PAGES.transactions = (main) => {
       if (st.coachId !== 'all' && String(coachId || '') !== String(st.coachId)) continue;
       if (st.search) {
         const q = st.search.toLowerCase();
-        if (!(customer.toLowerCase().includes(q) || ref.toLowerCase().includes(q) || sport.toLowerCase().includes(q))) continue;
+        const cust = customerInfo(inv);
+        const phoneHit = phoneQueryMatches(cust.phone, st.search) || phoneQueryMatches(cust.phone2, st.search) || phoneQueryMatches(inv.customerPhone, st.search);
+        if (!(customer.toLowerCase().includes(q) || ref.toLowerCase().includes(q) || sport.toLowerCase().includes(q) || phoneHit)) continue;
       }
       txns.push({ id: inv.id, ref, date: (inv.date || '').slice(0, 10), category: cat, customer, sport, coach: coachName(coachId) || '—', amount: invAmount, method: inv.method || '' });
       byCategory[cat] = byCategory[cat] || { total: 0, count: 0 };
@@ -19048,4 +19496,382 @@ PAGES.transactions = (main) => {
   $('#txn-coach').addEventListener('change', e => { st.coachId = e.target.value; pg.page = 1; refresh(); });
   $('#txn-search').addEventListener('input', e => { st.search = e.target.value; pg.page = 1; refresh(); });
   refresh();
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DUPLICATE INVOICES  (Finance) — standalone review screen. Shows each suspected
+// duplicate group as detailed, side-by-side invoice cards so the admin can SEE
+// the old vs new invoice (ref, dates, customer, items, coach, amount, paid,
+// method, description) before deciding to keep or delete. Uses the same
+// detectDuplicateInvoices() detector as the popup did.
+// ═══════════════════════════════════════════════════════════════════════════
+PAGES.dupinvoices = (main) => {
+  if (currentRole() !== 'admin') { main.innerHTML = `<div class="empty"><div class="empty-icon">🔐</div>${t('Admins only', 'للمشرفين فقط')}</div>`; return; }
+  const groups = detectDuplicateInvoices();
+  const extra = groups.reduce((s, g) => s + (g.rows.length - 1), 0);
+  const exactN = groups.filter(g => g.tier === 'exact').length;
+  const possN = groups.filter(g => g.tier === 'possible').length;
+
+  const tierBadge = (tier) => tier === 'exact'
+    ? `<span class="badge" style="background:rgba(239,68,68,.15);color:var(--red)">${t('exact', 'مطابق')}</span>`
+    : `<span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-2)">${t('possible', 'محتمل')}</span>`;
+
+  const detailRow = (label, value) => `<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:12px"><span class="text-mute">${label}</span><span style="text-align:right;font-weight:600">${value}</span></div>`;
+
+  // One detailed card per invoice copy.
+  const invCard = (row, idx) => {
+    const inv = row.inv;
+    const keep = idx === 0;
+    const items = (inv.lineItems && inv.lineItems.length) ? inv.lineItems : [{ sport: inv.sport, coach: inv.coach, price: inv.amount || 0, classes: inv.classes }];
+    const paid = invoicePaid(inv);
+    return `
+      <div style="flex:1;min-width:230px;border:2px solid ${keep ? 'var(--green)' : 'var(--red)'};border-radius:10px;overflow:hidden;background:var(--surface)">
+        <div style="padding:8px 12px;background:${keep ? 'rgba(34,197,94,.10)' : 'rgba(239,68,68,.08)'};display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <div style="font-weight:700;font-size:13px">${escapeHtml(inv.ref || ('INV' + inv.id))}</div>
+          ${keep ? `<span class="badge" style="background:var(--green);color:#fff;font-size:10px">✓ ${t('KEEP (oldest)', 'احتفظ (الأقدم)')}</span>` : `<span class="badge" style="background:rgba(239,68,68,.15);color:var(--red);font-size:10px">${t('duplicate', 'مكرر')}</span>`}
+        </div>
+        <div style="padding:10px 12px">
+          ${detailRow(t('Date', 'التاريخ'), inv.date ? fmtDate(inv.date) : '—')}
+          ${detailRow(t('Month', 'الشهر'), escapeHtml(inv.month || (inv.date || '').slice(0, 7) || '—'))}
+          ${detailRow(t('Customer', 'العميل'), escapeHtml(row.memName || '—'))}
+          ${detailRow(t('Category', 'الفئة'), escapeHtml(inv.category || 'Membership'))}
+          <div style="border-top:1px solid var(--border);margin:6px 0;padding-top:6px">
+            ${items.map(li => `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:2px 0"><span>${escapeHtml(li.sport || li.name || li.product || '—')}${li.coach ? ` <span class="text-mute">· ${escapeHtml(li.coach)}</span>` : ''}${li.classes ? ` <span class="text-mute">×${li.classes}</span>` : ''}</span><span class="num font-bold">${fmt(li.price || 0)}</span></div>`).join('')}
+          </div>
+          ${detailRow(t('Amount', 'المبلغ'), `<span style="color:var(--text)">${fmt(inv.amount || 0)} QAR</span>`)}
+          ${detailRow(t('Paid', 'المدفوع'), `${fmt(paid)} QAR`)}
+          ${detailRow(t('Method', 'الطريقة'), escapeHtml(inv.method || '—'))}
+          ${inv.description ? `<div class="text-mute" style="font-size:11px;margin-top:6px;border-top:1px solid var(--border);padding-top:6px">${escapeHtml(inv.description)}</div>` : ''}
+        </div>
+        <div style="padding:8px 12px;border-top:1px solid var(--border);display:flex;gap:6px">
+          <button class="btn ghost sm" style="flex:1" onclick="printInvoicePDF(${inv.id})">👁 ${t('View PDF', 'عرض PDF')}</button>
+          ${keep ? `<button class="btn ghost sm" style="flex:1;opacity:.5;cursor:not-allowed" disabled title="${t('Kept — the oldest copy', 'مُحتفظ به — الأقدم')}">✓ ${t('Keeping', 'محتفظ')}</button>`
+                 : `<button class="btn ghost sm" style="flex:1;color:var(--red);border-color:var(--red)" onclick="deleteDuplicateInvoicePage(${inv.id})">🗑 ${t('Delete', 'حذف')}</button>`}
+        </div>
+      </div>`;
+  };
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🔍 ${t('Duplicate Invoices', 'الفواتير المكررة')}</h1>
+        <div class="subtitle">${t('Review suspected duplicates side by side before deleting. The oldest copy is kept by default.', 'راجع الفواتير المكررة جنباً إلى جنب قبل الحذف. يتم الاحتفاظ بالأقدم افتراضياً.')}</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="render()">↻ ${t('Refresh', 'تحديث')}</button>
+      </div>
+    </div>
+
+    ${groups.length ? `
+    <div class="card" style="margin-bottom:14px">
+      <div style="padding:14px;display:flex;flex-wrap:wrap;gap:18px;align-items:center">
+        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">${t('Groups', 'مجموعات')}</div><div style="font-size:22px;font-weight:800">${groups.length}</div></div>
+        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase;color:var(--red)">${t('Exact', 'مطابق')}</div><div style="font-size:22px;font-weight:800;color:var(--red)">${exactN}</div></div>
+        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase;color:var(--accent-2)">${t('Possible', 'محتمل')}</div><div style="font-size:22px;font-weight:800;color:var(--accent-2)">${possN}</div></div>
+        <div><div class="text-mute" style="font-size:11px;text-transform:uppercase">${t('Extra invoices', 'فواتير زائدة')}</div><div style="font-size:22px;font-weight:800">${extra}</div></div>
+        <div class="text-mute" style="font-size:11px;max-width:380px;line-height:1.5">
+          <b style="color:var(--red)">${t('Exact', 'مطابق')}</b> = ${t('same customer, items, month AND amount.', 'نفس العميل والبنود والشهر والمبلغ.')}
+          <b style="color:var(--accent-2)">${t('Possible', 'محتمل')}</b> = ${t('same customer, items & amount within 7 days — review carefully.', 'نفس العميل والبنود والمبلغ خلال 7 أيام — راجع بعناية.')}
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      ${groups.map(g => {
+        const r0 = g.rows[0];
+        return `
+        <div class="card">
+          <div class="card-header"><div><div class="card-title" style="display:flex;align-items:center;gap:8px">${tierBadge(g.tier)} ${escapeHtml(r0.memName)}</div><div class="card-subtitle">${escapeHtml(r0.cat)} · ${escapeHtml(r0.sport)} · ${fmt(r0.inv.amount || 0)} QAR · ${g.rows.length} ${t('copies', 'نسخ')}</div></div></div>
+          <div style="padding:14px;display:flex;flex-wrap:wrap;gap:12px;align-items:stretch">
+            ${g.rows.map((row, idx) => invCard(row, idx)).join('<div style="display:flex;align-items:center;color:var(--text-mute);font-size:20px">vs</div>')}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+    ` : `
+    <div class="card"><div class="empty" style="padding:50px"><div class="empty-icon">✅</div>
+      <div style="font-weight:600;margin-bottom:4px">${t('No duplicate invoices found', 'لا توجد فواتير مكررة')}</div>
+      <div class="text-mute" style="font-size:12px;max-width:420px;margin:0 auto">${t('Checks every category for more than one invoice with the same customer, items and amount (exact = same month; possible = within 7 days).', 'يفحص كل الفئات بحثاً عن أكثر من فاتورة بنفس العميل والبنود والمبلغ (مطابق = نفس الشهر؛ محتمل = خلال 7 أيام).')}</div>
+    </div></div>
+    `}
+  `;
+};
+
+// Delete from the dedicated page, then re-render the page (not the old popup).
+window.deleteDuplicateInvoicePage = function(id) {
+  const inv = state.invoices.find(i => i.id === id);
+  if (!inv) return;
+  if (!confirm(`${t('Delete invoice', 'حذف الفاتورة')} ${inv.ref || ('INV' + id)} (${fmt(inv.amount || 0)} QAR)? ${t('This cannot be undone.', 'لا يمكن التراجع.')}`)) return;
+  // Soft-delete keeps the audit trail and lets revenue reports exclude it cleanly.
+  inv.deleted = true;
+  if (typeof audit === 'function') audit('invoice.delete_duplicate', 'invoice:' + id, `Deleted duplicate ${inv.ref || id} (${fmt(inv.amount || 0)} QAR)`, { id });
+  save();
+  toast(t('Duplicate invoice deleted', 'تم حذف الفاتورة المكررة'));
+  render();
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PRODUCT SALES INSIGHTS  (Finance) — aggregates state.sales[].items by product
+// so the owner can see best-sellers, units sold, revenue per product, current
+// stock and low-stock flags at a glance, with a period filter. Complements the
+// per-transaction Sales list with product-level analytics.
+// ═══════════════════════════════════════════════════════════════════════════
+PAGES.productsales = (main) => {
+  const isoOf = x => x.toISOString().slice(0, 10);
+  if (!window._psState) window._psState = { preset: 'this_month', from: '', to: '', sort: 'revenue' };
+  const st = window._psState;
+
+  function resolveRange(preset) {
+    const today = TODAY;
+    if (preset === 'this_month') return { from: today.slice(0, 7) + '-01', to: today };
+    if (preset === 'last_month') {
+      const y = parseInt(today.slice(0, 4)), m = parseInt(today.slice(5, 7));
+      const lm = m === 1 ? 12 : m - 1, ly = m === 1 ? y - 1 : y;
+      const last = new Date(ly, lm, 0).getDate(), mm = String(lm).padStart(2, '0');
+      return { from: `${ly}-${mm}-01`, to: `${ly}-${mm}-${String(last).padStart(2, '0')}` };
+    }
+    if (preset === 'this_year') return { from: today.slice(0, 4) + '-01-01', to: today };
+    if (preset === 'custom') return { from: st.from || '', to: st.to || today };
+    return { from: '', to: '' };   // all time
+  }
+
+  function build() {
+    const range = resolveRange(st.preset);
+    const inRange = s => {
+      const d = (s.date || '').slice(0, 10);
+      if (range.from && d < range.from) return false;
+      if (range.to && d > range.to) return false;
+      return true;
+    };
+    // Aggregate per product across all sales in range.
+    const byProduct = {};
+    let totalUnits = 0, totalRevenue = 0, txCount = 0;
+    for (const sale of (state.sales || [])) {
+      if (!inRange(sale)) continue;
+      let saleHasItem = false;
+      for (const it of (sale.items || [])) {
+        const key = it.productId != null ? 'p' + it.productId : 'n:' + (it.name || '—');
+        const rev = (it.qty || 0) * (it.unitPrice || 0);
+        if (!byProduct[key]) {
+          const prod = it.productId != null ? (state.products || []).find(p => p.id === it.productId) : null;
+          byProduct[key] = { productId: it.productId, name: (prod && prod.name) || it.name || '—', category: (prod && prod.category) || '', units: 0, revenue: 0, txns: 0, stock: prod ? (typeof productCurrentStock === 'function' ? productCurrentStock(it.productId) : (prod.stock || 0)) : null };
+        }
+        byProduct[key].units += it.qty || 0;
+        byProduct[key].revenue += rev;
+        byProduct[key].txns += 1;
+        totalUnits += it.qty || 0;
+        totalRevenue += rev;
+        saleHasItem = true;
+      }
+      if (saleHasItem) txCount++;
+    }
+    let products = Object.values(byProduct);
+    const sorters = {
+      revenue: (a, b) => b.revenue - a.revenue,
+      units: (a, b) => b.units - a.units,
+      name: (a, b) => String(a.name).localeCompare(String(b.name)),
+      stock: (a, b) => (a.stock == null ? 1 : b.stock == null ? -1 : a.stock - b.stock),
+    };
+    products.sort(sorters[st.sort] || sorters.revenue);
+    return { products, totalUnits, totalRevenue, txCount, range };
+  }
+
+  function refresh() {
+    const { products, totalUnits, totalRevenue, txCount } = build();
+    const maxRev = Math.max(1, ...products.map(p => p.revenue));
+    const top = products[0];
+
+    $('#ps-kpis').innerHTML = `
+      <div class="kpi"><div class="kpi-label">${t('Products sold', 'منتجات مُباعة')}</div><div class="kpi-value num">${products.length}</div></div>
+      <div class="kpi blue"><div class="kpi-label">${t('Units sold', 'وحدات مُباعة')}</div><div class="kpi-value num">${totalUnits}</div></div>
+      <div class="kpi green"><div class="kpi-label">${t('Revenue', 'الإيراد')}</div><div class="kpi-value num">${fmt(totalRevenue)}</div><div class="kpi-sub">QAR · ${txCount} ${t('sales', 'عملية')}</div></div>
+      <div class="kpi"><div class="kpi-label">${t('Best seller', 'الأكثر مبيعاً')}</div><div class="kpi-value" style="font-size:15px">${top ? escapeHtml(top.name) : '—'}</div>${top ? `<div class="kpi-sub">${top.units} ${t('units', 'وحدة')} · ${fmt(top.revenue)} QAR</div>` : ''}</div>`;
+
+    $('#ps-tbody').innerHTML = products.length ? products.map((p, i) => {
+      const low = p.stock != null && p.stock <= 3;
+      return `<tr>
+        <td style="padding:8px 10px;text-align:center;color:var(--text-mute);font-weight:700">${i + 1}</td>
+        <td style="padding:8px 10px"><div style="font-weight:600">${escapeHtml(p.name)}</div>${p.category ? `<div class="text-mute" style="font-size:11px">${escapeHtml(p.category)}</div>` : ''}</td>
+        <td style="padding:8px 10px;text-align:right" class="num font-bold">${p.units}</td>
+        <td style="padding:8px 10px;min-width:120px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="flex:1;height:7px;background:var(--surface-2);border-radius:4px;overflow:hidden"><div style="height:100%;width:${Math.round(p.revenue / maxRev * 100)}%;background:var(--green)"></div></div>
+            <span class="num font-bold" style="white-space:nowrap">${fmt(p.revenue)}</span>
+          </div>
+        </td>
+        <td style="padding:8px 10px;text-align:right" class="num">${p.txns}</td>
+        <td style="padding:8px 10px;text-align:right">${p.stock == null ? '<span class="text-mute">—</span>' : `<span class="${low ? 'badge' : 'num'}" style="${low ? 'background:rgba(239,68,68,.15);color:var(--red);font-weight:700' : ''}">${p.stock}${low ? ' ⚠' : ''}</span>`}</td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="6" class="empty"><div class="empty-icon">📦</div>${t('No product sales in this period', 'لا توجد مبيعات منتجات في هذه الفترة')}</td></tr>`;
+
+    $('#ps-foot').innerHTML = products.length ? `<tr style="border-top:2px solid var(--border);font-weight:800">
+      <td></td><td style="padding:8px 10px">${t('Total', 'الإجمالي')}</td>
+      <td style="padding:8px 10px;text-align:right" class="num">${totalUnits}</td>
+      <td style="padding:8px 10px" class="num font-bold" style="color:var(--green)">${fmt(totalRevenue)} QAR</td>
+      <td style="padding:8px 10px;text-align:right" class="num">${txCount}</td><td></td>
+    </tr>` : '';
+
+    const cr = $('#ps-customrange');
+    if (cr) cr.style.display = st.preset === 'custom' ? 'flex' : 'none';
+  }
+
+  window._psExportCSV = () => {
+    const { products } = build();
+    const rows = [['Rank', 'Product', 'Category', 'Units', 'Revenue', 'Sales', 'Stock']];
+    products.forEach((p, i) => rows.push([i + 1, p.name, p.category, p.units, p.revenue, p.txns, p.stock == null ? '' : p.stock]));
+    downloadFile(`product-sales-${TODAY}.csv`, rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n'), 'text/csv');
+    toast('Exported product-sales.csv');
+  };
+
+  const presetOpt = (v, label) => `<option value="${v}" ${st.preset === v ? 'selected' : ''}>${label}</option>`;
+  const sortOpt = (v, label) => `<option value="${v}" ${st.sort === v ? 'selected' : ''}>${label}</option>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>📦 ${t('Product Sales', 'مبيعات المنتجات')}</h1>
+        <div class="subtitle">${t('Best-sellers, units and revenue per product', 'الأكثر مبيعاً والوحدات والإيراد لكل منتج')}</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="_psExportCSV()">⬇ ${t('Export CSV', 'تصدير CSV')}</button>
+        <button class="btn ghost" onclick="navigate('sales')">🧾 ${t('All sales', 'كل المبيعات')}</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="filter-bar" style="flex-wrap:wrap;gap:8px">
+        <select id="ps-preset" class="btn ghost">
+          ${presetOpt('this_month', t('This month', 'هذا الشهر'))}
+          ${presetOpt('last_month', t('Last month', 'الشهر الماضي'))}
+          ${presetOpt('this_year', t('This year', 'هذا العام'))}
+          ${presetOpt('all', t('All time', 'كل الوقت'))}
+          ${presetOpt('custom', t('Custom range', 'فترة مخصصة'))}
+        </select>
+        <div id="ps-customrange" style="display:${st.preset === 'custom' ? 'flex' : 'none'};gap:6px;align-items:center">
+          <input id="ps-from" type="date" class="btn ghost" value="${st.from}" />
+          <span class="text-mute">→</span>
+          <input id="ps-to" type="date" class="btn ghost" value="${st.to}" />
+        </div>
+        <select id="ps-sort" class="btn ghost">
+          ${sortOpt('revenue', t('Sort: Revenue', 'ترتيب: الإيراد'))}
+          ${sortOpt('units', t('Sort: Units sold', 'ترتيب: الوحدات'))}
+          ${sortOpt('stock', t('Sort: Stock (low first)', 'ترتيب: المخزون'))}
+          ${sortOpt('name', t('Sort: Name', 'ترتيب: الاسم'))}
+        </select>
+      </div>
+      <div class="kpi-grid" id="ps-kpis" style="grid-template-columns:repeat(4,1fr);gap:12px;margin:0 0 14px"></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th style="text-align:center">#</th>
+            <th>${t('Product', 'المنتج')}</th>
+            <th class="text-right">${t('Units', 'الوحدات')}</th>
+            <th>${t('Revenue', 'الإيراد')}</th>
+            <th class="text-right">${t('Sales', 'العمليات')}</th>
+            <th class="text-right">${t('Stock', 'المخزون')}</th>
+          </tr></thead>
+          <tbody id="ps-tbody"></tbody>
+          <tfoot id="ps-foot"></tfoot>
+        </table>
+      </div>
+    </div>
+  `;
+  $('#ps-preset').addEventListener('change', e => { st.preset = e.target.value; refresh(); });
+  $('#ps-from')?.addEventListener('change', e => { st.from = e.target.value; refresh(); });
+  $('#ps-to')?.addEventListener('change', e => { st.to = e.target.value; refresh(); });
+  $('#ps-sort').addEventListener('change', e => { st.sort = e.target.value; refresh(); });
+  refresh();
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLEANUP CENTER  (System, admin-only) — one place to find and fix legacy data
+// messes: members with the same sport enrolled twice, and members holding
+// several membership invoices that should be a single one (the v6.55 rule
+// applied retroactively). Each finding has a one-click, audited fix. All fixes
+// are reversible-friendly (invoice removals are SOFT deletes).
+// ═══════════════════════════════════════════════════════════════════════════
+PAGES.cleanup = (main) => {
+  if (currentRole() !== 'admin') { main.innerHTML = `<div class="empty"><div class="empty-icon">🔐</div>${t('Admins only', 'للمشرفين فقط')}</div>`; return; }
+  const dupEnr = findDuplicateEnrollments();
+  const mergeable = findMembersWithMergeableInvoices();
+
+  const enrSection = dupEnr.length ? dupEnr.map(d => {
+    const rows = d.rows.map((e, i) => `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:3px 0;${i === 0 ? '' : 'opacity:.7'}">
+      <span>${i === 0 ? '✅ ' + t('keep', 'احتفظ') : '🗑 ' + t('duplicate', 'مكرر')} · ${escapeHtml(coachName(e.coachId) || '—')} · ${e.classes || 0} ${t('classes', 'حصة')}</span>
+      <span class="num">${fmt(e.price || 0)} QAR</span>
+    </div>`).join('');
+    return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><b>${escapeHtml(d.member.name)}</b> · <span class="badge blue" style="font-size:10px">${escapeHtml(d.sport)} ×${d.count}</span></div>
+        <button class="btn ghost sm" style="color:var(--blue)" onclick="dedupeMemberEnrollment(${d.member.id}, ${JSON.stringify(d.sport).replace(/"/g, '&quot;')})">🔧 ${t('Keep one', 'احتفظ بواحد')}</button>
+      </div>
+      <div style="margin-top:6px">${rows}</div>
+    </div>`;
+  }).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('No duplicate enrollments found', 'لا توجد تسجيلات مكررة')}</div>`;
+
+  const mergeSection = mergeable.length ? mergeable.map(d => `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><b>${escapeHtml(d.member.name)}</b> · <span class="text-mute" style="font-size:12px">${d.invoices.length} ${t('invoices', 'فواتير')} · ${fmt(d.total)} QAR ${t('total', 'إجمالي')} · ${fmt(d.paid)} ${t('paid', 'مدفوع')}</span></div>
+        <button class="btn ghost sm" style="color:var(--blue)" onclick="mergeMemberInvoicesUI(${d.member.id})">🧾 ${t('Merge into one', 'دمج في واحدة')}</button>
+      </div>
+      <div style="margin-top:6px;font-size:11px" class="text-mute">${d.invoices.map((iv, i) => `${i === 0 ? '✅ ' : '↪ '}${escapeHtml(iv.ref || ('INV' + iv.id))} · ${iv.date ? fmtDate(iv.date) : '—'} · ${fmt(iv.amount || 0)}`).join('<br>')}</div>
+    </div>`).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('No members with splittable invoices', 'لا يوجد أعضاء بفواتير متعددة')}</div>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🧹 ${t('Cleanup Center', 'مركز التنظيف')}</h1>
+        <div class="subtitle">${t('Find and fix legacy data issues — duplicate sports and split invoices', 'ابحث وأصلح مشاكل البيانات القديمة — الرياضات المكررة والفواتير المتعددة')}</div>
+      </div>
+      <div class="topbar-actions"><button class="btn ghost" onclick="render()">↻ ${t('Rescan', 'إعادة الفحص')}</button></div>
+    </div>
+
+    <div class="kpi-grid" style="grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi ${dupEnr.length ? 'red' : 'green'}"><div class="kpi-label">${t('Duplicate enrollments', 'تسجيلات مكررة')}</div><div class="kpi-value num">${dupEnr.length}</div></div>
+      <div class="kpi ${mergeable.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Members with split invoices', 'أعضاء بفواتير متعددة')}</div><div class="kpi-value num">${mergeable.length}</div></div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-header"><div><div class="card-title">🔁 ${t('Duplicate enrollments', 'تسجيلات مكررة')}</div><div class="card-subtitle">${t('Same sport enrolled more than once on a member. Keep one removes the extras (oldest kept).', 'نفس الرياضة مسجلة أكثر من مرة. الاحتفاظ بواحد يزيل الزائد.')}</div></div></div>
+      <div style="padding:12px">${enrSection}</div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">🧾 ${t('Consolidate invoices', 'دمج الفواتير')}</div><div class="card-subtitle">${t('Members with several membership invoices. Merge combines them into the oldest one; payments keep their months so revenue is unchanged.', 'أعضاء لديهم عدة فواتير اشتراك. الدمج يجمعها في الأقدم؛ المدفوعات تحتفظ بشهورها فلا يتغير الإيراد.')}</div></div></div>
+      <div style="padding:12px">${mergeSection}</div>
+    </div>
+  `;
+};
+
+window.dedupeMemberEnrollment = function(memberId, sport) {
+  const m = state.members.find(x => x.id === memberId);
+  if (!m || !Array.isArray(m.enrollments)) return;
+  const matches = m.enrollments.filter(e => e.sport === sport);
+  if (matches.length < 2) { toast('Nothing to dedupe', 'info'); return; }
+  if (!confirm(`Keep one "${sport}" enrollment for ${m.name} and remove ${matches.length - 1} duplicate${matches.length - 1 === 1 ? '' : 's'}?\n\nThis does not touch invoices or attendance — it only removes the repeated enrollment row(s).`)) return;
+  // Keep the first occurrence, drop the rest.
+  let kept = false;
+  m.enrollments = m.enrollments.filter(e => {
+    if (e.sport !== sport) return true;
+    if (!kept) { kept = true; return true; }
+    return false;
+  });
+  if (typeof audit === 'function') audit('cleanup.dedupe_enrollment', 'member:' + memberId, `Removed ${matches.length - 1} duplicate ${sport} enrollment(s)`);
+  save();
+  toast(`Kept one ${sport} enrollment for ${m.name}`, 'success');
+  render();
+};
+
+window.mergeMemberInvoicesUI = function(memberId) {
+  const m = state.members.find(x => x.id === memberId);
+  if (!m) return;
+  const invs = (state.invoices || []).filter(inv => !inv.deleted && inv.customerId === memberId && !inv.switchCredit && inv.activityType !== 'switch-credit' && (inv.category || 'Membership') === 'Membership');
+  if (invs.length < 2) { toast('Only one invoice — nothing to merge', 'info'); return; }
+  if (!confirm(`Merge ${m.name}'s ${invs.length} membership invoices into one?\n\nAll sport lines and payments move into the oldest invoice; the others are archived (soft-deleted). Payments keep their own months, so monthly revenue does not change.`)) return;
+  const kept = mergeMemberInvoices(memberId);
+  if (!kept) { toast('Merge failed', 'error'); return; }
+  if (typeof audit === 'function') audit('cleanup.merge_invoices', 'member:' + memberId, `Merged ${invs.length} invoices into ${kept.ref || ('INV' + kept.id)}`);
+  save();
+  toast(`Merged into ${kept.ref || ('INV' + kept.id)} — ${fmt(kept.amount)} QAR`, 'success');
+  render();
 };

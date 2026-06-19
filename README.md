@@ -1,4 +1,273 @@
 # Black Stars CRM
+Version 6.57.0 - Bilingual invoice PDF + club rule conditions.
+
+## 6.57.0 note - bilingual invoice + policy terms
+1. The printed invoice is now bilingual (English / Arabic) on its structural
+   labels: Invoice, Issued, Printed, From, Billed to, Activity, Coach, Period,
+   Description, Qty, Amount, Subtotal, Tax, Total, Paid, Balance due, Amount in
+   words, Payment method. (The Terms block was already English+Arabic side by
+   side.) Member-entered data - names, notes - is left as typed.
+2. Added the three club conditions to BOTH the English and Arabic terms lists:
+   - The sport may be switched only once per membership.
+   - Membership may be frozen up to one week for each month of membership.
+   - Classes must be completed within the package validity period; unused classes
+     after expiry are forfeited.
+These match the in-app enforcement added in 6.53/6.54. No schema change.
+
+# Black Stars CRM
+Version 6.56.0 - Batch C: Cleanup Center for legacy data.
+
+## 6.56.0 note - Cleanup Center (System, admin)
+New System -> Cleanup Center screen to find and fix legacy data messes left from
+imports and pre-6.55 edits:
+1. DUPLICATE ENROLLMENTS - members with the same sport enrolled more than once.
+   "Keep one" removes the extra enrollment row(s) (oldest kept); invoices and
+   attendance are untouched.
+2. SPLIT INVOICES - members holding several membership invoices. "Merge into one"
+   consolidates all their sport lines and payments into the OLDEST invoice and
+   soft-deletes the rest. Payments keep their own months, so monthly revenue is
+   unchanged - it just becomes a single invoice document per member (the v6.55
+   rule applied retroactively).
+Both fixes are admin-only, confirmed, and audit-logged; invoice removals are soft
+deletes (recoverable). Route count -> 47. No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
+Version 6.55.0 - One invoice per member: edits merge, not duplicate.
+
+## 6.55.0 note - keep a single membership invoice per member
+Editing an existing member no longer creates extra invoices. Specifically:
+- ADDING a sport during edit now MERGES into the member's existing membership
+  invoice (adds a line item, raises the total) instead of creating a second
+  invoice. The added amount is recorded as a fresh PAYMENT dated today, so the
+  invoice document stays single while revenue is still counted in the month the
+  money was actually collected.
+- DELETING a sport already adjusts the existing invoice in place (prorates paid).
+- EDITING a sport's duration / price / coach already syncs the existing invoice.
+- UPDATING member details (name, phone) now also syncs onto their existing linked
+  invoice(s) - no new invoice.
+New invoices are still created only for: adding a NEW member, RENEWING, a PRODUCT
+sale, or a RENTAL. If a member somehow has no membership invoice yet, adding a
+sport creates the first one (fallback). No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.54.0 - One sport switch; commission kept; 2-reminder tracking.
+
+## 6.54.0 note - switch limit, commission, reminder status
+1. SPORT SWITCH is now limited to ONCE per membership cycle. A second attempt is
+   blocked with a clear message (shows the prior switch). The allowance resets when
+   the member renews. For other corrections, Withdraw or Edit pricing still work.
+2. Coach commission/salary on a switch is preserved (this already worked via the
+   attended-classes split: the old coach keeps the share they earned for classes
+   already attended, and the unearned remainder transfers to the new coach). No
+   change to that maths - confirmed and now covered.
+3. REMINDERS (expiring / expired / due) now track a COUNT, not just a date. A
+   member can be reminded up to TWICE per cycle; the 2nd reminder asks for
+   confirmation ("send a second/final reminder?") and a 3rd is blocked. The status
+   column shows "1/2" or "2/2" with the last date, and the action turns to "done"
+   once twice-reminded. Legacy lastRemindedAt counts as one. Same applies to the
+   camp reminder buttons and the bulk camp panel. No schema change.
+
+# Black Stars CRM
+Version 6.53.0 - Freeze: one week per month, multiple freezes, in days.
+
+## 6.53.0 note - freeze allowance one week per month
+The membership freeze allowance is now ONE WEEK (7 days) for each month of
+membership: a 1-month plan = 7 days, 2-month = 14, 3-month = 21, and so on
+(rounded to the nearest month of validity). Members can freeze MORE THAN ONCE -
+the allowance can be split across several freezes - as long as the running total
+stays within it; the freeze dialog shows allowance / used / remaining and caps the
+input at what is left. Freezes remain DAY-based (any number of days up to the
+remaining allowance, with quick presets). The allowance resets when the member
+renews (new cycle). Expiry and each sport's end date still shift forward by the
+frozen days. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.52.0 - Bug-fix Batch 1: data-entry guards.
+
+## 6.52.0 note - guard against bad data entry
+1. Classes field now has sane bounds. A realistic count (<=60) saves freely; an
+   unusually high one (61-365) asks for confirmation; anything absurd (>365, e.g.
+   a mistyped year like "2026") is rejected with a clear message. The input also
+   carries a max attribute. This stops fat-finger entries from polluting
+   attendance percentages and coach reports.
+2. Attendance marking is capped at the planned classes. If marking a member
+   "present" would push their attended count past the classes they paid for in the
+   current subscription period, it asks to confirm first (suggesting they may need
+   to renew). Toggling an existing mark is unaffected. This complements the v6.27
+   display clamp by stopping the over-count at the source.
+
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.51.0 - Invoice date = sport start date; separate Printed date.
+
+## 6.51.0 note - invoice issue date follows the sport start
+1. "Generate latest invoice" now defaults the invoice date to the member's
+   EARLIEST sport start date (the membership-period start), not today - so a
+   retro-generated invoice carries the date the subscription actually began
+   (e.g. 10 May, not the day you pressed Generate). With several sports it takes
+   the earliest start. The admin can still override the date field; once edited
+   by hand it won't be auto-changed.
+2. The printed invoice now shows a separate "Printed {today}" line under the
+   "Issued {invoice date}" line, so the document records when it was actually
+   printed/exported, distinct from its issue date.
+
+Revenue is unaffected by display-date changes where payments carry their own
+month; for these generated invoices the month follows the issue (start) date as
+before. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.50.0 - Remind all expiring camp members (guided panel).
+
+## 6.50.0 note - "Remind all expiring" for camp
+A "Remind all expiring (N)" button now appears on the Camp Members screen whenever
+there are members expiring within 7 days. It opens a guided panel with one row per
+expiring-soon camp member - name, phone, expiry and days left - each with its own
+WhatsApp button carrying the warm bilingual renewal message. Because WhatsApp can
+only open one chat at a time, you tap down the list one parent at a time; the panel
+ticks each off (⏳ -> ✅), stamps them reminded (audit-logged), and shows a live
+progress bar ("3 / 9 messaged") so nobody is missed or double-messaged. Members
+without a phone are listed but flagged to add a number first. No schema change.
+
+# Black Stars CRM
+Version 6.49.0 - Camp expiring-soon: friendly WhatsApp renewal reminder.
+
+## 6.49.0 note - remind expiring camp members
+Camp members whose membership expires within 7 days now show a 📱 Remind button
+on their row in the Camp Members screen. It opens WhatsApp with a warm, bilingual
+(Arabic-first) message that names the member and their expiry date - "We'll really
+miss {name} at camp! We'd love for them to renew and enjoy even more activities and
+fun with their friends." Sending stamps lastRemindedAt (audit-logged), same as the
+main renewal reminders. The button only appears for expiring-soon members who have
+a real phone number. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.48.0 - Product Sales insights screen.
+
+## 6.48.0 note - product-level sales analytics
+New Finance -> Product Sales screen. It aggregates every product sale (from
+state.sales items) by product so you can see best-sellers, units sold, revenue
+per product (with a bar), number of sales, and current stock at a glance - rather
+than reading it off individual invoices. Includes a period filter (This month /
+Last month / This year / All time / Custom range), a Sort dropdown (revenue /
+units / stock low-first / name), KPI cards (products sold, units, revenue, best
+seller), a totals footer, low-stock flags, and CSV export. Read-only; no schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.47.0 - Expenses: multi-select category & method filters.
+
+## 6.47.0 note - pick several categories / methods at once
+The Expenses screen's Category and Method filters are now multi-select checkbox
+dropdowns instead of single-pick. You can view several categories together (e.g.
+Salary + Coach Commission), or several methods (Cash + Card), and the table,
+footer totals and subtitle all reflect the combined selection. The button shows
+"N selected" when more than one is ticked. No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
+Version 6.46.0 - Families page: member breakdown + paid/owed totals.
+
+## 6.46.0 note - family financials and member list
+1. The Families page now shows, for each household, a TABLE of its members - name,
+   Arabic name, sport(s), status, total PAID, and outstanding (Owes) - with a
+   "Family total" footer summing paid and owed. A new "Total paid" KPI sits beside
+   the combined-balance KPI at the top. Click any member row to open them.
+2. The bulk "Add to family" button (in the Members selection bar) now appears only
+   when 2 or more members are selected, since a family needs at least two. It still
+   suggests a family name from the shared surname and the common phone.
+
+memberPaidTotal counts paid amounts across ALL the member's non-deleted invoices
+(every category, cash-basis); outstanding is membership balance as before. No
+schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.45.0 - Bulk "Add to family" for selected members.
+
+## 6.45.0 note - group selected members into a family at once
+The Members selection bar (shown when you tick members) has a new "Add to family"
+button. Pick several members - e.g. siblings who share a phone - and assign them
+all to one household in one step: choose an existing family or create a new one.
+The dialog pre-suggests a family name from the members' shared surname and a
+shared contact phone from the selection, and lists everyone being grouped (showing
+who is already in a family). No schema change - it sets each member's familyId,
+the same field the single-member family dialog uses.
+
+# Black Stars CRM
+Version 6.44.0 - Fix Add Sibling; clearer same-phone handling.
+
+## 6.44.0 note - Add Sibling now works end-to-end
+"Add Sibling" (the copy-member button) used to copy the source member's NAME and
+QID too, so when you pressed Save the new record looked like an exact duplicate
+(same name + same phone) and was BLOCKED, reopening the original - which is why it
+seemed broken. Now it copies the shared family data - phone, second phone, email,
+nationality, level, and every sport/coach/class/price - but CLEARS the name,
+Arabic name, birthdate, gender and QID (a sibling is a different person and QID is
+a personal national ID). You just enter the sibling's own name + birthdate and
+save. Because the name now differs, the same-phone/different-name confirmation
+("Mobile X already belongs to Y - add as a separate member?") is what appears,
+which is the intended family-on-one-phone path. No schema change.
+
+# Black Stars CRM
+Version 6.43.0 - Members: "Similar names" filter to find likely duplicates.
+
+## 6.43.0 note - find redundant/duplicate member names
+The Members screen has a new "Similar names" toggle in the filter bar. When on,
+it shows only members whose English OR Arabic name is the SAME or very similar to
+another member's - using edit-distance (Levenshtein) similarity, so "Mohamed Ali"
+clusters with "Mohammed Ali", and Arabic names differing only by a hamza/diacritic
+(احمد محمد / أحمد محمد) are caught too. A summary line shows how many groups and
+members were flagged. Open each to compare and merge/archive the real duplicates.
+Short names (<4 chars) require an exact match to avoid false positives. Toggling
+it off or Clear filters restores the normal list. No schema change.
+
+# Black Stars CRM
+Version 6.42.0 - Format-insensitive phone search + per-coach invoice lines.
+
+## 6.42.0 note - phone search any format + coaches on every invoice line
+1. Mobile search now ignores formatting everywhere it matters: spaces ("5040
+   5905"), a leading + or 00, and the 974 country code all match a stored
+   "+97450405905". Added to the Invoices, Transactions and Transfer searches
+   (the Members list already did this). Partial digit runs still match.
+2. Generated/combined membership invoices now store per-sport LINE ITEMS, so the
+   printed invoice lists EACH enrolled sport on its own row with its own coach
+   (previously a multi-sport invoice showed only the primary coach and merged the
+   sports into one description line with no second coach).
+
+Note on the "4 invoices for one customer": those are real saved invoices - the
+original per-sport ones plus a later combined one created via "Generate latest
+invoice". That flow warns about a same-month duplicate but still lets you proceed,
+so overlaps can exist. Use Finance -> Duplicate Invoices to review and remove the
+extras. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.41.0 - Duplicate Invoices: dedicated side-by-side review screen.
+
+## 6.41.0 note - review duplicate invoices before deleting
+Duplicate-invoice review moved from a cramped popup to a dedicated screen under
+Finance -> Duplicate Invoices (admin only). Each suspected duplicate group now
+shows its copies as detailed cards SIDE BY SIDE - ref, date, month, customer,
+category, line items, amount, paid, method and description - with a "vs" between
+them, so you can compare the old and new invoice before deciding. The oldest copy
+is marked KEEP (green); each other copy has View PDF and Delete buttons. Summary
+counters show groups / exact / possible / extra at the top. Delete is now a SOFT
+delete (sets deleted=true) so it keeps an audit-log entry and revenue reports
+exclude it cleanly, rather than hard-removing the record. The Invoices page
+"Find duplicates" button opens this screen. No schema change.
+
+# Black Stars CRM
+Version 6.40.0 - Transfer Membership: cleaner single-column redesign.
+
+## 6.40.0 note - clearer Transfer Membership UX
+Removed the redundant right-side "Members with transferable memberships" table
+(the From-member search + filters already do that job). The page is now a single
+centered column with a clear numbered 3-step flow: 1) find the sender via search +
+Sport/Coach filters, picking from a clean clickable result list (EN/AR name +
+mobile); 2) choose the sport; 3) find the receiver the same way. Selected members
+show as a confirmation chip with a Change button, the result lists cap at 40 for
+performance, and a green "Ready to transfer" summary precedes the action. Transfer
+history stays below, full width. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.39.0 - Get Invoice now covers ALL the member's sports (full amount).
 
 ## 6.39.0 note - combined member invoice (CRITICAL fix)

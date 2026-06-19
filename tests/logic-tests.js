@@ -637,10 +637,10 @@ ${seed}
       expiryDate: '2026-07-01', status: 'Active', deleted: true, lastRemindedAt: '2026-05-01' };
     var dup = buildMemberDuplicateStub(src, 9999);
     eq(dup.id, 9999, 'sibling: gets new id');
-    eq(dup.name, 'Ali Hassan', 'sibling: copies English name');
-    eq(dup.nameArabic, 'علي حسن', 'sibling: copies Arabic name');
-    eq(dup.qid, '28912345678', 'sibling: copies QID');
-    eq(dup.phone, '+97455500011', 'sibling: copies phone');
+    eq(dup.name, '', 'sibling: clears English name (sibling is a different person)');
+    eq(dup.nameArabic, '', 'sibling: clears Arabic name');
+    ok(!dup.qid, 'sibling: clears QID (personal national ID, not shared)');
+    eq(dup.phone, '+97455500011', 'sibling: copies shared phone');
     eq(dup.notes, 'allergic to nuts', 'sibling: copies notes');
     eq(dup.enrollments.length, 1, 'sibling: copies enrollments (plan)');
     eq(dup.enrollments[0].price, 350, 'sibling: enrollment price copied');
@@ -1407,20 +1407,70 @@ ${seed}
   ok(_atRisk(1, 3) === true, 'at-risk: 25% over 4 sessions is flagged');
   ok(_atRisk(3, 1) === false, 'at-risk: 75% is not flagged');
   ok(_atRisk(0, 1) === false, 'at-risk: a single mark is not enough to flag');
-  // Freeze allowance: 5 days per 30 days of validity, tracked per cycle
+  // Freeze allowance: ONE WEEK (7 days) per 30 days of validity, tracked per cycle
   state.members.push({ id: 960, name: 'FZ', startDate: '2026-06-01', expiryDate: '2026-07-01', enrollments: [{ sport: 'Boxing', validity: 30 }], freezes: [] });
   var _fm = state.members.find(m => m.id === 960);
-  eq(freezeAllowance(_fm).allowanceDays, 5, 'freeze: 30-day validity = 5 days allowance');
+  eq(freezeAllowance(_fm).allowanceDays, 7, 'freeze: 30-day validity = 7 days (one week) allowance');
   _fm.enrollments = [{ validity: 60 }];
-  eq(freezeAllowance(_fm).allowanceDays, 10, 'freeze: 60-day validity = 10 days allowance');
+  eq(freezeAllowance(_fm).allowanceDays, 14, 'freeze: 60-day validity = 14 days allowance');
   _fm.enrollments = [{ validity: 90 }];
-  eq(freezeAllowance(_fm).allowanceDays, 15, 'freeze: 90-day validity = 15 days allowance');
+  eq(freezeAllowance(_fm).allowanceDays, 21, 'freeze: 90-day validity = 21 days allowance');
   _fm.enrollments = [{ validity: 60 }]; _fm.freezes = [{ days: 3, start: '2026-06-10' }];
   eq(freezeAllowance(_fm).usedDays, 3, 'freeze: counts days used in current cycle');
-  eq(freezeAllowance(_fm).remainingDays, 7, 'freeze: remaining = allowance - used');
+  eq(freezeAllowance(_fm).remainingDays, 11, 'freeze: remaining = allowance - used (14 - 3)');
+  eq(freezeAllowance(_fm).freezeCount, 1, 'freeze: counts number of freezes in cycle');
   _fm.freezes = [{ days: 5, start: '2026-05-01' }];
   eq(freezeAllowance(_fm).usedDays, 0, 'freeze: freezes before the cycle start are not counted');
   state.members = state.members.filter(m => m.id !== 960);
+  // Reminder tracking: up to 2 per cycle, with legacy back-compat
+  eq(reminderInfo({ startDate: '2026-06-01' }).count, 0, 'reminder: none yet = 0');
+  eq(reminderInfo({ startDate: '2026-06-01' }).remaining, 2, 'reminder: 2 remaining when fresh');
+  eq(reminderInfo({ startDate: '2026-06-01', lastRemindedAt: '2026-06-10' }).count, 1, 'reminder: legacy lastRemindedAt counts as 1');
+  eq(reminderInfo({ startDate: '2026-06-01', reminderDates: ['2026-06-05', '2026-06-12'] }).count, 2, 'reminder: two dates = 2');
+  eq(reminderInfo({ startDate: '2026-06-01', reminderDates: ['2026-06-05', '2026-06-12'] }).remaining, 0, 'reminder: capped at 2');
+  eq(reminderInfo({ startDate: '2026-06-01', reminderDates: ['2026-05-01'] }).count, 0, 'reminder: pre-cycle reminders not counted');
+  // One invoice per member: merging an added sport keeps a single invoice while
+  // payments stay split by month so revenue is still accurate.
+  (function () {
+    var inv = { id: 1, ref: 'INV1', amount: 375, month: '2026-05',
+      payments: [{ date: '2026-05-10', month: '2026-05', amount: 375, method: 'cash' }],
+      lineItems: [{ sport: 'Karate', price: 375 }] };
+    var newLines = [{ sport: 'Swimming', price: 375 }];
+    inv.lineItems = inv.lineItems.concat(newLines);
+    inv.amount += 375;
+    inv.payments.push({ date: '2026-06-19', month: '2026-06', amount: 375, method: 'cash' });
+    inv.amountPaid = inv.payments.reduce(function (s, p) { return s + p.amount; }, 0);
+    eq(inv.amount, 750, 'merge: one invoice total grows to 750');
+    eq(inv.lineItems.length, 2, 'merge: both sports on one invoice');
+    eq(inv.payments.filter(function (p) { return p.month === '2026-05'; })[0].amount, 375, 'merge: May revenue stays 375');
+    eq(inv.payments.filter(function (p) { return p.month === '2026-06'; })[0].amount, 375, 'merge: June revenue is the added sport 375');
+  })();
+  // Batch C cleanup: duplicate-enrollment detector + invoice merge
+  (function () {
+    var savedM = state.members, savedI = state.invoices;
+    state.members = [
+      { id: 9001, name: 'DupGuy', enrollments: [{ sport: 'Karate', coachId: 1, price: 375 }, { sport: 'Karate', coachId: 1, price: 375 }, { sport: 'Swim', coachId: 2, price: 300 }] },
+      { id: 9002, name: 'CleanGuy', enrollments: [{ sport: 'MMA', coachId: 1, price: 400 }] },
+    ];
+    state.invoices = [
+      { id: 9101, customerId: 9001, category: 'Membership', amount: 375, date: '2026-05-01', month: '2026-05', payments: [{ month: '2026-05', amount: 375 }], lineItems: [{ sport: 'Karate', price: 375 }] },
+      { id: 9102, customerId: 9001, category: 'Membership', amount: 300, date: '2026-06-01', month: '2026-06', payments: [{ month: '2026-06', amount: 300 }], lineItems: [{ sport: 'Swim', price: 300 }] },
+      { id: 9103, customerId: 9002, category: 'Membership', amount: 400, date: '2026-06-01', month: '2026-06', payments: [{ month: '2026-06', amount: 400 }], lineItems: [{ sport: 'MMA', price: 400 }] },
+    ];
+    var de = findDuplicateEnrollments();
+    eq(de.length, 1, 'cleanup: one member has duplicate enrollments');
+    eq(de[0].sport, 'Karate', 'cleanup: the duplicated sport is Karate');
+    eq(de[0].count, 2, 'cleanup: Karate listed twice');
+    var mg = findMembersWithMergeableInvoices();
+    eq(mg.length, 1, 'cleanup: one member has splittable invoices');
+    eq(mg[0].total, 675, 'cleanup: mergeable total is 675');
+    var kept = mergeMemberInvoices(9001);
+    eq(kept.amount, 675, 'cleanup: merged invoice totals 675');
+    eq(kept.lineItems.length, 2, 'cleanup: merged invoice has both sports');
+    eq(state.invoices.filter(function (i) { return !i.deleted && i.customerId === 9001; }).length, 1, 'cleanup: member left with one invoice');
+    eq(kept.payments.filter(function (p) { return p.month === '2026-05'; })[0].amount, 375, 'cleanup: May revenue preserved after merge');
+    state.members = savedM; state.invoices = savedI;
+  })();
   var _af = { expiryDate: '2026-07-01', freezes: [] };
   applyFreeze(_af, 7, 'x');
   eq(_af.expiryDate, '2026-07-08', 'freeze: applyFreeze shifts expiry forward by the frozen days');
@@ -1470,9 +1520,9 @@ ${seed}
   eq(dupStub.phone, '+97455500011', 'sibling: copies shared phone');
   eq(dupStub.email, 'family@x.com', 'sibling: copies shared email');
   eq(dupStub.nationality, 'Qatar', 'sibling: copies nationality');
-  eq(dupStub.name, 'Ahmed Ali', 'sibling: copies the name (user edits it)');
-  eq(dupStub.qid, '288', 'sibling: copies the QID (user edits it)');
-  eq(dupStub.birthdate, '2015-01-01', 'sibling: copies the birthdate');
+  eq(dupStub.name, '', 'sibling: clears name (admin enters the sibling\u2019s own)');
+  ok(!dupStub.qid, 'sibling: clears QID (not shared between siblings)');
+  eq(dupStub.birthdate, '', 'sibling: clears birthdate (admin enters the sibling\u2019s own)');
   eq(dupStub._duplicatedFrom, 'Ahmed Ali', 'sibling: remembers the source name for the banner');
   ok(Array.isArray(dupStub.enrollments) && dupStub.enrollments.length === 1, 'sibling: copies enrollments (plan)');
   ok(dupStub.id === 99, 'sibling: gets a fresh id (treated as new member)');
