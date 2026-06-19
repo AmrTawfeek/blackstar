@@ -1564,10 +1564,10 @@ function viewMember(id) {
         // member and export it as PDF. Visible to admin + receptionist (who handle
         // payment paperwork). Hidden if the member has no invoice yet.
         if (isViewerRole() && currentRole() !== 'receptionist' && currentRole() !== 'admin') return [];
-        const memberInvs = (state.invoices || []).filter(iv => !iv.deleted && iv.customerId === id && (iv.category || 'Membership') === 'Membership');
+        const memberInvs = (state.invoices || []).filter(iv => !iv.deleted && iv.customerId === id && (iv.category || 'Membership') === 'Membership' && !iv.switchCredit && (iv.amount || 0) > 0);
         if (!memberInvs.length) return [];
-        const latest = memberInvs.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id - a.id)[0];
-        return [{ label: '🧾 Get Invoice', class: 'btn ghost', onclick: () => { closeModal(); printInvoicePDF(latest.id); } }];
+        const multi = memberInvs.length > 1;
+        return [{ label: multi ? `🧾 Get Invoice (${memberInvs.length} sports)` : '🧾 Get Invoice', class: 'btn ghost', onclick: () => { closeModal(); printMemberInvoicePDF(id); } }];
       })(),
       ...(isViewerRole() ? [] : [{ label: '📜 Full History', class: 'btn ghost', onclick: () => { closeModal(); openMemberHistory(id); } }]),
       { label: '👨‍👩‍👧 Family', class: 'btn ghost', onclick: () => { closeModal(); assignFamily(id); } },
@@ -7358,6 +7358,64 @@ window.printIdCard = function(memberId) {
 };
 
 // ─── Invoice PDF (uses browser's "Save as PDF" via print dialog) ────────
+// Print a COMBINED invoice for a member: merges all their non-deleted membership
+// invoices into one PDF (all sports as line items, full total + full paid), so a
+// member with several sports doesn't get a single-sport invoice showing only part
+// of what they paid. Falls back to the single invoice when there's just one.
+window.printMemberInvoicePDF = function(memberId) {
+  const m = state.members.find(x => x.id === memberId);
+  const invs = (state.invoices || []).filter(iv =>
+    !iv.deleted && iv.customerId === memberId &&
+    (iv.category || 'Membership') === 'Membership' &&
+    !iv.switchCredit && (iv.amount || 0) > 0
+  );
+  if (!invs.length) { toast('No membership invoice for this member', 'error'); return; }
+  if (invs.length === 1) { printInvoicePDF(invs[0].id); return; }
+
+  // Merge line items across all the member's membership invoices.
+  const lineItems = [];
+  let amount = 0, paid = 0;
+  for (const iv of invs) {
+    const items = (iv.lineItems && iv.lineItems.length) ? iv.lineItems
+      : [{ sport: iv.sport, coach: iv.coach, coachId: iv.coachId, classes: iv.classes, price: iv.amount || 0 }];
+    for (const li of items) {
+      lineItems.push({ sport: li.sport, coach: li.coach || coachName(li.coachId) || '', coachId: li.coachId, classes: li.classes, price: Number(li.price) || 0 });
+    }
+    amount += iv.amount || 0;
+    paid += invoicePaid(iv);
+  }
+  const latest = invs.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id - a.id)[0];
+
+  // Build a synthetic combined invoice, register it temporarily so printInvoicePDF
+  // can render it with the existing template, then remove it (never persisted).
+  const tempId = -(Date.now());
+  const combined = {
+    id: tempId,
+    ref: 'INV-' + (m ? String(m.id).padStart(4, '0') : '0000') + '-ALL',
+    date: latest.date,
+    month: latest.month,
+    category: 'Membership',
+    customerId: memberId,
+    customerName: m ? m.name : (latest.customerName || ''),
+    customerPhone: (m && m.phone) || latest.customerPhone || null,
+    coach: lineItems.length === 1 ? lineItems[0].coach : '',
+    sport: lineItems.map(li => li.sport).filter(Boolean).join(', '),
+    amount,
+    amountPaid: paid,
+    payments: paid > 0 ? [{ amount: paid, date: latest.date }] : [],
+    lineItems,
+    _combined: true,
+  };
+  state.invoices.push(combined);
+  try {
+    printInvoicePDF(tempId);
+  } finally {
+    // Remove the temporary invoice without saving (it must never persist).
+    const i = state.invoices.findIndex(x => x.id === tempId);
+    if (i >= 0) state.invoices.splice(i, 1);
+  }
+};
+
 window.printInvoicePDF = function(id) {
   const inv = state.invoices.find(x => x.id === id);
   if (!inv) { toast('Invoice not found', 'error'); return; }
@@ -10041,16 +10099,21 @@ PAGES.sports = (main) => {
   }
 
   function countUsage(sportName) {
-    // How many enrollments reference this sport?
+    // Count DISTINCT members currently registered for this sport — matching the
+    // Camp Members / member lists (headline sport or an active enrollment). Past
+    // sports that survive only in subscription history are NOT counted here, so
+    // the figure lines up with what those pages show (no double-counting).
     let count = 0;
+    let hasHistory = false;
     for (const m of (state.members || [])) {
-      for (const e of (m.enrollments || [])) {
-        if (e.sport === sportName) count++;
-      }
-      for (const s of (m.subscriptions || [])) {
-        if (s.activity === sportName) count++;
-      }
+      if (m.deleted) continue;
+      const current = m.sport === sportName || (m.enrollments || []).some(e => e.sport === sportName);
+      if (current) count++;
+      else if ((m.subscriptions || []).some(s => s.activity === sportName)) hasHistory = true;
     }
+    // Stash whether ANY historical reference exists (used by the delete guard so
+    // a sport with old invoices/attendance still can't be hard-deleted).
+    countUsage._hasHistory = hasHistory || count > 0;
     return count;
   }
 
@@ -10060,6 +10123,7 @@ PAGES.sports = (main) => {
     if (!tbody) return;
     tbody.innerHTML = sports.length ? sports.map((s, idx) => {
       const usage = countUsage(s.name);
+      const hasHistory = countUsage._hasHistory;   // any historical reference, even if current count is 0
       const isEnabled = s.enabled !== false;
       return `
         <tr>
@@ -10082,7 +10146,7 @@ PAGES.sports = (main) => {
             <button class="btn ghost sm" onclick="editSport('${escapeHtml(s.name)}')" title="Rename">✏️</button>
             ${(!isPrivateSport(s.name) && s.name !== SUMMER_CAMP) ? `<button class="btn ghost sm" onclick="makePrivateVariant('${escapeHtml(s.name)}')" title="Create a private (1:1) variant of this sport">🔒+</button>` : ''}
             <button class="btn ghost sm" onclick="toggleSport('${escapeHtml(s.name)}')" title="${isEnabled ? 'Disable (hide from new registrations)' : 'Re-enable'}">${isEnabled ? '🚫' : '✅'}</button>
-            ${usage === 0 ? `<button class="btn ghost sm" onclick="deleteSport('${escapeHtml(s.name)}')" title="Delete (only allowed when no one is registered)" style="color:var(--red)">🗑</button>` : `<button class="btn ghost sm" disabled title="Cannot delete — ${usage} enrollments use this sport" style="opacity:.4">🔒</button>`}
+            ${(usage === 0 && !hasHistory) ? `<button class="btn ghost sm" onclick="deleteSport('${escapeHtml(s.name)}')" title="Delete (only allowed when no one is registered)" style="color:var(--red)">🗑</button>` : `<button class="btn ghost sm" disabled title="Cannot delete — ${usage > 0 ? usage + ' members registered' : 'historical records reference this sport'}" style="opacity:.4">🔒</button>`}
           </td>
         </tr>
       `;
@@ -10111,7 +10175,7 @@ PAGES.sports = (main) => {
         <table>
           <thead><tr>
             <th>Sport</th>
-            <th class="text-right">Enrollments</th>
+            <th class="text-right">Members</th>
             <th>Status</th>
             <th></th>
           </tr></thead>
@@ -13468,7 +13532,7 @@ window.exportMemberHistoryCSV = function(memberId) {
 
 PAGES.expiring = (main) => {
   const threshold = state.settings?.expiringSoonDays || 3;
-  let filter = { sport: 'all', coach: 'all', search: '', bucket: 'all' };
+  let filter = { sport: 'all', coach: 'all', search: '', bucket: 'all', sort: 'expiry' };
   // Which sections are collapsed (default: all open)
   const collapsed = { soon: false, expired: false, upcoming: false };
   // Bulk-selected member IDs (across all sections)
@@ -13716,6 +13780,11 @@ PAGES.expiring = (main) => {
           <option value="all">All coaches</option>
           ${coachesInList.map(cid => `<option value="${cid}">${escapeHtml(coachName(cid))}</option>`).join('')}
         </select>
+        <select id="exp-sort" class="btn ghost" title="Sort each section">
+          <option value="expiry">↕ Sort: Expiry (default)</option>
+          <option value="renewal_desc">↓ Last renewal: newest first</option>
+          <option value="renewal_asc">↑ Last renewal: oldest first</option>
+        </select>
         <div class="search" style="flex:1;min-width:220px"><input id="exp-search" type="text" placeholder="Search by name, mobile, QID..." /></div>
         <button class="btn ghost sm" id="exp-collapse-all" title="Collapse all sections">⊟ Collapse all</button>
         <button class="btn ghost sm" id="exp-expand-all" title="Expand all sections">⊞ Expand all</button>
@@ -13737,9 +13806,24 @@ PAGES.expiring = (main) => {
   `;
 
   function renderSections() {
-    const sFiltered = expiringSoon.filter(matchFilter);
-    const eFiltered = expired.filter(matchFilter);
-    const uFiltered = upcoming.filter(matchFilter);
+    // Sort within each section. Default keeps the expiry-proximity order computed
+    // above; the other options re-order by last-renewal date (asc/desc).
+    const applySort = (arr) => {
+      if (filter.sort === 'renewal_desc' || filter.sort === 'renewal_asc') {
+        const dir = filter.sort === 'renewal_asc' ? 1 : -1;
+        return arr.slice().sort((a, b) => {
+          const ra = lastRenewalDate(a.m) || '', rb = lastRenewalDate(b.m) || '';
+          if (ra === rb) return 0;
+          if (!ra) return 1;       // members with no renewal date go last
+          if (!rb) return -1;
+          return ra < rb ? -dir : dir;
+        });
+      }
+      return arr;   // 'expiry' default — already sorted by days
+    };
+    const sFiltered = applySort(expiringSoon.filter(matchFilter));
+    const eFiltered = applySort(expired.filter(matchFilter));
+    const uFiltered = applySort(upcoming.filter(matchFilter));
     const parts = [];
     if (filter.bucket === 'recent') {
       parts.push(section(`Recently expired — within ${recentDays} days`, 'var(--red)', '🔴', eFiltered, 'expired'));
@@ -13831,6 +13915,7 @@ PAGES.expiring = (main) => {
   $('#exp-bucket').addEventListener('change', e => { filter.bucket = e.target.value; renderSections(); });
   $('#exp-sport').addEventListener('change', e => { filter.sport = e.target.value; renderSections(); });
   $('#exp-coach').addEventListener('change', e => { filter.coach = e.target.value; renderSections(); });
+  $('#exp-sort').addEventListener('change', e => { filter.sort = e.target.value; renderSections(); });
   $('#exp-search').addEventListener('input', e => { filter.search = e.target.value; renderSections(); });
   $('#exp-collapse-all').addEventListener('click', () => {
     collapsed.soon = collapsed.expired = collapsed.upcoming = true;
@@ -18593,9 +18678,18 @@ window.transferMembership = function(fromId, sport, toId) {
 // ─── Transfer Membership page ───────────────────────────────────────────────
 PAGES.transfers = (main) => {
   if (currentRole() !== 'admin') { main.innerHTML = `<div class="empty"><div class="empty-icon">🔐</div>${t('Admins only','للمشرفين فقط')}</div>`; return; }
-  const st = window._trState || (window._trState = { fromId: null, sport: null, toId: null, fromQ: '', toQ: '' });
+  const st = window._trState || (window._trState = { fromId: null, sport: null, toId: null, fromQ: '', toQ: '', fcoach: 'all', fsport: 'all' });
+  if (st.fcoach == null) st.fcoach = 'all';
+  if (st.fsport == null) st.fsport = 'all';
 
   const members = (state.members || []).filter(m => !m.deleted);
+  // Broad search: English name, Arabic name, and mobile (any of phone/phone2).
+  const matchQuery = (m, q) => {
+    if (!q) return true;
+    const needle = q.trim().toLowerCase();
+    const hay = [m.name, m.nameArabic, m.phone, m.phone2].filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(needle);
+  };
   // Members who CAN transfer something out: have ≥1 transferable enrollment AND
   // are not Withdrawn (a withdrawn member has left/been refunded — their leftover
   // enrollment shouldn't be transferable to someone else).
@@ -18613,9 +18707,26 @@ PAGES.transfers = (main) => {
 
   const transfers = (state.membershipTransfers || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || '').localeCompare(a.createdAt || ''));
 
-  const memberOption = (m) => `${escapeHtml(m.name)}${m.phone ? ` · ${escapeHtml(String(m.phone))}` : ''}`;
-  const fromFiltered = eligible.filter(x => !st.fromQ || (x.m.name || '').toLowerCase().includes(st.fromQ.toLowerCase()) || String(x.m.phone || '').includes(st.fromQ));
-  const toFiltered = members.filter(m => (!st.fromId || m.id !== st.fromId) && (!st.toQ || (m.name || '').toLowerCase().includes(st.toQ.toLowerCase()) || String(m.phone || '').includes(st.toQ)));
+  const memberOption = (m) => `${escapeHtml(m.name)}${m.nameArabic ? ` · ${escapeHtml(m.nameArabic)}` : ''}${m.phone ? ` · ${escapeHtml(String(m.phone))}` : ''}`;
+
+  // Coach + sport option sets, derived from the transferable memberships.
+  const coachIdsInList = [...new Set(eligible.flatMap(x => x.enrs.map(e => e.coachId)).filter(v => v != null))];
+  const sportsInList = [...new Set(eligible.flatMap(x => x.enrs.map(e => e.sport)).filter(Boolean))].sort();
+
+  // Apply coach + sport filters to each member's transferable rows; keep the
+  // member only if at least one row survives.
+  const eligibleFiltered = eligible
+    .map(x => ({
+      m: x.m,
+      enrs: x.enrs.filter(e =>
+        (st.fcoach === 'all' || String(e.coachId) === String(st.fcoach)) &&
+        (st.fsport === 'all' || e.sport === st.fsport)
+      ),
+    }))
+    .filter(x => x.enrs.length);
+
+  const fromFiltered = eligibleFiltered.filter(x => matchQuery(x.m, st.fromQ));
+  const toFiltered = members.filter(m => (!st.fromId || m.id !== st.fromId) && matchQuery(m, st.toQ));
 
   // Block reasons for the confirm button
   let blockMsg = '';
@@ -18639,7 +18750,17 @@ PAGES.transfers = (main) => {
 
           <div>
             <label style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--blue);font-weight:600">1 · ${t('From member', 'من العضو')}</label>
-            <input id="tr-fromq" placeholder="${t('Search member to transfer FROM…', 'ابحث عن العضو الناقل…')}" value="${escapeHtml(st.fromQ)}" style="width:100%;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);margin:6px 0" />
+            <div style="display:flex;gap:6px;margin:6px 0">
+              <select id="tr-fsport" style="flex:1;padding:8px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)">
+                <option value="all">${t('All sports', 'كل الرياضات')}</option>
+                ${sportsInList.map(s => `<option value="${escapeHtml(s)}" ${st.fsport === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+              </select>
+              <select id="tr-fcoach" style="flex:1;padding:8px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)">
+                <option value="all">${t('All coaches', 'كل المدربين')}</option>
+                ${coachIdsInList.map(cid => `<option value="${cid}" ${String(st.fcoach) === String(cid) ? 'selected' : ''}>${escapeHtml(coachName(cid) || '—')}</option>`).join('')}
+              </select>
+            </div>
+            <input id="tr-fromq" placeholder="${t('Search name (EN/AR) or mobile…', 'ابحث بالاسم (عربي/إنجليزي) أو الجوال…')}" value="${escapeHtml(st.fromQ)}" style="width:100%;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);margin:6px 0" />
             <select id="tr-from" size="${Math.min(6, Math.max(3, fromFiltered.length))}" style="width:100%;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)">
               ${fromFiltered.length ? fromFiltered.map(x => `<option value="${x.m.id}" ${x.m.id === st.fromId ? 'selected' : ''}>${memberOption(x.m)} — ${x.enrs.map(e => e.sport).join(', ')}</option>`).join('') : `<option disabled>${t('No members with a transferable membership', 'لا يوجد أعضاء لديهم اشتراك قابل للنقل')}</option>`}
             </select>
@@ -18663,7 +18784,7 @@ PAGES.transfers = (main) => {
           ${selEnr ? `
           <div>
             <label style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--blue);font-weight:600">3 · ${t('To member', 'إلى العضو')}</label>
-            <input id="tr-toq" placeholder="${t('Search member to transfer TO…', 'ابحث عن العضو المستلم…')}" value="${escapeHtml(st.toQ)}" style="width:100%;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);margin:6px 0" />
+            <input id="tr-toq" placeholder="${t('Search name (EN/AR) or mobile…', 'ابحث بالاسم (عربي/إنجليزي) أو الجوال…')}" value="${escapeHtml(st.toQ)}" style="width:100%;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);margin:6px 0" />
             <select id="tr-to" size="${Math.min(6, Math.max(3, toFiltered.length))}" style="width:100%;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)">
               ${toFiltered.length ? toFiltered.map(m => `<option value="${m.id}" ${m.id === st.toId ? 'selected' : ''}>${memberOption(m)}</option>`).join('') : `<option disabled>${t('No match', 'لا نتيجة')}</option>`}
             </select>
@@ -18684,17 +18805,17 @@ PAGES.transfers = (main) => {
       </div>
 
       <div class="card">
-        <div class="card-header"><div><div class="card-title">📋 ${t('Members with transferable memberships', 'الأعضاء الذين لديهم اشتراك قابل للنقل')}</div><div class="card-subtitle">${eligible.length} ${t('members', 'عضو')}</div></div></div>
+        <div class="card-header"><div><div class="card-title">📋 ${t('Members with transferable memberships', 'الأعضاء الذين لديهم اشتراك قابل للنقل')}</div><div class="card-subtitle">${fromFiltered.length} ${t('of', 'من')} ${eligible.length} ${t('members', 'عضو')}${(st.fcoach !== 'all' || st.fsport !== 'all' || st.fromQ) ? ' · ' + t('filtered', 'مُصفّى') : ''}</div></div></div>
         <div class="table-wrap" style="max-height:60vh;overflow:auto">
-          ${eligible.length ? `<table>
+          ${fromFiltered.length ? `<table>
             <thead><tr><th>${t('Member', 'العضو')}</th><th>${t('Sport', 'الرياضة')}</th><th>${t('Coach', 'المدرب')}</th><th class="text-right">${t('Classes', 'الحصص')}</th></tr></thead>
-            <tbody>${eligible.map(x => x.enrs.map((e, i) => `<tr>
-              ${i === 0 ? `<td rowspan="${x.enrs.length}" class="font-bold" style="vertical-align:top">${escapeHtml(x.m.name)}</td>` : ''}
+            <tbody>${fromFiltered.map(x => x.enrs.map((e, i) => `<tr style="cursor:pointer" onclick="window._trState={...window._trState,fromId:${x.m.id},sport:${JSON.stringify(e.sport).replace(/"/g, '&quot;')},toId:null};render()" title="${t('Click to start a transfer from this member', 'اضغط لبدء النقل من هذا العضو')}">
+              ${i === 0 ? `<td rowspan="${x.enrs.length}" style="vertical-align:top"><div class="font-bold">${escapeHtml(x.m.name)}</div>${x.m.nameArabic ? `<div class="text-mute" style="font-size:11px" dir="rtl">${escapeHtml(x.m.nameArabic)}</div>` : ''}${x.m.phone ? `<div class="text-mute" style="font-size:11px">${escapeHtml(String(x.m.phone))}</div>` : ''}</td>` : ''}
               <td>${escapeHtml(e.sport)}</td>
               <td class="text-mute">${escapeHtml(coachName(e.coachId) || '—')}</td>
               <td class="text-right num">${e.classes || 0}</td>
             </tr>`).join('')).join('')}</tbody>
-          </table>` : `<div class="empty"><div class="empty-icon">📭</div>${t('No transferable memberships right now', 'لا توجد اشتراكات قابلة للنقل حالياً')}</div>`}
+          </table>` : `<div class="empty"><div class="empty-icon">📭</div>${(st.fcoach !== 'all' || st.fsport !== 'all' || st.fromQ) ? t('No members match the filters', 'لا يوجد أعضاء يطابقون المرشحات') : t('No transferable memberships right now', 'لا توجد اشتراكات قابلة للنقل حالياً')}</div>`}
         </div>
       </div>
     </div>
@@ -18719,6 +18840,8 @@ PAGES.transfers = (main) => {
   `;
 
   // Wiring
+  $('#tr-fsport')?.addEventListener('change', e => { st.fsport = e.target.value; render(); });
+  $('#tr-fcoach')?.addEventListener('change', e => { st.fcoach = e.target.value; render(); });
   $('#tr-fromq')?.addEventListener('input', e => { st.fromQ = e.target.value; render(); setTimeout(() => { const el = $('#tr-fromq'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0); });
   $('#tr-from')?.addEventListener('change', e => { st.fromId = parseInt(e.target.value); st.sport = null; st.toId = null; render(); });
   document.querySelectorAll('input[name="tr-sport"]').forEach(r => r.addEventListener('change', e => { st.sport = e.target.value; st.toId = null; render(); }));

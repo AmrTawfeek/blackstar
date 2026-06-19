@@ -1,4 +1,55 @@
 # Black Stars CRM
+Version 6.39.0 - Get Invoice now covers ALL the member's sports (full amount).
+
+## 6.39.0 note - combined member invoice (CRITICAL fix)
+"Get Invoice" on the member profile printed only the LATEST single membership
+invoice, so a member registered in several sports got a PDF showing just one
+sport's amount (e.g. 375 instead of the 750 they actually paid). It now builds a
+COMBINED invoice across all of the member's non-deleted membership invoices: every
+sport appears as a line item and the Subtotal / Total / Paid reflect the full
+amount. The button shows "Get Invoice (N sports)" when there's more than one. The
+combined invoice is generated in-memory only for the PDF and never saved, so it
+doesn't affect stored data or revenue reports. Members with a single sport are
+unchanged. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.38.0 - Transfer Membership: coach/sport filters + better search.
+
+## 6.38.0 note - filter and search the transfer screen
+The Transfer Membership screen now has Sport and Coach filter dropdowns on the
+"From member" step, and the search box matches English name, Arabic name AND
+mobile (any of phone/phone2). The right-side "Members with transferable
+memberships" table reflects the same filters + search live (showing "X of Y"),
+each member now shows their Arabic name and phone, and clicking a row starts a
+transfer from that member/sport. This makes the 257-member list usable. No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.37.0 - Fix inflated sport member count (was double-counting).
+
+## 6.37.0 note - Sports page count now matches reality
+The Sports page count column was adding up enrollment rows PLUS subscription
+(history) rows for each sport, so a member with both an active enrollment and a
+subscription record - very common for Summer Camp, which renews - was counted
+twice or more. That made Summer Camp show 46 when there were really 23 members.
+It now counts DISTINCT members currently registered for the sport (headline sport
+or an active enrollment), matching the Camp Members and member-list pages. The
+column is relabelled "Members". The delete guard still blocks deleting a sport
+that has any historical reference (old invoices/attendance), even when the current
+count is 0. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.36.0 - Expiring: sort by last-renewal date (asc/desc).
+
+## 6.36.0 note - sort expiring members by last renewal
+The Expiring screen has a new Sort dropdown: keep the default Expiry order, or
+sort each section by Last renewal date - newest first or oldest first. Members
+with no recorded renewal go to the bottom. (Generic column-header sort icons, the
+small up/down arrows that appear on clickable headers across all data tables, were
+already present - clicking a header sorts the visible rows; this new control sorts
+the whole grouped expiring list at the data level.) No schema change.
+
+# Black Stars CRM
 Version 6.35.0 - Camp group: manual override for siblings.
 
 ## 6.35.0 note - assign a camp member to a different group
