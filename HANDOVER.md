@@ -1,23 +1,26 @@
 # Black Stars CRM — Handover for Freelancer
 
-**App version:** 4.46.2 (v89.2)
+**App version:** 6.70.0
 **Stack:** Vanilla JavaScript, no build step, no framework
-**Total code:** ~9,000 lines across 3 main JS files
+**Total code:** ~19,900 lines, primarily in `app.js` (core: state, routing, persistence, helpers) and `pages.js` (page renderers); plus `styles.css`, `index.html`, `storage.js`, `seed-embed.js`
+**Data:** Lives in the browser via `storage.js` (localStorage), with optional cloud sync. `SCHEMA_VERSION` is 9; bumping it would migrate/clear data, so feature changes keep it fixed.
+**Tests:** `tests/logic-tests.js` (node, ~644 assertions, must pass with 0 fail before shipping). A render gate checks all 47 route pages render without throwing.
 **Browser support:** Chrome / Edge 80+, Firefox 113+, Safari 16.4+
 
 ## What the app does
 
-A CRM for a martial arts academy in Doha, Qatar:
-- **Members** — registration, multi-sport enrollment, renewals, freezes
-- **Attendance** — daily marking, per-sport, per-month
-- **Invoices** — unified form for memberships, products (with cart/POS), other
+A bilingual (Arabic/English) CRM for a martial-arts & sports academy in Doha, Qatar:
+- **Members** — registration, multi-sport enrollment, renewals, freezes (one week per month of membership), sport switching (once per cycle, with coach-commission split), siblings (copy details + split one family payment), status derived live from attendance + expiry
+- **Attendance** — daily marking, per-sport, per-month; per-member history view + CSV export
+- **Invoices** — one invoice per member (edits merge instead of duplicating); bilingual PDF; dated to the sport start; search by EN/AR name, mobile, QID
+- **Finance** — invoices, duplicate-invoice finder (rentals matched by exact date), cash collection (kept separate from expenses), expenses, salaries, product sales (grouped by product name)
+- **Cleanup Center** (System) — fix duplicate enrollments and consolidate split invoices
 - **Products** — stock catalog with low-stock alerts
 - **Rentals** — football court / boxing room / swimming pool with hourly rates
-- **Schedule** — drag-and-drop weekly grid (Saturday–Thursday, 3PM–9PM)
-- **Coach performance** — commission tracking based on active-member revenue
-- **Excel import/export** — Members, Attendance (with color-coded fills), Expenses, Sales
-- **PDF generation** — invoices, per-student attendance cards
-- **JSON backup/restore** — full state snapshot
+- **Summer Camp** — groups, schedule, expiry reminders (WhatsApp), per-kid renewal prompts
+- **Schedule** — drag-and-drop weekly grid
+- **Coach performance** — commission tracking
+- **Excel import/export**, **PDF generation**, **JSON backup/restore**
 
 ## File structure
 

@@ -1376,6 +1376,55 @@ function showDuplicatesModal() {
 }
 window.showDuplicatesModal = showDuplicatesModal;
 
+// Jump from a member profile to the Attendance grid, focused on this member.
+window.viewMemberAttendance = function(id) {
+  const m = state.members.find(x => x.id === id);
+  if (!m) return;
+  window._attFocus = { id, name: m.name };
+  closeModal();
+  navigate('attendance');
+};
+
+// Export ONE member's full attendance history (every recorded day across all
+// months and sports) to CSV. dailyAttendance is keyed YYYY-MM → sport → dayOfMonth.
+window.exportMemberAttendance = function(id) {
+  const m = state.members.find(x => x.id === id);
+  if (!m) { toast('Member not found', 'error'); return; }
+  const da = m.dailyAttendance || {};
+  const rows = [['Date', 'Month', 'Sport', 'Status']];
+  const months = Object.keys(da).sort();
+  for (const mo of months) {
+    const sports = da[mo] || {};
+    for (const sport of Object.keys(sports).sort()) {
+      const days = sports[sport] || {};
+      for (const day of Object.keys(days).sort((a, b) => parseInt(a) - parseInt(b))) {
+        const mark = days[day];
+        if (!mark) continue;
+        const fullDate = `${mo}-${String(parseInt(day)).padStart(2, '0')}`;
+        const status = mark === 'Y' ? 'Present' : mark === 'N' ? 'Absent' : String(mark);
+        rows.push([fullDate, mo, sport, status]);
+      }
+    }
+  }
+  if (rows.length === 1) { toast('No attendance recorded yet for this member', 'info'); return; }
+  // Summary lines at the top.
+  const present = rows.slice(1).filter(r => r[3] === 'Present').length;
+  const absent = rows.slice(1).filter(r => r[3] === 'Absent').length;
+  const csv = [
+    `"Member","${(m.name || '').replace(/"/g, '""')}"`,
+    `"Arabic name","${(m.nameArabic || '').replace(/"/g, '""')}"`,
+    `"Phone","${(m.phone || '').replace(/"/g, '""')}"`,
+    `"Exported","${TODAY}"`,
+    `"Total present","${present}"`,
+    `"Total absent","${absent}"`,
+    '',
+    ...rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')),
+  ].join('\n');
+  const safeName = (m.name || 'member').replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim();
+  downloadFile(`attendance-${safeName}-${TODAY}.csv`, csv, 'text/csv');
+  toast(`Exported ${present + absent} attendance record${present + absent === 1 ? '' : 's'} for ${m.name}`, 'success');
+};
+
 function viewMember(id) {
   const m = state.members.find(x => x.id === id);
   if (!m) return;
@@ -1421,7 +1470,20 @@ function viewMember(id) {
         <td>${s.end ? fmtDate(s.end) : '—'}</td>
         <td>${attCell}</td>
         ${isViewerRole() ? '' : `<td class="text-right num">${s.amountPaid ? fmt(s.amountPaid) : '—'}</td>`}
-        <td>${s.status ? `<span class="badge ${s.status.toLowerCase()==='expired'?'expired':'active'}">${s.status}</span>` : '—'}</td>
+        <td>${(() => {
+          // Derive this subscription's own status from its END date + attendance,
+          // rather than a stored 'status' that was set once and never updated. So
+          // a sport whose period ended shows "expired" even while the member is
+          // still active on another sport.
+          const total = s.totalClasses, attended = s.attendedClasses;
+          let label, cls;
+          if (s.end && s.end < TODAY) { label = 'expired'; cls = 'expired'; }
+          else if (total != null && total > 0 && attended != null && attended >= total) { label = 'completed'; cls = 'active'; }
+          else if (s.start && s.end) { label = 'active'; cls = 'active'; }
+          else if (s.status) { label = s.status.toLowerCase(); cls = label === 'expired' ? 'expired' : 'active'; }
+          else { return '—'; }
+          return `<span class="badge ${cls}">${label}</span>`;
+        })()}</td>
       </tr>
     `;
   }).join('');
@@ -1495,9 +1557,13 @@ function viewMember(id) {
       </div>
       <div class="kpi-grid mb-3" style="grid-template-columns:repeat(${isViewerRole() ? 3 : 4},1fr);gap:8px">
         <div class="kpi" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Subs</div><div class="kpi-value" style="font-size:18px">${totalSubs}</div></div>
-        <div class="kpi blue" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Classes ${liveCount.total ? '· live' : ''}</div><div class="kpi-value" style="font-size:18px">${attendedSum}/${totalClassesSum}</div></div>
+        <div class="kpi blue" style="padding:10px 12px;cursor:pointer" onclick="viewMemberAttendance(${m.id})" title="See this member's attendance">
+          <div class="kpi-label" style="font-size:10px">Classes ${liveCount.total ? '· live' : ''} ›</div><div class="kpi-value" style="font-size:18px">${attendedSum}/${totalClassesSum}</div></div>
         ${isViewerRole() ? '' : `<div class="kpi green" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Paid</div><div class="kpi-value" style="font-size:18px">${fmt(paidSum)}</div></div>`}
-        <div class="kpi orange" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Att Rate</div><div class="kpi-value" style="font-size:18px">${attRatePct}%</div></div>
+        <div class="kpi orange" style="padding:10px 12px;cursor:pointer;position:relative" onclick="viewMemberAttendance(${m.id})" title="See this member's attendance">
+          <div class="kpi-label" style="font-size:10px">Att Rate ›</div><div class="kpi-value" style="font-size:18px">${attRatePct}%</div>
+          <button onclick="event.stopPropagation();exportMemberAttendance(${m.id})" title="Export attendance history (CSV)" style="position:absolute;top:6px;right:6px;background:transparent;border:none;cursor:pointer;font-size:13px;opacity:.7;padding:2px">⬇</button>
+        </div>
       </div>
       <h3 style="font-size:13px;font-weight:600;margin-bottom:8px">Subscription History (${totalSubs})</h3>
       <div class="table-wrap">
@@ -1591,11 +1657,15 @@ function viewMember(id) {
         // payment paperwork). Hidden if the member has no invoice yet.
         if (isViewerRole() && currentRole() !== 'receptionist' && currentRole() !== 'admin') return [];
         const memberInvs = (state.invoices || []).filter(iv => !iv.deleted && iv.customerId === id && (iv.category || 'Membership') === 'Membership' && !iv.switchCredit && (iv.amount || 0) > 0);
-        if (!memberInvs.length) return [];
+        const hasEnrollments = Array.isArray(m.enrollments) && m.enrollments.some(e => e && e.sport);
+        // Show the button if there's an invoice OR any enrollment we can build one
+        // from. Only hide it when there's genuinely nothing to bill.
+        if (!memberInvs.length && !hasEnrollments) return [];
         const multi = memberInvs.length > 1;
         return [{ label: multi ? `🧾 Get Invoice (${memberInvs.length} sports)` : '🧾 Get Invoice', class: 'btn ghost', onclick: () => { closeModal(); printMemberInvoicePDF(id); } }];
       })(),
       ...(isViewerRole() ? [] : [{ label: '📜 Full History', class: 'btn ghost', onclick: () => { closeModal(); openMemberHistory(id); } }]),
+      { label: '📊 Attendance', class: 'btn ghost', onclick: () => { exportMemberAttendance(id); } },
       { label: '👨‍👩‍👧 Family', class: 'btn ghost', onclick: () => { closeModal(); assignFamily(id); } },
       { label: 'Edit', class: 'btn ghost', onclick: () => { closeModal(); editMember(id); } },
       { label: 'Close', class: 'btn primary', onclick: closeModal },
@@ -1643,6 +1713,9 @@ function buildMemberDuplicateStub(src, newId) {
   clone.birthdate = '';
   clone.gender = '';
   clone._duplicatedFrom = src.name || src.nameArabic || null;
+  // Remember the source so we can split the family's single payment equally
+  // across all siblings when this one is saved (each invoice = total ÷ siblings).
+  clone._siblingSplitFrom = src.id;
   return clone;
 }
 
@@ -2342,7 +2415,7 @@ function showMemberForm(m) {
           <div class="field"><label>${t('Payment method', 'طريقة الدفع')}</label><select id="f-method"><option value="cash">${t('Cash', 'نقداً')}</option><option value="card">${t('Card', 'بطاقة')}</option></select></div>
           <div class="field"><label>💵 ${t('Paid now (QAR)', 'المدفوع الآن (ر.ق)')} <span class="text-mute" style="font-size:10px">${t('blank = pay full', 'فارغ = دفع كامل')}</span></label><input id="f-paidnow" type="number" min="0" step="0.01" placeholder="${t('e.g. 100', 'مثال: 100')}" style="font-size:16px;font-weight:600" /></div>
         </div>
-        <div class="field" style="margin-top:8px"><label>📅 ${t('Payment date', 'تاريخ الدفع')} <span class="text-mute" style="font-size:10px;font-weight:400">${t('when cash was collected — can differ from the start date', 'وقت تحصيل المبلغ — قد يختلف عن تاريخ البداية')}</span></label><input id="f-paydate" type="date" value="${TODAY}" /><div class="text-mute" style="font-size:10px;margin-top:4px">${t('Revenue is counted in this date\u2019s month. The membership window still starts from each sport\u2019s Start date above.', 'تُحتسب الإيرادات في شهر هذا التاريخ. تبدأ مدة الاشتراك من تاريخ بداية كل رياضة بالأعلى.')}</div></div>
+        <div class="field" style="margin-top:8px"><label>📅 ${t('Payment date', 'تاريخ الدفع')} <span class="text-mute" style="font-size:10px;font-weight:400">${t('leave blank to use the start date — set only if cash was collected on a different day', 'اتركه فارغاً لاستخدام تاريخ البداية — حدده فقط إذا حُصّل في يوم مختلف')}</span></label><input id="f-paydate" type="date" value="" /><div class="text-mute" style="font-size:10px;margin-top:4px">${t('Revenue is counted in this date\u2019s month. The membership window still starts from each sport\u2019s Start date above.', 'تُحتسب الإيرادات في شهر هذا التاريخ. تبدأ مدة الاشتراك من تاريخ بداية كل رياضة بالأعلى.')}</div></div>
         <div id="f-payment-summary" style="margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">
           <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:8px">
             <div class="text-mute" style="font-size:10px;text-transform:uppercase;letter-spacing:.5px">${t('Total', 'الإجمالي')}</div>
@@ -2604,11 +2677,13 @@ function showMemberForm(m) {
           const totalPay = enrollments.reduce((s, e) => s + e.price, 0);
           if (totalPay > 0) {
             const method = $('#f-method')?.value || 'cash';
-            // Invoice/payment date = when cash was collected (defaults to today).
-            // This is SEPARATE from the membership start date, which drives the
-            // expiry window. Revenue is cash-basis → counted in the payment month.
+            // Invoice/payment date: if the admin set an explicit payment date, use
+            // it; otherwise default to the membership START date (earliest sport
+            // start) so back-dated registrations get a correctly-dated invoice
+            // instead of today's date. Falls back to today only if no start date.
             const payDateRaw = $('#f-paydate')?.value;
-            const activityDate = payDateRaw || TODAY || data.startDate || data.joinDate;
+            const startBased = (md && md.startDate) || data.startDate || minStart || null;
+            const activityDate = payDateRaw || startBased || TODAY;
             const monthKey = activityDate.slice(0, 7);
             const ref = nextInvoiceRef();
             const sportList = enrollments.map(e => e.sport).join(', ');
@@ -2679,6 +2754,40 @@ function showMemberForm(m) {
             if (allEnds.length) {
               const latest = allEnds.sort().pop();
               if (!data.expiryDate || latest > data.expiryDate) data.expiryDate = latest;
+            }
+
+            // ── Sibling payment split ──────────────────────────────────────
+            // If this member was added via "Add Sibling", the parent paid ONE
+            // family total; split it equally across all the siblings so each
+            // invoice = total ÷ number of siblings.
+            if (m._siblingSplitFrom != null) {
+              const src = state.members.find(x => x.id === m._siblingSplitFrom);
+              if (src) {
+                // Make sure both share a family group.
+                let famId = src.familyId || data.familyId;
+                if (!famId) {
+                  const fam = { id: nextId(state.families || (state.families = [])), name: ((src.name || '').trim().split(/\s+/).slice(-1)[0] || 'Family') + ' family', phone: src.phone || data.phone || null, createdAt: new Date().toISOString() };
+                  state.families.push(fam);
+                  famId = fam.id;
+                }
+                src.familyId = famId;
+                data.familyId = famId;
+                // Siblings = everyone in the family group (incl. src + this new one).
+                const sibs = familyMembers(famId, true);
+                // Family total = the original total the parent paid. Prefer a stored
+                // value on the family; else the source member's current paid total
+                // (which, the first time, is the whole family payment).
+                const fam = state.families.find(f => f.id === famId);
+                if (fam && !(fam.familyTotal > 0)) fam.familyTotal = memberPaidTotal(src.id) || totalPay;
+                const familyTotal = (fam && fam.familyTotal > 0) ? fam.familyTotal : (memberPaidTotal(src.id) || totalPay);
+                const share = splitSiblingPayment(sibs, familyTotal);
+                if (typeof audit === 'function') audit('member.sibling_split', 'family:' + famId, `Split ${fmt(familyTotal)} across ${sibs.length} siblings = ${fmt(share)} each`);
+                save();
+                closeModal();
+                render();
+                toast(`Sibling added · family payment ${fmt(familyTotal)} split across ${sibs.length} = ${fmt(share)} each`);
+                return;
+              }
             }
 
             save();
@@ -4041,10 +4150,13 @@ window.editMemberPricing = function(memberId) {
     body: `
       <div class="text-mute" style="font-size:12px;margin-bottom:10px">${escapeHtml(m.name)}${m.nameArabic ? ` · <span dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}${m.phone ? ' · ' + phoneCell(m.phone) : ''}</div>
       ${rowHtml}
+      <div class="field" style="margin-top:10px;max-width:220px"><label style="font-size:12px;font-weight:600">📅 ${t('Payment date', 'تاريخ الدفع')}</label><input type="date" id="pri-paydate" value="${TODAY}" /><div class="text-mute" style="font-size:10px;margin-top:3px">${t('Date recorded for these payments (revenue counts in this month).', 'تاريخ تسجيل هذه الدفعات (تُحتسب الإيرادات في هذا الشهر).')}</div></div>
       <div class="text-mute" style="font-size:11px;margin-top:4px">${t('Each row updates the membership invoice for that sport. The matching line item, discount, paid total and payments log all reconcile.', 'كل صف يحدّث فاتورة العضوية لتلك الرياضة. يتم مزامنة بند الفاتورة والخصم والمدفوع وسجل الدفعات.')}</div>`,
     actions: [
       { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
       { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
+        const payDate = (document.getElementById('pri-paydate') && document.getElementById('pri-paydate').value) || TODAY;
+        const payMonth = payDate.slice(0, 7);
         const updates = rows.map(r => ({
           r,
           price: Math.max(0, parseFloat(document.querySelector(`.pri-price[data-i="${r.idx}"]`).value) || 0),
@@ -4066,15 +4178,15 @@ window.editMemberPricing = function(memberId) {
               category: 'Membership',
               sport: r.sport,
               description: r.sport,
-              date: TODAY,
-              month: TODAY.slice(0, 7),
+              date: payDate,
+              month: payMonth,
               amount: net,
               discount: disc,
               amountPaid: paid,
               method: paid > 0 ? 'Cash' : '',
               coachId: (r.enr && r.enr.coachId) || null,
               lineItems: [{ sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net }],
-              payments: paid > 0 ? [{ amount: paid, date: TODAY, month: TODAY.slice(0, 7), method: 'Cash' }] : [],
+              payments: paid > 0 ? [{ amount: paid, date: payDate, month: payMonth, method: 'Cash' }] : [],
             };
             state.invoices.push(inv);
           } else {
@@ -4084,7 +4196,7 @@ window.editMemberPricing = function(memberId) {
             if (!Array.isArray(inv.payments)) inv.payments = [];
             const currentLogged = inv.payments.reduce((s, p) => s + (p.amount || 0), 0);
             const delta = paid - currentLogged;
-            if (Math.abs(delta) > 0.001) inv.payments.push({ amount: delta, date: TODAY, month: TODAY.slice(0, 7), method: 'Cash', note: 'Adjusted via Edit pricing' });
+            if (Math.abs(delta) > 0.001) inv.payments.push({ amount: delta, date: payDate, month: payMonth, method: 'Cash', note: 'Adjusted via Edit pricing' });
             if (Array.isArray(inv.lineItems)) {
               const li = inv.lineItems.find(x => x.sport === r.sport) || inv.lineItems[0];
               if (li) li.price = net;
@@ -4222,6 +4334,8 @@ window.editCampMember = function(id) {
         if (paid > net) { toast(t('Paid amount cannot exceed price minus discount', 'المبلغ المدفوع لا يمكن أن يتجاوز السعر بعد الخصم'), 'error'); return; }
         if (picked) {
           const start = (campSub && campSub.start) || (campEnr && campEnr.start) || m.startDate || TODAY;
+          const campPayDate = start || TODAY;
+          const campPayMonth = campPayDate.slice(0, 7);
           if (campEnr) { campEnr.durationLabel = picked.label; campEnr.classes = picked.days; campEnr.price = price; campEnr.start = campEnr.start || start; }
           if (campSub) { campSub.durationLabel = picked.label; campSub.totalClasses = picked.days; campSub.start = campSub.start || start; campSub.end = addDays(start, picked.days); }
           if (m.sport === SUMMER_CAMP) { m.expiryDate = addDays(start, picked.days); m.price = price; }
@@ -4236,14 +4350,14 @@ window.editCampMember = function(id) {
             category: 'Membership',
             sport: SUMMER_CAMP + (picked ? ' · ' + picked.label : ''),
             description: SUMMER_CAMP + (picked ? ' · ' + picked.label : ''),
-            date: TODAY,
-            month: TODAY.slice(0, 7),
+            date: campPayDate,
+            month: campPayMonth,
             amount: net,
             discount: disc,
             amountPaid: paid,
             method: paid > 0 ? 'Cash' : '',
             lineItems: [{ sport: SUMMER_CAMP, price: net, classes: picked ? picked.days : null, durationLabel: picked ? picked.label : null }],
-            payments: paid > 0 ? [{ amount: paid, date: TODAY, month: TODAY.slice(0, 7), method: 'Cash' }] : [],
+            payments: paid > 0 ? [{ amount: paid, date: campPayDate, month: campPayMonth, method: 'Cash' }] : [],
           };
           state.invoices.push(inv);
         } else {
@@ -4254,7 +4368,7 @@ window.editCampMember = function(id) {
           // Reconcile the payments log to match the new paid total.
           const currentLogged = inv.payments.reduce((s, p) => s + (p.amount || 0), 0);
           const delta = paid - currentLogged;
-          if (Math.abs(delta) > 0.001) inv.payments.push({ amount: delta, date: TODAY, month: TODAY.slice(0, 7), method: 'Cash', note: 'Adjusted via Camp edit' });
+          if (Math.abs(delta) > 0.001) inv.payments.push({ amount: delta, date: campPayDate, month: campPayMonth, method: 'Cash', note: 'Adjusted via Camp edit' });
           // Keep the matching camp line item priced + duration in sync.
           if (Array.isArray(inv.lineItems)) {
             const li = inv.lineItems.find(x => x.sport === SUMMER_CAMP) || inv.lineItems[0];
@@ -6329,11 +6443,19 @@ PAGES.invoices = (main) => {
       if (filter.search) {
         const q = filter.search.toLowerCase();
         const cust = customerInfo(i);   // live name + phone if linked
-        const hay = [i.description, cust.name, cust.nameArabic, cust.phone, cust.phone2, cust.qid, i.coach, i.sport, i.ref, i.category]
-          .filter(Boolean).join(' ').toLowerCase();
+        // Also pull the linked member record directly so Arabic name, QID, and
+        // both phones are always searchable even if customerInfo misses one.
+        const mem = i.customerId != null ? state.members.find(m => m.id === i.customerId) : null;
+        const hay = [
+          i.description, i.ref, i.coach, i.sport, i.category,
+          cust.name, cust.nameArabic, cust.phone, cust.phone2, cust.qid,
+          i.customerName, i.customerPhone, i.customerNameArabic, i.customerQid,
+          mem && mem.name, mem && mem.nameArabic, mem && mem.phone, mem && mem.phone2, mem && mem.qid, mem && mem.email,
+        ].filter(Boolean).join(' ').toLowerCase();
         let hit = hay.includes(q);
         // Phone-aware fallback: match by digits, ignoring spaces, +, and 974.
-        if (!hit) hit = phoneQueryMatches(cust.phone, filter.search) || phoneQueryMatches(cust.phone2, filter.search) || phoneQueryMatches(i.customerPhone, filter.search);
+        if (!hit) hit = phoneQueryMatches(cust.phone, filter.search) || phoneQueryMatches(cust.phone2, filter.search)
+          || phoneQueryMatches(i.customerPhone, filter.search) || phoneQueryMatches(mem && mem.phone, filter.search) || phoneQueryMatches(mem && mem.phone2, filter.search);
         if (!hit) return false;
       }
       if (filter.month !== 'all' && i.month !== filter.month) return false;
@@ -6385,7 +6507,6 @@ PAGES.invoices = (main) => {
         <td>${i.category ? `<span class="badge ${i.category==='Court Rental'||i.category==='Boxing Room'?'pending':i.category==='Product'?'purple':'green'}" style="font-size:10px">${escapeHtml(i.category)}</span>` : '<span class="text-mute">—</span>'}</td>
         <td>${i.sport ? `<span class="badge ${sportBadgeColor}">${escapeHtml(sportLabel)}</span>` : '<span class="text-mute">—</span>'}</td>
         <td>${i.coach ? `<span class="text-dim">${escapeHtml(i.coach)}</span>` : '<span class="text-mute">—</span>'}</td>
-        <td class="text-mute" style="font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(i.description)}</td>
         <td><span class="badge ${i.method === 'card' ? 'blue' : ''}">${i.method}</span></td>
         <td class="text-right num font-bold">${fmt(i.amount)}${(() => {
           const st = invoiceStatus(i);
@@ -6402,7 +6523,7 @@ PAGES.invoices = (main) => {
           ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="deleteInvoice(${i.id})" title="Delete">🗑</button>`}
         </td>
       </tr>`;
-    }).join('') : `<tr><td colspan="11" class="empty"><div class="empty-icon">📄</div>No invoices match</td></tr>`;
+    }).join('') : `<tr><td colspan="10" class="empty"><div class="empty-icon">📄</div>No invoices match</td></tr>`;
     $('#inv-count').textContent = isViewerRole() ? `${allRows.length} invoices` : `${allRows.length} invoices · ${fmtMoney(total)}`;
     $('#inv-pagination').innerHTML = paginationBar(pg, allRows.length, 'inv');
     bindPagination('inv', pg, allRows.length, refresh);
@@ -6459,7 +6580,7 @@ PAGES.invoices = (main) => {
     </div>
     <div class="card">
       <div class="filter-bar">
-        <div class="search"><input id="inv-search" type="text" placeholder="Search customer name, mobile, QID, coach, sport..." /></div>
+        <div class="search"><input id="inv-search" type="text" placeholder="Search name (EN/AR), mobile, QID, coach, sport..." /></div>
         <select id="inv-month" class="btn ghost">
           <option value="all">All months</option>
           ${[...new Set(state.invoices.map(i => i.month).filter(Boolean))].sort().reverse().map(m => `<option value="${m}">${fmtMonth(m)}</option>`).join('')}
@@ -6499,7 +6620,6 @@ PAGES.invoices = (main) => {
               <th>Category</th>
               <th>Activity</th>
               <th>Coach</th>
-              <th>Description · البيان</th>
               <th>Method</th>
               <th class="text-right">Amount</th>
               <th></th>
@@ -7715,7 +7835,31 @@ window.printMemberInvoicePDF = function(memberId) {
     (iv.category || 'Membership') === 'Membership' &&
     !iv.switchCredit && (iv.amount || 0) > 0
   );
-  if (!invs.length) { toast('No membership invoice for this member', 'error'); return; }
+  if (!invs.length) {
+    // No saved invoice — build one on the fly from the member's enrollments so
+    // "Get Invoice" still works (common for legacy/imported members). This is a
+    // temporary, never-persisted invoice used only for the PDF.
+    const enr = (m && Array.isArray(m.enrollments)) ? m.enrollments.filter(e => e && e.sport) : [];
+    if (!enr.length) { toast('No membership invoice or enrollments for this member', 'error'); return; }
+    const lineItems = enr.map(e => ({ sport: e.sport, coach: coachName(e.coachId) || '', coachId: e.coachId, classes: e.classes, price: Number(e.price) || 0 }));
+    const amount = lineItems.reduce((s, li) => s + li.price, 0);
+    const startDates = enr.map(e => (typeof enrollmentStartDate === 'function' ? enrollmentStartDate(e, m) : (e.start || m.startDate || TODAY))).filter(Boolean).sort();
+    const issueDate = startDates[0] || m.startDate || TODAY;
+    const tempId = -(Date.now());
+    const label = (typeof sportListWithDuration === 'function' && sportListWithDuration(lineItems)) || lineItems.map(li => li.sport).join(', ');
+    const temp = {
+      id: tempId, ref: 'INV-' + String(Math.abs(tempId)).slice(-6), date: issueDate,
+      month: issueDate.slice(0, 7), category: 'Membership', activityType: 'subscription',
+      customerId: memberId, customerName: m.name, customerPhone: m.phone,
+      sport: label, coach: lineItems[0] ? lineItems[0].coach : '', coachId: lineItems[0] ? lineItems[0].coachId : null,
+      amount, amountPaid: typeof memberPaidTotal === 'function' ? Math.min(amount, memberPaidTotal(memberId)) : 0,
+      method: 'cash', lineItems, _synthetic: true,
+    };
+    state.invoices.push(temp);
+    try { printInvoicePDF(tempId); }
+    finally { state.invoices = state.invoices.filter(iv => iv.id !== tempId); }
+    return;
+  }
   if (invs.length === 1) { printInvoicePDF(invs[0].id); return; }
 
   // Merge line items across all the member's membership invoices.
@@ -8181,16 +8325,16 @@ window.printInvoicePDF = function(id) {
       </div>
     </div>
     <div class="header-right">
-      <div class="invoice-label">Invoice · فاتورة</div>
+      <div class="invoice-label">Invoice · <bdi>فاتورة</bdi></div>
       <div class="invoice-no">${escapeHtml(ref)}</div>
-      <div class="invoice-date">Issued · تاريخ الإصدار: ${issueDate}</div>
-      <div class="invoice-date" style="opacity:.7;font-size:.85em">Printed · الطباعة: ${fmtDate(TODAY)}</div>
+      <div class="invoice-date" dir="ltr">Issued · <bdi>تاريخ الإصدار</bdi>: ${issueDate}</div>
+      <div class="invoice-date" dir="ltr" style="opacity:.7;font-size:.85em">Printed · <bdi>الطباعة</bdi>: ${fmtDate(TODAY)}</div>
     </div>
   </div>
 
   <div class="parties">
     <div>
-      <div class="party-label">From · من</div>
+      <div class="party-label">From · <bdi>من</bdi></div>
       <div class="party-name">Black Stars Sports Club</div>
       <div class="party-detail">
         Waab — Village Resort, Doha, Qatar<br>
@@ -8199,8 +8343,9 @@ window.printInvoicePDF = function(id) {
       </div>
     </div>
     <div>
-      <div class="party-label">Billed to · فاتورة إلى</div>
+      <div class="party-label">Billed to · <bdi>فاتورة إلى</bdi></div>
       <div class="party-name">${escapeHtml(customerName)}</div>
+      ${(() => { const ar = (liveCust && liveCust.nameArabic) || (matchedMember && matchedMember.nameArabic) || ''; return ar ? `<div class="party-name" dir="rtl" style="font-size:.92em;color:#444">${escapeHtml(ar)}</div>` : ''; })()}
       <div class="party-detail">
         ${customerPhone && !customerPhone.startsWith('+9747000') ? escapeHtml(customerPhone) + '<br>' : ''}
         ${liveCust.isMember && liveCust.qid ? 'QID: ' + escapeHtml(liveCust.qid) + '<br>' : (matchedMember && matchedMember.qid ? 'QID: ' + escapeHtml(matchedMember.qid) + '<br>' : '')}
@@ -8209,21 +8354,15 @@ window.printInvoicePDF = function(id) {
     </div>
   </div>
 
-  <!-- Activity + Coach badges -->
-  ${(inv.sport || inv.coach) ? `
+  <!-- Activity + Period (coach is shown per line item below, not here) -->
+  ${inv.sport ? `
   <div style="display:flex;gap:20px;margin-bottom:24px;padding:14px 20px;background:#f7f7f8;border-radius:10px">
-    ${inv.sport ? `
-      <div>
-        <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Activity · النشاط</div>
-        <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escapeHtml(inv.sport)}</div>
-      </div>` : ''}
-    ${inv.coach ? `
-      <div>
-        <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Coach · المدرب</div>
-        <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escapeHtml(inv.coach)}</div>
-      </div>` : ''}
+    <div>
+      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Activity · <bdi>النشاط</bdi></div>
+      <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escapeHtml(inv.sport)}</div>
+    </div>
     <div style="margin-left:auto">
-      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Period · الفترة</div>
+      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Period · <bdi>الفترة</bdi></div>
       <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escapeHtml(fmtMonth(inv.month))}</div>
     </div>
   </div>
@@ -8233,8 +8372,8 @@ window.printInvoicePDF = function(id) {
     <thead>
       <tr>
         <th>Description</th>
-        <th class="right" style="width:90px">Qty · الكمية</th>
-        <th class="right" style="width:130px">Amount · المبلغ (QAR)</th>
+        <th class="right" style="width:90px">Qty · <bdi>الكمية</bdi></th>
+        <th class="right" style="width:130px">Amount · <bdi>المبلغ</bdi> (QAR)</th>
       </tr>
     </thead>
     <tbody>
@@ -8242,7 +8381,7 @@ window.printInvoicePDF = function(id) {
       <tr>
         <td>
           <div class="item-desc">${escapeHtml(li.sport)} subscription</div>
-          <div class="item-sub">Coach · المدرب: ${escapeHtml(li.coach || '—')} · Issued on ${issueDate}</div>
+          <div class="item-sub" dir="ltr">Coach · <bdi>المدرب</bdi>: ${escapeHtml(li.coach || '—')} · Issued on ${issueDate}</div>
         </td>
         <td class="right">${li.classes || 1}</td>
         <td class="right">${Number(li.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
@@ -8261,31 +8400,31 @@ window.printInvoicePDF = function(id) {
   <div class="totals">
     <div class="totals-table">
       <div class="totals-row">
-        <span>Subtotal · المجموع الفرعي</span>
+        <span>Subtotal · <bdi>المجموع الفرعي</bdi></span>
         <span>${amountStr} QAR</span>
       </div>
       <div class="totals-row">
-        <span>Tax · الضريبة (0%)</span>
+        <span>Tax · <bdi>الضريبة</bdi> (0%)</span>
         <span>0.00 QAR</span>
       </div>
       <div class="totals-row grand">
-        <span>Total · الإجمالي</span>
+        <span>Total · <bdi>الإجمالي</bdi></span>
         <span class="amount">${amountStr} QAR</span>
       </div>
       ${invoiceBalance(inv) > 0.001 ? `
       <div class="totals-row">
-        <span>Paid · المدفوع${inv.amountPaid > 0 ? '' : ' (deposit)'}</span>
+        <span>Paid · <bdi>المدفوع</bdi>${inv.amountPaid > 0 ? '' : ' (deposit)'}</span>
         <span>${Number(invoicePaid(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR</span>
       </div>
       <div class="totals-row grand" style="color:#b45309">
-        <span>Balance due · المتبقي</span>
+        <span>Balance due · <bdi>المتبقي</bdi></span>
         <span class="amount">${Number(invoiceBalance(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR</span>
       </div>` : ''}
     </div>
   </div>
 
   <div class="amount-words">
-    <strong>Amount in words · المبلغ كتابةً:</strong> ${escapeHtml(amountWords)} Qatari Riyals only.
+    <strong dir="ltr">Amount in words · <bdi>المبلغ كتابةً</bdi>:</strong> ${escapeHtml(amountWords)} Qatari Riyals only.
   </div>
 
   <div class="payment-info">
@@ -8298,7 +8437,7 @@ window.printInvoicePDF = function(id) {
       })()}
     </div>
     <div class="payment-method">
-      Payment method · طريقة الدفع: <strong>${escapeHtml(inv.method || 'Cash')}</strong>
+      <span dir="ltr">Payment method · <bdi>طريقة الدفع</bdi>: <strong>${escapeHtml(inv.method || 'Cash')}</strong></span>
     </div>
   </div>
 
@@ -8660,7 +8799,10 @@ PAGES.expenses = (main) => {
   const pg = makePager(10);
 
   function refresh() {
-    const allRows = state.expenses.filter(e => {
+    // Cash collections (owner taking cash out) are tracked on their own Cash
+    // Collection screen — they are NOT real expenses, so keep them off this page.
+    const realExpenses = state.expenses.filter(e => (e.category || '') !== CASH_COLLECTION_CATEGORY);
+    const allRows = realExpenses.filter(e => {
       if (filter.search && !e.description.toLowerCase().includes(filter.search.toLowerCase())) return false;
       if (filter.month !== 'all' && e.month !== filter.month) return false;
       if (filter.categories.length && !filter.categories.includes(e.category || 'Others')) return false;
@@ -8670,7 +8812,7 @@ PAGES.expenses = (main) => {
     const rows = paginate(allRows, pg);
 
     const total = allRows.reduce((s,r) => s + (r.amount || 0), 0);          // filtered total
-    const grandTotal = state.expenses.reduce((s,r) => s + (r.amount || 0), 0); // all expenses
+    const grandTotal = realExpenses.reduce((s,r) => s + (r.amount || 0), 0); // all real expenses
     const anyFilter = filter.search || filter.month !== 'all' || filter.categories.length || filter.methods.length;
     // Per-category totals — replaces old monthly/equipment split since the
     // Type field is removed. Top 3 categories shown in the subtitle.
@@ -8731,7 +8873,7 @@ PAGES.expenses = (main) => {
             <span id="exp-cat-label">All categories</span><span style="opacity:.6">▾</span>
           </button>
           <div id="exp-cat-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:190px;max-height:320px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
-            ${EXP_CATS.map(c => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="exp-cat-cb" value="${escapeHtml(c)}" /> ${escapeHtml(c)}</label>`).join('')}
+            ${EXP_CATS.filter(c => c !== CASH_COLLECTION_CATEGORY).map(c => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="exp-cat-cb" value="${escapeHtml(c)}" /> ${escapeHtml(c)}</label>`).join('')}
           </div>
         </div>
         <div style="position:relative">
@@ -8783,7 +8925,8 @@ function showExpenseForm(id) {
   const isNew = !e;
   // Default to first available category if creating fresh; preserve existing on edit
   const cur = e || { description:'', amount:'', category: '', method:'', date: TODAY };
-  const cats = EXP_CATS;
+  // Cash collections are recorded on the Cash Collection screen, not here.
+  const cats = EXP_CATS.filter(c => c !== CASH_COLLECTION_CATEGORY);
   showModal({
     title: isNew ? 'New Expense' : 'Edit Expense',
     body: `
@@ -11510,6 +11653,14 @@ PAGES.attendance = (main) => {
   // filter.days is an array of day-numbers; empty = all days
   const _defaultDays = _defaultMonth === _todayMonth ? [_now.getDate()] : [];
   let filter = { month: _defaultMonth, coach: 'all', search: '', sports: [], memberId: null, days: _defaultDays, att: 'all' };
+  // If navigated here from a member profile ("see attendance"), pre-fill the
+  // search with that member's name and show all months so their full history is
+  // visible. Consumed once.
+  if (window._attFocus) {
+    filter.search = window._attFocus.name || '';
+    filter.days = [];                          // show the whole month, not just today
+    window._attFocus = null;
+  }
 
   // When a COACH is signed in, the attendance grid shows ONLY the sports they
   // actually coach (per-enrolment coachId), so a coach can mark their own
@@ -19643,18 +19794,28 @@ PAGES.productsales = (main) => {
       if (range.to && d > range.to) return false;
       return true;
     };
-    // Aggregate per product across all sales in range.
+    // Aggregate per product across all sales in range. We group by the product's
+    // NAME (case-insensitive), not its id — the same item (e.g. "Gymnastic
+    // Uniform") can appear under several product records or with a missing
+    // productId, and the owner expects to see ONE row per product name.
     const byProduct = {};
     let totalUnits = 0, totalRevenue = 0, txCount = 0;
     for (const sale of (state.sales || [])) {
       if (!inRange(sale)) continue;
       let saleHasItem = false;
       for (const it of (sale.items || [])) {
-        const key = it.productId != null ? 'p' + it.productId : 'n:' + (it.name || '—');
+        const prod = it.productId != null ? (state.products || []).find(p => p.id === it.productId) : null;
+        const displayName = (prod && prod.name) || it.name || '—';
+        const key = 'n:' + displayName.trim().toLowerCase();   // group by name
         const rev = (it.qty || 0) * (it.unitPrice || 0);
         if (!byProduct[key]) {
-          const prod = it.productId != null ? (state.products || []).find(p => p.id === it.productId) : null;
-          byProduct[key] = { productId: it.productId, name: (prod && prod.name) || it.name || '—', category: (prod && prod.category) || '', units: 0, revenue: 0, txns: 0, stock: prod ? (typeof productCurrentStock === 'function' ? productCurrentStock(it.productId) : (prod.stock || 0)) : null };
+          // Stock = sum across ALL product records sharing this name.
+          const sameName = (state.products || []).filter(p => (p.name || '').trim().toLowerCase() === displayName.trim().toLowerCase());
+          let stock = null;
+          if (sameName.length) {
+            stock = sameName.reduce((s, p) => s + (typeof productCurrentStock === 'function' ? productCurrentStock(p.id) : (p.stock || 0)), 0);
+          }
+          byProduct[key] = { productId: (prod && prod.id) != null ? prod.id : it.productId, name: displayName, category: (prod && prod.category) || (sameName[0] && sameName[0].category) || '', units: 0, revenue: 0, txns: 0, stock };
         }
         byProduct[key].units += it.qty || 0;
         byProduct[key].revenue += rev;
@@ -19793,6 +19954,8 @@ PAGES.cleanup = (main) => {
   if (currentRole() !== 'admin') { main.innerHTML = `<div class="empty"><div class="empty-icon">🔐</div>${t('Admins only', 'للمشرفين فقط')}</div>`; return; }
   const dupEnr = findDuplicateEnrollments();
   const mergeable = findMembersWithMergeableInvoices();
+  const misdated = findMisdatedInvoices();
+  const dupProducts = findDuplicateProducts();
 
   const enrSection = dupEnr.length ? dupEnr.map(d => {
     const rows = d.rows.map((e, i) => `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:3px 0;${i === 0 ? '' : 'opacity:.7'}">
@@ -19817,6 +19980,27 @@ PAGES.cleanup = (main) => {
       <div style="margin-top:6px;font-size:11px" class="text-mute">${d.invoices.map((iv, i) => `${i === 0 ? '✅ ' : '↪ '}${escapeHtml(iv.ref || ('INV' + iv.id))} · ${iv.date ? fmtDate(iv.date) : '—'} · ${fmt(iv.amount || 0)}`).join('<br>')}</div>
     </div>`).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('No members with splittable invoices', 'لا يوجد أعضاء بفواتير متعددة')}</div>`;
 
+  const misdatedSection = misdated.length ? misdated.map(d => `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><b>${escapeHtml(d.member.name)}</b> · <span class="text-mute" style="font-size:12px">${escapeHtml(d.inv.ref || ('INV' + d.inv.id))}</span></div>
+        <button class="btn ghost sm" style="color:var(--blue)" onclick="fixInvoiceDateUI(${d.inv.id})">📅 ${t('Fix date', 'تصحيح التاريخ')}</button>
+      </div>
+      <div style="margin-top:6px;font-size:12px" class="text-mute">
+        ${t('Invoice dated', 'الفاتورة بتاريخ')} <b style="color:var(--red)">${fmtDate(d.invDate)}</b> → ${t('should be', 'يجب أن تكون')} <b style="color:var(--green)">${fmtDate(d.startDate)}</b>
+        <span style="opacity:.7">(${d.gapDays} ${t('days off', 'يوم فرق')})</span>
+      </div>
+    </div>`).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('No misdated invoices', 'لا توجد فواتير بتواريخ خاطئة')}</div>`;
+
+  const dupProdSection = dupProducts.length ? dupProducts.map(d => `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><b>${escapeHtml(d.name)}</b> · <span class="badge blue" style="font-size:10px">${d.count} ${t('records', 'سجلات')}</span> · <span class="text-mute" style="font-size:12px">${d.totalStock} ${t('in stock combined', 'في المخزون مجتمعة')}</span></div>
+        <button class="btn ghost sm" style="color:var(--blue)" onclick="mergeDuplicateProductsUI(${JSON.stringify(d.name).replace(/"/g, '&quot;')})">📦 ${t('Merge into one', 'دمج في واحد')}</button>
+      </div>
+      <div style="margin-top:6px;font-size:11px" class="text-mute">${d.products.map((p, i) => `${i === 0 ? '✅ ' + t('keep', 'احتفظ') : '↪ '}#${p.id} · ${escapeHtml(p.category || '—')} · ${productCurrentStock(p.id)} ${t('in stock', 'في المخزون')}`).join('<br>')}</div>
+    </div>`).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('No duplicate products', 'لا توجد منتجات مكررة')}</div>`;
+
   main.innerHTML = `
     <div class="topbar">
       <div>
@@ -19826,9 +20010,11 @@ PAGES.cleanup = (main) => {
       <div class="topbar-actions"><button class="btn ghost" onclick="render()">↻ ${t('Rescan', 'إعادة الفحص')}</button></div>
     </div>
 
-    <div class="kpi-grid" style="grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:16px">
+    <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
       <div class="kpi ${dupEnr.length ? 'red' : 'green'}"><div class="kpi-label">${t('Duplicate enrollments', 'تسجيلات مكررة')}</div><div class="kpi-value num">${dupEnr.length}</div></div>
       <div class="kpi ${mergeable.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Members with split invoices', 'أعضاء بفواتير متعددة')}</div><div class="kpi-value num">${mergeable.length}</div></div>
+      <div class="kpi ${misdated.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Misdated invoices', 'فواتير بتواريخ خاطئة')}</div><div class="kpi-value num">${misdated.length}</div></div>
+      <div class="kpi ${dupProducts.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Duplicate products', 'منتجات مكررة')}</div><div class="kpi-value num">${dupProducts.length}</div></div>
     </div>
 
     <div class="card" style="margin-bottom:14px">
@@ -19839,6 +20025,19 @@ PAGES.cleanup = (main) => {
     <div class="card">
       <div class="card-header"><div><div class="card-title">🧾 ${t('Consolidate invoices', 'دمج الفواتير')}</div><div class="card-subtitle">${t('Members with several membership invoices. Merge combines them into the oldest one; payments keep their months so revenue is unchanged.', 'أعضاء لديهم عدة فواتير اشتراك. الدمج يجمعها في الأقدم؛ المدفوعات تحتفظ بشهورها فلا يتغير الإيراد.')}</div></div></div>
       <div style="padding:12px">${mergeSection}</div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+        <div><div class="card-title">📅 ${t('Fix invoice dates', 'تصحيح تواريخ الفواتير')}</div><div class="card-subtitle">${t('Membership invoices dated after the member\\u2019s start date (e.g. old members added later). Fixing re-dates the invoice and its payments to the start date, so revenue lands in the right month. Amounts are unchanged.', 'فواتير اشتراك مؤرخة بعد تاريخ بداية العضو (مثل الأعضاء القدامى المضافين لاحقاً). التصحيح يعيد تأريخ الفاتورة ومدفوعاتها لتاريخ البداية. المبالغ لا تتغير.')}</div></div>
+        ${misdated.length ? `<button class="btn ghost sm" style="color:var(--blue);white-space:nowrap" onclick="fixAllInvoiceDatesUI()">📅 ${t('Fix all', 'تصحيح الكل')} (${misdated.length})</button>` : ''}
+      </div>
+      <div style="padding:12px">${misdatedSection}</div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="card-header"><div><div class="card-title">📦 ${t('Merge duplicate products', 'دمج المنتجات المكررة')}</div><div class="card-subtitle">${t('Products entered more than once under the same name split stock and sales. Merge keeps the oldest record, sums all their stock onto it, re-points past sales, and removes the extras.', 'المنتجات المدخلة أكثر من مرة بنفس الاسم تقسّم المخزون والمبيعات. الدمج يحتفظ بالأقدم، ويجمع المخزون، ويعيد ربط المبيعات، ويزيل الزائد.')}</div></div></div>
+      <div style="padding:12px">${dupProdSection}</div>
     </div>
   `;
 };
@@ -19859,6 +20058,43 @@ window.dedupeMemberEnrollment = function(memberId, sport) {
   if (typeof audit === 'function') audit('cleanup.dedupe_enrollment', 'member:' + memberId, `Removed ${matches.length - 1} duplicate ${sport} enrollment(s)`);
   save();
   toast(`Kept one ${sport} enrollment for ${m.name}`, 'success');
+  render();
+};
+
+window.mergeDuplicateProductsUI = function(name) {
+  const groups = findDuplicateProducts();
+  const grp = groups.find(g => (g.name || '').trim().toLowerCase() === (name || '').trim().toLowerCase());
+  if (!grp) { toast('Nothing to merge', 'info'); return; }
+  if (!confirm(`Merge ${grp.count} "${grp.name}" product records into one?\n\nThe oldest record is kept, all their stock (${grp.totalStock} in stock) is combined onto it, past sales are re-pointed, and the duplicates are removed. This cannot be undone from here.`)) return;
+  const kept = mergeDuplicateProducts(grp.name);
+  if (!kept) { toast('Merge failed', 'error'); return; }
+  if (typeof audit === 'function') audit('cleanup.merge_products', 'product:' + kept.id, `Merged ${grp.count} "${grp.name}" records into #${kept.id}`);
+  save();
+  toast(`Merged into one "${kept.name}" — ${productCurrentStock(kept.id)} in stock`, 'success');
+  render();
+};
+
+window.fixInvoiceDateUI = function(invId) {
+  const inv = (state.invoices || []).find(i => i.id === invId && !i.deleted);
+  if (!inv) { toast('Invoice not found', 'error'); return; }
+  const before = inv.date;
+  const fixed = fixInvoiceDateToStart(invId);
+  if (!fixed) { toast('Could not determine a start date for this invoice', 'error'); return; }
+  if (typeof audit === 'function') audit('cleanup.fix_invoice_date', 'invoice:' + invId, `Re-dated ${inv.ref || ('INV' + invId)} from ${before} to ${fixed.date}`);
+  save();
+  toast(`${fixed.ref || ('INV' + invId)} re-dated to ${fmtDate(fixed.date)}`, 'success');
+  render();
+};
+
+window.fixAllInvoiceDatesUI = function() {
+  const list = findMisdatedInvoices();
+  if (!list.length) { toast('No misdated invoices', 'info'); return; }
+  if (!confirm(`Re-date ${list.length} invoice${list.length === 1 ? '' : 's'} to their members' start dates?\n\nEach invoice and its payments move to the correct start month. Amounts are unchanged.`)) return;
+  let n = 0;
+  for (const d of list) { if (fixInvoiceDateToStart(d.inv.id)) n++; }
+  if (typeof audit === 'function') audit('cleanup.fix_invoice_date_bulk', 'invoices', `Re-dated ${n} invoices to start dates`);
+  save();
+  toast(`Re-dated ${n} invoice${n === 1 ? '' : 's'} to their start dates`, 'success');
   render();
 };
 

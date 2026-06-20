@@ -1,4 +1,206 @@
 # Black Stars CRM
+Version 6.73.0 - Cleanup Center: merge duplicate products.
+
+## 6.73.0 note - merge duplicate products
+Added a fourth Cleanup Center tool: "Merge duplicate products". It finds products
+entered more than once under the same name (case-insensitive) - which split stock
+and sales reporting (the root cause behind the earlier Gymnastic Uniform issue).
+Merging keeps the oldest record, sums every duplicate's stock onto it, re-points
+all past sale line items to the kept product, inherits category/sku/threshold where
+missing, and removes the extra records. Current stock stays correct (summed initial
+minus all sales). Admin-only, confirmed and audit-logged. No schema change.
+
+# Black Stars CRM
+Version 6.72.0 - Cleanup Center: fix misdated invoices.
+
+## 6.72.0 note - fix invoice dates to start date
+Added a third tool to the Cleanup Center: "Fix invoice dates". It finds membership
+invoices dated noticeably after the member's start date (old members added after
+the fact, like Saad - registered now but starting in January), shows the wrong vs
+correct date and the day gap, and re-dates the invoice AND its payment records to
+the member's start date so revenue is recognised in the correct month. Amounts are
+never changed. Works per-invoice or "Fix all" at once; admin-only, confirmed and
+audit-logged. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.71.0 - Fix: bilingual invoice labels no longer scramble (bidi).
+
+## 6.71.0 note - invoice bidirectional-text fix
+On the invoice PDF, bilingual labels that are followed by a value - "Issued",
+"Printed", "Payment method", "Amount in words", and the per-line "Coach" - were
+rendering in the wrong order (e.g. the date "21 Jun 2026" got split and reordered)
+because the Arabic label between the English word and the value flipped the text
+direction. Fixed by isolating every Arabic label in a <bdi> (bidirectional
+isolate) element and forcing those lines to dir="ltr", so the order stays
+"English . Arabic: value" correctly. Applied to all 17 bilingual invoice labels
+for consistency. Visual-only; no data or schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.70.0 - Batch E: editable payment dates + refreshed handover.
+
+## 6.70.0 note - Batch E housekeeping
+1. The "Edit pricing & payment" dialog now has an editable PAYMENT DATE field
+   (defaults to today). The payment(s) it records - on existing or newly-created
+   invoices - are dated and counted in that date's month, so you can back-date a
+   payment that was actually collected on another day.
+2. The Summer Camp pricing edit now dates its payment to the CAMP START date
+   instead of today, so camp revenue lands in the right month.
+3. Refreshed HANDOVER.md - it was stuck at v4.46.2 / ~9,000 lines; now reflects
+   the current v6.70 app (~19,900 lines, 47 routes, schema 9, test/render gates,
+   and the major systems added since).
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.69.0 - Fix: new-member invoice dated to the sport start date.
+
+## 6.69.0 note - invoice date follows start date
+When registering a member (including back-dated / old members), the invoice was
+always dated TODAY because the "Payment date" field was pre-filled with today.
+Now that field is BLANK by default, and when left blank the invoice is dated to
+the membership START date (the earliest sport start) - so a member registered now
+but starting in January gets a January-dated invoice, and revenue lands in the
+correct month. The admin can still type an explicit payment date to override (e.g.
+when cash was actually collected on a different day). The printed invoice's
+"Printed" line still shows today. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.68.0 - Add Sibling: copy all details + split the family payment.
+
+## 6.68.0 note - sibling payment split
+"Add Sibling" still copies all the shared details (phone, nationality, level, and
+the full plan: sports / coaches / classes / prices), and now also SPLITS the one
+family payment equally across the siblings. When you add a sibling, the parent's
+single family total is divided by the number of siblings and each child's
+membership invoice is set to that share (e.g. 750 for 2 kids -> 375 each; add a
+3rd -> 250 each). The rounding remainder is placed on the first sibling so the
+shares always add back to the exact family total - no money is created or lost.
+The family total is captured once (stored on the family record) so adding a 3rd or
+4th sibling re-splits the original total rather than compounding. Each split
+invoice is noted "Family share (1/N)" and revenue stays in the month it was paid.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.67.0 - Fix: Product Sales groups by product name (no more split rows).
+
+## 6.67.0 note - Product Sales discrepancy
+Product Sales was showing the same item (e.g. "Gymnastic Uniform") as several
+separate rows. Cause: it grouped by product ID, but the same product can exist
+under more than one product record, or a sale line can have no product ID - so
+identical items landed in different buckets. Now it groups by the product NAME
+(case-insensitive): one row per product name, with units, revenue and sales count
+summed, and stock totalled across all product records sharing that name. This
+makes Product Sales reconcile with the Invoices/Product sales lines. No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.66.0 - Invoices: removed Description column.
+
+## 6.66.0 note - cleaner invoices table
+Removed the Description column from the Invoices screen (header + cells) to
+declutter the table - the sport/coach/customer columns already convey the same
+information. Description is still stored on each invoice, still printed on the PDF,
+and still searchable from the search box; it's only hidden from the list view.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.65.0 - Invoice search by EN/AR name, mobile, QID.
+
+## 6.65.0 note - richer invoice search
+The Invoices search box now reliably matches by the customer's English name,
+Arabic name, mobile number (any format - spaces, +974, partial), and QID, in
+addition to ref/coach/sport/description. It pulls these from the linked member
+record directly (plus the invoice's own snapshot fields), so a member's Arabic
+name and QID are searchable even when not stored on the invoice itself. Phone
+matching stays format-insensitive. Placeholder updated. No schema change.
+
+# Black Stars CRM
+Version 6.64.0 - Invoice: drop header coach, add Arabic customer name.
+
+## 6.64.0 note - invoice header tidy-up
+1. Removed the single "Coach" box from the invoice header. On a multi-sport
+   invoice it only showed the FIRST sport's coach (misleading). Each coach is
+   already listed per line item in the Description, so the header now shows just
+   Activity and Period.
+2. The "Billed to" block now shows the customer's ARABIC name under their English
+   name when one is on file (right-aligned RTL). Works for saved invoices and the
+   on-the-fly generated ones. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.63.0 - "Get Invoice" works even without a saved invoice.
+
+## 6.63.0 note - Get Invoice always available
+The "Get Invoice" button on a member profile used to disappear when the member had
+no saved membership invoice (common for imported/legacy members who have
+enrollments but no invoice record - e.g. Ali, 3 sports, PAID 1,125 but no invoice).
+Now the button shows whenever the member has an invoice OR any sport enrollment,
+and if there's no saved invoice it builds one ON THE FLY from the member's
+enrollments (each sport, its coach, classes and price; total = sum; dated to the
+earliest sport start). That invoice is temporary and never saved - it's only used
+to render the PDF, exactly like the multi-invoice combined print. No schema change.
+
+# Black Stars CRM
+Version 6.62.0 - Cash collections kept off the Expenses screen.
+
+## 6.62.0 note - separate cash collection from expenses
+"Cash collected by owner" entries are no longer shown on the Expenses screen -
+they belong on the dedicated Cash Collection page. The Expenses list, its grand
+total and category subtitle now exclude that category, the category is removed
+from the Expenses filter dropdown, and the "+ New Expense" form no longer offers
+it (cash collection is recorded only from the Cash Collection screen). The
+underlying records are unchanged - Reports / net-profit still account for cash
+collection as before; this only cleans up the Expenses view. No schema change.
+
+# Black Stars CRM
+Version 6.61.0 - Fix: rentals no longer flagged as duplicate invoices.
+
+## 6.61.0 note - duplicate detector ignores repeat rentals
+Court Rental / Boxing Room invoices are inherently repeatable - the same customer
+books the same facility many times a month. The duplicate detector was grouping
+them by month, so two legitimate rentals of the same court on different days were
+wrongly flagged as an "exact" duplicate. Now rentals are matched by the exact DATE
+(so only a genuine same-day double-entry is flagged) and are excluded from the
+"within 7 days" possible tier. Membership and product duplicate detection is
+unchanged. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.60.0 - Fix: per-sport subscription status reflects its own end date.
+
+## 6.60.0 note - subscription-row status bug
+In the member profile's Subscription History, every sport row showed "active"
+even when that sport's period had ended, because the badge used a stored 'status'
+field that was set once and never updated. Now each row derives its OWN status
+from its END date and attendance: a sport whose end date has passed shows
+"expired", a fully-attended one shows "completed", otherwise "active". This is
+independent of the member's overall status - a member can be Active (because one
+sport still runs) while other sports on the same profile correctly show expired.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.59.0 - Member profile: clickable attendance + export.
+
+## 6.59.0 note - jump to attendance + export a member's history
+1. On the member profile, the CLASSES and ATT RATE cards are now clickable - they
+   open the Attendance grid pre-filtered to that member (all months, so their full
+   history shows). A small "" download icon on the Att Rate card, and a new
+   "Attendance" button in the profile footer, export that member's COMPLETE
+   attendance history to CSV: one row per recorded day (date, month, sport,
+   Present/Absent) with present/absent totals and the member's details at the top.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.58.0 - Fix: "Completed" status now reflects the CURRENT membership.
+
+## 6.58.0 note - Completed status bug
+A member could show "Completed" while their current membership was still in
+progress (e.g. only 3 of 8 classes attended, expiry in the future). Cause:
+isCompleted() scanned ALL subscriptions including past months, so a fully-attended
+PRIOR month kept marking the member Completed even after they renewed into a new,
+unfinished subscription. Fixed: isCompleted() now looks only at the CURRENT cycle's
+subscription(s) (those starting on/after the member's current start date; if none
+match, the most recent one). A member is Completed only when their current package
+is fully attended - otherwise Active. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.57.0 - Bilingual invoice PDF + club rule conditions.
 
 ## 6.57.0 note - bilingual invoice + policy terms

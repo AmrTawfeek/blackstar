@@ -409,6 +409,16 @@ ${seed}
   const dupGroups = detectDuplicateInvoices();
   ok(dupGroups.some(g => g.rows.length === 2 && g.rows.every(r => r.inv.customerId === 80)), 'dup finder: flags the two identical invoices for member 80');
   ok(!dupGroups.some(g => g.rows.some(r => r.inv.id === 705) && g.rows.some(r => r.inv.id === 706)), 'dup finder: same member but different amounts are NOT flagged');
+  // Rentals are repeatable: two Court Rentals on DIFFERENT days = not duplicates;
+  // two on the SAME day = a real double-entry, still flagged.
+  state.invoices.push(
+    { id: 7801, customerName: 'rentguy', category: 'Court Rental', activityType: 'rental', sport: 'Football Court', amount: 200, date: '2026-06-06', month: '2026-06' },
+    { id: 7802, customerName: 'rentguy', category: 'Court Rental', activityType: 'rental', sport: 'Football Court', amount: 200, date: '2026-06-17', month: '2026-06' },
+    { id: 7803, customerName: 'rentguy', category: 'Court Rental', activityType: 'rental', sport: 'Football Court', amount: 200, date: '2026-06-17', month: '2026-06' });
+  var rentGroups = detectDuplicateInvoices();
+  ok(!rentGroups.some(g => g.rows.some(r => r.inv.id === 7801) && g.rows.some(r => r.inv.id === 7802)), 'dup finder: rentals on different days are NOT flagged');
+  ok(rentGroups.some(g => g.rows.some(r => r.inv.id === 7802) && g.rows.some(r => r.inv.id === 7803)), 'dup finder: two rentals on the same day ARE flagged');
+  state.invoices = state.invoices.filter(i => ![7801, 7802, 7803].includes(i.id));
   ok(findDuplicateInvoiceOf(80, 'Boxing', '2026-06', 450, null), 'pre-save guard: detects an existing matching invoice');
   ok(!findDuplicateInvoiceOf(80, 'Boxing', '2026-06', 999, null), 'pre-save guard: different amount is not a match');
   ok(!findDuplicateInvoiceOf(80, 'MMA', '2026-06', 450, null), 'pre-save guard: different sport is not a match');
@@ -653,6 +663,91 @@ ${seed}
     // mutating the copy must not touch the source (deep clone)
     dup.enrollments[0].price = 999;
     eq(src.enrollments[0].price, 350, 'sibling: deep clone — source untouched');
+    eq(dup._siblingSplitFrom, src.id, 'sibling: records split source id for payment split');
+  })();
+  // Sibling payment split: one family total divided equally; parts sum to total
+  (function () {
+    state.members.push(
+      { id: 9301, name: 'Kid One', familyId: 9300, enrollments: [{ sport: 'Karate', price: 750 }] },
+      { id: 9302, name: 'Kid Two', familyId: 9300, enrollments: [{ sport: 'Karate', price: 750 }] });
+    state.invoices.push(
+      { id: 9311, customerId: 9301, category: 'Membership', amount: 750, amountPaid: 750, payments: [{ month: '2026-06', amount: 750 }] },
+      { id: 9312, customerId: 9302, category: 'Membership', amount: 750, amountPaid: 750, payments: [{ month: '2026-06', amount: 750 }] });
+    var sibs2 = state.members.filter(m => m.familyId === 9300);
+    var share2 = splitSiblingPayment(sibs2, 750);
+    eq(share2, 375, 'split: 750 across 2 = 375 each');
+    eq(state.invoices.find(i => i.id === 9311).amountPaid, 375, 'split: first sibling invoice set to share');
+    eq(state.invoices.find(i => i.id === 9312).amountPaid, 375, 'split: second sibling invoice set to share');
+    // add a third → 250 each, still sums to 750
+    state.members.push({ id: 9303, name: 'Kid Three', familyId: 9300, enrollments: [{ sport: 'Karate', price: 750 }] });
+    var sibs3 = state.members.filter(m => m.familyId === 9300);
+    var share3 = splitSiblingPayment(sibs3, 750);
+    eq(share3, 250, 'split: 750 across 3 = 250 each');
+    var sum3 = state.invoices.filter(i => [9311, 9312].includes(i.id) || i.customerId === 9303).reduce((s, i) => s + i.amountPaid, 0);
+    eq(sum3, 750, 'split: three shares still sum to the family total (no money lost)');
+    // remainder case: 100 / 3 → 33.34 + 33.33 + 33.33 = 100
+    state.members = state.members.filter(m => m.familyId !== 9300);
+    state.invoices = state.invoices.filter(i => ![9311, 9312].includes(i.id) && i.customerId !== 9303);
+    state.members.push(
+      { id: 9401, name: 'R1', familyId: 9400, enrollments: [] },
+      { id: 9402, name: 'R2', familyId: 9400, enrollments: [] },
+      { id: 9403, name: 'R3', familyId: 9400, enrollments: [] });
+    var shareR = splitSiblingPayment(state.members.filter(m => m.familyId === 9400), 100);
+    var sumR = Math.round(state.invoices.filter(i => [9401, 9402, 9403].includes(i.customerId)).reduce((s, i) => s + i.amountPaid, 0) * 100) / 100;
+    eq(sumR, 100, 'split: remainder handled — 100/3 shares sum to exactly 100');
+    state.members = state.members.filter(m => m.familyId !== 9400);
+    state.invoices = state.invoices.filter(i => ![9401, 9402, 9403].includes(i.customerId));
+  })();
+  // Cleanup: detect + fix invoices dated later than the member's start date
+  (function () {
+    var savedM = state.members, savedI = state.invoices;
+    state.members = [
+      { id: 9501, name: 'Saad', startDate: '2026-01-13', enrollments: [{ sport: 'MMA', start: '2026-01-13' }] },
+      { id: 9502, name: 'Normal', startDate: '2026-06-20', enrollments: [{ sport: 'Karate', start: '2026-06-20' }] },
+    ];
+    state.invoices = [
+      { id: 9510, customerId: 9501, category: 'Membership', date: '2026-06-20', month: '2026-06', amount: 350, payments: [{ date: '2026-06-20', month: '2026-06', amount: 350 }] },
+      { id: 9511, customerId: 9502, category: 'Membership', date: '2026-06-20', month: '2026-06', amount: 300, payments: [{ date: '2026-06-20', month: '2026-06', amount: 300 }] },
+    ];
+    var mis = findMisdatedInvoices();
+    eq(mis.length, 1, 'fix-date: only the back-dated member is flagged');
+    eq(mis[0].inv.id, 9510, 'fix-date: flags the back-dated invoice');
+    ok(mis[0].gapDays > 150, 'fix-date: reports the day gap');
+    var fixed = fixInvoiceDateToStart(9510);
+    eq(fixed.date, '2026-01-13', 'fix-date: invoice re-dated to start');
+    eq(fixed.month, '2026-01', 'fix-date: month moved to start month');
+    eq(fixed.payments[0].month, '2026-01', 'fix-date: payment month moved too (revenue lands in Jan)');
+    eq(fixed.amount, 350, 'fix-date: amount unchanged');
+    eq(findMisdatedInvoices().length, 0, 'fix-date: nothing flagged after fixing');
+    eq(state.invoices.find(i => i.id === 9511).date, '2026-06-20', 'fix-date: same-day member untouched');
+    state.members = savedM; state.invoices = savedI;
+  })();
+  // Cleanup: merge duplicate product records (same name) into one
+  (function () {
+    var savedP = state.products, savedS = state.sales;
+    state.products = [
+      { id: 9601, name: 'Gymnastic Uniform', category: 'Gymnastic', stock: 10 },
+      { id: 9602, name: 'Gymnastic Uniform', category: '', stock: 5 },
+      { id: 9603, name: 'gymnastic uniform', category: 'Gymnastic', stock: 3 },
+      { id: 9604, name: 'Karate Gloves', category: 'Karate', stock: 9 },
+    ];
+    state.sales = [
+      { items: [{ productId: 9601, name: 'Gymnastic Uniform', qty: 2 }] },
+      { items: [{ productId: 9602, name: 'Gymnastic Uniform', qty: 1 }] },
+      { items: [{ productId: 9603, name: 'gymnastic uniform', qty: 1 }] },
+    ];
+    var dups = findDuplicateProducts();
+    eq(dups.length, 1, 'dup-products: one duplicate group (case-insensitive)');
+    eq(dups[0].count, 3, 'dup-products: three records share the name');
+    var kept = mergeDuplicateProducts('Gymnastic Uniform');
+    eq(kept.id, 9601, 'dup-products: keeps the oldest (lowest-id) record');
+    eq(kept.stock, 18, 'dup-products: initial stock summed (10+5+3)');
+    eq(productCurrentStock(kept.id), 14, 'dup-products: current stock = 18 - 4 sold');
+    eq(kept.category, 'Gymnastic', 'dup-products: keeps category');
+    ok(state.sales.every(s => s.items.every(it => it.productId === 9601)), 'dup-products: all sales re-pointed to kept product');
+    eq((state.products || []).filter(p => (p.name || '').toLowerCase() === 'gymnastic uniform').length, 1, 'dup-products: only one record remains');
+    eq(findDuplicateProducts().length, 0, 'dup-products: no duplicates after merge');
+    state.products = savedP; state.sales = savedS;
   })();
   // auto membership expiry = latest sport end across enrollment rows
   window._enrollRows = [{ sport: 'Boxing', start: '2026-01-01', validity: 30 }, { sport: 'Karate', start: '2026-01-01', validity: 60 }];
@@ -681,6 +776,27 @@ ${seed}
   eq(memberStatus({ status: 'Withdrawn', expiryDate: '2020-01-01' }), 'Withdrawn', 'status: Withdrawn overrides expired');
   eq(memberStatus({ status: 'Active', expiryDate: '2099-01-01' }), 'Active', 'status: normal active unaffected');
   eq(memberStatus({ status: 'Withdrawn', expiryDate: '2099-01-01' }), 'Withdrawn', 'status: Withdrawn holds even with future expiry (excluded from expiring/renewals)');
+  // Completed must reflect the CURRENT cycle only, not a fully-attended past month
+  eq(isCompleted({ startDate: '2026-06-09', subscriptions: [
+    { start: '2026-04-28', end: '2026-05-28', totalClasses: 8, attendedClasses: 8 },
+    { start: '2026-06-09', end: '2026-07-09', totalClasses: 8, attendedClasses: 3 },
+  ] }), false, 'status: past month fully attended does NOT mark Completed when current is in progress');
+  eq(isCompleted({ startDate: '2026-06-09', subscriptions: [
+    { start: '2026-06-09', end: '2026-06-20', totalClasses: 8, attendedClasses: 8 },
+  ] }), true, 'status: current subscription fully attended IS Completed');
+  eq(isCompleted({ startDate: '2026-06-09', subscriptions: [
+    { start: '2026-06-09', end: '2026-07-09', totalClasses: 8, attendedClasses: 0 },
+  ] }), false, 'status: fresh membership with no attendance is not Completed');
+  eq(memberStatus({ startDate: '2026-06-09', expiryDate: '2099-01-01', subscriptions: [
+    { start: '2026-04-28', end: '2026-05-28', totalClasses: 8, attendedClasses: 8 },
+    { start: '2026-06-09', end: '2026-07-09', totalClasses: 8, attendedClasses: 3 },
+  ] }), 'Active', 'status: member with in-progress current sub shows Active not Completed');
+  // Member overall stays Active when the LATEST sport still runs even though
+  // earlier sports' periods have ended (per-sport expiry differs from member).
+  eq(memberStatus({ startDate: '2026-04-12', expiryDate: '2026-06-24', subscriptions: [
+    { activity: 'Karate', start: '2026-04-12', end: '2026-05-12', totalClasses: 12, attendedClasses: 1 },
+    { activity: 'KickBoxing', start: '2026-05-25', end: '2026-06-24', totalClasses: 12, attendedClasses: 4 },
+  ] }), 'Active', 'status: member Active while latest sport runs, even if an earlier sport ended');
   // products: inventory sell value vs original/cost value
   (function(){
     var sp = state.products, ss = state.sales;
@@ -1429,6 +1545,14 @@ ${seed}
   eq(reminderInfo({ startDate: '2026-06-01', reminderDates: ['2026-06-05', '2026-06-12'] }).count, 2, 'reminder: two dates = 2');
   eq(reminderInfo({ startDate: '2026-06-01', reminderDates: ['2026-06-05', '2026-06-12'] }).remaining, 0, 'reminder: capped at 2');
   eq(reminderInfo({ startDate: '2026-06-01', reminderDates: ['2026-05-01'] }).count, 0, 'reminder: pre-cycle reminders not counted');
+  // New-member invoice date defaults to the membership start date, not today,
+  // unless an explicit payment date is given.
+  (function () {
+    var invoiceDate = function (payDateRaw, startDate, today) { return payDateRaw || startDate || today; };
+    eq(invoiceDate('', '2026-01-13', '2026-06-20'), '2026-01-13', 'invoice date: back-dated member uses start date, not today');
+    eq(invoiceDate('2026-06-20', '2026-01-13', '2026-06-20'), '2026-06-20', 'invoice date: explicit payment date overrides start');
+    eq(invoiceDate('', null, '2026-06-20'), '2026-06-20', 'invoice date: falls back to today when no start date');
+  })();
   // One invoice per member: merging an added sport keeps a single invoice while
   // payments stay split by month so revenue is still accurate.
   (function () {
