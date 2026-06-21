@@ -1,4 +1,44 @@
 # Black Stars CRM
+Version 6.94.0 - Cleanup: recalculate existing camp members to business days.
+
+## 6.94.0 note - recalc existing camp data
+Added a fifth Cleanup Center tool: "Recalculate camp (business days)". It finds camp
+memberships added before the business-day rules (v6.87/6.88) that still carry
+calendar class counts or expiry, shows the before -> after, and recalculates them:
+class counts become business-day based (1 week = 5, 1 month = 22, 2 months = 44) and
+camp expiry is counted in business days (Sun-Thu). The matching enrollment and the
+member's expiry are updated too. ATTENDANCE IS NEVER CHANGED. Works per-member or
+"Recalculate all"; admin-only, confirmed, audit-logged. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.93.0 - Transfer Membership: merge same-sport into one enrollment + count attendance.
+
+## 6.93.0 note - transfer merges instead of duplicating
+Transferring a sport to a member who already has it used to be BLOCKED ("already
+enrolled... only one active enrollment per sport"), and earlier flows could leave a
+duplicate row (two "Boxing") that wouldn't save. Now:
+- If the receiver already has the SAME sport with the SAME coach, the transfer MERGES
+  into their existing enrollment: the classes are added to the current membership
+  (and the subscription record), instead of creating a second row.
+- Attendance is accounted for: only the sender's UNATTENDED (remaining) classes are
+  transferred - attended classes were already used, so they don't carry over.
+- If the receiver has that sport with a DIFFERENT coach, the transfer is blocked with
+  guidance to use Switch Sport (can't merge across coaches).
+- If the receiver doesn't have the sport, it's added as before.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.92.0 - Edit Invoice: add Summer Camp to the Activity dropdown.
+
+## 6.92.0 note - Summer Camp in Edit Invoice activity list
+The Edit Invoice dialog's Activity dropdown listed the regular sports (plus Court
+Rental / Merchandise) but NOT "Summer Camp" - so a camp invoice couldn't keep or set
+its activity to Summer Camp. Now the dropdown includes Summer Camp (listed first),
+and it also always includes the invoice's OWN current activity so an existing value
+is never lost on edit. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.91.0 - Fix: editing an invoice keeps your filters & page (audit batch).
 
 ## 6.91.0 note - edit invoice without losing your place

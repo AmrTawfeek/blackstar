@@ -7531,7 +7531,7 @@ window.editInvoiceQuick = function(id) {
       <div class="field"><label>Description</label><input id="ef-desc" value="${escapeHtml(inv.description || '')}" /></div>
       <div class="form-row">
         <div class="field"><label>Revenue category</label><select id="ef-category">${INVOICE_CATS.map(c => `<option ${c===(inv.category||'Membership')?'selected':''}>${c}</option>`).join('')}</select></div>
-        <div class="field"><label>Activity</label><select id="ef-sport"><option value="">— none —</option>${sports.map(s => `<option ${s===inv.sport?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div class="field"><label>Activity</label><select id="ef-sport"><option value="">— none —</option>${[...new Set([SUMMER_CAMP, ...sports, inv.sport].filter(Boolean))].map(s => `<option ${s===inv.sport?'selected':''}>${escapeHtml(s)}</option>`).join('')}</select></div>
       </div>
       <div class="form-row">
         <div class="field"><label>Coach</label><select id="ef-coach"><option value="">— none —</option>${coachOptions.map(c => `<option ${c===inv.coach?'selected':''}>${escapeHtml(c)}</option>`).join('')}</select></div>
@@ -19241,19 +19241,28 @@ window.transferMembership = function(fromId, sport, toId) {
   if (memberStatus(A) === 'Withdrawn') { toast(`${A.name} is withdrawn — their membership can't be transferred.`, 'error'); return false; }
   if (enr.transferLocked) { toast(`This ${sport} membership was already transferred once — it can't be transferred again.`, 'error'); return false; }
   if (sport === SUMMER_CAMP) { toast('Summer Camp memberships can\'t be transferred.', 'error'); return false; }
-  // B can hold only one active enrollment per sport.
-  if ((B.enrollments || []).some(e => e.sport === sport)) {
-    toast(`${B.name} is already enrolled in ${sport}. A member can have only one active enrollment per sport.`, 'error');
-    return false;
-  }
-
   const found = _membershipInvoiceForSport(fromId, sport);
   const coachId = enr.coachId;
-  const classes = enr.classes || (found && found.li && found.li.classes) || 0;
+  const fullClasses = enr.classes || (found && found.li && found.li.classes) || 0;
+  // Account for attendance: only the UNATTENDED (remaining) classes transfer, since
+  // the attended ones were already consumed by A.
+  const aSub = (A.subscriptions || []).find(s => (s.activity || '') === sport);
+  const attended = aSub ? (parseInt(aSub.attendedClasses) || 0) : 0;
+  const classes = Math.max(0, fullClasses - attended);
   const price = enr.price || (found && found.li && found.li.price) || 0;
   const validity = enr.validity || DEFAULT_VALIDITY;
   const start = TODAY;
   const end = addDays(start, validity);
+
+  // Does B already have this sport? If so, only MERGE when it's the SAME coach —
+  // we add the remaining classes onto B's existing enrollment instead of creating a
+  // duplicate row. Different coach can't be merged (use Switch Sport instead).
+  const bExistingEnr = (B.enrollments || []).find(e => e.sport === sport);
+  if (bExistingEnr && (bExistingEnr.coachId || null) !== (coachId || null)) {
+    toast(`${B.name} already has ${sport} with a different coach. Same-coach transfers merge automatically; for a different coach use Switch Sport.`, 'error');
+    return false;
+  }
+  const mergeIntoExisting = !!bExistingEnr;
 
   // 1) Remove the enrollment from A.
   A.enrollments = (A.enrollments || []).filter(e => e.sport !== sport);
@@ -19324,17 +19333,37 @@ window.transferMembership = function(fromId, sport, toId) {
     }
   }
 
-  // 4) Give B a fresh, full-reset enrollment (transfer-locked so it can't move again).
+  // 4) Add the transferred classes to B. If B already has this sport with the same
+  //    coach, MERGE onto the existing enrollment (sum the remaining classes and
+  //    extend the window if the transfer runs longer); otherwise add a fresh row.
   if (!Array.isArray(B.enrollments)) B.enrollments = [];
-  B.enrollments.push({ sport, coachId, classes, price, start, validity, transferLocked: true });
-  // 5) Fresh subscription record on B (full classes, fresh window, 0 attended).
+  if (mergeIntoExisting) {
+    bExistingEnr.classes = (parseInt(bExistingEnr.classes) || 0) + classes;
+    bExistingEnr.price = (parseFloat(bExistingEnr.price) || 0) + price;
+    if (end && (!bExistingEnr.start || end > addDays(bExistingEnr.start, bExistingEnr.validity || DEFAULT_VALIDITY))) {
+      bExistingEnr.validity = validity;
+      bExistingEnr.start = bExistingEnr.start || start;
+    }
+  } else {
+    B.enrollments.push({ sport, coachId, classes, price, start, validity, transferLocked: true });
+  }
+  // 5) Subscription record on B: merge into the matching active sub when present.
   if (!Array.isArray(B.subscriptions)) B.subscriptions = [];
-  B.subscriptions.push({
-    _rid: 'tr_' + Date.now(), activity: sport, coachId, coach: coachName(coachId),
-    totalClasses: classes, attendedClasses: 0, amountPaid: price,
-    start, end, validity, month: ymToShort(start.slice(0, 7)) || start.slice(0, 7),
-    status: 'Active', transferredFrom: A.id,
-  });
+  const bExistingSub = mergeIntoExisting
+    ? B.subscriptions.find(s => (s.activity || '') === sport && (s.coachId || null) === (coachId || null) && s.status !== 'Withdrawn')
+    : null;
+  if (bExistingSub) {
+    bExistingSub.totalClasses = (parseInt(bExistingSub.totalClasses) || 0) + classes;
+    bExistingSub.amountPaid = (parseFloat(bExistingSub.amountPaid) || 0) + price;
+    if (end && (!bExistingSub.end || end > bExistingSub.end)) bExistingSub.end = end;
+  } else {
+    B.subscriptions.push({
+      _rid: 'tr_' + Date.now(), activity: sport, coachId, coach: coachName(coachId),
+      totalClasses: classes, attendedClasses: 0, amountPaid: price,
+      start, end, validity, month: ymToShort(start.slice(0, 7)) || start.slice(0, 7),
+      status: 'Active', transferredFrom: A.id,
+    });
+  }
   // Keep B's headline fields sensible if B had none.
   if (!B.sport) { B.sport = sport; B.coachId = coachId; }
   if (!B.startDate || (B.expiryDate && end > B.expiryDate)) { B.startDate = start; B.expiryDate = end; }
@@ -20077,6 +20106,7 @@ PAGES.cleanup = (main) => {
   const mergeable = findMembersWithMergeableInvoices();
   const misdated = findMisdatedInvoices();
   const dupProducts = findDuplicateProducts();
+  const campRecalc = findCampMembersToRecalc();
 
   const enrSection = dupEnr.length ? dupEnr.map(d => {
     const rows = d.rows.map((e, i) => `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:3px 0;${i === 0 ? '' : 'opacity:.7'}">
@@ -20122,6 +20152,15 @@ PAGES.cleanup = (main) => {
       <div style="margin-top:6px;font-size:11px" class="text-mute">${d.products.map((p, i) => `${i === 0 ? '✅ ' + t('keep', 'احتفظ') : '↪ '}#${p.id} · ${escapeHtml(p.category || '—')} · ${productCurrentStock(p.id)} ${t('in stock', 'في المخزون')}`).join('<br>')}</div>
     </div>`).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('No duplicate products', 'لا توجد منتجات مكررة')}</div>`;
 
+  const campRecalcSection = campRecalc.length ? campRecalc.map(d => `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><b>${escapeHtml(d.member.name)}</b></div>
+        <button class="btn ghost sm" style="color:var(--blue)" onclick="recalcCampMemberUI(${d.member.id})">☀️ ${t('Recalculate', 'إعادة الحساب')}</button>
+      </div>
+      <div style="margin-top:6px;font-size:12px" class="text-mute">${d.fixes.map(f => `${escapeHtml(f.label)}: ${f.fromClasses !== f.toClasses ? `<b style="color:var(--red)">${f.fromClasses}</b> → <b style="color:var(--green)">${f.toClasses}</b> ${t('classes', 'حصص')}` : ''}${(f.fromClasses !== f.toClasses && f.fromEnd !== f.toEnd) ? ' · ' : ''}${f.fromEnd !== f.toEnd ? `${t('expiry', 'انتهاء')} ${fmtDate(f.fromEnd)} → <b style="color:var(--green)">${fmtDate(f.toEnd)}</b>` : ''}`).join('<br>')}</div>
+    </div>`).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('All camp memberships use business-day counts', 'كل اشتراكات المعسكر تستخدم أيام العمل')}</div>`;
+
   main.innerHTML = `
     <div class="topbar">
       <div>
@@ -20131,11 +20170,12 @@ PAGES.cleanup = (main) => {
       <div class="topbar-actions"><button class="btn ghost" onclick="render()">↻ ${t('Rescan', 'إعادة الفحص')}</button></div>
     </div>
 
-    <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+    <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">
       <div class="kpi ${dupEnr.length ? 'red' : 'green'}"><div class="kpi-label">${t('Duplicate enrollments', 'تسجيلات مكررة')}</div><div class="kpi-value num">${dupEnr.length}</div></div>
       <div class="kpi ${mergeable.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Members with split invoices', 'أعضاء بفواتير متعددة')}</div><div class="kpi-value num">${mergeable.length}</div></div>
       <div class="kpi ${misdated.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Misdated invoices', 'فواتير بتواريخ خاطئة')}</div><div class="kpi-value num">${misdated.length}</div></div>
       <div class="kpi ${dupProducts.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Duplicate products', 'منتجات مكررة')}</div><div class="kpi-value num">${dupProducts.length}</div></div>
+      <div class="kpi ${campRecalc.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Camp to recalc', 'معسكر للإعادة')}</div><div class="kpi-value num">${campRecalc.length}</div></div>
     </div>
 
     <div class="card" style="margin-bottom:14px">
@@ -20160,6 +20200,14 @@ PAGES.cleanup = (main) => {
       <div class="card-header"><div><div class="card-title">📦 ${t('Merge duplicate products', 'دمج المنتجات المكررة')}</div><div class="card-subtitle">${t('Products entered more than once under the same name split stock and sales. Merge keeps the oldest record, sums all their stock onto it, re-points past sales, and removes the extras.', 'المنتجات المدخلة أكثر من مرة بنفس الاسم تقسّم المخزون والمبيعات. الدمج يحتفظ بالأقدم، ويجمع المخزون، ويعيد ربط المبيعات، ويزيل الزائد.')}</div></div></div>
       <div style="padding:12px">${dupProdSection}</div>
     </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+        <div><div class="card-title">☀️ ${t('Recalculate camp (business days)', 'إعادة حساب المعسكر (أيام العمل)')}</div><div class="card-subtitle">${t('Camp memberships added before the business-day rule may show calendar class counts/expiry. Recalculating sets the class count to business days (1 week = 5, 1 month = 22, 2 months = 44) and the expiry to business days (Sun–Thu). Attendance is never changed.', 'اشتراكات المعسكر المضافة قبل قاعدة أيام العمل قد تظهر بحساب تقويمي. إعادة الحساب تضبط الحصص على أيام العمل (أسبوع=٥، شهر=٢٢، شهران=٤٤) والانتهاء على أيام العمل. لا يتغير الحضور.')}</div></div>
+        ${campRecalc.length ? `<button class="btn ghost sm" style="color:var(--blue);white-space:nowrap" onclick="recalcAllCampUI()">☀️ ${t('Recalculate all', 'إعادة حساب الكل')} (${campRecalc.length})</button>` : ''}
+      </div>
+      <div style="padding:12px">${campRecalcSection}</div>
+    </div>
   `;
 };
 
@@ -20179,6 +20227,29 @@ window.dedupeMemberEnrollment = function(memberId, sport) {
   if (typeof audit === 'function') audit('cleanup.dedupe_enrollment', 'member:' + memberId, `Removed ${matches.length - 1} duplicate ${sport} enrollment(s)`);
   save();
   toast(`Kept one ${sport} enrollment for ${m.name}`, 'success');
+  render();
+};
+
+window.recalcCampMemberUI = function(memberId) {
+  const m = state.members.find(x => x.id === memberId);
+  if (!m) { toast('Member not found', 'error'); return; }
+  const n = recalcCampMember(memberId);
+  if (!n) { toast('Nothing to recalculate', 'info'); return; }
+  if (typeof audit === 'function') audit('cleanup.recalc_camp', 'member:' + memberId, `Recalculated camp business-day counts for ${m.name}`);
+  save();
+  toast(`Recalculated camp for ${m.name}`, 'success');
+  render();
+};
+
+window.recalcAllCampUI = function() {
+  const list = findCampMembersToRecalc();
+  if (!list.length) { toast('Nothing to recalculate', 'info'); return; }
+  if (!confirm(`Recalculate ${list.length} camp member${list.length === 1 ? '' : 's'} to business-day class counts and expiry?\n\nClass counts become 1 week = 5, 1 month = 22, 2 months = 44, and camp expiry is counted in business days (Sun–Thu). Attendance is not changed.`)) return;
+  let n = 0;
+  for (const d of list) { if (recalcCampMember(d.member.id)) n++; }
+  if (typeof audit === 'function') audit('cleanup.recalc_camp_bulk', 'members', `Recalculated camp business-day counts for ${n} members`);
+  save();
+  toast(`Recalculated ${n} camp member${n === 1 ? '' : 's'}`, 'success');
   render();
 };
 

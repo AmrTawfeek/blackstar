@@ -1760,6 +1760,45 @@ ${seed}
     eq(after.usedDays, 0, 'freeze+renew: old freezes no longer count after renewal');
     eq(after.remainingDays, after.allowanceDays, 'freeze+renew: allowance fully reset on renewal');
   })();
+  // Transfer membership: same sport + same coach merges remaining classes
+  (function () {
+    var decide = function (aFull, aAttended, bExisting, transferCoach) {
+      var classes = Math.max(0, aFull - aAttended);
+      if (bExisting && (bExisting.coachId || null) !== (transferCoach || null)) return { blocked: true };
+      var merge = !!bExisting;
+      return { blocked: false, merged: merge, transferred: classes, bClasses: merge ? (bExisting.classes || 0) + classes : classes };
+    };
+    var r1 = decide(12, 5, { coachId: 1, classes: 12 }, 1);
+    eq(r1.merged, true, 'transfer: same sport+coach merges');
+    eq(r1.transferred, 7, 'transfer: only unattended classes move (12-5)');
+    eq(r1.bClasses, 19, 'transfer: classes summed onto existing (12+7)');
+    eq(decide(12, 5, { coachId: 2, classes: 12 }, 1).blocked, true, 'transfer: different coach is blocked');
+    eq(decide(12, 5, null, 1).merged, false, 'transfer: new sport adds a fresh row');
+    eq(decide(12, 12, { coachId: 1, classes: 12 }, 1).transferred, 0, 'transfer: fully-attended transfers 0 classes');
+  })();
+  // Camp recalc: legacy calendar counts are flagged and fixed to business days
+  (function () {
+    var savedM = state.members;
+    state.members = [
+      { id: 9701, name: 'OldCamp', sport: 'Summer Camp',
+        enrollments: [{ sport: 'Summer Camp', classes: 30, durationLabel: '1 month', start: '2026-06-14' }],
+        subscriptions: [{ activity: 'Summer Camp', durationLabel: '1 month', totalClasses: 30, start: '2026-06-14', end: '2026-07-14', attendedClasses: 7, status: 'Active' }] },
+      { id: 9702, name: 'GoodCamp', sport: 'Summer Camp',
+        enrollments: [{ sport: 'Summer Camp', classes: 5, durationLabel: '1 week', start: '2026-06-14' }],
+        subscriptions: [{ activity: 'Summer Camp', durationLabel: '1 week', totalClasses: 5, start: '2026-06-14', end: '2026-06-18', attendedClasses: 0, status: 'Active' }] },
+    ];
+    var flagged = findCampMembersToRecalc();
+    eq(flagged.length, 1, 'camp recalc: only the legacy member is flagged');
+    eq(flagged[0].member.id, 9701, 'camp recalc: flags the 30-class member');
+    var sub = state.members[0].subscriptions[0];
+    var beforeAtt = sub.attendedClasses;
+    recalcCampMember(9701);
+    eq(sub.totalClasses, 22, 'camp recalc: 1 month -> 22 classes');
+    eq(sub.end, '2026-07-13', 'camp recalc: end re-dated to business-day calendar');
+    eq(sub.attendedClasses, beforeAtt, 'camp recalc: attendance unchanged');
+    eq(findCampMembersToRecalc().length, 0, 'camp recalc: nothing flagged after fixing');
+    state.members = savedM;
+  })();
   var _af = { expiryDate: '2026-07-01', freezes: [] };
   applyFreeze(_af, 7, 'x');
   eq(_af.expiryDate, '2026-07-08', 'freeze: applyFreeze shifts expiry forward by the frozen days');
