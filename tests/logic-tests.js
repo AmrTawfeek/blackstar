@@ -1721,6 +1721,45 @@ ${seed}
     eq(existing.amountPaid, 825, 'edit pricing: payments accumulated');
     state.invoices = savedI; state.members = savedM;
   })();
+  // Summer Camp: a "week" is five business days (Sun–Thu), skipping Fri/Sat
+  (function () {
+    eq(addBusinessDays('2026-06-14', 4), '2026-06-18', 'business days: Sun +4 biz = Thu (same week)');
+    eq(addBusinessDays('2026-06-18', 1), '2026-06-21', 'business days: Thu +1 biz skips Fri/Sat to Sun');
+    eq(campEndDate('2026-06-14', 7), '2026-06-18', 'camp: 1 week from Sun ends Thu (5 business days)');
+    eq(campEndDate('2026-06-14', 14), '2026-06-25', 'camp: 2 weeks ends the following Thu');
+    eq(campEndDate('2026-06-14', 1), '2026-06-14', 'camp: 1 day ends same day');
+    eq(campEndDate('2026-06-14', 30), '2026-07-13', 'camp: 1 month uses calendar days');
+  })();
+  // Summer Camp class counts are business-day based
+  (function () {
+    eq(campClassCount(7), 5, 'camp classes: 1 week = 5');
+    eq(campClassCount(14), 10, 'camp classes: 2 weeks = 10');
+    eq(campClassCount(30), 22, 'camp classes: 1 month = 22');
+    eq(campClassCount(60), 44, 'camp classes: 2 months = 44');
+    eq(campClassCount(1), 1, 'camp classes: 1 day = 1');
+    eq(campLabelForClasses(5), '1 week', 'camp label: 5 classes -> 1 week');
+    eq(campLabelForClasses(22), '1 month', 'camp label: 22 classes -> 1 month');
+    eq(campLabelForClasses(44), '2 months', 'camp label: 44 classes -> 2 months');
+    eq(campLabelForClasses(7), '1 week', 'camp label: legacy 7 still resolves');
+  })();
+  // Camp renewal expiry uses business days based on the class count
+  (function () {
+    var priceFor = function (cls) { return (DEFAULT_SUMMER_CAMP_PRICES || []).find(function (p) { return campClassCount(p.days) === cls; }); };
+    var row1 = priceFor(5);
+    eq(campEndDate('2026-06-14', row1.days), '2026-06-18', 'camp renew: 1 week (5 classes) from Sun ends Thu');
+    var row2 = priceFor(10);
+    eq(campEndDate('2026-06-14', row2.days), '2026-06-25', 'camp renew: 2 weeks (10 classes) ends next Thu');
+  })();
+  // Freeze allowance resets after a renewal (new cycle start)
+  (function () {
+    var mem = { startDate: '2026-05-01', firstRegistration: '2026-05-01', expiryDate: '2026-05-31', freezes: [{ start: '2026-05-10', days: 7 }] };
+    var before = freezeAllowance(mem);
+    eq(before.usedDays, 7, 'freeze+renew: pre-renewal used days counted');
+    mem.startDate = '2026-06-01';   // renewal moves the cycle start
+    var after = freezeAllowance(mem);
+    eq(after.usedDays, 0, 'freeze+renew: old freezes no longer count after renewal');
+    eq(after.remainingDays, after.allowanceDays, 'freeze+renew: allowance fully reset on renewal');
+  })();
   var _af = { expiryDate: '2026-07-01', freezes: [] };
   applyFreeze(_af, 7, 'x');
   eq(_af.expiryDate, '2026-07-08', 'freeze: applyFreeze shifts expiry forward by the frozen days');

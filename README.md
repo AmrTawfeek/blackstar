@@ -1,4 +1,74 @@
 # Black Stars CRM
+Version 6.91.0 - Fix: editing an invoice keeps your filters & page (audit batch).
+
+## 6.91.0 note - edit invoice without losing your place
+Audited the Edit-invoice action on the Invoices screen. Found the same issue that
+delete had before v6.79: saving an edit did a full page re-render, which reset every
+filter (month, day, category, activity, coach, method, search) and jumped back to
+page 1. Now editing an invoice refreshes the table IN PLACE - the row updates and
+totals recompute, but the current filters and pagination stay exactly as they were.
+(If an invoice is edited from outside the Invoices screen it still does a normal
+render.) The other invoice-screen actions (merge, generate latest, add rental)
+already refreshed in place. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.90.0 - Fix: camp renewals use business-day expiry (audit batch).
+
+## 6.90.0 note - camp renewal audit
+Audited camp renewal and the freeze/renewal interaction.
+Found + fixed: when renewing a Summer Camp subscription, the auto expiry date used
+calendar days (start + validity) instead of camp BUSINESS days. Now a camp renewal's
+auto expiry follows the business-day rule (a week = 5 days Sun–Thu), derived from the
+class count - matching how new camp registrations behave (v6.87/6.88). The class
+field and expiry now recompute together when you change the camp duration/classes.
+Manual expiry override still works for any sport.
+Audited + verified CORRECT (no change): the freeze allowance correctly RESETS when a
+member renews (renewal moves the cycle start, so pre-renewal freezes no longer count
+against the new cycle's one-week-per-month allowance).
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.89.0 - Camp renewal: no coach field for Summer Camp.
+
+## 6.89.0 note - hide coach on camp renewal
+The Renew Subscription dialog showed a Coach dropdown even when renewing a Summer
+Camp subscription (camp has no coach), and it defaulted to a real coach. Now the
+Coach field is HIDDEN whenever the chosen Activity is Summer Camp - both on open and
+when switching activity or quick-picking a sport. The saved renewal already stores
+coachId = null for camp, so camp renewals are coach-free end to end. Regular sports
+still show the Coach field. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.88.0 - Camp class counts (business days), bilingual attendance name, modal footer fix.
+
+## 6.88.0 note
+1. Summer Camp class counts are now BUSINESS-DAY based: 1 week = 5 classes,
+   2 weeks = 10, 3 weeks = 15, 1 month = 22, 6 weeks = 30, 2 months = 44, 1 day = 1.
+   New helpers campClassCount() / campLabelForClasses() drive registration, the camp
+   pricing edit, invoice line items, and the duration label (legacy calendar counts
+   like 7/30 still resolve so old records keep working).
+2. The Attendance grid now shows the member's ARABIC name under the English name in
+   the same cell (when an Arabic name exists), for easier reading.
+3. Fixed a UI bug where the member profile popup's footer buttons (Get Invoice,
+   Full History, Attendance, Family, Edit, Close) could be cut off on the left when
+   there were many of them - the footer now wraps instead of overflowing.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.87.0 - Summer Camp: a week = 5 business days; expiry reminder badge.
+
+## 6.87.0 note - camp business-day expiry + reminder
+1. Summer Camp durations sold in WEEKS now expire after FIVE BUSINESS DAYS per week
+   (Sunday–Thursday), skipping the Fri/Sat weekend - so a "1 week" camp starting
+   Sunday now ends Thursday, "2 weeks" ends the next Thursday, etc. Day and month
+   durations still use the calendar. New helpers addBusinessDays() and campEndDate()
+   drive new-member camp registration, the camp pricing edit, and the expiry preview.
+2. The "Camp Members" sidebar item now shows a red REMINDER BADGE with the number
+   of camp members expiring within a week, so you can see at a glance who needs a
+   renewal nudge. The Camp Members page already has the "Expiring soon" filter and a
+   "Remind all expiring" WhatsApp button. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.86.0 - Fix: editing a member reuses the same invoice (no duplicate).
 
 ## 6.86.0 note - one invoice per member when editing

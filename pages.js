@@ -1997,7 +1997,7 @@ function enrollRowHtml(row, idx) {
   const campPrices = (state.settings?.summerCampPrices) || DEFAULT_SUMMER_CAMP_PRICES;
   // For existing camp rows, infer the matching label from days OR durationLabel
   const matchedLabel = isCamp
-    ? (row.durationLabel || (campPrices.find(p => p.days === classesNum)?.label) || '')
+    ? (row.durationLabel || campLabelForClasses(classesNum) || '')
     : '';
 
   const classesField = isCamp
@@ -2056,7 +2056,8 @@ function enrollRowHtml(row, idx) {
 function autoExpiryFromRows() {
   const ends = (window._enrollRows || []).map(r => {
     const days = r.sport === SUMMER_CAMP ? (parseInt(r.classes) || 0) : (parseInt(r.validity) || 0);
-    return (r.start && days > 0) ? addDays(r.start, days) : null;
+    if (!(r.start && days > 0)) return null;
+    return r.sport === SUMMER_CAMP ? campEndDate(r.start, days) : addDays(r.start, days);
   }).filter(Boolean).sort();
   return ends.length ? ends[ends.length - 1] : '';
 }
@@ -2137,7 +2138,7 @@ function renderEnrollRows() {
         const match = prices.find(p => p.label === val);
         if (match) {
           row.durationLabel = match.label;
-          row.classes = match.days;
+          row.classes = campClassCount(match.days);   // business-day class count
           // Only auto-fill price if user hasn't typed one yet
           const currentPrice = parseFloat(row.price);
           if (!currentPrice || currentPrice === 0) {
@@ -2734,7 +2735,8 @@ function showMemberForm(m) {
               const isCamp = e.sport === SUMMER_CAMP;
               const eStart = enrollmentStartDate(e, data);   // per-sport start (defaults to member start)
               const subValidity = isCamp ? (e.classes || DEFAULT_VALIDITY) : (e.validity || DEFAULT_VALIDITY);
-              const subEnd = addDays(eStart, subValidity);
+              // Camp "weeks" are five business days (Sun–Thu); regular sports use calendar days.
+              const subEnd = isCamp ? campEndDate(eStart, subValidity) : addDays(eStart, subValidity);
               data.subscriptions.push({
                 month: ymToShort(eStart.slice(0, 7)) || eStart.slice(0, 7),
                 activity: e.sport,
@@ -4378,9 +4380,9 @@ window.editCampMember = function(id) {
           const start = (campSub && campSub.start) || (campEnr && campEnr.start) || m.startDate || TODAY;
           const campPayDate = start || TODAY;
           const campPayMonth = campPayDate.slice(0, 7);
-          if (campEnr) { campEnr.durationLabel = picked.label; campEnr.classes = picked.days; campEnr.price = price; campEnr.start = campEnr.start || start; }
-          if (campSub) { campSub.durationLabel = picked.label; campSub.totalClasses = picked.days; campSub.start = campSub.start || start; campSub.end = addDays(start, picked.days); }
-          if (m.sport === SUMMER_CAMP) { m.expiryDate = addDays(start, picked.days); m.price = price; }
+          if (campEnr) { campEnr.durationLabel = picked.label; campEnr.classes = campClassCount(picked.days); campEnr.price = price; campEnr.start = campEnr.start || start; }
+          if (campSub) { campSub.durationLabel = picked.label; campSub.totalClasses = campClassCount(picked.days); campSub.start = campSub.start || start; campSub.end = campEndDate(start, picked.days); }
+          if (m.sport === SUMMER_CAMP) { m.expiryDate = campEndDate(start, picked.days); m.price = price; }
         }
         // Update or create the camp invoice so the outstanding balance reflects.
         let inv = campInv;
@@ -4398,7 +4400,7 @@ window.editCampMember = function(id) {
             discount: disc,
             amountPaid: paid,
             method: paid > 0 ? 'Cash' : '',
-            lineItems: [{ sport: SUMMER_CAMP, price: net, classes: picked ? picked.days : null, durationLabel: picked ? picked.label : null }],
+            lineItems: [{ sport: SUMMER_CAMP, price: net, classes: picked ? campClassCount(picked.days) : null, durationLabel: picked ? picked.label : null }],
             payments: paid > 0 ? [{ amount: paid, date: campPayDate, month: campPayMonth, method: 'Cash' }] : [],
           };
           state.invoices.push(inv);
@@ -4416,7 +4418,7 @@ window.editCampMember = function(id) {
             const li = inv.lineItems.find(x => x.sport === SUMMER_CAMP) || inv.lineItems[0];
             if (li) {
               li.price = net;
-              if (picked) { li.classes = picked.days; li.durationLabel = picked.label; }
+              if (picked) { li.classes = campClassCount(picked.days); li.durationLabel = picked.label; }
             }
           }
           // Refresh description + sport label so the receipt reads e.g.
@@ -7577,7 +7579,13 @@ window.editInvoiceQuick = function(id) {
         }
         save();
         closeModal();
-        render();
+        // Refresh the invoices table in place if we're on that screen (keeps the
+        // current filters + pagination); otherwise fall back to a full render.
+        if (typeof window._invoicesRefresh === 'function' && state.route === 'invoices') {
+          window._invoicesRefresh();
+        } else {
+          render();
+        }
         toast(invoiceBalance(inv) > 0.001 ? `Invoice updated · ${fmt(invoiceBalance(inv))} still due` : 'Invoice updated');
       }},
     ],
@@ -7738,7 +7746,7 @@ window.regenerateInvoice = function(id) {
         // receipt and reports show "Summer Camp · 1 month" etc.
         for (const li of newLineItems) {
           if (li.sport === SUMMER_CAMP && !li.durationLabel && li.classes && typeof DEFAULT_SUMMER_CAMP_PRICES !== 'undefined') {
-            const match = DEFAULT_SUMMER_CAMP_PRICES.find(p => p.days === (parseInt(li.classes) || 0));
+            const match = DEFAULT_SUMMER_CAMP_PRICES.find(p => p.label === campLabelForClasses(li.classes));
             if (match) li.durationLabel = match.label;
           }
         }
@@ -11977,6 +11985,7 @@ PAGES.attendance = (main) => {
         return `<tr style="${isExpired ? 'background:rgba(120,120,140,.06)' : ''}">
             <td class="att-name-cell" title="${escapeHtml(m.name)} · ${escapeHtml(sport)}">
               <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.name)}${statusBadge}</div>
+              ${m.nameArabic ? `<div dir="rtl" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.nameArabic)}</div>` : ''}
               <div class="text-mute" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}</div>
             </td>
             ${cells}
@@ -12027,6 +12036,7 @@ PAGES.attendance = (main) => {
         <tr style="${rowStyle}">
           <td class="att-name-cell" title="${escapeHtml(m.name)} · ${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}${isExpired ? ' · expired ' + fmtDate(m.expiryDate) : ''}">
             <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.name)}${statusBadge}</div>
+            ${m.nameArabic ? `<div dir="rtl" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.nameArabic)}</div>` : ''}
             <div class="text-mute" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}</div>
           </td>
           ${cells}
@@ -13876,7 +13886,7 @@ window.addRenewal = function(memberId) {
       </div>` : ''}
       <div class="form-row">
         <div class="field"><label>Activity</label><select id="rn-act">${[...new Set([...enrolledUnique.map(e => e.sport), m.sport, ...sports].filter(Boolean))].map(s => `<option ${s===(enrolledUnique[0]?.sport||m.sport)?'selected':''}>${escapeHtml(s)}</option>`).join('')}</select></div>
-        <div class="field"><label>Coach</label><select id="rn-coach">${coachOpts(enrolledUnique[0]?.coachId || m.coachId)}</select></div>
+        <div class="field" id="rn-coach-field" style="${(enrolledUnique[0]?.sport || m.sport) === SUMMER_CAMP ? 'display:none' : ''}"><label>Coach</label><select id="rn-coach">${coachOpts(enrolledUnique[0]?.coachId || m.coachId)}</select></div>
       </div>
       <div class="form-row">
         <div class="field"><label>Classes</label><input id="rn-classes" type="number" min="0" step="1" value="${enrolledUnique[0]?.classes || ''}" /></div>
@@ -13960,7 +13970,7 @@ window.addRenewal = function(memberId) {
           // Build a duration-aware label so the receipt reads e.g.
           // "Summer Camp · 1 month renewal" instead of plain "Summer Camp renewal".
           const dl = (renewedSport === SUMMER_CAMP && classes)
-            ? (DEFAULT_SUMMER_CAMP_PRICES.find(p => p.days === classes)?.label || '')
+            ? (campLabelForClasses(classes) || '')
             : '';
           const sportLabel = dl ? `${renewedSport} · ${dl}` : renewedSport;
           state.invoices.push({
@@ -14023,6 +14033,8 @@ window.addRenewal = function(memberId) {
         const coachSel = document.getElementById('rn-coach');
         if (actSel) actSel.value = e2.sport;
         if (coachSel) coachSel.value = e2.coachId;
+        const coachField2 = document.getElementById('rn-coach-field');
+        if (coachField2) coachField2.style.display = (e2.sport === SUMMER_CAMP) ? 'none' : '';
         const cl = document.getElementById('rn-classes'); if (cl) cl.value = e2.classes || '';
         const am = document.getElementById('rn-amount'); if (am) am.value = e2.price || '';
         if (e2.validity) {
@@ -14041,9 +14053,21 @@ window.addRenewal = function(memberId) {
     const vEl = document.getElementById('rn-validity');
     const endEl = document.getElementById('rn-end');
     const hintEl = document.getElementById('rn-end-hint');
+    const actEl3 = document.getElementById('rn-act');
     if (!startEl || !vEl || !endEl) return;
+    const isCampRenew = actEl3 && actEl3.value === SUMMER_CAMP;
     const v = parseInt(vEl.value) || DEFAULT_VALIDITY;
-    const auto = addDays(startEl.value, v);
+    // Camp expiry follows business days (a week = 5 Sun–Thu days), driven by the
+    // class count; regular sports use calendar days.
+    let auto;
+    if (isCampRenew) {
+      const cls = parseInt((document.getElementById('rn-classes') || {}).value) || 0;
+      // Recover the sold duration's day-count from the class count, then end-date it.
+      const priceRow = (DEFAULT_SUMMER_CAMP_PRICES || []).find(p => campClassCount(p.days) === cls);
+      auto = priceRow ? campEndDate(startEl.value, priceRow.days) : addDays(startEl.value, v);
+    } else {
+      auto = addDays(startEl.value, v);
+    }
     if (!endEl.value || _rnAutoSet) {
       endEl.value = auto;
       _rnAutoSet = true;
@@ -14051,12 +14075,14 @@ window.addRenewal = function(memberId) {
     if (hintEl) {
       const same = endEl.value === auto;
       hintEl.textContent = same
-        ? `Auto: ${fmtDate(startEl.value)} + ${v} days`
+        ? (isCampRenew ? `Auto: camp business days (Sun–Thu)` : `Auto: ${fmtDate(startEl.value)} + ${v} days`)
         : `Manual override · auto would be ${fmtDate(auto)}`;
     }
   }
   document.getElementById('rn-start')?.addEventListener('change', recalcRnExpiry);
   document.getElementById('rn-validity')?.addEventListener('change', recalcRnExpiry);
+  document.getElementById('rn-classes')?.addEventListener('input', recalcRnExpiry);
+  document.getElementById('rn-act')?.addEventListener('change', recalcRnExpiry);
   document.getElementById('rn-end')?.addEventListener('input', () => { _rnAutoSet = false; recalcRnExpiry(); });
   recalcRnExpiry();
 
@@ -14120,7 +14146,15 @@ window.addRenewal = function(memberId) {
       </div>
     `;
   }
-  document.getElementById('rn-act')?.addEventListener('change', recalcRnDeduction);
+  // Hide the Coach field whenever Summer Camp is the chosen activity (camp has
+  // no coach); show it for any other sport.
+  const syncRnCoachVisibility = () => {
+    const actEl2 = document.getElementById('rn-act');
+    const coachField = document.getElementById('rn-coach-field');
+    if (actEl2 && coachField) coachField.style.display = (actEl2.value === SUMMER_CAMP) ? 'none' : '';
+  };
+  document.getElementById('rn-act')?.addEventListener('change', () => { syncRnCoachVisibility(); recalcRnDeduction(); });
+  syncRnCoachVisibility();
   recalcRnDeduction();
 };
 
