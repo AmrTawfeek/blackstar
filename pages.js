@@ -2772,8 +2772,10 @@ function showMemberForm(m) {
                 }
                 src.familyId = famId;
                 data.familyId = famId;
-                // Siblings = everyone in the family group (incl. src + this new one).
-                const sibs = familyMembers(famId, true);
+                // Siblings = ACTIVE members in the family group (src + this new one).
+                // Exclude withdrawn/archived members so a former member doesn't get
+                // a share and shrink everyone else's.
+                const sibs = familyMembers(famId, false);
                 // Family total = the original total the parent paid. Prefer a stored
                 // value on the family; else the source member's current paid total
                 // (which, the first time, is the whole family payment).
@@ -6434,7 +6436,7 @@ window.toggleCoachActive = function(coachId) {
 
 // ─── INVOICES ──────────────────────────────────────────────────
 PAGES.invoices = (main) => {
-  let filter = { search: '', month: 'all', method: 'all', sport: 'all', coach: 'all', category: 'all' };
+  let filter = { search: '', month: 'all', day: '', method: 'all', sport: 'all', coach: 'all', category: 'all' };
   const pg = makePager(10);
   const selected = new Set();   // invoice ids ticked for merging
 
@@ -6459,6 +6461,7 @@ PAGES.invoices = (main) => {
         if (!hit) return false;
       }
       if (filter.month !== 'all' && i.month !== filter.month) return false;
+      if (filter.day && i.date !== filter.day) return false;
       if (filter.method !== 'all' && i.method !== filter.method) return false;
       if (filter.sport !== 'all' && i.sport !== filter.sport) return false;
       if (filter.coach !== 'all' && i.coach !== filter.coach) return false;
@@ -6585,6 +6588,10 @@ PAGES.invoices = (main) => {
           <option value="all">All months</option>
           ${[...new Set(state.invoices.map(i => i.month).filter(Boolean))].sort().reverse().map(m => `<option value="${m}">${fmtMonth(m)}</option>`).join('')}
         </select>
+        <div style="display:flex;align-items:center;gap:4px">
+          <input id="inv-day" type="date" class="btn ghost" style="padding:6px 10px" title="${t('Filter by a specific day', 'تصفية بيوم محدد')}" />
+          <button id="inv-day-clear" class="btn ghost sm" title="${t('Clear day filter', 'مسح تصفية اليوم')}" style="padding:6px 8px;display:none">✕</button>
+        </div>
         <select id="inv-category" class="btn ghost">
           <option value="all">All categories</option>
           ${INVOICE_CATS.map(c => `<option>${c}</option>`).join('')}
@@ -6633,6 +6640,17 @@ PAGES.invoices = (main) => {
   `;
   $('#inv-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   $('#inv-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
+  $('#inv-day')?.addEventListener('change', e => {
+    filter.day = e.target.value || '';
+    const clr = $('#inv-day-clear'); if (clr) clr.style.display = filter.day ? '' : 'none';
+    pg.page = 1; refresh();
+  });
+  $('#inv-day-clear')?.addEventListener('click', () => {
+    filter.day = '';
+    const di = $('#inv-day'); if (di) di.value = '';
+    const clr = $('#inv-day-clear'); if (clr) clr.style.display = 'none';
+    pg.page = 1; refresh();
+  });
   $('#inv-method').addEventListener('change', e => { filter.method = e.target.value; pg.page = 1; refresh(); });
   $('#inv-sport').addEventListener('change', e => { filter.sport = e.target.value; pg.page = 1; refresh(); });
   $('#inv-coach').addEventListener('change', e => { filter.coach = e.target.value; pg.page = 1; refresh(); });
@@ -6751,6 +6769,9 @@ PAGES.invoices = (main) => {
     downloadFile(`invoices-${TODAY}.csv`, rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n'), 'text/csv');
     toast(`Exported ${all.length} invoice${all.length === 1 ? '' : 's'}`);
   });
+  // Expose this page's in-place refresh so actions like delete can update the
+  // table WITHOUT a full re-render — keeping the current filters and page.
+  window._invoicesRefresh = refresh;
   refresh();
 };
 
@@ -7571,7 +7592,14 @@ window.deleteInvoice = function(id) {
         if (linkedSale) delete linkedSale.invoiceId;
         state.invoices = state.invoices.filter(i => i.id !== id);
         if (typeof audit === 'function') audit('invoice.delete', 'invoice:' + id, `Deleted ${inv.ref || '#' + id} for ${cust.name || 'customer'} — ${fmt(inv.amount || 0)} QAR, ${fmt(paid)} paid`);
-        save(); closeModal(); render();
+        save(); closeModal();
+        // Refresh the invoices table in place if we're on that screen (keeps the
+        // current filters + pagination); otherwise fall back to a full render.
+        if (typeof window._invoicesRefresh === 'function' && state.route === 'invoices') {
+          window._invoicesRefresh();
+        } else {
+          render();
+        }
         toast(`✓ Invoice ${inv.ref || '#' + id} deleted`);
       }},
     ],
@@ -13792,7 +13820,7 @@ window.addRenewal = function(memberId) {
         <div class="text-mute" style="font-size:10px">This member is enrolled in ${enrolledUnique.length} sports. Pick one to renew — you can renew it even if the classes aren't finished yet.</div>
       </div>` : ''}
       <div class="form-row">
-        <div class="field"><label>Activity</label><select id="rn-act">${sports.map(s => `<option ${s===(enrolledUnique[0]?.sport||m.sport)?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div class="field"><label>Activity</label><select id="rn-act">${[...new Set([...enrolledUnique.map(e => e.sport), m.sport, ...sports].filter(Boolean))].map(s => `<option ${s===(enrolledUnique[0]?.sport||m.sport)?'selected':''}>${escapeHtml(s)}</option>`).join('')}</select></div>
         <div class="field"><label>Coach</label><select id="rn-coach">${coachOpts(enrolledUnique[0]?.coachId || m.coachId)}</select></div>
       </div>
       <div class="form-row">
@@ -13815,11 +13843,12 @@ window.addRenewal = function(memberId) {
         const amount = parseFloat($('#rn-amount').value) || 0;
         const classesRaw = parseInt($('#rn-classes').value) || 0;
         const validity = parseInt($('#rn-validity').value) || DEFAULT_VALIDITY;
-        const coachId = parseInt($('#rn-coach').value);
+        const renewedSport = $('#rn-act').value;
+        // Camp has no coach; for camp renewals a missing/NaN coach is fine (null).
+        const coachId = renewedSport === SUMMER_CAMP ? null : (parseInt($('#rn-coach').value) || null);
         if (!start) { toast('Start date required', 'error'); return; }
         if (!m.renewals) m.renewals = [];
         const _rid = 'r' + Date.now();
-        const renewedSport = $('#rn-act').value;
 
         // ── Post-expiry attendance deduction ──
         // If admin confirmed the deduction (checkbox), reduce totalClasses by
@@ -20110,4 +20139,157 @@ window.mergeMemberInvoicesUI = function(memberId) {
   save();
   toast(`Merged into ${kept.ref || ('INV' + kept.id)} — ${fmt(kept.amount)} QAR`, 'success');
   render();
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NOTES & REMINDERS  (Main) — a personal scratch-pad for the owner: jot notes,
+// set a priority, optionally a reminder date, and flag items to follow up. Items
+// that are due (reminder today/overdue) or flagged to follow show a red count
+// badge on the sidebar. Notes are stored in state.notes and sync like everything
+// else.
+// ═══════════════════════════════════════════════════════════════════════════
+PAGES.notes = (main) => {
+  const notes = allNotes();
+  if (window._notesFilter == null) window._notesFilter = 'open';   // open | attention | done | all
+  const f = window._notesFilter;
+
+  const visible = notes.filter(n => {
+    if (f === 'open') return !n.done;
+    if (f === 'attention') return noteNeedsAttention(n);
+    if (f === 'done') return n.done;
+    return true;
+  }).sort((a, b) => {
+    // attention first, then priority, then nearest reminder, then newest
+    const aa = noteNeedsAttention(a) ? 0 : 1, ba = noteNeedsAttention(b) ? 0 : 1;
+    if (aa !== ba) return aa - ba;
+    const pr = notePriorityRank(a.priority) - notePriorityRank(b.priority);
+    if (pr !== 0) return pr;
+    const ar = a.remindDate || '9999', br = b.remindDate || '9999';
+    if (ar !== br) return ar.localeCompare(br);
+    return (b.createdAt || '').localeCompare(a.createdAt || '');
+  });
+
+  const attentionCount = notes.filter(noteNeedsAttention).length;
+  const openCount = notes.filter(n => !n.done).length;
+  const doneCount = notes.filter(n => n.done).length;
+
+  const priColor = p => p === 'high' ? 'var(--red)' : p === 'medium' ? 'var(--accent-2)' : 'var(--blue)';
+  const priLabel = p => p === 'high' ? t('High', 'عالية') : p === 'medium' ? t('Medium', 'متوسطة') : t('Low', 'منخفضة');
+
+  const cards = visible.length ? visible.map(n => {
+    const overdue = n.remindDate && n.remindDate < TODAY && !n.done;
+    const dueToday = n.remindDate === TODAY && !n.done;
+    return `
+    <div style="border:1px solid ${noteNeedsAttention(n) ? 'rgba(239,68,68,.4)' : 'var(--border)'};border-left:4px solid ${priColor(n.priority)};border-radius:10px;padding:14px;margin-bottom:10px;${n.done ? 'opacity:.6' : ''}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span class="badge" style="background:${priColor(n.priority)}22;color:${priColor(n.priority)};font-size:10px;font-weight:700">${priLabel(n.priority)}</span>
+            ${n.follow ? `<span class="badge" style="background:rgba(239,68,68,.15);color:var(--red);font-size:10px">🔔 ${t('Follow up', 'متابعة')}</span>` : ''}
+            ${n.remindDate ? `<span class="badge" style="background:${overdue ? 'rgba(239,68,68,.15)' : dueToday ? 'rgba(245,158,11,.15)' : 'rgba(120,120,140,.12)'};color:${overdue ? 'var(--red)' : dueToday ? 'var(--accent-2)' : 'var(--text-mute)'};font-size:10px">📅 ${overdue ? t('Overdue', 'متأخر') + ' · ' : dueToday ? t('Today', 'اليوم') + ' · ' : ''}${fmtDate(n.remindDate)}</span>` : ''}
+            ${n.done ? `<span class="badge active" style="font-size:10px">✓ ${t('Done', 'تم')}</span>` : ''}
+          </div>
+          <div class="font-bold" style="margin-top:6px;${n.done ? 'text-decoration:line-through' : ''}">${escapeHtml(n.title || t('(untitled)', '(بدون عنوان)'))}</div>
+          ${n.body ? `<div class="text-mute" style="font-size:13px;margin-top:4px;white-space:pre-wrap">${escapeHtml(n.body)}</div>` : ''}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">
+          <button class="btn ghost sm" onclick="toggleNoteDone(${n.id})" title="${n.done ? t('Mark not done', 'إلغاء الإنجاز') : t('Mark done', 'وضع كمنجز')}">${n.done ? '↩' : '✓'}</button>
+          <button class="btn ghost sm" onclick="editNote(${n.id})" title="${t('Edit', 'تعديل')}">✎</button>
+          <button class="btn ghost sm" onclick="deleteNote(${n.id})" title="${t('Delete', 'حذف')}" style="color:var(--red)">🗑</button>
+        </div>
+      </div>
+      ${!n.done ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn ghost sm" style="font-size:11px;${n.follow ? 'color:var(--red)' : ''}" onclick="toggleNoteFollow(${n.id})">${n.follow ? '🔕 ' + t('Stop following', 'إيقاف المتابعة') : '🔔 ' + t('Follow up', 'متابعة')}</button>
+      </div>` : ''}
+    </div>`;
+  }).join('') : `<div class="empty" style="padding:40px"><div class="empty-icon">📝</div>${t('No notes here yet', 'لا توجد ملاحظات بعد')}</div>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>📝 ${t('Notes & Reminders', 'الملاحظات والتذكيرات')}</h1>
+        <div class="subtitle">${t('Your personal notes, reminders and follow-ups', 'ملاحظاتك وتذكيراتك ومتابعاتك الشخصية')}</div>
+      </div>
+      <div class="topbar-actions"><button class="btn primary" onclick="editNote(null)">+ ${t('New note', 'ملاحظة جديدة')}</button></div>
+    </div>
+
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi ${attentionCount ? 'red' : 'green'}"><div class="kpi-label">${t('Needs attention', 'تحتاج انتباه')}</div><div class="kpi-value num">${attentionCount}</div></div>
+      <div class="kpi blue"><div class="kpi-label">${t('Open', 'مفتوحة')}</div><div class="kpi-value num">${openCount}</div></div>
+      <div class="kpi"><div class="kpi-label">${t('Done', 'منجزة')}</div><div class="kpi-value num">${doneCount}</div></div>
+    </div>
+
+    <div class="filter-bar" style="margin-bottom:14px">
+      ${[['open', t('Open', 'مفتوحة')], ['attention', '🔔 ' + t('Needs attention', 'تحتاج انتباه')], ['done', t('Done', 'منجزة')], ['all', t('All', 'الكل')]].map(([k, lbl]) =>
+        `<button class="btn ${f === k ? 'primary' : 'ghost'} sm" onclick="window._notesFilter='${k}';render()">${lbl}</button>`).join('')}
+    </div>
+
+    <div>${cards}</div>
+  `;
+};
+
+window.editNote = function(id) {
+  const notes = allNotes();
+  const n = id != null ? notes.find(x => x.id === id) : null;
+  const cur = n || { title: '', body: '', priority: 'medium', remindDate: '', follow: false };
+  showModal({
+    title: n ? t('Edit note', 'تعديل الملاحظة') : t('New note', 'ملاحظة جديدة'),
+    body: `
+      <div class="field"><label>${t('Title', 'العنوان')}</label><input id="note-title" type="text" value="${escapeHtml(cur.title || '')}" placeholder="${t('Short title', 'عنوان قصير')}" /></div>
+      <div class="field" style="margin-top:8px"><label>${t('Details', 'التفاصيل')}</label><textarea id="note-body" rows="4" placeholder="${t('Write your note…', 'اكتب ملاحظتك…')}">${escapeHtml(cur.body || '')}</textarea></div>
+      <div style="display:flex;gap:12px;margin-top:8px;flex-wrap:wrap">
+        <div class="field" style="flex:1;min-width:140px"><label>${t('Priority', 'الأولوية')}</label>
+          <select id="note-priority">
+            <option value="high" ${cur.priority === 'high' ? 'selected' : ''}>${t('High', 'عالية')}</option>
+            <option value="medium" ${cur.priority === 'medium' ? 'selected' : ''}>${t('Medium', 'متوسطة')}</option>
+            <option value="low" ${cur.priority === 'low' ? 'selected' : ''}>${t('Low', 'منخفضة')}</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1;min-width:140px"><label>📅 ${t('Remind me on', 'ذكّرني في')} <span class="text-mute" style="font-size:10px;font-weight:400">(${t('optional', 'اختياري')})</span></label><input id="note-remind" type="date" value="${cur.remindDate || ''}" /></div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-size:13px"><input type="checkbox" id="note-follow" ${cur.follow ? 'checked' : ''} /> 🔔 ${t('Flag this to follow up (shows in the sidebar badge)', 'علّمها للمتابعة (تظهر في شارة القائمة الجانبية)')}</label>
+    `,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), onclick: closeModal },
+      { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
+        const title = (document.getElementById('note-title').value || '').trim();
+        const body = (document.getElementById('note-body').value || '').trim();
+        if (!title && !body) { toast(t('Add a title or some text', 'أضف عنواناً أو نصاً'), 'error'); return; }
+        const priority = document.getElementById('note-priority').value;
+        const remindDate = document.getElementById('note-remind').value || null;
+        const follow = document.getElementById('note-follow').checked;
+        if (n) {
+          n.title = title; n.body = body; n.priority = priority; n.remindDate = remindDate; n.follow = follow; n.updatedAt = new Date().toISOString();
+          if (typeof audit === 'function') audit('note.update', 'note:' + n.id, title || '(untitled)');
+        } else {
+          const note = { id: nextId(notes), title, body, priority, remindDate, follow, done: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+          notes.push(note);
+          if (typeof audit === 'function') audit('note.create', 'note:' + note.id, title || '(untitled)');
+        }
+        save(); closeModal(); render();
+        toast(n ? t('Note updated', 'تم تحديث الملاحظة') : t('Note added', 'تمت إضافة الملاحظة'), 'success');
+      }},
+    ],
+  });
+};
+
+window.toggleNoteDone = function(id) {
+  const n = allNotes().find(x => x.id === id); if (!n) return;
+  n.done = !n.done; n.updatedAt = new Date().toISOString();
+  if (n.done) n.follow = false;   // completing clears the follow flag
+  save(); render();
+};
+window.toggleNoteFollow = function(id) {
+  const n = allNotes().find(x => x.id === id); if (!n) return;
+  n.follow = !n.follow; n.updatedAt = new Date().toISOString();
+  save(); render();
+};
+window.deleteNote = function(id) {
+  const notes = allNotes();
+  const n = notes.find(x => x.id === id); if (!n) return;
+  if (!confirm(t('Delete this note?', 'حذف هذه الملاحظة؟'))) return;
+  const idx = notes.indexOf(n); if (idx >= 0) notes.splice(idx, 1);
+  if (typeof audit === 'function') audit('note.delete', 'note:' + id, n.title || '(untitled)');
+  save(); render();
+  toast(t('Note deleted', 'تم حذف الملاحظة'), 'success');
 };

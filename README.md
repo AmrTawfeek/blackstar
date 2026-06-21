@@ -1,4 +1,74 @@
 # Black Stars CRM
+Version 6.79.0 - Invoices: deleting keeps your filters & page.
+
+## 6.79.0 note - delete invoice without losing your place
+Deleting an invoice from the Invoices screen used to re-render the whole page,
+resetting every filter (month, day, category, activity, coach, method, search) and
+jumping back to page 1. Now the delete updates the table IN PLACE: the row
+disappears and totals update, but the current filters and pagination stay exactly
+as they were. (If an invoice is deleted from somewhere other than the Invoices
+screen, it still does a normal render.) No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.78.0 - Fix: can't renew Summer Camp members.
+
+## 6.78.0 note - camp renewal bug
+Renewing a Summer Camp member was broken: the renewal dialog's Activity dropdown
+was hardcoded to the regular sports list (MMA, Boxing, ...) and did NOT include
+"Summer Camp". So a camp member's renewal defaulted to a random sport (MMA) and
+never applied camp pricing/duration. Fixed: the Activity dropdown now includes the
+member's own enrolled activities - including Summer Camp - selected by default, so
+camp members renew correctly as camp. Camp renewals also no longer require a coach
+(camp has none; coach is stored as null). Regular members are unaffected. No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.77.0 - Fix: sibling split excludes withdrawn family members.
+
+## 6.77.0 note - sibling split counts active siblings only
+The "Add Sibling" payment split divided the family total across ALL members in the
+family group, including withdrawn/archived ones. So if a family had a former member,
+adding a new sibling would give the withdrawn person a share and shrink everyone
+else's incorrectly (e.g. 750 split 3 ways = 250 instead of 375 across the 2 active
+kids). Fixed: the split now counts only ACTIVE siblings, and splitSiblingPayment
+itself skips deleted members as a safeguard. No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
+Version 6.76.0 - Fix: "Fix invoice dates" no longer touches renewals.
+
+## 6.76.0 note - protect renewals in the fix-dates tool
+The Cleanup Center "Fix invoice dates" tool (6.72) could wrongly flag a member's
+RENEWAL invoice. A renewal is correctly dated to its own month (e.g. a June
+renewal for a member who first started in January), but the tool compared every
+membership invoice against the member's earliest start date - so it would offer to
+move the June renewal back to January, corrupting its date and revenue month.
+Fixed: the tool now only considers members with a SINGLE membership invoice (whose
+one invoice should match the start date). Members who have renewed (2+ invoices)
+are skipped entirely - consolidating those is the separate "Consolidate invoices"
+tool. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.75.0 - New: Notes & Reminders screen with sidebar badge.
+
+## 6.75.0 note - personal notes & reminders
+Added a "Notes & Reminders" screen (Main). Jot a note with a title and details,
+set a PRIORITY (High / Medium / Low - colour-coded), optionally a REMINDER date,
+and flag items to FOLLOW UP. Notes that need attention - flagged to follow, or with
+a reminder that is today or overdue - drive a red count BADGE on the sidebar item,
+so you always see how many items are waiting. Filter by Open / Needs attention /
+Done / All; mark done, edit, or delete each note. Stored in state.notes and synced
+like everything else. Route count -> 48. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.74.0 - Invoices: filter by a specific day.
+
+## 6.74.0 note - invoice day filter
+Added a date picker to the Invoices filter bar. Pick a day to show only invoices
+dated that exact day; a small clear (X) button resets it. Works alongside the
+existing month / category / activity / coach / method filters and search. No
+schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.73.0 - Cleanup Center: merge duplicate products.
 
 ## 6.73.0 note - merge duplicate products

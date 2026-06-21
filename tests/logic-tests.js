@@ -697,6 +697,16 @@ ${seed}
     eq(sumR, 100, 'split: remainder handled — 100/3 shares sum to exactly 100');
     state.members = state.members.filter(m => m.familyId !== 9400);
     state.invoices = state.invoices.filter(i => ![9401, 9402, 9403].includes(i.customerId));
+    // Withdrawn family members must NOT receive a share
+    state.members.push(
+      { id: 9451, name: 'Active1', familyId: 9450, enrollments: [] },
+      { id: 9452, name: 'Active2', familyId: 9450, enrollments: [] },
+      { id: 9453, name: 'Gone', familyId: 9450, deleted: true, enrollments: [] });
+    var shareW = splitSiblingPayment(state.members.filter(m => m.familyId === 9450), 750);
+    eq(shareW, 375, 'split: 750 across 2 ACTIVE siblings = 375 (withdrawn excluded)');
+    ok(!state.invoices.some(i => i.customerId === 9453), 'split: withdrawn member gets no invoice share');
+    state.members = state.members.filter(m => m.familyId !== 9450);
+    state.invoices = state.invoices.filter(i => ![9451, 9452, 9453].includes(i.customerId));
   })();
   // Cleanup: detect + fix invoices dated later than the member's start date
   (function () {
@@ -720,6 +730,13 @@ ${seed}
     eq(fixed.amount, 350, 'fix-date: amount unchanged');
     eq(findMisdatedInvoices().length, 0, 'fix-date: nothing flagged after fixing');
     eq(state.invoices.find(i => i.id === 9511).date, '2026-06-20', 'fix-date: same-day member untouched');
+    // Renewers (more than one membership invoice) must NOT be flagged — a later
+    // renewal is correctly dated to its own month, not the original start.
+    state.members.push({ id: 9520, name: 'Renewer', startDate: '2026-01-13', enrollments: [{ sport: 'MMA', start: '2026-01-13' }] });
+    state.invoices.push(
+      { id: 9521, customerId: 9520, category: 'Membership', date: '2026-01-13', month: '2026-01', amount: 350, payments: [{ date: '2026-01-13', month: '2026-01', amount: 350 }] },
+      { id: 9522, customerId: 9520, category: 'Membership', date: '2026-06-13', month: '2026-06', amount: 350, payments: [{ date: '2026-06-13', month: '2026-06', amount: 350 }] });
+    ok(!findMisdatedInvoices().some(d => d.member.id === 9520), 'fix-date: renewer with 2 invoices is NOT flagged (renewal protected)');
     state.members = savedM; state.invoices = savedI;
   })();
   // Cleanup: merge duplicate product records (same name) into one
@@ -748,6 +765,25 @@ ${seed}
     eq((state.products || []).filter(p => (p.name || '').toLowerCase() === 'gymnastic uniform').length, 1, 'dup-products: only one record remains');
     eq(findDuplicateProducts().length, 0, 'dup-products: no duplicates after merge');
     state.products = savedP; state.sales = savedS;
+  })();
+  // Notes & reminders: attention detection drives the sidebar badge
+  (function () {
+    var savedN = state.notes;
+    state.notes = [
+      { id: 1, title: 'overdue', priority: 'high', remindDate: '2020-01-01', done: false },
+      { id: 2, title: 'follow', priority: 'medium', follow: true, done: false },
+      { id: 3, title: 'future', priority: 'low', remindDate: '2999-01-01', done: false },
+      { id: 4, title: 'done', priority: 'high', follow: true, done: true },
+      { id: 5, title: 'plain', priority: 'low', done: false },
+    ];
+    ok(noteNeedsAttention(state.notes[0]), 'note: overdue reminder needs attention');
+    ok(noteNeedsAttention(state.notes[1]), 'note: follow-flag needs attention');
+    ok(!noteNeedsAttention(state.notes[2]), 'note: future reminder does not yet');
+    ok(!noteNeedsAttention(state.notes[3]), 'note: done note never needs attention');
+    ok(!noteNeedsAttention(state.notes[4]), 'note: plain open note does not');
+    eq(dueNotesCount(), 2, 'note: badge counts only the two needing attention');
+    eq(notePriorityRank('high') < notePriorityRank('low'), true, 'note: high sorts before low');
+    state.notes = savedN;
   })();
   // auto membership expiry = latest sport end across enrollment rows
   window._enrollRows = [{ sport: 'Boxing', start: '2026-01-01', validity: 30 }, { sport: 'Karate', start: '2026-01-01', validity: 60 }];
