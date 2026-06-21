@@ -1193,6 +1193,7 @@ PAGES.members = (main) => {
   const refreshAndSave = () => { saveFilter('members', filter); refresh(); };
 
   $('#search-input').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refreshAndSave(); });
+  attachRecentSearch('search-input', 'members');
   // Reusable multi-select dropdown wiring (button + checkbox menu).
   function wireMultiFilter(key, cbClass, btnId, menuId, labelId, allText, oneFmt) {
     const btn = $('#' + btnId), menu = $('#' + menuId);
@@ -1734,6 +1735,7 @@ window.freezeMember = function(id) {
   const m = state.members.find(x => x.id === id);
   if (!m) return;
   const allow = freezeAllowance(m);
+  const isAdmin = (typeof currentRole === 'function') && currentRole() === 'admin';
   const isFrozen = m.currentFreezeUntil && TODAY <= m.currentFreezeUntil;
   if (isFrozen) {
     showModal({
@@ -1745,7 +1747,9 @@ window.freezeMember = function(id) {
     });
     return;
   }
-  if (allow.remainingDays <= 0) {
+  // Non-admins are capped at the one-week-per-month allowance. Admins may freeze
+  // any number of days (an override of the standard policy).
+  if (!isAdmin && allow.remainingDays <= 0) {
     showModal({
       title: `No freeze allowance left: ${escapeHtml(m.name)}`,
       body: `<div style="text-align:center;padding:20px"><div style="font-size:40px;margin-bottom:10px">⛔</div>
@@ -1755,8 +1759,10 @@ window.freezeMember = function(id) {
     });
     return;
   }
-  const defaultDays = Math.min(7, allow.remainingDays);
-  const presetDays = [1, 3, 7, 14, 30].filter(d => d <= allow.remainingDays);
+  // For admins, the input is not capped (free choice); for others it's the remaining allowance.
+  const inputMax = isAdmin ? 365 : allow.remainingDays;
+  const defaultDays = isAdmin ? (allow.remainingDays > 0 ? Math.min(7, allow.remainingDays) : 7) : Math.min(7, allow.remainingDays);
+  const presetDays = (isAdmin ? [1, 3, 7, 14, 30, 60, 90] : [1, 3, 7, 14, 30].filter(d => d <= allow.remainingDays));
   showModal({
     title: `❄️ Freeze membership: ${escapeHtml(m.name)}`,
     body: `
@@ -1766,13 +1772,14 @@ window.freezeMember = function(id) {
           <span>❄️ ${t('Freeze allowance', 'رصيد التجميد')}: <b>${allow.allowanceDays} ${t('days', 'يوم')}</b> (${allow.months} ${t('month(s)', 'شهر')} × 7)</span>
           <span>${t('Used', 'مستخدم')}: <b>${allow.usedDays}</b>${allow.freezeCount ? ` (${allow.freezeCount}×)` : ''} · ${t('Remaining', 'متبقٍ')}: <b style="color:var(--blue)">${allow.remainingDays} ${t('days', 'يوم')}</b></span>
         </div>
+        ${isAdmin ? `<div class="text-mute" style="font-size:11px;margin-top:-6px">🔓 ${t('Admin override: you can freeze beyond the standard allowance. The printed invoice policy stays one week per month.', 'صلاحية المشرف: يمكنك التجميد بأكثر من الرصيد القياسي. تبقى سياسة الفاتورة المطبوعة أسبوعاً واحداً لكل شهر.')}</div>` : ''}
         <div>
-          <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px">Freeze duration <span class="text-mute" style="font-weight:400">(max ${allow.remainingDays} days)</span></label>
+          <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px">Freeze duration <span class="text-mute" style="font-weight:400">${isAdmin ? '(admin · any number of days)' : `(max ${allow.remainingDays} days)`}</span></label>
           <div id="freeze-presets" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
             ${presetDays.map(d => `<button type="button" class="btn ghost sm freeze-preset" data-days="${d}" style="padding:6px 14px;font-size:12px">${d} day${d===1?'':'s'}</button>`).join('')}
           </div>
           <div style="display:flex;align-items:center;gap:10px">
-            <input type="number" id="freeze-days" min="1" max="${allow.remainingDays}" value="${defaultDays}" style="flex:1;padding:10px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)" />
+            <input type="number" id="freeze-days" min="1" max="${inputMax}" value="${defaultDays}" style="flex:1;padding:10px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)" />
             <span class="text-mute" style="font-size:12px">days</span>
           </div>
         </div>
@@ -1805,7 +1812,7 @@ window.freezeMember = function(id) {
       { label: '❄️ Apply Freeze', primary: true, onclick: () => {
         const days = parseInt(document.getElementById('freeze-days').value);
         if (!days || days < 1) { toast('Enter a duration of at least 1 day', 'error'); return; }
-        if (days > allow.remainingDays) { toast(`Only ${allow.remainingDays} freeze day${allow.remainingDays === 1 ? '' : 's'} remaining for this membership cycle.`, 'error'); return; }
+        if (!isAdmin && days > allow.remainingDays) { toast(`Only ${allow.remainingDays} freeze day${allow.remainingDays === 1 ? '' : 's'} remaining for this membership cycle.`, 'error'); return; }
         const reason = document.getElementById('freeze-reason').value.trim();
         applyFreeze(m, days, reason);
         save();
@@ -4173,24 +4180,57 @@ window.editMemberPricing = function(memberId) {
           const net = Math.max(0, price - disc);
           let inv = r.inv;
           if (!inv) {
-            inv = {
-              id: nextId(state.invoices),
-              customerId: m.id,
-              customerType: 'member',
-              category: 'Membership',
-              sport: r.sport,
-              description: r.sport,
-              date: payDate,
-              month: payMonth,
-              amount: net,
-              discount: disc,
-              amountPaid: paid,
-              method: paid > 0 ? 'Cash' : '',
-              coachId: (r.enr && r.enr.coachId) || null,
-              lineItems: [{ sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net }],
-              payments: paid > 0 ? [{ amount: paid, date: payDate, month: payMonth, method: 'Cash' }] : [],
-            };
-            state.invoices.push(inv);
+            // No invoice carries this sport yet. Prefer to ADD it as a line item to
+            // the member's EXISTING membership invoice (one invoice per member),
+            // rather than spawning a separate invoice per sport. Only create a
+            // fresh invoice if the member has no membership invoice at all.
+            const existing = (state.invoices || [])
+              .filter(i => !i.deleted && i.customerId === m.id && (i.category || 'Membership') === 'Membership'
+                && !i.switchCredit && i.activityType !== 'switch-credit' && (i.amount || 0) >= 0)
+              .sort((a, b) => (a.date || '').localeCompare(b.date || ''))[0];
+            if (existing) {
+              inv = existing;
+              if (!Array.isArray(inv.lineItems)) {
+                inv.lineItems = [{ sport: inv.sport, coachId: inv.coachId, classes: inv.classes, price: inv.amount || 0 }];
+              }
+              // Add or update this sport's line on the shared invoice.
+              let li = inv.lineItems.find(x => x.sport === r.sport);
+              if (!li) {
+                li = { sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net };
+                inv.lineItems.push(li);
+              } else {
+                li.price = net;
+              }
+              // Roll up totals from all line items; add the discount and payment.
+              inv.amount = inv.lineItems.reduce((s, x) => s + (Number(x.price) || 0), 0);
+              if (disc > 0) inv.discount = (Number(inv.discount) || 0) + disc;
+              if (!Array.isArray(inv.payments)) inv.payments = [];
+              if (paid > 0) inv.payments.push({ amount: paid, date: payDate, month: payMonth, method: 'Cash', note: 'Added via Edit pricing' });
+              inv.amountPaid = inv.payments.reduce((s, p) => s + (p.amount || 0), 0);
+              // Keep the headline sport label in sync (multi-sport summary).
+              if (typeof sportListWithDuration === 'function') {
+                inv.sport = sportListWithDuration(inv.lineItems) || inv.lineItems.map(x => x.sport).join(', ');
+              }
+            } else {
+              inv = {
+                id: nextId(state.invoices),
+                customerId: m.id,
+                customerType: 'member',
+                category: 'Membership',
+                sport: r.sport,
+                description: r.sport,
+                date: payDate,
+                month: payMonth,
+                amount: net,
+                discount: disc,
+                amountPaid: paid,
+                method: paid > 0 ? 'Cash' : '',
+                coachId: (r.enr && r.enr.coachId) || null,
+                lineItems: [{ sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net }],
+                payments: paid > 0 ? [{ amount: paid, date: payDate, month: payMonth, method: 'Cash' }] : [],
+              };
+              state.invoices.push(inv);
+            }
           } else {
             inv.amount = net;
             inv.discount = disc;
@@ -6418,6 +6458,7 @@ PAGES.coaches = (main) => {
   `;
 
   $('#coach-search').addEventListener('input', e => { filter.search = e.target.value; refresh(); });
+  attachRecentSearch('coach-search', 'coaches');
   $('#coach-active-filter').addEventListener('change', e => { filter.active = e.target.value; refresh(); });
   $('#coach-role-filter').addEventListener('change', e => { filter.role = e.target.value; refresh(); });
   refresh();
@@ -6639,6 +6680,7 @@ PAGES.invoices = (main) => {
     </div>
   `;
   $('#inv-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
+  attachRecentSearch('inv-search', 'invoices');
   $('#inv-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
   $('#inv-day')?.addEventListener('change', e => {
     filter.day = e.target.value || '';
@@ -8924,6 +8966,7 @@ PAGES.expenses = (main) => {
     </div>
   `;
   $('#exp-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
+  attachRecentSearch('exp-search', 'expenses');
   $('#exp-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
   // Multi-select category + method dropdowns (checkbox menus).
   function wireExpMulti(key, cbClass, btnId, menuId, labelId, allText, oneFmt) {
@@ -10265,6 +10308,7 @@ PAGES.sales = (main) => {
   `;
 
   $('#sale-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
+  attachRecentSearch('sale-search', 'sales');
   $('#sale-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
   $('#sale-method').addEventListener('change', e => { filter.method = e.target.value; pg.page = 1; refresh(); });
   $('#sale-cust').addEventListener('change', e => { filter.custType = e.target.value; pg.page = 1; refresh(); });
@@ -11041,6 +11085,7 @@ PAGES.audit = (main) => {
     </div>
   `;
   $('#audit-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
+  attachRecentSearch('audit-search', 'audit');
   $('#audit-action').addEventListener('change', e => { filter.action = e.target.value; pg.page = 1; refresh(); });
   $('#audit-days').addEventListener('change', e => { filter.days = e.target.value; pg.page = 1; refresh(); });
   $('#audit-export').addEventListener('click', () => {
@@ -11749,8 +11794,17 @@ PAGES.attendance = (main) => {
           if (filter.att === 'attended' && !att) continue;
           if (filter.att === 'notattended' && att) continue;
         }
+        // Resolve the coach for THIS sport: prefer the matching enrollment, then
+        // the matching subscription (a sport may live only in subscriptions, e.g.
+        // legacy/imported data), and only fall back to the member's primary coach
+        // as a last resort. This prevents showing the wrong coach (the headline
+        // coach) for a sport that isn't in enrollments.
         const enr = (m.enrollments || []).find(e => e.sport === sp);
-        rows.push({ m, sport: sp, coachId: enr?.coachId ?? m.coachId });
+        const sub = (m.subscriptions || []).find(s => s.activity === sp);
+        const rowCoachId = (enr && enr.coachId != null) ? enr.coachId
+          : (sub && sub.coachId != null) ? sub.coachId
+          : m.coachId;
+        rows.push({ m, sport: sp, coachId: rowCoachId });
       }
     }
     // Sort: active members first, then expired ones (so admin's attention
@@ -13027,6 +13081,7 @@ PAGES.history = (main) => {
   `;
 
   $('#hist-search').addEventListener('input', e => { state2.search = e.target.value; renderMembers(); });
+  attachRecentSearch('hist-search', 'history');
 
   renderMembers();
   renderTimeline();
@@ -14505,6 +14560,7 @@ PAGES.expiring = (main) => {
   $('#exp-coach').addEventListener('change', e => { filter.coach = e.target.value; renderSections(); });
   $('#exp-sort').addEventListener('change', e => { filter.sort = e.target.value; renderSections(); });
   $('#exp-search').addEventListener('input', e => { filter.search = e.target.value; renderSections(); });
+  attachRecentSearch('exp-search', 'campmembers');
   $('#exp-collapse-all').addEventListener('click', () => {
     collapsed.soon = collapsed.expired = collapsed.upcoming = true;
     renderSections();
@@ -14754,6 +14810,7 @@ PAGES.trials = (main) => {
   `;
 
   $('#trial-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
+  attachRecentSearch('trial-search', 'trials');
   $('#trial-status').addEventListener('change', e => { filter.status = e.target.value; pg.page = 1; refresh(); });
   $('#trial-sport').addEventListener('change', e => { filter.sport = e.target.value; pg.page = 1; refresh(); });
   $('#add-trial').addEventListener('click', () => addTrial());
@@ -16675,6 +16732,7 @@ PAGES.enrolled = (main) => {
 
   const saveAndRefresh = () => { saveFilter('enrolled', filter); pg.page = 1; refresh(); };
   $('#enr-search').addEventListener('input', e => { filter.search = e.target.value; saveAndRefresh(); });
+  attachRecentSearch('enr-search', 'enrollment');
   $('#enr-sport').addEventListener('change', e => { filter.sport = e.target.value; saveAndRefresh(); });
   $('#enr-coach').addEventListener('change', e => { filter.coach = e.target.value; saveAndRefresh(); });
   $('#enr-status').addEventListener('change', e => { filter.status = e.target.value; saveAndRefresh(); });

@@ -1,4 +1,96 @@
 # Black Stars CRM
+Version 6.86.0 - Fix: editing a member reuses the same invoice (no duplicate).
+
+## 6.86.0 note - one invoice per member when editing
+Editing a member's pricing/sports could create a brand-NEW invoice instead of using
+the member's existing one. The "Edit pricing & payment" dialog looked up an invoice
+PER SPORT; if a sport had none yet (e.g. adding Swimming to a member who already had
+a Kick Boxing invoice), it spawned a separate invoice for that sport. Now editing
+REUSES the member's existing membership invoice and adds the sport as a LINE ITEM,
+rolling up the total, discount and payments onto that one invoice. A fresh invoice
+is only created if the member has none at all. Renewals are unchanged - renewing
+still creates a new invoice as before. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.85.0 - Light is now the default theme.
+
+## 6.85.0 note - default theme = Light
+The app now defaults to the LIGHT theme for anyone who hasn't chosen a theme yet
+(previously it defaulted to Dark). Members, coaches and admins opening the app for
+the first time on a device will see the light theme. Anyone who has already picked
+a theme (Dark / Light / Cream / Colorful) keeps their own choice - the theme toggle
+still works and is remembered per device. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.84.0 - New: recent searches dropdown on search boxes.
+
+## 6.84.0 note - recent searches
+Search boxes now remember what you searched. Focus a search field (Members,
+Invoices, Coaches, Sales, Expenses, History, Trials, Camp members, Enrolment, Audit)
+and a dropdown shows your recent searches for THAT field - click one to run it
+again. Each field keeps its own history (up to 8, newest first, duplicates merged,
+very short terms ignored), with a Clear button. History is stored in
+state.recentSearches and syncs across devices like the rest of your data. No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.83.0 - Fix: attendance grid showed wrong coach per sport.
+
+## 6.83.0 note - attendance coach mismatch
+On the Attendance grid, a member's sport row could show the WRONG coach. The grid
+resolved each sport's coach by looking it up ONLY in the member's enrollments[]; if
+a sport existed only in subscriptions[] (common for imported/older members, or when
+enrollments got out of sync), the lookup failed and it fell back to the member's
+HEADLINE coach. Example: a member with Gymnastic (Jennifer), Swimming (Mostafa),
+Kick Boxing (Aya) where Gymnastic was missing from enrollments showed Gymnastic
+under "Aya" instead of Jennifer. Fixed: the grid now resolves each sport's coach
+from the matching enrollment, then the matching subscription, and only then the
+headline coach. Each sport now pairs with its correct coach. No schema change.
+
+# Black Stars CRM
+Version 6.82.0 - Fix: coach earnings page now credits per-sport commission.
+
+## 6.82.0 note - coach commission audit (batch)
+Audited coach commission. Found and fixed a bug on the individual coach
+earnings/profile page: its coachEarnings() calculation credited commission at the
+INVOICE level (inv.coachId + full inv.amount). On a multi-sport / merged invoice -
+where two coaches share one invoice (since the one-invoice-per-member change) - the
+invoice's coach was credited the WHOLE amount and the other coach got nothing.
+e.g. Karate (Coach A, 375) + Swimming (Coach B, 400) on one invoice credited A with
+775 and B with 0. Fixed: coachEarnings() now walks LINE ITEMS and credits each
+coach only for their own sport's price (A:375, B:400), with a fallback to the
+invoice coach for legacy invoices that have no line items. The Salaries / Coach
+Performance pages already used the correct line-item logic and were unaffected.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.81.0 - Fix: invoice merge no longer loses discounts.
+
+## 6.81.0 note - merge tools audit (batch)
+Audited the invoice-merge and product-merge tools. Found and fixed one real bug:
+when consolidating a member's invoices, if any invoice had a DISCOUNT (its charged
+amount was below the sum of its line-item prices), the merge recomputed the total
+from raw line prices and dropped the discount - inflating the total and creating a
+phantom "balance due" on a fully-paid member. Now the merge keeps each invoice's
+true charged amount (summing the original amounts) and carries the combined
+discount onto the kept invoice. Partial payments and revenue months are still
+preserved. The product-merge tool was audited and found correct (handles missing
+stock and orphan sale refs safely). No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.80.0 - Freeze: admins can grant free days; invoice policy unchanged.
+
+## 6.80.0 note - admin freeze override
+Admins can now freeze a membership for ANY number of days, overriding the standard
+one-week-per-month allowance (useful for goodwill / special cases). The freeze
+dialog for an admin removes the cap and the "no allowance left" block, shows quick
+presets up to 90 days, and notes that it's an admin override. Non-admin roles are
+still held to the one-week-per-month allowance. The PRINTED INVOICE conditions are
+deliberately unchanged - they still state "Membership may be frozen up to one week
+for each month of membership" (EN + AR), since that remains the customer-facing
+policy. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.79.0 - Invoices: deleting keeps your filters & page.
 
 ## 6.79.0 note - delete invoice without losing your place

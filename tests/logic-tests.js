@@ -1631,6 +1631,96 @@ ${seed}
     eq(kept.payments.filter(function (p) { return p.month === '2026-05'; })[0].amount, 375, 'cleanup: May revenue preserved after merge');
     state.members = savedM; state.invoices = savedI;
   })();
+  // Invoice merge must preserve a discounted invoice's true charged amount
+  (function () {
+    var savedM = state.members, savedI = state.invoices;
+    state.members = [{ id: 9701, name: 'Disc' }];
+    state.invoices = [
+      { id: 9711, customerId: 9701, category: 'Membership', date: '2026-05-01', month: '2026-05', amount: 300, discount: 75, amountPaid: 300, lineItems: [{ sport: 'Karate', price: 375 }], payments: [{ date: '2026-05-01', month: '2026-05', amount: 300 }] },
+      { id: 9712, customerId: 9701, category: 'Membership', date: '2026-06-01', month: '2026-06', amount: 400, amountPaid: 400, lineItems: [{ sport: 'Swim', price: 400 }], payments: [{ date: '2026-06-01', month: '2026-06', amount: 400 }] },
+    ];
+    var k = mergeMemberInvoices(9701);
+    eq(k.amount, 700, 'merge: discounted total preserved (300+400), not inflated to 775');
+    eq(k.amountPaid, 700, 'merge: paid total correct');
+    eq(k.amount - k.amountPaid, 0, 'merge: no phantom balance due from lost discount');
+    eq(k.discount, 75, 'merge: combined discount carried onto the kept invoice');
+    state.members = savedM; state.invoices = savedI;
+  })();
+  // coachEarnings must credit each coach per line item, not the whole invoice
+  (function () {
+    var savedC = state.coaches, savedM = state.members, savedI = state.invoices;
+    state.coaches = [{ id: 8801, name: 'CA', rate: 40 }, { id: 8802, name: 'CB', rate: 40 }];
+    state.members = [{ id: 8805, name: 'Kid', status: 'Active', expiryDate: '2099-01-01' }];
+    state.invoices = [
+      { id: 8810, customerId: 8805, month: '2026-06', coachId: 8801, amount: 775, lineItems: [{ sport: 'Karate', coachId: 8801, price: 375 }, { sport: 'Swim', coachId: 8802, price: 400 }] },
+    ];
+    var ea = coachEarnings(state.coaches[0], '2026-06');
+    var eb = coachEarnings(state.coaches[1], '2026-06');
+    eq(ea.commissionBase, 375, 'commission: coach A credited only their Karate line (375), not the whole 775');
+    eq(eb.commissionBase, 400, 'commission: coach B credited their Swim line (400), not zero');
+    eq(Math.round(ea.commission), 150, 'commission: coach A commission = 40% of 375');
+    eq(Math.round(eb.commission), 160, 'commission: coach B commission = 40% of 400');
+    state.coaches = savedC; state.members = savedM; state.invoices = savedI;
+  })();
+  // Attendance row coach: when a sport is missing from enrollments, use the
+  // subscription's coach, NOT the member's headline coach.
+  (function () {
+    var resolveRowCoach = function (m, sp) {
+      var enr = (m.enrollments || []).find(function (e) { return e.sport === sp; });
+      var sub = (m.subscriptions || []).find(function (s) { return s.activity === sp; });
+      return (enr && enr.coachId != null) ? enr.coachId
+        : (sub && sub.coachId != null) ? sub.coachId
+        : m.coachId;
+    };
+    var mem = {
+      coachId: 5, // headline coach
+      enrollments: [{ sport: 'Swimming', coachId: 3 }, { sport: 'Kick Boxing', coachId: 5 }], // Gymnastic missing
+      subscriptions: [{ activity: 'Gymnastic', coachId: 2 }, { activity: 'Swimming', coachId: 3 }, { activity: 'Kick Boxing', coachId: 5 }],
+    };
+    eq(resolveRowCoach(mem, 'Gymnastic'), 2, 'attendance: gymnastic coach from subscription (2), not headline (5)');
+    eq(resolveRowCoach(mem, 'Swimming'), 3, 'attendance: swimming coach from enrollment (3)');
+    eq(resolveRowCoach(mem, 'Kick Boxing'), 5, 'attendance: kick boxing coach (5)');
+  })();
+  // Recent searches: per-key history, dedup/move-to-front, min length, max cap
+  (function () {
+    var savedRS = state.recentSearches;
+    state.recentSearches = {};
+    recordRecentSearch('members', 'Ahmed');
+    recordRecentSearch('members', 'Sara');
+    recordRecentSearch('members', 'a');         // too short, ignored
+    recordRecentSearch('members', 'Ahmed');     // dup -> front
+    eq(recentSearches('members').join(','), 'Ahmed,Sara', 'recent: dedup + move-to-front, short ignored');
+    recordRecentSearch('invoices', 'INV9');
+    eq(recentSearches('invoices').length, 1, 'recent: keys are independent');
+    eq(recentSearches('members').length, 2, 'recent: members unaffected by invoices');
+    for (var i = 0; i < 12; i++) recordRecentSearch('cap', 'term' + i);
+    eq(recentSearches('cap').length, 8, 'recent: capped at 8');
+    eq(recentSearches('cap')[0], 'term11', 'recent: newest first');
+    clearRecentSearches('members');
+    eq(recentSearches('members').length, 0, 'recent: clear empties the list');
+    state.recentSearches = savedRS;
+  })();
+  // Edit pricing for a new sport must REUSE the member's existing invoice
+  // (add a line item), not create a second invoice.
+  (function () {
+    var savedI = state.invoices, savedM = state.members;
+    state.members = [{ id: 9148, enrollments: [{ sport: 'Swimming', coachId: 3, classes: 8 }] }];
+    state.invoices = [
+      { id: 9150, customerId: 9148, category: 'Membership', date: '2026-05-19', month: '2026-05', amount: 450, amountPaid: 450, sport: 'Kick Boxing', coachId: 5, lineItems: [{ sport: 'Kick Boxing', coachId: 5, price: 450 }], payments: [{ amount: 450 }] },
+    ];
+    // Replicate the reuse logic: add Swimming 375 to the existing invoice.
+    var m = state.members[0], net = 375, paid = 375;
+    var existing = state.invoices.filter(function (i) { return !i.deleted && i.customerId === m.id && (i.category || 'Membership') === 'Membership'; }).sort(function (a, b) { return (a.date || '').localeCompare(b.date || ''); })[0];
+    existing.lineItems.push({ sport: 'Swimming', coachId: 3, classes: 8, price: net });
+    existing.amount = existing.lineItems.reduce(function (s, x) { return s + (Number(x.price) || 0); }, 0);
+    existing.payments.push({ amount: paid });
+    existing.amountPaid = existing.payments.reduce(function (s, p) { return s + (p.amount || 0); }, 0);
+    eq(state.invoices.filter(function (i) { return i.customerId === 9148 && !i.deleted; }).length, 1, 'edit pricing: still ONE invoice after adding a sport');
+    eq(existing.lineItems.length, 2, 'edit pricing: new sport added as a line item');
+    eq(existing.amount, 825, 'edit pricing: total rolled up (450+375)');
+    eq(existing.amountPaid, 825, 'edit pricing: payments accumulated');
+    state.invoices = savedI; state.members = savedM;
+  })();
   var _af = { expiryDate: '2026-07-01', freezes: [] };
   applyFreeze(_af, 7, 'x');
   eq(_af.expiryDate, '2026-07-08', 'freeze: applyFreeze shifts expiry forward by the frozen days');

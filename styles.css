@@ -1706,3 +1706,54 @@ a:focus-visible,
   padding: 1px 5px;
   font-size: 10px;
 }
+
+/* Recent searches dropdown (shared across search boxes) */
+.recent-search-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  background: var(--surface-1, #1b1b22);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 10px);
+  box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  overflow: hidden;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.recent-search-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--text-mute);
+  border-bottom: 1px solid var(--border);
+}
+.recent-search-clear {
+  background: transparent;
+  border: none;
+  color: var(--blue, #5b8def);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.recent-search-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 9px 12px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.recent-search-item:hover { background: var(--surface-2, rgba(255,255,255,.05)); }
+.recent-search-item .rs-ico { opacity: .6; font-size: 12px; }
+.recent-search-item .rs-term { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
