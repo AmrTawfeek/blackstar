@@ -1,4 +1,134 @@
 # Black Stars CRM
+Version 6.103.0 - Cleanup: re-sync enrollments from subscriptions.
+
+## 6.103.0 note - re-sync enrollments
+Added a sixth Cleanup Center tool: "Re-sync enrollments". It finds members whose
+sport rows (enrollments[]) don't match their actual subscriptions[] - a sport
+duplicated, missing, or pointing at the WRONG COACH (this mismatch was the root cause
+behind earlier wrong-coach attendance issues). The tool shows the current vs correct
+sports, and re-syncing rebuilds the enrollment rows from the active subscriptions
+(one per sport, correct coaches), keeping each row's classes/price/dates/validity.
+ATTENDANCE AND SUBSCRIPTIONS ARE NEVER CHANGED. Works per-member or "Re-sync all";
+admin-only, confirmed, audit-logged. The Cleanup KPI grid is now 6 tiles. No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.102.0 - Notes date filter + attendance renewal cue.
+
+## 6.102.0 note
+1. Notes & Reminders: added "month" and "day" dropdowns that filter notes by their
+   reminder date (works together with the Open/Attention/Done/All tabs). A "Clear
+   dates" button resets them. Notes with no reminder date are hidden while a date
+   filter is active.
+2. Attendance: a member whose membership has EXPIRED but who owes NOTHING is now
+   highlighted with an amber row + inset stripe and a "🔄 RENEW" badge - prompting
+   reception to offer a renewal. This is visually distinct from the red "💳 UNPAID"
+   case (expired AND still owing) and the plain grey expired row. Driven by member
+   status + invoice balance; no data changed.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.101.0 - Invoices: bulk "Delete selected".
+
+## 6.101.0 note - bulk delete invoices
+The blue selection bar on the Invoices screen (shown when you tick one or more
+invoices) now has a red "Delete selected" button alongside "Merge into one invoice".
+It asks for confirmation showing how many invoices and the total/paid amounts, then
+permanently deletes them all at once. Linked sale records are kept but their invoice
+link is broken cleanly (same as single delete), the action is audit-logged, and the
+table refreshes IN PLACE so your current filters and page are preserved. No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.100.0 - Clarify revenue figures (Invoices vs Dashboard).
+
+## 6.100.0 note - why Invoices total != Dashboard revenue
+Not a calculation bug - the two numbers measure different things, but the labels made
+them look contradictory:
+- Invoices header (e.g. "68,781 QAR") = total CHARGED across all invoices, ALL-TIME
+  (everything billed, paid or not).
+- Dashboard "Total Revenue (Jun)" (e.g. "57,426") = cash actually COLLECTED in the
+  current month only (cash-basis), via cashInMonth().
+They legitimately differ because of (a) time scope - all-time vs one month - and
+(b) charged vs collected (unpaid balances inflate the charged total).
+Changes (display only, no math changed):
+- Invoices header now reads "N invoices · X charged · Y collected · Z due", so it's
+  explicit and reconciles (charged = collected + due).
+- Dashboard revenue card gained a tooltip explaining it's cash collected this month.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.99.0 - Bug audit batch: pagination, profile total, date counting.
+
+## 6.99.0 note - proactive bug fixes
+1. Pagination out-of-range: if you were on (say) page 5 and then applied a filter or
+   deleted rows so only 1 page of results remained, the table could render EMPTY
+   because the page slice fell past the end. paginate() now clamps the current page
+   into range first, so it always shows the last valid page instead of blank rows.
+   Affects every paginated screen (members, invoices, expenses, trials, etc.).
+2. Member profile money card: the Total/Paid figures now exclude switch-credit
+   (negative) invoices, matching the balance-due calculation - so the displayed total
+   always reconciles with the amount due for members who switched sports.
+3. daysUntil() now parses date-only values as local midnight, preventing a possible
+   off-by-one in expiry / "days left" counts (robust across timezones).
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.98.0 - Expenses: export a fancy PDF report.
+
+## 6.98.0 note - expenses PDF report
+Added an "Export PDF" button to the Expenses screen. It opens a clean, branded,
+print-ready report of the CURRENT filtered view with:
+- a gradient header (club name + period),
+- a meta line (date range, entry count, active filters, generated timestamp),
+- summary cards (total, entries, average per entry, number of categories),
+- a "Breakdown by category" section with coloured percentage bars,
+- and an itemized table (date, description, category, method, amount) with a bold total.
+The report reflects whatever filters/month are applied, and a "Save as PDF" button
+prints it. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.97.0 - Fix: recent-searches & notification dropdowns now match the theme.
+
+## 6.97.0 note - dropdown theme fix
+The Recent Searches dropdown (and the notification bell panel) used a CSS variable
+that doesn't exist (--surface-1), so they fell back to a hardcoded DARK background.
+On the Light/Cream themes this made the panel dark with dark text - the recent
+search terms looked like empty rows because the text was invisible against the wrong
+background. Both panels now use the theme's real --surface colour, so they render
+correctly (white panel + dark text on light, dark panel + light text on dark) and the
+search terms are visible. CSS-only change. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.96.0 - Show unpaid clearly: attendance flag + profile total/balance.
+
+## 6.96.0 note - unpaid visibility
+1. Attendance grid: members who still owe money now show a red "💳 UNPAID" badge next
+   to their name (with the amount due in the tooltip), so you can see at a glance who
+   registered but hasn't paid. Driven by the member's invoice balance.
+2. Member profile popup: the "Paid" card was misleading - it showed the subscription's
+   stored amount even when nothing had been collected. It now shows the TOTAL charged,
+   and when there's a balance it turns orange, relabels to "Total · due", and shows
+   "<balance> due · <paid> paid" underneath. Figures come from invoices (the source of
+   truth). No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.95.0 - New: notification bell (Facebook-style), role-aware.
+
+## 6.95.0 note - notification bell
+Added a bell icon in the top header with a red count badge and a dropdown list of
+alerts, tailored to the signed-in role:
+- STUDENT: next class (today/tomorrow), membership expiring soon, classes running low
+  (finish the remaining ones), and unpaid balance.
+- COACH: their next class, students expiring soon (to nudge them), students with few
+  classes left, and new students assigned this week.
+- ADMIN/STAFF: notes needing attention, camp members expiring, and memberships
+  expiring soon.
+Click an item to jump to the relevant screen. The bell count and list are computed
+live from current data and refresh whenever the app re-renders. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.94.0 - Cleanup: recalculate existing camp members to business days.
 
 ## 6.94.0 note - recalc existing camp data

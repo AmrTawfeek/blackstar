@@ -332,7 +332,7 @@ PAGES.dashboard = (main) => {
     <div class="kpi-grid">
       <div class="kpi">
         <div class="kpi-icon">💰</div>
-        <div class="kpi-label">${t('Total Revenue','إجمالي الإيرادات')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
+        <div class="kpi-label" title="${t('Cash actually collected this month (payments dated this month). Differs from the Invoices total, which is everything billed all-time.', 'النقد المُحصّل فعلياً هذا الشهر — يختلف عن إجمالي الفواتير الذي يشمل كل ما تم إصداره')}">${t('Total Revenue','إجمالي الإيرادات')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
         <div class="kpi-value num">${fmt(s.currRevenue)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
         ${kpiDelta(s.currRevenue, s.prevRevenue)}
         ${sparkline([s.prevRevenue, s.currRevenue])}
@@ -1500,6 +1500,16 @@ function viewMember(id) {
     return acc + (lw.total > 0 ? lw.y : (x.attendedClasses || 0));
   }, 0);
   const paidSum = allSubs.reduce((s,x) => s + (x.amountPaid || 0), 0);
+  // Money figures from INVOICES (the source of truth), so the card reflects what's
+  // actually been paid vs the full charge — not the subscription's stored amount,
+  // which can equal the total even when nothing has been collected yet.
+  const memberInvs = (state.invoices || []).filter(i => i.customerId === m.id && !i.deleted);
+  // Charge/paid totals exclude switch-credit (negative) invoices so the displayed
+  // "Total" reconciles with the balance-due figure, which also excludes them.
+  const chargeInvs = memberInvs.filter(i => !i.switchCredit && i.activityType !== 'switch-credit' && (Number(i.amount) || 0) >= 0);
+  const totalCharged = chargeInvs.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+  const totalPaid = chargeInvs.reduce((s, i) => s + invoicePaid(i), 0);
+  const balanceDue = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : Math.max(0, totalCharged - totalPaid);
   const anyLiveMarks = allSubs.some(x => liveAttendanceCount(m, x.activity, x.start || null, x.end || null).total > 0);
   const liveCount = { total: anyLiveMarks ? 1 : 0 };   // flag for the "· live" label
   const attRatePct = totalClassesSum ? Math.min(100, Math.round(attendedSum / totalClassesSum * 100)) : 0;
@@ -1560,7 +1570,7 @@ function viewMember(id) {
         <div class="kpi" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Subs</div><div class="kpi-value" style="font-size:18px">${totalSubs}</div></div>
         <div class="kpi blue" style="padding:10px 12px;cursor:pointer" onclick="viewMemberAttendance(${m.id})" title="See this member's attendance">
           <div class="kpi-label" style="font-size:10px">Classes ${liveCount.total ? '· live' : ''} ›</div><div class="kpi-value" style="font-size:18px">${attendedSum}/${totalClassesSum}</div></div>
-        ${isViewerRole() ? '' : `<div class="kpi green" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Paid</div><div class="kpi-value" style="font-size:18px">${fmt(paidSum)}</div></div>`}
+        ${isViewerRole() ? '' : `<div class="kpi ${balanceDue > 0.5 ? 'orange' : 'green'}" style="padding:10px 12px" title="${balanceDue > 0.5 ? `Paid ${fmt(totalPaid)} of ${fmt(totalCharged)} — ${fmt(balanceDue)} still due` : 'Fully paid'}"><div class="kpi-label" style="font-size:10px">${balanceDue > 0.5 ? 'Total · due' : 'Paid'}</div><div class="kpi-value" style="font-size:18px">${fmt(totalCharged)}</div>${balanceDue > 0.5 ? `<div style="font-size:9px;color:var(--red);font-weight:700;margin-top:1px">${fmt(balanceDue)} due · ${fmt(totalPaid)} paid</div>` : ''}</div>`}
         <div class="kpi orange" style="padding:10px 12px;cursor:pointer;position:relative" onclick="viewMemberAttendance(${m.id})" title="See this member's attendance">
           <div class="kpi-label" style="font-size:10px">Att Rate ›</div><div class="kpi-value" style="font-size:18px">${attRatePct}%</div>
           <button onclick="event.stopPropagation();exportMemberAttendance(${m.id})" title="Export attendance history (CSV)" style="position:absolute;top:6px;right:6px;background:transparent;border:none;cursor:pointer;font-size:13px;opacity:.7;padding:2px">⬇</button>
@@ -6570,7 +6580,15 @@ PAGES.invoices = (main) => {
         </td>
       </tr>`;
     }).join('') : `<tr><td colspan="10" class="empty"><div class="empty-icon">📄</div>No invoices match</td></tr>`;
-    $('#inv-count').textContent = isViewerRole() ? `${allRows.length} invoices` : `${allRows.length} invoices · ${fmtMoney(total)}`;
+    // The headline number is total CHARGED (billed) across the filtered invoices,
+    // all-time — distinct from the Dashboard's "Total Revenue", which is cash
+    // COLLECTED in a given month. Show collected + outstanding too so the figures
+    // are unambiguous and reconcile with the Dashboard.
+    const collected = allRows.reduce((s, r) => s + invoicePaid(r), 0);
+    const outstanding = allRows.reduce((s, r) => s + invoiceBalance(r), 0);
+    $('#inv-count').textContent = isViewerRole()
+      ? `${allRows.length} invoices`
+      : `${allRows.length} invoices · ${fmtMoney(total)} charged · ${fmtMoney(collected)} collected${outstanding > 0.5 ? ` · ${fmtMoney(outstanding)} due` : ''}`;
     $('#inv-pagination').innerHTML = paginationBar(pg, allRows.length, 'inv');
     bindPagination('inv', pg, allRows.length, refresh);
 
@@ -6657,6 +6675,7 @@ PAGES.invoices = (main) => {
         <span style="font-size:16px">🧾</span>
         <div style="flex:1;font-size:13px;font-weight:600"><span id="inv-merge-count">0</span> invoices selected</div>
         <button class="btn primary sm" id="inv-merge-go" title="Combine the selected invoices (same customer) into one">🔗 Merge into one invoice</button>
+        <button class="btn sm" id="inv-delete-sel" style="background:var(--red);border-color:var(--red);color:#fff" title="Permanently delete the selected invoices">🗑 ${t('Delete selected', 'حذف المحدد')}</button>
         <button class="btn ghost sm" id="inv-merge-clear">Clear</button>
       </div>
       <div class="table-wrap">
@@ -6702,6 +6721,26 @@ PAGES.invoices = (main) => {
   $('#add-inv').addEventListener('click', addInvoice);
   $('#inv-merge-clear').addEventListener('click', () => { selected.clear(); refresh(); });
   $('#inv-merge-go').addEventListener('click', () => mergeSelectedInvoices());
+  $('#inv-delete-sel')?.addEventListener('click', () => deleteSelectedInvoices());
+
+  function deleteSelectedInvoices() {
+    const invs = state.invoices.filter(i => selected.has(i.id));
+    if (!invs.length) { toast('No invoices selected', 'info'); return; }
+    const totalAmt = invs.reduce((s, i) => s + (i.amount || 0), 0);
+    const paidAmt = invs.reduce((s, i) => s + invoicePaid(i), 0);
+    if (!confirm(`Permanently delete ${invs.length} invoice${invs.length === 1 ? '' : 's'}?\n\n` +
+      `Total: ${fmt(totalAmt)} QAR · Paid: ${fmt(paidAmt)} QAR\n\n` +
+      `This cannot be undone. Revenue, coach performance, and team figures will update automatically. Any linked sale records stay, but their invoice link breaks.`)) return;
+    const ids = new Set(invs.map(i => i.id));
+    // Break any sale → invoice links cleanly so sale rows don't show a dangling ref.
+    for (const sale of (state.sales || [])) { if (sale.invoiceId != null && ids.has(sale.invoiceId)) delete sale.invoiceId; }
+    state.invoices = state.invoices.filter(i => !ids.has(i.id));
+    if (typeof audit === 'function') audit('invoice.delete_bulk', 'invoices', `Bulk-deleted ${invs.length} invoices — ${fmt(totalAmt)} QAR (${fmt(paidAmt)} paid)`);
+    selected.clear();
+    save();
+    toast(`✓ ${invs.length} invoice${invs.length === 1 ? '' : 's'} deleted`);
+    refresh();
+  }
 
   function mergeSelectedInvoices() {
     const invs = state.invoices.filter(i => selected.has(i.id));
@@ -8872,9 +8911,140 @@ PAGES.cashcollection = (main) => {
 };
 
 // ─── EXPENSES ──────────────────────────────────────────────────
+// Fancy, readable Expenses PDF report — branded header, summary band, category
+// breakdown with bars, and the itemized table. Reflects the current filtered view.
+window.exportExpensesPDF = function(rows, meta) {
+  rows = rows || [];
+  meta = meta || {};
+  if (!rows.length) { toast('No expenses to export', 'info'); return; }
+  const money = n => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const total = meta.total != null ? meta.total : rows.reduce((s, r) => s + (r.amount || 0), 0);
+  const byCat = meta.byCat || rows.reduce((acc, r) => { const c = r.category || 'Others'; acc[c] = (acc[c] || 0) + (r.amount || 0); return acc; }, {});
+  const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+  const maxCat = cats.length ? cats[0][1] : 0;
+  const f = meta.filter || {};
+  const periodLabel = (f.month && f.month !== 'all') ? fmtMonth(f.month) : 'All months';
+  const filterBits = [];
+  if (f.search) filterBits.push(`search: "${escapeHtml(f.search)}"`);
+  if (f.categories && f.categories.length) filterBits.push('categories: ' + f.categories.map(escapeHtml).join(', '));
+  if (f.methods && f.methods.length) filterBits.push('methods: ' + f.methods.map(escapeHtml).join(', '));
+  const dates = rows.map(r => r.date).filter(Boolean).sort();
+  const rangeLabel = dates.length ? `${fmtDate(dates[0])} – ${fmtDate(dates[dates.length - 1])}` : '—';
+  const avg = rows.length ? total / rows.length : 0;
+  const catColors = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#8b5cf6', '#ef4444', '#84cc16'];
+
+  const rowsHtml = rows.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((e, i) => `
+    <tr style="${i % 2 ? 'background:#faf9fc' : ''}">
+      <td class="c-date">${fmtDate(e.date)}</td>
+      <td class="c-desc">${escapeHtml(e.description || '—')}</td>
+      <td><span class="chip">${escapeHtml(e.category || 'Others')}</span></td>
+      <td class="c-method">${escapeHtml(e.method || '—')}</td>
+      <td class="c-amt">${money(e.amount)}</td>
+    </tr>`).join('');
+
+  const catRowsHtml = cats.map(([c, v], i) => {
+    const pct = total > 0 ? (v / total * 100) : 0;
+    const w = maxCat > 0 ? (v / maxCat * 100) : 0;
+    const color = catColors[i % catColors.length];
+    return `<div class="cat-row">
+      <div class="cat-name"><span class="cat-dot" style="background:${color}"></span>${escapeHtml(c)}</div>
+      <div class="cat-bar-wrap"><div class="cat-bar" style="width:${w}%;background:${color}"></div></div>
+      <div class="cat-val">${money(v)} <span class="cat-pct">${pct.toFixed(1)}%</span></div>
+    </div>`;
+  }).join('');
+
+  const now = new Date();
+  const genStr = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) + ' · ' + now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Expenses Report — Black Stars Sports Club</title>
+  <style>
+    @page { size: A4; margin: 14mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; color: #1f2230; margin: 0; padding: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .sheet { max-width: 780px; margin: 0 auto; padding: 8px; }
+    .hdr { display: flex; justify-content: space-between; align-items: flex-end; padding: 22px 24px; border-radius: 14px;
+      background: linear-gradient(135deg, #ff6a3d 0%, #f5365c 100%); color: #fff; }
+    .hdr h1 { margin: 0; font-size: 24px; letter-spacing: .3px; }
+    .hdr .club { font-size: 13px; opacity: .92; margin-top: 2px; }
+    .hdr .rpt { text-align: right; }
+    .hdr .rpt .label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; opacity: .85; }
+    .hdr .rpt .val { font-size: 16px; font-weight: 700; }
+    .meta { display: flex; gap: 18px; flex-wrap: wrap; font-size: 11px; color: #6b7080; margin: 12px 4px 0; }
+    .meta b { color: #1f2230; }
+    .cards { display: flex; gap: 12px; margin: 16px 0; }
+    .card2 { flex: 1; border: 1px solid #ececf2; border-radius: 12px; padding: 14px 16px; }
+    .card2 .k { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: #8a8fa3; }
+    .card2 .v { font-size: 22px; font-weight: 800; margin-top: 4px; }
+    .card2.total .v { color: #f5365c; }
+    .sec-title { font-size: 13px; font-weight: 700; margin: 18px 4px 10px; color: #2a2d3c; }
+    .cat-row { display: flex; align-items: center; gap: 12px; padding: 6px 4px; font-size: 12px; }
+    .cat-name { width: 150px; display: flex; align-items: center; gap: 7px; font-weight: 600; }
+    .cat-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+    .cat-bar-wrap { flex: 1; background: #f0f0f5; height: 9px; border-radius: 5px; overflow: hidden; }
+    .cat-bar { height: 100%; border-radius: 5px; }
+    .cat-val { width: 120px; text-align: right; font-weight: 600; }
+    .cat-pct { color: #9296a8; font-weight: 500; font-size: 11px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+    thead th { background: #2a2d3c; color: #fff; text-align: left; padding: 9px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+    thead th:last-child { text-align: right; }
+    tbody td { padding: 8px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
+    .c-date { white-space: nowrap; color: #6b7080; }
+    .c-desc { font-weight: 500; }
+    .c-method { text-transform: capitalize; color: #6b7080; }
+    .c-amt { text-align: right; font-weight: 700; white-space: nowrap; }
+    .chip { background: #eef0fb; color: #4b4f87; font-size: 10px; padding: 2px 8px; border-radius: 20px; white-space: nowrap; }
+    tfoot td { padding: 11px 10px; font-weight: 800; border-top: 2px solid #2a2d3c; }
+    tfoot .c-amt { color: #f5365c; font-size: 14px; }
+    .foot { margin-top: 18px; text-align: center; font-size: 10px; color: #a0a4b4; }
+    .print-btn { position: fixed; top: 14px; right: 14px; background: #f5365c; color: #fff; border: none; padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 14px rgba(245,54,92,.4); }
+    @media print { .print-btn { display: none; } .sheet { max-width: none; } }
+  </style></head>
+  <body>
+    <button class="print-btn" onclick="window.print()">⬇ Save as PDF</button>
+    <div class="sheet">
+      <div class="hdr">
+        <div>
+          <h1>Expenses Report</h1>
+          <div class="club">Black Stars Sports Club · Waab — Village Resort, Doha, Qatar</div>
+        </div>
+        <div class="rpt">
+          <div class="label">Period</div>
+          <div class="val">${escapeHtml(periodLabel)}</div>
+        </div>
+      </div>
+      <div class="meta">
+        <div>Date range: <b>${rangeLabel}</b></div>
+        <div>Entries: <b>${rows.length}</b></div>
+        ${filterBits.length ? `<div>Filters — ${filterBits.join(' · ')}</div>` : '<div>Filters: <b>none (all expenses)</b></div>'}
+        <div style="margin-left:auto">Generated ${genStr}</div>
+      </div>
+      <div class="cards">
+        <div class="card2 total"><div class="k">Total expenses</div><div class="v">${money(total)} <span style="font-size:12px;font-weight:600">QAR</span></div></div>
+        <div class="card2"><div class="k">Entries</div><div class="v">${rows.length}</div></div>
+        <div class="card2"><div class="k">Average / entry</div><div class="v">${money(avg)}</div></div>
+        <div class="card2"><div class="k">Categories</div><div class="v">${cats.length}</div></div>
+      </div>
+      ${cats.length ? `<div class="sec-title">Breakdown by category</div>${catRowsHtml}` : ''}
+      <div class="sec-title">Itemized expenses</div>
+      <table>
+        <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Method</th><th style="text-align:right">Amount (QAR)</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+        <tfoot><tr><td colspan="4">Total · ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}</td><td class="c-amt">${money(total)} QAR</td></tr></tfoot>
+      </table>
+      <div class="foot">Black Stars Sports Club — Expenses Report · Generated ${genStr} · This is a system-generated report.</div>
+    </div>
+  </body></html>`;
+
+  const w = window.open('', '_blank');
+  if (!w) { toast('Allow pop-ups to export the PDF', 'error'); return; }
+  w.document.write(html);
+  w.document.close();
+};
+
 PAGES.expenses = (main) => {
   let filter = { search: '', month: 'all', categories: [], methods: [] };
   const pg = makePager(10);
+  let _exportRows = [], _exportMeta = {};
 
   function refresh() {
     // Cash collections (owner taking cash out) are tracked on their own Cash
@@ -8901,6 +9071,9 @@ PAGES.expenses = (main) => {
     }
     const topCats = Object.entries(byCat).sort((a,b) => b[1] - a[1]).slice(0, 3);
     const topStr = topCats.map(([c, v]) => `${c} ${fmt(v)}`).join(' · ');
+    // Snapshot the current filtered view for the PDF export.
+    _exportRows = allRows;
+    _exportMeta = { total, grandTotal, anyFilter, byCat, filter: { ...filter } };
 
     $('#exp-tbody').innerHTML = rows.length ? rows.map(e => `
       <tr>
@@ -8936,6 +9109,7 @@ PAGES.expenses = (main) => {
         <div class="subtitle"><span id="exp-count">Loading...</span></div>
       </div>
       <div class="topbar-actions">
+        <button class="btn ghost" id="exp-pdf">📄 ${t('Export PDF', 'تصدير PDF')}</button>
         <button class="btn primary" id="add-exp">+ New Expense</button>
       </div>
     </div>
@@ -8975,6 +9149,7 @@ PAGES.expenses = (main) => {
   `;
   $('#exp-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   attachRecentSearch('exp-search', 'expenses');
+  $('#exp-pdf')?.addEventListener('click', () => exportExpensesPDF(_exportRows, _exportMeta));
   $('#exp-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
   // Multi-select category + method dropdowns (checkbox menus).
   function wireExpMulti(key, cbClass, btnId, menuId, labelId, allText, oneFmt) {
@@ -11980,11 +12155,16 @@ PAGES.attendance = (main) => {
         }).join('');
         const status = memberStatus(m);
         const isExpired = status === 'Expired';
+        const _due2 = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0;
+        const needsRenewal2 = isExpired && _due2 <= 0.5;
         const statusBadge = isExpired ? '<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(242,96,96,.15);color:var(--red);margin-left:4px">EXPIRED</span>' : '';
+        const renewBadge2 = needsRenewal2 ? `<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(245,158,11,.18);color:var(--accent-2);margin-left:4px" title="Paid up but membership expired — offer a renewal">🔄 ${t('RENEW', 'تجديد')}</span>` : '';
+        const unpaidBadge2 = _due2 > 0.5 ? `<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(242,96,96,.15);color:var(--red);margin-left:4px" title="Not fully paid — ${fmt(_due2)} QAR due">💳 ${t('UNPAID', 'غير مدفوع')}</span>` : '';
+        const rowStyle2 = needsRenewal2 ? 'background:rgba(245,158,11,.10);box-shadow:inset 3px 0 0 var(--accent-2)' : (isExpired ? 'background:rgba(120,120,140,.06)' : '');
         const sportEsc = sport.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-        return `<tr style="${isExpired ? 'background:rgba(120,120,140,.06)' : ''}">
-            <td class="att-name-cell" title="${escapeHtml(m.name)} · ${escapeHtml(sport)}">
-              <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.name)}${statusBadge}</div>
+        return `<tr style="${rowStyle2}">
+            <td class="att-name-cell" title="${escapeHtml(m.name)} · ${escapeHtml(sport)}${_due2 > 0.5 ? ' · ' + fmt(_due2) + ' QAR due' : ''}">
+              <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.name)}${statusBadge}${renewBadge2}${unpaidBadge2}</div>
               ${m.nameArabic ? `<div dir="rtl" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.nameArabic)}</div>` : ''}
               <div class="text-mute" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}</div>
             </td>
@@ -12026,7 +12206,19 @@ PAGES.attendance = (main) => {
       const sportEsc = sport.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
       const status = memberStatus(m);
       const isExpired = status === 'Expired';
-      const rowStyle = isExpired ? 'background:rgba(120,120,140,.06)' : '';
+      const _due = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0;
+      // Expired but fully paid → a renewal candidate: highlight in amber so reception
+      // is prompted to extend the membership (distinct from the red UNPAID case).
+      const needsRenewal = isExpired && _due <= 0.5;
+      const rowStyle = needsRenewal
+        ? 'background:rgba(245,158,11,.10);box-shadow:inset 3px 0 0 var(--accent-2)'
+        : (isExpired ? 'background:rgba(120,120,140,.06)' : '');
+      const unpaidBadge = _due > 0.5
+        ? `<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(242,96,96,.15);color:var(--red);margin-left:4px" title="Not fully paid — ${fmt(_due)} QAR due">💳 ${t('UNPAID', 'غير مدفوع')}</span>`
+        : '';
+      const renewBadge = needsRenewal
+        ? `<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(245,158,11,.18);color:var(--accent-2);margin-left:4px" title="Paid up but membership expired — offer a renewal">🔄 ${t('RENEW', 'تجديد')}</span>`
+        : '';
       const statusBadge = isExpired
         ? '<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(242,96,96,.15);color:var(--red);margin-left:4px">EXPIRED</span>'
         : (status === 'Frozen'
@@ -12034,8 +12226,8 @@ PAGES.attendance = (main) => {
           : '');
       return `
         <tr style="${rowStyle}">
-          <td class="att-name-cell" title="${escapeHtml(m.name)} · ${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}${isExpired ? ' · expired ' + fmtDate(m.expiryDate) : ''}">
-            <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.name)}${statusBadge}</div>
+          <td class="att-name-cell" title="${escapeHtml(m.name)} · ${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}${isExpired ? ' · expired ' + fmtDate(m.expiryDate) : ''}${_due > 0.5 ? ' · ' + fmt(_due) + ' QAR due' : ''}">
+            <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.name)}${statusBadge}${renewBadge}${unpaidBadge}</div>
             ${m.nameArabic ? `<div dir="rtl" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.nameArabic)}</div>` : ''}
             <div class="text-mute" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}</div>
           </td>
@@ -20107,6 +20299,7 @@ PAGES.cleanup = (main) => {
   const misdated = findMisdatedInvoices();
   const dupProducts = findDuplicateProducts();
   const campRecalc = findCampMembersToRecalc();
+  const enrDrift = findMembersWithEnrollmentDrift();
 
   const enrSection = dupEnr.length ? dupEnr.map(d => {
     const rows = d.rows.map((e, i) => `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:3px 0;${i === 0 ? '' : 'opacity:.7'}">
@@ -20161,6 +20354,18 @@ PAGES.cleanup = (main) => {
       <div style="margin-top:6px;font-size:12px" class="text-mute">${d.fixes.map(f => `${escapeHtml(f.label)}: ${f.fromClasses !== f.toClasses ? `<b style="color:var(--red)">${f.fromClasses}</b> → <b style="color:var(--green)">${f.toClasses}</b> ${t('classes', 'حصص')}` : ''}${(f.fromClasses !== f.toClasses && f.fromEnd !== f.toEnd) ? ' · ' : ''}${f.fromEnd !== f.toEnd ? `${t('expiry', 'انتهاء')} ${fmtDate(f.fromEnd)} → <b style="color:var(--green)">${fmtDate(f.toEnd)}</b>` : ''}`).join('<br>')}</div>
     </div>`).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('All camp memberships use business-day counts', 'كل اشتراكات المعسكر تستخدم أيام العمل')}</div>`;
 
+  const enrDriftSection = enrDrift.length ? enrDrift.map(d => `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><b>${escapeHtml(d.member.name)}</b></div>
+        <button class="btn ghost sm" style="color:var(--blue)" onclick="resyncMemberEnrollmentsUI(${d.member.id})">🔧 ${t('Re-sync', 'إعادة المزامنة')}</button>
+      </div>
+      <div style="margin-top:6px;font-size:12px" class="text-mute">
+        ${t('Enrollments', 'التسجيلات')}: <b style="color:var(--red)">${d.enrollmentSports.length ? d.enrollmentSports.map(escapeHtml).join(', ') : '—'}</b><br>
+        ${t('Should be (from subscriptions)', 'يجب أن تكون (من الاشتراكات)')}: <b style="color:var(--green)">${d.subscriptionSports.length ? d.subscriptionSports.map(escapeHtml).join(', ') : '—'}</b>
+      </div>
+    </div>`).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('All members\\u2019 enrollments match their subscriptions', 'تسجيلات جميع الأعضاء تطابق اشتراكاتهم')}</div>`;
+
   main.innerHTML = `
     <div class="topbar">
       <div>
@@ -20170,12 +20375,13 @@ PAGES.cleanup = (main) => {
       <div class="topbar-actions"><button class="btn ghost" onclick="render()">↻ ${t('Rescan', 'إعادة الفحص')}</button></div>
     </div>
 
-    <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">
+    <div class="kpi-grid" style="grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px">
       <div class="kpi ${dupEnr.length ? 'red' : 'green'}"><div class="kpi-label">${t('Duplicate enrollments', 'تسجيلات مكررة')}</div><div class="kpi-value num">${dupEnr.length}</div></div>
       <div class="kpi ${mergeable.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Members with split invoices', 'أعضاء بفواتير متعددة')}</div><div class="kpi-value num">${mergeable.length}</div></div>
       <div class="kpi ${misdated.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Misdated invoices', 'فواتير بتواريخ خاطئة')}</div><div class="kpi-value num">${misdated.length}</div></div>
       <div class="kpi ${dupProducts.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Duplicate products', 'منتجات مكررة')}</div><div class="kpi-value num">${dupProducts.length}</div></div>
       <div class="kpi ${campRecalc.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Camp to recalc', 'معسكر للإعادة')}</div><div class="kpi-value num">${campRecalc.length}</div></div>
+      <div class="kpi ${enrDrift.length ? 'red' : 'green'}"><div class="kpi-label">${t('Enrollment mismatch', 'عدم تطابق التسجيل')}</div><div class="kpi-value num">${enrDrift.length}</div></div>
     </div>
 
     <div class="card" style="margin-bottom:14px">
@@ -20208,6 +20414,14 @@ PAGES.cleanup = (main) => {
       </div>
       <div style="padding:12px">${campRecalcSection}</div>
     </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+        <div><div class="card-title">🔧 ${t('Re-sync enrollments', 'إعادة مزامنة التسجيلات')}</div><div class="card-subtitle">${t('Finds members whose sport rows (enrollments) don\\u2019t match their actual subscriptions — a sport duplicated, missing, or pointing at the wrong coach. Re-syncing rebuilds the rows from the active subscriptions (correct sports + coaches), keeping classes/price/dates. Attendance and subscriptions are never changed.', 'يبحث عن الأعضاء الذين لا تتطابق صفوف رياضاتهم مع اشتراكاتهم الفعلية — رياضة مكررة أو مفقودة أو بمدرب خاطئ. تعيد المزامنة بناء الصفوف من الاشتراكات النشطة. لا يتغير الحضور أو الاشتراكات.')}</div></div>
+        ${enrDrift.length ? `<button class="btn ghost sm" style="color:var(--blue);white-space:nowrap" onclick="resyncAllEnrollmentsUI()">🔧 ${t('Re-sync all', 'مزامنة الكل')} (${enrDrift.length})</button>` : ''}
+      </div>
+      <div style="padding:12px">${enrDriftSection}</div>
+    </div>
   `;
 };
 
@@ -20227,6 +20441,30 @@ window.dedupeMemberEnrollment = function(memberId, sport) {
   if (typeof audit === 'function') audit('cleanup.dedupe_enrollment', 'member:' + memberId, `Removed ${matches.length - 1} duplicate ${sport} enrollment(s)`);
   save();
   toast(`Kept one ${sport} enrollment for ${m.name}`, 'success');
+  render();
+};
+
+window.resyncMemberEnrollmentsUI = function(memberId) {
+  const m = state.members.find(x => x.id === memberId);
+  if (!m) { toast('Member not found', 'error'); return; }
+  const before = (m.enrollments || []).filter(e => e && e.sport).map(e => e.sport).join(', ') || '—';
+  if (!confirm(`Re-sync ${m.name}'s enrollments from their subscriptions?\n\nCurrent sport rows: ${before}\n\nThe sport rows will be rebuilt to match the active subscriptions (correct sports and coaches). Classes, price and dates are kept; attendance and subscriptions are NOT changed.`)) return;
+  if (!resyncMemberEnrollments(memberId)) { toast('Nothing to re-sync', 'info'); return; }
+  if (typeof audit === 'function') audit('cleanup.resync_enrollments', 'member:' + memberId, `Re-synced enrollments from subscriptions for ${m.name}`);
+  save();
+  toast(`Re-synced ${m.name}'s enrollments`, 'success');
+  render();
+};
+
+window.resyncAllEnrollmentsUI = function() {
+  const list = findMembersWithEnrollmentDrift();
+  if (!list.length) { toast('Nothing to re-sync', 'info'); return; }
+  if (!confirm(`Re-sync ${list.length} member${list.length === 1 ? '' : 's'} whose enrollments don't match their subscriptions?\n\nEach member's sport rows will be rebuilt from their active subscriptions (correct sports + coaches), keeping classes/price/dates. Attendance and subscriptions are NOT changed.`)) return;
+  let n = 0;
+  for (const d of list) { if (resyncMemberEnrollments(d.member.id)) n++; }
+  if (typeof audit === 'function') audit('cleanup.resync_enrollments_bulk', 'members', `Re-synced enrollments for ${n} members`);
+  save();
+  toast(`Re-synced ${n} member${n === 1 ? '' : 's'}`, 'success');
   render();
 };
 
@@ -20314,12 +20552,27 @@ window.mergeMemberInvoicesUI = function(memberId) {
 PAGES.notes = (main) => {
   const notes = allNotes();
   if (window._notesFilter == null) window._notesFilter = 'open';   // open | attention | done | all
+  if (window._notesMonth == null) window._notesMonth = 'all';      // 'all' | YYYY-MM
+  if (window._notesDay == null) window._notesDay = 'all';          // 'all' | '01'..'31'
   const f = window._notesFilter;
+  const fMonth = window._notesMonth;
+  const fDay = window._notesDay;
+
+  // Months/days present across notes' reminder dates, for the dropdowns.
+  const noteMonths = [...new Set(notes.map(n => n.remindDate).filter(Boolean).map(d => d.slice(0, 7)))].sort().reverse();
 
   const visible = notes.filter(n => {
-    if (f === 'open') return !n.done;
-    if (f === 'attention') return noteNeedsAttention(n);
-    if (f === 'done') return n.done;
+    if (f === 'open' && n.done) return false;
+    if (f === 'attention' && !noteNeedsAttention(n)) return false;
+    if (f === 'done' && !n.done) return false;
+    // Month/day filters act on the reminder date. A note with no reminder date is
+    // hidden once a month or day filter is active (nothing to match against).
+    if (fMonth !== 'all') {
+      if (!n.remindDate || n.remindDate.slice(0, 7) !== fMonth) return false;
+    }
+    if (fDay !== 'all') {
+      if (!n.remindDate || n.remindDate.slice(8, 10) !== fDay) return false;
+    }
     return true;
   }).sort((a, b) => {
     // attention first, then priority, then nearest reminder, then newest
@@ -20382,9 +20635,19 @@ PAGES.notes = (main) => {
       <div class="kpi"><div class="kpi-label">${t('Done', 'منجزة')}</div><div class="kpi-value num">${doneCount}</div></div>
     </div>
 
-    <div class="filter-bar" style="margin-bottom:14px">
+    <div class="filter-bar" style="margin-bottom:14px;flex-wrap:wrap;gap:8px;align-items:center">
       ${[['open', t('Open', 'مفتوحة')], ['attention', '🔔 ' + t('Needs attention', 'تحتاج انتباه')], ['done', t('Done', 'منجزة')], ['all', t('All', 'الكل')]].map(([k, lbl]) =>
         `<button class="btn ${f === k ? 'primary' : 'ghost'} sm" onclick="window._notesFilter='${k}';render()">${lbl}</button>`).join('')}
+      <span style="width:1px;height:22px;background:var(--border);margin:0 4px"></span>
+      <select class="btn ghost sm" onchange="window._notesMonth=this.value;render()" title="${t('Filter by reminder month', 'تصفية حسب شهر التذكير')}">
+        <option value="all" ${fMonth === 'all' ? 'selected' : ''}>${t('All months', 'كل الأشهر')}</option>
+        ${noteMonths.map(m => `<option value="${m}" ${fMonth === m ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
+      </select>
+      <select class="btn ghost sm" onchange="window._notesDay=this.value;render()" title="${t('Filter by reminder day', 'تصفية حسب يوم التذكير')}">
+        <option value="all" ${fDay === 'all' ? 'selected' : ''}>${t('All days', 'كل الأيام')}</option>
+        ${Array.from({length: 31}, (_, i) => String(i + 1).padStart(2, '0')).map(d => `<option value="${d}" ${fDay === d ? 'selected' : ''}>${t('Day', 'يوم')} ${parseInt(d)}</option>`).join('')}
+      </select>
+      ${(fMonth !== 'all' || fDay !== 'all') ? `<button class="btn ghost sm" onclick="window._notesMonth='all';window._notesDay='all';render()" title="${t('Clear date filters', 'مسح فلاتر التاريخ')}">✕ ${t('Clear dates', 'مسح التواريخ')}</button>` : ''}
     </div>
 
     <div>${cards}</div>

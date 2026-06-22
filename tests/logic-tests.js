@@ -228,7 +228,9 @@ ${seed}
   eq(escapeHtml(null), '', 'escapeHtml null -> empty');
   eq(normalizePhoneForCompare('+974 50-11 (x)'), '974' + '5011', 'normalizePhone strips non-digits');
   eq(numberToWords(-5), 'Negative Five', 'numberToWords negative');
-  ok(paginate([1,2,3], (()=>{const p=makePager(2);p.page=99;return p;})()).length === 0, 'paginate out-of-range -> [] (no crash)');
+  // Out-of-range page now CLAMPS to the last valid page (so a filter/deletion that
+  // shrinks results below the current page never shows an empty table).
+  ok((()=>{const p=makePager(2);p.page=99;const r=paginate([1,2,3],p);return r.length===1 && r[0]===3 && p.page===2;})(), 'paginate out-of-range -> clamps to last page');
 
   // --- computeStats: must not produce NaN/throw ---
   let stats = null, statsErr = null;
@@ -1797,6 +1799,108 @@ ${seed}
     eq(sub.end, '2026-07-13', 'camp recalc: end re-dated to business-day calendar');
     eq(sub.attendedClasses, beforeAtt, 'camp recalc: attendance unchanged');
     eq(findCampMembersToRecalc().length, 0, 'camp recalc: nothing flagged after fixing');
+    state.members = savedM;
+  })();
+  // Notifications: student gets the right alerts from their own data
+  (function () {
+    var savedM = state.members, savedS = state.schedule, savedU = state.user, savedSess = state.session;
+    state.session = { role: 'student', memberId: 8901 };
+    state.user = { memberId: 8901 };
+    state.schedule = [{ day: ['sun','mon','tue','wed','thu','fri','sat'][new Date().getDay()], slot: '4PM - 5PM', sport: 'Swimming', coachId: 3 }];
+    var soon = new Date(); soon.setDate(soon.getDate() + 4);
+    var soonStr = soon.toISOString().slice(0, 10);
+    state.members = [{ id: 8901, name: 'Stu', sport: 'Swimming', expiryDate: soonStr,
+      enrollments: [{ sport: 'Swimming', coachId: 3 }],
+      subscriptions: [{ activity: 'Swimming', coachId: 3, totalClasses: 8, attendedClasses: 7, status: 'Active' }] }];
+    // currentRole() reads state; emulate student by checking buildNotifications shape
+    var titles = buildNotifications().map(function (n) { return n.title; });
+    // The student should at least see expiry + low-classes alerts (next-class depends on weekday)
+    ok(titles.some(function (x) { return /expir/i.test(x); }), 'notif: student sees expiring-soon');
+    ok(titles.some(function (x) { return /running low/i.test(x); }), 'notif: student sees low-classes');
+    state.members = savedM; state.schedule = savedS; state.user = savedU; state.session = savedSess;
+  })();
+  // Unpaid flag: memberOutstanding drives the attendance UNPAID badge + profile total
+  (function () {
+    var savedI = state.invoices;
+    state.invoices = [
+      { customerId: 8801, category: 'Membership', amount: 800, amountPaid: 0 },
+      { customerId: 8802, category: 'Membership', amount: 500, amountPaid: 500 },
+      { customerId: 8803, category: 'Membership', amount: 1000, amountPaid: 600 },
+    ];
+    eq(memberOutstanding(8801), 800, 'unpaid: registered-unpaid member shows full balance due');
+    eq(memberOutstanding(8802), 0, 'unpaid: fully-paid member has no balance');
+    eq(memberOutstanding(8803), 400, 'unpaid: partial payment shows remaining balance');
+    ok(memberOutstanding(8801) > 0.5, 'unpaid: flag condition true when due');
+    ok(!(memberOutstanding(8802) > 0.5), 'unpaid: no flag when fully paid');
+    state.invoices = savedI;
+  })();
+  // daysUntil counts calendar days correctly (no timezone off-by-one)
+  (function () {
+    var d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() + 5);
+    var s = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+    eq(daysUntil(s), 5, 'daysUntil: a date 5 days out returns 5');
+    var p = new Date(); p.setHours(0,0,0,0); p.setDate(p.getDate() - 3);
+    var ps = p.getFullYear() + '-' + String(p.getMonth()+1).padStart(2,'0') + '-' + String(p.getDate()).padStart(2,'0');
+    eq(daysUntil(ps), -3, 'daysUntil: a date 3 days ago returns -3');
+  })();
+  // Notes month/day filter logic (acts on remindDate)
+  (function () {
+    var ns = [
+      { id: 1, remindDate: '2026-06-15' },
+      { id: 2, remindDate: '2026-06-21' },
+      { id: 3, remindDate: '2026-07-15' },
+      { id: 4, remindDate: null },
+    ];
+    var filt = function (fMonth, fDay) {
+      return ns.filter(function (n) {
+        if (fMonth !== 'all') { if (!n.remindDate || n.remindDate.slice(0, 7) !== fMonth) return false; }
+        if (fDay !== 'all') { if (!n.remindDate || n.remindDate.slice(8, 10) !== fDay) return false; }
+        return true;
+      }).map(function (n) { return n.id; });
+    };
+    eq(filt('2026-06', 'all').join(','), '1,2', 'notes filter: month only');
+    eq(filt('all', '15').join(','), '1,3', 'notes filter: day across months');
+    eq(filt('2026-06', '21').join(','), '2', 'notes filter: month + day');
+    eq(filt('all', 'all').length, 4, 'notes filter: none shows all');
+  })();
+  // Attendance "needs renewal" cue: expired AND fully paid (distinct from UNPAID)
+  (function () {
+    var needsRenewal = function (isExpired, due) { return isExpired && due <= 0.5; };
+    eq(needsRenewal(true, 0), true, 'renewal cue: expired + paid → renew');
+    eq(needsRenewal(true, 200), false, 'renewal cue: expired + owing → not renew (shows unpaid)');
+    eq(needsRenewal(false, 0), false, 'renewal cue: active → no cue');
+  })();
+  // Enrollment re-sync: rebuild drifted enrollments from active subscriptions
+  (function () {
+    var savedM = state.members;
+    state.members = [
+      { id: 9801, name: 'Drift', sport: 'Gymnastic',
+        subscriptions: [
+          { activity: 'Gymnastic', coachId: 2, totalClasses: 8, status: 'Active', start: '2026-05-01' },
+          { activity: 'Swimming', coachId: 3, totalClasses: 8, status: 'Active', start: '2026-05-01' },
+          { activity: 'Kick Boxing', coachId: 5, totalClasses: 8, status: 'Active', start: '2026-05-01' },
+        ],
+        enrollments: [ // duplicated + missing Gymnastic
+          { sport: 'Kick Boxing', coachId: 5 }, { sport: 'Swimming', coachId: 3 },
+          { sport: 'Kick Boxing', coachId: 5 }, { sport: 'Swimming', coachId: 3 },
+        ] },
+      { id: 9802, name: 'WrongCoach', sport: 'Boxing',
+        subscriptions: [{ activity: 'Boxing', coachId: 1, totalClasses: 8, status: 'Active' }],
+        enrollments: [{ sport: 'Boxing', coachId: 5 }] },
+      { id: 9803, name: 'Clean', sport: 'Karate',
+        subscriptions: [{ activity: 'Karate', coachId: 4, status: 'Active' }],
+        enrollments: [{ sport: 'Karate', coachId: 4 }] },
+    ];
+    var flagged = findMembersWithEnrollmentDrift().map(function (d) { return d.member.id; }).sort();
+    eq(flagged.join(','), '9801,9802', 'resync: flags drifted members only (not clean)');
+    resyncMemberEnrollments(9801);
+    var m1 = state.members[0];
+    eq(m1.enrollments.length, 3, 'resync: rebuilt to one row per sport');
+    var sports = m1.enrollments.map(function (e) { return e.sport + '/' + e.coachId; }).sort().join(',');
+    eq(sports, 'Gymnastic/2,Kick Boxing/5,Swimming/3', 'resync: correct sports + coaches restored');
+    resyncMemberEnrollments(9802);
+    eq(state.members[1].enrollments[0].coachId, 1, 'resync: wrong coach corrected');
+    eq(findMembersWithEnrollmentDrift().length, 0, 'resync: nothing flagged after fixing');
     state.members = savedM;
   })();
   var _af = { expiryDate: '2026-07-01', freezes: [] };
