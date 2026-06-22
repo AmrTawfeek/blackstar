@@ -430,7 +430,7 @@ PAGES.dashboard = (main) => {
       <div class="card">
         <div class="card-header">
           <div>
-            <div class="card-title">Top Coaches by Students</div>
+            <div class="card-title">${t('Top Coaches by Students', 'أفضل المدربين حسب الطلاب')}</div>
             <div class="card-subtitle">Most-enrolled coaches</div>
           </div>
         </div>
@@ -439,7 +439,7 @@ PAGES.dashboard = (main) => {
       <div class="card">
         <div class="card-header">
           <div>
-            <div class="card-title">Recent Invoices</div>
+            <div class="card-title">${t('Recent Invoices', 'أحدث الفواتير')}</div>
             <div class="card-subtitle">Latest 8 transactions</div>
           </div>
           <button class="btn ghost sm" onclick="navigate('invoices')">View all →</button>
@@ -452,7 +452,7 @@ PAGES.dashboard = (main) => {
     <div class="card">
       <div class="card-header">
         <div>
-          <div class="card-title">Monthly Summary</div>
+          <div class="card-title">${t('Monthly Summary', 'الملخص الشهري')}</div>
           <div class="card-subtitle">${fmtMonth(s.prevMonth).split(' ')[0]} vs ${fmtMonth(s.currMonth).split(' ')[0]} comparison</div>
         </div>
       </div>
@@ -1113,7 +1113,7 @@ PAGES.members = (main) => {
         <button class="btn ghost sm" id="members-bulk-clear">Clear</button>
       </div>
       <div class="filter-bar">
-        <div class="search"><input id="search-input" type="text" placeholder="Search name, phone, QID, email..." value="${escapeHtml(filter.search || '')}" /></div>
+        <div class="search"><input id="search-input" type="text" placeholder="${t('Search name, phone, QID, email...', 'ابحث بالاسم أو الهاتف أو الهوية أو البريد...')}" value="${escapeHtml(filter.search || '')}" /></div>
         <div style="position:relative">
           <button type="button" id="filter-status-btn" class="btn ghost" style="min-width:120px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more statuses">
             <span id="filter-status-label">${filter.statuses && filter.statuses.length ? (filter.statuses.length === 1 ? escapeHtml(filter.statuses[0]) : filter.statuses.length + ' statuses') : 'All status'}</span>
@@ -6093,7 +6093,7 @@ PAGES.schedule = (main) => {
         <div class="subtitle"><span id="sch-count"></span>${canEdit ? ' · drag a sport tile onto a cell to add' : ' · view only'}</div>
       </div>
       <div class="topbar-actions">
-        ${canEdit ? '<button class="btn ghost" id="sch-clear" title="Remove all scheduled classes">🗑 Clear all</button>' : ''}
+        ${canEdit && currentRole() === 'admin' ? '<button class="btn ghost" id="sch-clear" title="Remove all scheduled classes">🗑 Clear all</button>' : ''}
         <button class="btn primary" id="sch-png">📸 Export PNG</button>
         <button class="btn ghost" id="sch-png-ar" title="تصدير الجدول بالعربية">📸 PNG (عربي)</button>
       </div>
@@ -6135,7 +6135,7 @@ PAGES.schedule = (main) => {
             <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:flex-end"><button type="button" class="btn ghost sm" id="sch-filter-sport-clear">Clear</button></div>
           </div>
         </div>
-        ${(filter.coaches.length || filter.sports.length) ? `<button type="button" class="btn ghost sm" id="sch-filter-reset">✕ Clear all</button>` : ''}
+        ${(filter.coaches.length || filter.sports.length) ? `<button type="button" class="btn ghost sm" id="sch-filter-reset">✕ ${t('Clear filters', 'مسح الفلاتر')}</button>` : ''}
         <div style="font-size:11px;color:var(--text-mute);margin-left:auto">Filters dim non-matching classes; export honors the filter</div>
       </div>
     </div>
@@ -6211,16 +6211,32 @@ PAGES.schedule = (main) => {
   // Clear all (admins only — button absent for read-only roles)
   const clearBtn = $('#sch-clear');
   if (clearBtn) clearBtn.addEventListener('click', () => {
+    if (currentRole() !== 'admin') { toast('Only an admin can clear the schedule', 'error'); return; }
     if (!(state.schedule || []).length) { toast('Schedule is already empty'); return; }
+    const count = state.schedule.length;
+    // First confirmation.
     showModal({
       title: '🗑 Clear all classes?',
-      body: `<p>This will remove all <b>${state.schedule.length}</b> scheduled classes. This action cannot be undone.</p>`,
+      body: `<p>This will remove all <b>${count}</b> scheduled classes. This action cannot be undone.</p>`,
       actions: [
         { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
-        { label: 'Yes, clear all', class: 'btn danger', onclick: () => {
-          state.schedule = [];
-          save(); closeModal(); refresh();
-          toast('Schedule cleared');
+        { label: 'Continue…', class: 'btn danger', onclick: () => {
+          closeModal();
+          // Second (final) confirmation — extra guard for a destructive, irreversible wipe.
+          setTimeout(() => showModal({
+            title: '⚠️ Are you absolutely sure?',
+            body: `<p>Final check: <b>${count}</b> scheduled classes will be permanently deleted and the weekly grid will be emptied.</p><p style="color:var(--text-mute);font-size:13px">Tip: you can export the schedule as PNG first if you want a record.</p>`,
+            actions: [
+              { label: 'No, keep them', class: 'btn ghost', onclick: closeModal },
+              { label: 'Yes, permanently clear all', class: 'btn danger', onclick: () => {
+                if (currentRole() !== 'admin') { toast('Only an admin can clear the schedule', 'error'); closeModal(); return; }
+                if (typeof audit === 'function') audit('schedule.clear_all', 'schedule', `Cleared all ${count} scheduled classes`);
+                state.schedule = [];
+                save(); closeModal(); refresh();
+                toast('Schedule cleared');
+              }},
+            ],
+          }), 60);
         }},
       ],
     });
@@ -6429,7 +6445,7 @@ PAGES.coaches = (main) => {
         <div><div class="card-title">Coach Performance — ${fmtMonth(currentMonth())}</div><div class="card-subtitle">Real data from attendance sheets · commission is calculated on active-member revenue only · Staff (admin/cleaner) are not listed here, see Salaries page</div></div>
       </div>
       <div class="filter-bar">
-        <div class="search"><input id="coach-search" type="text" placeholder="Search by name..." /></div>
+        <div class="search"><input id="coach-search" type="text" placeholder="${t('Search by name...', 'ابحث بالاسم...')}" /></div>
         <select id="coach-role-filter" class="btn ghost">
           <option value="coach">🥋 Coaches</option>
           <option value="staff">👔 Staff</option>
@@ -6464,7 +6480,7 @@ PAGES.coaches = (main) => {
     </div>
 
     <div class="card">
-      <div class="card-header"><div><div class="card-title">Quick Cards</div></div></div>
+      <div class="card-header"><div><div class="card-title">${t('Quick Cards', 'بطاقات سريعة')}</div></div></div>
       <div class="kpi-grid" id="coach-cards"></div>
     </div>
   `;
@@ -6644,7 +6660,7 @@ PAGES.invoices = (main) => {
     </div>
     <div class="card">
       <div class="filter-bar">
-        <div class="search"><input id="inv-search" type="text" placeholder="Search name (EN/AR), mobile, QID, coach, sport..." /></div>
+        <div class="search"><input id="inv-search" type="text" placeholder="${t('Search name (EN/AR), mobile, QID, coach, sport...', 'ابحث بالاسم أو الجوال أو الهوية أو المدرب أو الرياضة...')}" /></div>
         <select id="inv-month" class="btn ghost">
           <option value="all">All months</option>
           ${[...new Set(state.invoices.map(i => i.month).filter(Boolean))].sort().reverse().map(m => `<option value="${m}">${fmtMonth(m)}</option>`).join('')}
@@ -9115,7 +9131,7 @@ PAGES.expenses = (main) => {
     </div>
     <div class="card">
       <div class="filter-bar">
-        <div class="search"><input id="exp-search" type="text" placeholder="Search description..." /></div>
+        <div class="search"><input id="exp-search" type="text" placeholder="${t('Search description...', 'ابحث في الوصف...')}" /></div>
         <select id="exp-month" class="btn ghost">
           <option value="all">All months</option>
           ${[...new Set(state.expenses.map(e => e.month).filter(Boolean))].sort().reverse().map(m => `<option value="${m}">${fmtMonth(m)}</option>`).join('')}
@@ -10454,7 +10470,7 @@ PAGES.sales = (main) => {
 
     <div class="card">
       <div class="filter-bar">
-        <div class="search"><input id="sale-search" type="text" placeholder="Search items, customer name, mobile..." /></div>
+        <div class="search"><input id="sale-search" type="text" placeholder="${t('Search items, customer name, mobile...', 'ابحث في المنتجات أو اسم العميل أو الجوال...')}" /></div>
         <select id="sale-month" class="btn ghost">
           <option value="all">All months</option>
           ${months.map(m => `<option value="${m}">${fmtMonth(m)}</option>`).join('')}
@@ -11240,7 +11256,7 @@ PAGES.audit = (main) => {
     </div>
     <div class="card">
       <div class="filter-bar">
-        <div class="search"><input id="audit-search" type="text" placeholder="Search action, summary, user…" /></div>
+        <div class="search"><input id="audit-search" type="text" placeholder="${t('Search action, summary, user…', 'ابحث في الإجراء أو الملخص أو المستخدم…')}" /></div>
         <select id="audit-action" class="btn ghost">
           <option value="all">All actions</option>
           ${prefixes.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')}
@@ -11305,7 +11321,7 @@ PAGES.settings = (main, section) => {
     </div>
 
     <div class="card" data-sset="preferences">
-      <div class="card-header"><div><div class="card-title">Appearance</div><div class="card-subtitle">Choose how the app looks — your selection is saved per browser</div></div></div>
+      <div class="card-header"><div><div class="card-title">${t('Appearance', 'المظهر')}</div><div class="card-subtitle">Choose how the app looks — your selection is saved per browser</div></div></div>
       <div id="theme-picker" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:6px">
         <div class="theme-card" data-theme-value="dark" style="cursor:pointer;border:2px solid ${getTheme()==='dark'?'var(--accent)':'var(--border)'};border-radius:10px;padding:14px;background:#0a0e1a;color:#e8eaf0">
           <div style="display:flex;gap:6px;margin-bottom:10px">
@@ -11355,7 +11371,7 @@ PAGES.settings = (main, section) => {
     </div>
 
     <div class="card" data-sset="preferences">
-      <div class="card-header"><div><div class="card-title">Preferences</div><div class="card-subtitle">Customize alerts and thresholds</div></div></div>
+      <div class="card-header"><div><div class="card-title">${t('Preferences', 'التفضيلات')}</div><div class="card-subtitle">Customize alerts and thresholds</div></div></div>
       <div class="form-row">
         <div class="field">
           <label>Expiring-soon alert (days before expiry)</label>
@@ -11399,7 +11415,7 @@ PAGES.settings = (main, section) => {
     </div>
 
     <div class="card" data-sset="club">
-      <div class="card-header"><div><div class="card-title">Coach Commission Rates</div><div class="card-subtitle">Commission is calculated as this % of each coach's total paid amount (subscription value)</div></div></div>
+      <div class="card-header"><div><div class="card-title">${t('Coach Commission Rates', 'نسب عمولة المدربين')}</div><div class="card-subtitle">Commission is calculated as this % of each coach's total paid amount (subscription value)</div></div></div>
       <div style="background:var(--surface-2);border-radius:8px;padding:12px;margin-bottom:14px">
         <label style="font-weight:600;font-size:13px;display:block;margin-bottom:6px">Commission basis</label>
         <select id="pref-commbasis" style="min-width:300px">
@@ -11505,7 +11521,7 @@ PAGES.settings = (main, section) => {
     </div>
 
     <div class="card" data-sset="data">
-      <div class="card-header"><div><div class="card-title">Data Management</div><div class="card-subtitle">Full backup &amp; restore · daily backups</div></div></div>
+      <div class="card-header"><div><div class="card-title">${t('Data Management', 'إدارة البيانات')}</div><div class="card-subtitle">Full backup &amp; restore · daily backups</div></div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn primary" id="backup-btn">💾 Backup all data (1 JSON file)</button>
         <button class="btn ghost" id="restore-btn">📂 Restore from backup</button>
@@ -11546,7 +11562,7 @@ PAGES.settings = (main, section) => {
     </div>
 
     <div class="card" data-sset="data">
-      <div class="card-header"><div><div class="card-title">About</div></div></div>
+      <div class="card-header"><div><div class="card-title">${t('About', 'حول التطبيق')}</div></div></div>
       <table>
         <tbody>
           <tr><td>Application</td><td class="text-right">Black Stars CRM</td></tr>
@@ -11774,12 +11790,14 @@ PAGES.settings = (main, section) => {
     }
   });
 
-  // Shared guard for destructive actions: force a backup download, then require
-  // TWO confirmations before running.
+  // Shared guard for destructive actions: admin-only, force a backup download, then
+  // require TWO confirmations before running.
   const dangerAction = (firstMsg, secondMsg, run) => {
+    if (currentRole() !== 'admin') { toast('Only an admin can perform this action', 'error'); return; }
     if (!confirm(firstMsg)) return;
     try { if (typeof window.downloadBackup === 'function') window.downloadBackup(); } catch (_) {}
     if (!confirm(secondMsg)) return;
+    if (currentRole() !== 'admin') { toast('Only an admin can perform this action', 'error'); return; }
     run();
   };
 
@@ -12170,7 +12188,7 @@ PAGES.attendance = (main) => {
             </td>
             ${cells}
             <td class="att-total"><span style="color:var(--green);font-weight:700">${grandY}</span></td>
-            <td class="att-export-cell" style="text-align:center"><button class="btn ghost sm" onclick="window._attPdf(${m.id}, null, '${sportEsc}')" title="Export ${escapeHtml(m.name)} attendance">⬇ PDF</button></td>
+            <td class="att-export-cell" style="text-align:center;white-space:nowrap">${needsRenewal2 ? `<button class="btn sm" style="background:var(--accent-2);border-color:var(--accent-2);color:#fff;margin-right:4px" onclick="window.addRenewal(${m.id})" title="Renew ${escapeHtml(m.name)}'s membership">🔄 ${t('Renew', 'تجديد')}</button>` : ''}<button class="btn ghost sm" onclick="window._attPdf(${m.id}, null, '${sportEsc}')" title="Export ${escapeHtml(m.name)} attendance">⬇ PDF</button></td>
           </tr>`;
       }).join('');
       $('#att-table-wrap').innerHTML = `
@@ -12234,7 +12252,7 @@ PAGES.attendance = (main) => {
           ${cells}
           <td class="att-total"><span style="color:var(--green);font-weight:600">${y}</span><span class="text-mute"> / ${total || '—'}</span></td>
           <td class="text-right" style="color:${rate >= 75 ? 'var(--green)' : rate >= 40 ? 'var(--accent-2)' : rate > 0 ? 'var(--red)' : 'var(--text-mute)'};font-weight:600">${total ? rate + '%' : '—'}</td>
-          <td class="att-export-cell" style="text-align:center"><button class="btn ghost sm" onclick="window._attPdf(${m.id}, null, '${sportEsc}')" title="Export ${escapeHtml(m.name)} · ${escapeHtml(sport)} attendance">⬇ PDF</button></td>
+          <td class="att-export-cell" style="text-align:center;white-space:nowrap">${needsRenewal ? `<button class="btn sm" style="background:var(--accent-2);border-color:var(--accent-2);color:#fff;margin-right:4px" onclick="window.addRenewal(${m.id})" title="Renew ${escapeHtml(m.name)}'s membership">🔄 ${t('Renew', 'تجديد')}</button>` : ''}<button class="btn ghost sm" onclick="window._attPdf(${m.id}, null, '${sportEsc}')" title="Export ${escapeHtml(m.name)} · ${escapeHtml(sport)} attendance">⬇ PDF</button></td>
         </tr>`;
     }).join('');
 
@@ -12747,28 +12765,34 @@ window._attPdf = function(memberId, month, sport) {
   const sportSections = sportsShown.map(sp => {
     const dd = sportsMap[sp] || {};
     let y = 0, n = 0;
-    const cells = [];
+    const marked = [];
     for (let d = 1; d <= days; d++) {
       const v = dd[String(d)];
-      if (v === 'Y') y++; if (v === 'N') n++;
-      cells.push({ d, v });
+      if (v === 'Y') { y++; marked.push({ d, v }); }
+      else if (v === 'N') { n++; marked.push({ d, v }); }
     }
     totalY += y; totalN += n;
     const sTot = y + n;
     const sRate = sTot ? Math.round(y / sTot * 100) : 0;
-    const dayCells = cells.map(c => {
-      const bg = c.v === 'Y' ? '#d1fae5' : c.v === 'N' ? '#fee2e2' : '#f7f7f8';
-      const col = c.v === 'Y' ? '#065f46' : c.v === 'N' ? '#991b1b' : '#bbb';
-      return `<td style="text-align:center;border:1px solid #e5e5ea;padding:4px 2px;background:${bg};color:${col};font-weight:600;font-size:11px">${c.v || '·'}</td>`;
-    }).join('');
-    const dayHeads = cells.map(c => `<th style="text-align:center;border:1px solid #e5e5ea;padding:3px 2px;font-size:9px;color:#777">${c.d}</th>`).join('');
     const enr = (m.enrollments || []).find(e => e.sport === sp);
     const cid = enr?.coachId ?? m.coachId;
+    // Vertical list of marked days — reads top-to-bottom, ideal on a phone.
+    const dayRows = marked.length ? marked.map(c => {
+      const dateStr = fmtDate(`${mo}-${String(c.d).padStart(2, '0')}`);
+      const present = c.v === 'Y';
+      return `<tr>
+        <td style="border:1px solid #e5e5ea;padding:7px 10px;font-size:12px">${dateStr}</td>
+        <td style="border:1px solid #e5e5ea;padding:7px 10px;text-align:center;font-weight:700;font-size:12px;background:${present ? '#d1fae5' : '#fee2e2'};color:${present ? '#065f46' : '#991b1b'}">${present ? 'Present' : 'Absent'}</td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="2" style="border:1px solid #e5e5ea;padding:10px;text-align:center;color:#999;font-size:12px">No days marked this month</td></tr>`;
     return `
       <div style="margin-bottom:20px">
-        <div style="font-size:13px;font-weight:700;color:#f26060;margin-bottom:6px">${escapeHtml(sp)} · Coach ${escapeHtml(coachName(cid))} · <span style="color:#666;font-weight:500">${y}/${sTot} · ${sTot?sRate+'%':'—'}</span></div>
-        <table style="width:100%"><thead><tr><th style="border:1px solid #e5e5ea;padding:4px;font-size:10px;color:#777;background:#fafafa">Day</th>${dayHeads}</tr></thead>
-        <tbody><tr><td style="border:1px solid #e5e5ea;padding:4px 8px;font-size:11px;font-weight:600;background:#fafafa">Mark</td>${dayCells}</tr></tbody></table>
+        <div style="font-size:14px;font-weight:700;color:#f26060;margin-bottom:8px">${escapeHtml(sp)}${sp === SUMMER_CAMP ? '' : ' · Coach ' + escapeHtml(coachName(cid))} · <span style="color:#666;font-weight:500">${y}/${sTot} · ${sTot ? sRate + '%' : '—'}</span></div>
+        <table style="width:100%;border-collapse:collapse"><thead><tr>
+          <th style="border:1px solid #e5e5ea;padding:6px 10px;font-size:10px;color:#777;background:#fafafa;text-align:left;text-transform:uppercase;letter-spacing:.5px">Date</th>
+          <th style="border:1px solid #e5e5ea;padding:6px 10px;font-size:10px;color:#777;background:#fafafa;text-align:center;text-transform:uppercase;letter-spacing:.5px">Attendance</th>
+        </tr></thead>
+        <tbody>${dayRows}</tbody></table>
       </div>`;
   }).join('');
 
@@ -12780,8 +12804,8 @@ window._attPdf = function(memberId, month, sport) {
   win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${fileName}</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
-    @page{size:A4 landscape;margin:12mm}
-    body{font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:24px}
+    @page{size:A4 portrait;margin:12mm}
+    body{font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:24px;max-width:600px;margin:0 auto}
     .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f26060;padding-bottom:14px;margin-bottom:18px}
     .brand{font-size:22px;font-weight:800}.brand span{color:#f26060}
     .sub{color:#777;font-size:12px;margin-top:2px}
@@ -12789,8 +12813,8 @@ window._attPdf = function(memberId, month, sport) {
     .meta{font-size:12px;color:#555;margin-bottom:16px}
     .meta b{color:#1a1a1a}
     table{border-collapse:collapse;margin-bottom:10px}
-    .summary{display:flex;gap:14px;margin-bottom:18px}
-    .kpi{flex:1;border:1px solid #e5e5ea;border-radius:8px;padding:10px 14px}
+    .summary{display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap}
+    .kpi{flex:1;min-width:110px;border:1px solid #e5e5ea;border-radius:8px;padding:10px 14px}
     .kpi .l{font-size:10px;text-transform:uppercase;color:#999;letter-spacing:.5px}
     .kpi .v{font-size:22px;font-weight:700;margin-top:2px}
     .foot{margin-top:24px;font-size:10px;color:#aaa;text-align:center;border-top:1px solid #eee;padding-top:10px}
@@ -12855,30 +12879,37 @@ window._attPdfSubscription = function(memberId) {
     const sportsMap = m.dailyAttendance?.[mo] || {};
     const perSport = sportsShown.map(sp => {
       const dd = sportsMap[sp] || {};
-      let y = 0, n = 0; const cells = [];
+      let y = 0, n = 0; const marked = [];
       for (let d = 1; d <= days; d++) {
         const v = dd[String(d)];
-        if (v === 'Y') y++; if (v === 'N') n++;
-        cells.push({ d, v });
+        if (v === 'Y') { y++; marked.push({ d, v }); }
+        else if (v === 'N') { n++; marked.push({ d, v }); }
       }
       grandY += y; grandN += n;
       const sTot = y + n;
       const sRate = sTot ? Math.round(y / sTot * 100) : 0;
-      const dayCells = cells.map(c => {
-        const bg = c.v === 'Y' ? '#d1fae5' : c.v === 'N' ? '#fee2e2' : '#f7f7f8';
-        const col = c.v === 'Y' ? '#065f46' : c.v === 'N' ? '#991b1b' : '#bbb';
-        return `<td style="text-align:center;border:1px solid #e5e5ea;padding:4px 2px;background:${bg};color:${col};font-weight:600;font-size:11px">${c.v || '·'}</td>`;
-      }).join('');
-      const dayHeads = cells.map(c => `<th style="text-align:center;border:1px solid #e5e5ea;padding:3px 2px;font-size:9px;color:#777">${c.d}</th>`).join('');
       const enr = (m.enrollments || []).find(e => e.sport === sp);
       const cid = enr?.coachId ?? m.coachId;
+      if (!marked.length) return '';   // skip months with nothing marked for this sport
+      const dayRows = marked.map(c => {
+        const dateStr = fmtDate(`${mo}-${String(c.d).padStart(2, '0')}`);
+        const present = c.v === 'Y';
+        return `<tr>
+          <td style="border:1px solid #e5e5ea;padding:7px 10px;font-size:12px">${dateStr}</td>
+          <td style="border:1px solid #e5e5ea;padding:7px 10px;text-align:center;font-weight:700;font-size:12px;background:${present ? '#d1fae5' : '#fee2e2'};color:${present ? '#065f46' : '#991b1b'}">${present ? 'Present' : 'Absent'}</td>
+        </tr>`;
+      }).join('');
       return `
         <div style="margin-bottom:14px">
-          <div style="font-size:12px;font-weight:700;color:#f26060;margin-bottom:6px">${escapeHtml(sp)} · Coach ${escapeHtml(coachName(cid))} · <span style="color:#666;font-weight:500">${y}/${sTot} · ${sTot ? sRate + '%' : '—'}</span></div>
-          <table style="width:100%"><thead><tr><th style="border:1px solid #e5e5ea;padding:4px;font-size:10px;color:#777;background:#fafafa">Day</th>${dayHeads}</tr></thead>
-          <tbody><tr><td style="border:1px solid #e5e5ea;padding:4px 8px;font-size:11px;font-weight:600;background:#fafafa">Mark</td>${dayCells}</tr></tbody></table>
+          <div style="font-size:13px;font-weight:700;color:#f26060;margin-bottom:6px">${escapeHtml(sp)}${sp === SUMMER_CAMP ? '' : ' · Coach ' + escapeHtml(coachName(cid))} · <span style="color:#666;font-weight:500">${y}/${sTot} · ${sTot ? sRate + '%' : '—'}</span></div>
+          <table style="width:100%;border-collapse:collapse"><thead><tr>
+            <th style="border:1px solid #e5e5ea;padding:6px 10px;font-size:10px;color:#777;background:#fafafa;text-align:left;text-transform:uppercase;letter-spacing:.5px">Date</th>
+            <th style="border:1px solid #e5e5ea;padding:6px 10px;font-size:10px;color:#777;background:#fafafa;text-align:center;text-transform:uppercase;letter-spacing:.5px">Attendance</th>
+          </tr></thead>
+          <tbody>${dayRows}</tbody></table>
         </div>`;
     }).join('');
+    if (!perSport.trim()) return '';   // skip a month with no marks at all
     return `<div style="margin-bottom:22px"><div style="font-size:14px;font-weight:800;border-bottom:2px solid #eee;padding-bottom:4px;margin-bottom:10px">${fmtMonth(mo)}</div>${perSport}</div>`;
   }).join('');
 
@@ -12892,8 +12923,8 @@ window._attPdfSubscription = function(memberId) {
   win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${fileName}</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
-    @page{size:A4 landscape;margin:12mm}
-    body{font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:24px}
+    @page{size:A4 portrait;margin:12mm}
+    body{font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:24px;max-width:600px;margin:0 auto}
     .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f26060;padding-bottom:14px;margin-bottom:18px}
     .brand{font-size:22px;font-weight:800}.brand span{color:#f26060}
     .sub{color:#777;font-size:12px;margin-top:2px}
@@ -12901,8 +12932,8 @@ window._attPdfSubscription = function(memberId) {
     .meta{font-size:12px;color:#555;margin-bottom:16px}
     .meta b{color:#1a1a1a}
     table{border-collapse:collapse;margin-bottom:10px}
-    .summary{display:flex;gap:14px;margin-bottom:18px}
-    .kpi{flex:1;border:1px solid #e5e5ea;border-radius:8px;padding:10px 14px}
+    .summary{display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap}
+    .kpi{flex:1;min-width:110px;border:1px solid #e5e5ea;border-radius:8px;padding:10px 14px}
     .kpi .l{font-size:10px;text-transform:uppercase;color:#999;letter-spacing:.5px}
     .kpi .v{font-size:22px;font-weight:700;margin-top:2px}
     .foot{margin-top:24px;font-size:10px;color:#aaa;text-align:center;border-top:1px solid #eee;padding-top:10px}
@@ -13273,7 +13304,7 @@ PAGES.history = (main) => {
     <div class="card" style="display:grid;grid-template-columns:300px 1fr;gap:0;padding:0;overflow:hidden">
       <div style="border-right:1px solid var(--border);display:flex;flex-direction:column;max-height:80vh">
         <div style="padding:12px;border-bottom:1px solid var(--border);background:var(--surface-2)">
-          <div class="search" style="margin-bottom:6px"><input id="hist-search" type="text" placeholder="Search name, phone, QID..." /></div>
+          <div class="search" style="margin-bottom:6px"><input id="hist-search" type="text" placeholder="${t('Search name, phone, QID...', 'ابحث بالاسم أو الهاتف أو الهوية...')}" /></div>
           <div class="text-mute" style="font-size:11px"><span id="hist-mem-count"></span></div>
         </div>
         <div id="hist-list" style="flex:1;overflow-y:auto;min-height:0"></div>
@@ -14996,7 +15027,7 @@ PAGES.trials = (main) => {
     <div class="card">
       <div class="card-header">
         <div>
-          <div class="card-title">Trial Log</div>
+          <div class="card-title">${t('Trial Log', 'سجل التجارب')}</div>
           <div class="card-subtitle"><span id="trial-count">0 of 0</span></div>
         </div>
       </div>
@@ -15290,6 +15321,11 @@ PAGES.mymembership = (main) => {
     const planned = e.classes || 0;
     const pct = planned ? Math.min(100, Math.round(y / planned * 100)) : 0;
     const meta = sportMeta(e.sport);
+    // Classes remaining across the whole subscription (lifetime), so the student
+    // sees how many sessions they still have left — not just this month.
+    const sub = (m.subscriptions || []).find(s => (s.activity || '') === e.sport && s.status !== 'Withdrawn');
+    const remaining = sub ? Math.max(0, (parseInt(sub.totalClasses) || 0) - (parseInt(sub.attendedClasses) || 0)) : null;
+    const remLow = remaining != null && remaining > 0 && remaining <= 2;
     return `<div style="border:1px solid var(--border);border-radius:16px;padding:18px;background:linear-gradient(135deg,${meta.c}14,transparent 70%)">
       <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
         <div style="width:60px;height:60px;border-radius:16px;background:${meta.c}26;display:flex;align-items:center;justify-content:center;font-size:32px;flex-shrink:0">${meta.e}</div>
@@ -15300,8 +15336,10 @@ PAGES.mymembership = (main) => {
         <div style="display:flex;gap:22px;text-align:center">
           <div><div style="font-size:30px;font-weight:800;color:var(--blue);line-height:1">${planned}</div><div style="font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">${t('Planned', 'المخطط')}</div></div>
           <div><div style="font-size:30px;font-weight:800;color:var(--green);line-height:1">${y}</div><div style="font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">${t('Attended', 'الحضور')}</div></div>
+          ${remaining != null ? `<div><div style="font-size:30px;font-weight:800;color:${remLow ? 'var(--red)' : 'var(--accent-2)'};line-height:1">${remaining}</div><div style="font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">${t('Left', 'المتبقي')}</div></div>` : ''}
         </div>
       </div>
+      ${remLow ? `<div style="margin-top:10px;font-size:12px;color:var(--red);font-weight:600">⚠ ${t('Only', 'فقط')} ${remaining} ${t('classes left — please renew soon to keep your spot.', 'حصص متبقية — جدّد قريباً للحفاظ على مكانك.')}</div>` : ''}
       <div style="margin-top:14px">
         <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-mute);margin-bottom:5px"><span>${t('This month', 'هذا الشهر')}</span><span><b style="color:var(--text)">${y}</b> ${t('of', 'من')} ${planned} ${t('classes', 'حصة')} · ${pct}%</span></div>
         <div style="height:10px;background:var(--surface);border-radius:99px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${meta.c};border-radius:99px;transition:width .4s"></div></div>
@@ -15684,6 +15722,29 @@ PAGES.coachhome = (main) => {
     return best;
   }
   const nx = nextClassFor(coach.id);
+  // Today's classes for this coach + who's expected (active students enrolled in
+  // that sport with this coach). View-only — reception/admin still mark attendance.
+  const JS_TO_KEY = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  const todayKey = JS_TO_KEY[new Date().getDay()];
+  const todayClasses = (state.schedule || [])
+    .filter(c => c.coachId === coach.id && c.day === todayKey)
+    .sort((a, b) => (a.slot || 0) - (b.slot || 0))
+    .map(c => {
+      const expected = roster.filter(r => (r.sports || []).includes(c.sport) && r.status !== 'Expired');
+      return { c, expected };
+    });
+  const todayCard = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><div><div class="card-title">📅 ${t('Today\\u2019s classes', 'حصص اليوم')} (${todayClasses.length})</div><div class="card-subtitle">${DAY_LABEL[todayKey]} · ${t('who\\u2019s expected to attend', 'من المتوقع حضوره')}</div></div></div>
+      ${todayClasses.length ? todayClasses.map(({ c, expected }) => `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+            <div style="font-weight:700">${escapeHtml(c.sport)} <span class="text-mute" style="font-weight:400;font-size:12px">· ${SLOT_LABEL[c.slot] || ''}</span></div>
+            <span class="badge" style="background:rgba(91,141,239,.12);color:var(--blue)">${expected.length} ${t('expected', 'متوقع')}</span>
+          </div>
+          ${expected.length ? `<div style="margin-top:6px;font-size:12px" class="text-mute">${expected.map(r => escapeHtml(r.name)).join(' · ')}</div>` : `<div style="margin-top:6px;font-size:12px" class="text-mute">${t('No active students enrolled in this class yet.', 'لا يوجد طلاب نشطون في هذه الحصة بعد.')}</div>`}
+        </div>`).join('') : `<div class="text-mute" style="font-size:13px">${t('You have no classes scheduled for today.', 'لا توجد حصص مجدولة لك اليوم.')}</div>`}
+    </div>`;
   const nxWhen = nx ? (nx.delta === 0 ? t('Today', 'اليوم') : nx.delta === 1 ? t('Tomorrow', 'غداً') : t('in', 'خلال') + ' ' + nx.delta + ' ' + t('days', 'أيام')) : '';
   const nextClassCard = nx ? `
     <div class="card" style="margin-bottom:16px;border:1px solid rgba(91,141,239,.35);background:linear-gradient(135deg,rgba(91,141,239,.12),rgba(91,141,239,.02))">
@@ -15710,6 +15771,8 @@ PAGES.coachhome = (main) => {
     </div>
 
     ${nextClassCard}
+
+    ${todayCard}
 
     <div class="kpi-grid" style="margin-bottom:16px">
       <div class="kpi">
@@ -15887,7 +15950,7 @@ PAGES.advice = (main) => {
   main.innerHTML = `
     <div class="topbar"><div><h1>💬 Coach Advice</h1><div class="subtitle">Send advice to your students</div></div></div>
     <div class="card">
-      <div class="card-header"><div><div class="card-title">New advice</div></div></div>
+      <div class="card-header"><div><div class="card-title">${t('New advice', 'نصيحة جديدة')}</div></div></div>
       <div class="field"><label>Student</label>
         <select id="adv-student">${students.length ? students.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('') : '<option value="">No students assigned to you</option>'}</select>
       </div>
@@ -16646,7 +16709,7 @@ PAGES.attreport = (main) => {
 
     <div class="card">
       <div class="card-header">
-        <div><div class="card-title">Attendance by Coach</div><div class="card-subtitle">Sessions attended, ranked</div></div>
+        <div><div class="card-title">${t('Attendance by Coach', 'الحضور حسب المدرب')}</div><div class="card-subtitle">Sessions attended, ranked</div></div>
       </div>
       <div class="filter-bar">
         <select id="ar-month" class="btn ghost">
@@ -16663,7 +16726,7 @@ PAGES.attreport = (main) => {
 
     <div class="card">
       <div class="card-header">
-        <div><div class="card-title">Detailed Statistics</div></div>
+        <div><div class="card-title">${t('Detailed Statistics', 'إحصائيات مفصلة')}</div></div>
       </div>
       <div class="table-wrap">
         <table>
@@ -16915,7 +16978,7 @@ PAGES.enrolled = (main) => {
     <div class="card">
       <div id="enr-filter-banner" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:8px"></div>
       <div class="filter-bar">
-        <div class="search"><input id="enr-search" type="text" placeholder="Search name, phone, QID..." value="${escapeHtml(filter.search || '')}" /></div>
+        <div class="search"><input id="enr-search" type="text" placeholder="${t('Search name, phone, QID...', 'ابحث بالاسم أو الهاتف أو الهوية...')}" value="${escapeHtml(filter.search || '')}" /></div>
         <select id="enr-sport" class="btn ghost">
           <option value="all">All sports</option>
           ${sportsInData.map(s => `<option value="${escapeHtml(s)}" ${filter.sport === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
@@ -17061,12 +17124,12 @@ PAGES.renewals = (main) => {
     </div>
 
     <div class="card">
-      <div class="card-header"><div><div class="card-title">Renewals by Sport</div><div class="card-subtitle">Total renewals recorded per activity</div></div></div>
+      <div class="card-header"><div><div class="card-title">${t('Renewals by Sport', 'التجديدات حسب الرياضة')}</div><div class="card-subtitle">Total renewals recorded per activity</div></div></div>
       <div style="padding:8px 4px">${sportBars}</div>
     </div>
 
     <div class="card">
-      <div class="card-header"><div><div class="card-title">Renewals by Member</div><div class="card-subtitle">Who renewed, and which sports</div></div></div>
+      <div class="card-header"><div><div class="card-title">${t('Renewals by Member', 'التجديدات حسب العضو')}</div><div class="card-subtitle">Who renewed, and which sports</div></div></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Member</th><th>Per sport</th><th class="text-right">Total</th></tr></thead>
@@ -17205,22 +17268,22 @@ PAGES.coachperf = (main) => {
 
       <div class="row row-2" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
         <div class="card">
-          <div class="card-header"><div><div class="card-title">Commission by Coach</div><div class="card-subtitle">Total paid × commission %</div></div></div>
+          <div class="card-header"><div><div class="card-title">${t('Commission by Coach', 'العمولة حسب المدرب')}</div><div class="card-subtitle">Total paid × commission %</div></div></div>
           <div style="padding:8px 4px">${commBars || '<div class="text-mute" style="padding:20px">No data</div>'}</div>
         </div>
         <div class="card">
-          <div class="card-header"><div><div class="card-title">Revenue by Coach</div><div class="card-subtitle">Total paid amount</div></div></div>
+          <div class="card-header"><div><div class="card-title">${t('Revenue by Coach', 'الإيرادات حسب المدرب')}</div><div class="card-subtitle">Total paid amount</div></div></div>
           <div style="padding:8px 4px">${revBars || '<div class="text-mute" style="padding:20px">No data</div>'}</div>
         </div>
       </div>
 
       <div class="card">
-        <div class="card-header"><div><div class="card-title">Students per Coach</div><div class="card-subtitle">Active student count</div></div></div>
+        <div class="card-header"><div><div class="card-title">${t('Students per Coach', 'الطلاب لكل مدرب')}</div><div class="card-subtitle">Active student count</div></div></div>
         ${studentCols}
       </div>
 
       <div class="card">
-        <div class="card-header"><div><div class="card-title">Attendance Rate by Coach</div><div class="card-subtitle">Classes attended ÷ scheduled</div></div></div>
+        <div class="card-header"><div><div class="card-title">${t('Attendance Rate by Coach', 'نسبة الحضور حسب المدرب')}</div><div class="card-subtitle">Classes attended ÷ scheduled</div></div></div>
         <div style="padding:8px 4px">${rateRows || '<div class="text-mute" style="padding:20px">No attendance data</div>'}</div>
       </div>
     `;

@@ -1,4 +1,67 @@
 # Black Stars CRM
+Version 6.107.0 - Portrait attendance report (mobile) + more Arabic labels.
+
+## 6.107.0 note
+1. Attendance PDF reports (per-month and per-subscription) now print in PORTRAIT and
+   list each marked day VERTICALLY (Date + Present/Absent rows) instead of a wide
+   horizontal day-grid. They're centred at a phone-friendly width, so they're easy to
+   read and share on mobile. Months/sports with no marks are skipped. (The Summer Camp
+   schedule grids stay landscape — they're genuinely wide.)
+2. Translated ~27 more user-facing labels into Arabic that were English-only:
+   dashboard card titles (Top Coaches, Recent Invoices, Monthly Summary), several
+   search placeholders (Members, Coaches, Invoices, Expenses, Sales, Audit, History),
+   Settings titles (Appearance, Preferences, Coach Commission Rates, Data Management,
+   About), and report titles (Renewals/Commission/Revenue/Students/Attendance by Coach,
+   Trial Log, etc.).
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.106.0 - Coach & student role views enhanced.
+
+## 6.106.0 note - role view upgrades
+COACH dashboard (view-only):
+- New "Today's classes" card listing each of the coach's scheduled classes for today
+  with who's expected to attend (active students enrolled in that sport with them).
+- (Already present: next-class card, students roster with attendance/expiry/at-risk,
+  expiring-students list, monthly salary, advice.)
+
+STUDENT "My Membership":
+- Each sport card now shows a "Left" number = classes remaining on the subscription
+  (totalClasses - attended), turning red with a "renew soon" note when only ≤2 remain.
+- (Already present: next-class card, attendance log, planned/attended progress,
+  balance-due KPI, payment history, expiry/renewal alert banner, freeze self-service.)
+
+Coaches remain view-only (no attendance marking from their dashboard). No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.105.0 - One-tap Renew from the Attendance screen.
+
+## 6.105.0 note - renew from attendance
+The amber "needs renewal" rows in Attendance (expired but fully paid, added v6.102) now
+have a one-tap "🔄 Renew" button in the actions column, right next to the PDF export.
+Clicking it opens the renewal dialog for that member without leaving the screen, so
+reception can extend a lapsed-but-paid member on the spot. The button only appears for
+members flagged as needing renewal; after renewing, the grid refreshes and the row
+clears. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.104.0 - Schedule clear-filters label + admin-only / double-confirm wipes.
+
+## 6.104.0 note
+1. Schedule filters: the filter-reset button is now labelled "Clear filters" (was
+   "Clear all", which clashed with the destructive schedule-wipe button). It still
+   appears whenever a coach/sport filter is active and resets them in one click;
+   per-dropdown Clear buttons remain too.
+2. The schedule "Clear all" (which wipes every scheduled class) is now ADMIN-ONLY -
+   the button is hidden for non-admin editors, and the handler refuses if a non-admin
+   somehow triggers it. It also now requires TWO confirmation popups (Continue… then
+   a final "Are you absolutely sure?") and writes an audit-log entry.
+3. The Danger Zone destructive actions (Clear all data, Hard Reset, Load demo) are now
+   admin-only too, on top of their existing forced-backup + two-confirmation guard.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.103.0 - Cleanup: re-sync enrollments from subscriptions.
 
 ## 6.103.0 note - re-sync enrollments
