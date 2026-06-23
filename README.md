@@ -1,4 +1,17 @@
 # Black Stars CRM
+Version 6.147.0 - FIX: attendance-report image showed 100% instead of attended/enrolled.
+
+## 6.147.0 note - attendance image rate
+The per-member attendance IMAGE showed an inflated rate — e.g. a camp member who
+attended 2 of her 8 enrolled days showed "2/2 · 100%" instead of "2/8 · 25%".
+Cause: the image computed the rate as present ÷ (present + absent MARKS), so with 2
+present and 0 absent it read 100%. The profile, by contrast, uses attended ÷ ENROLLED.
+Fix: the image now uses the enrolled count (the subscription's class/day limit, or the
+enrollment's classes) as the denominator, both per-sport and overall — so the image now
+reads "2/8 · 25%", matching the profile's Att rate. Falls back to present ÷ marks only
+when nothing is enrolled. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.146.0 - Members header status chips are now clickable filters.
 
 ## 6.146.0 note - clickable status chips

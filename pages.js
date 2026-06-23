@@ -1450,8 +1450,17 @@ window.exportMemberAttendanceImage = function(id, lang) {
   };
   const da = m.dailyAttendance || {};
   const months = Object.keys(da).sort();
+  // Enrolled count per sport (the class/day limit) → used as the rate denominator so
+  // the % matches the profile (attended ÷ enrolled), not present ÷ marks.
+  const enrolledFor = (sp) => {
+    const sub = (m.subscriptions || []).filter(s => (s.activity || '') === sp).slice(-1)[0];
+    const enr = (m.enrollments || []).find(e => e.sport === sp);
+    return (sub && parseInt(sub.totalClasses)) || (enr && parseInt(enr.classes)) || 0;
+  };
   // Build sections per month → per sport.
   let totalY = 0, totalN = 0;
+  // Live present count + enrolled total per sport (across all months), for the rate.
+  const sportPresent = {};
   const sections = [];
   for (const mo of months) {
     const sports = da[mo] || {};
@@ -1466,7 +1475,12 @@ window.exportMemberAttendanceImage = function(id, lang) {
       });
       if (!marked.length) continue;
       totalY += y; totalN += n;
-      const sTot = y + n; const sRate = sTot ? Math.round(y / sTot * 100) : 0;
+      sportPresent[sp] = (sportPresent[sp] || 0) + y;
+      const enrolled = enrolledFor(sp);
+      // Per-sport rate = present ÷ enrolled limit (falls back to present÷marks if
+      // there's no enrolled count on record).
+      const denom = enrolled || (y + n);
+      const sRate = denom ? Math.round(y / denom * 100) : 0;
       const enr = (m.enrollments || []).find(e => e.sport === sp);
       const cid = enr?.coachId ?? m.coachId;
       const rows = marked.map(c => {
@@ -1479,7 +1493,7 @@ window.exportMemberAttendanceImage = function(id, lang) {
       }).join('');
       sections.push(`
         <div style="margin-bottom:18px">
-          <div style="font-size:14px;font-weight:700;color:#f26060;margin-bottom:6px">${escapeHtml(sp)}${sp === SUMMER_CAMP ? '' : ' · ' + L.coach + ' ' + escapeHtml(coachName(cid))} · <span style="color:#666;font-weight:500">${fmtMonth(mo)} · ${y}/${sTot} · ${sTot ? sRate + '%' : '—'}</span></div>
+          <div style="font-size:14px;font-weight:700;color:#f26060;margin-bottom:6px">${escapeHtml(sp)}${sp === SUMMER_CAMP ? '' : ' · ' + L.coach + ' ' + escapeHtml(coachName(cid))} · <span style="color:#666;font-weight:500">${fmtMonth(mo)} · ${y}/${enrolled || (y + n)} · ${denom ? sRate + '%' : '—'}</span></div>
           <table style="width:100%;border-collapse:collapse">
             <thead><tr>
               <th style="border:1px solid #e5e5ea;padding:6px 10px;font-size:10px;color:#777;background:#fafafa;text-align:${ar ? 'right' : 'left'};text-transform:uppercase;letter-spacing:.5px">${L.date}</th>
@@ -1491,8 +1505,12 @@ window.exportMemberAttendanceImage = function(id, lang) {
     }
   }
   if (!sections.length) { toast(L.noData, 'info'); return; }
-  const total = totalY + totalN;
-  const rate = total ? Math.round(totalY / total * 100) : 0;
+  // Overall = total present ÷ total enrolled across the member's sports (matches the
+  // profile's "Att rate"). Fall back to present÷marks only if nothing is enrolled.
+  const totalEnrolled = Object.keys(sportPresent).reduce((s, sp) => s + (enrolledFor(sp) || 0), 0);
+  const overallDenom = totalEnrolled || (totalY + totalN);
+  const total = overallDenom;
+  const rate = overallDenom ? Math.round(totalY / overallDenom * 100) : 0;
   const dir = ar ? 'rtl' : 'ltr';
   const W = 560;
   const html = `

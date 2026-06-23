@@ -2348,6 +2348,20 @@ ${seed}
     eq(r.attended, 9, 'expiring attended: counts ALL marks (not windowed → would be 6)');
     eq(r.planned, 8, 'expiring attended: planned = subscription limit');
   })();
+  // Attendance-report image rate = attended ÷ ENROLLED (not present ÷ marks)
+  (function () {
+    var m = { subscriptions: [{ activity: 'Summer Camp', totalClasses: 8 }], enrollments: [{ sport: 'Summer Camp', classes: 8 }] };
+    var enrolledFor = function (sp) {
+      var sub = (m.subscriptions || []).filter(function (s) { return (s.activity || '') === sp; }).slice(-1)[0];
+      var enr = (m.enrollments || []).find(function (e) { return e.sport === sp; });
+      return (sub && parseInt(sub.totalClasses)) || (enr && parseInt(enr.classes)) || 0;
+    };
+    var present = 2;
+    var enrolled = enrolledFor('Summer Camp');
+    var rate = enrolled ? Math.round(present / enrolled * 100) : 0;
+    eq(enrolled, 8, 'att image: denominator = enrolled count');
+    eq(rate, 25, 'att image: 2 of 8 enrolled → 25% (not 100%)');
+  })();
   // Edit form loads camp validity from the stored subscription window (not class count)
   (function () {
     var loadValidity = function (sub) {
