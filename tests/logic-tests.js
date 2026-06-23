@@ -2160,6 +2160,10 @@ ${seed}
     // Local addition survives
     var r6 = _mergeCollection([{ id: 1, v: 'a' }], [{ id: 1, v: 'a' }, { id: 9, v: 'm' }], [{ id: 1, v: 'a' }]);
     eq(idsOf(r6.merged), '1:a,9:m', 'merge: local addition survives');
+    // No-change echo: merging identical data must report nothing changed (prevents
+    // the save→remote-update→save refresh loop).
+    var same = _mergeCollection([{ id: 1, v: 'a' }], [{ id: 1, v: 'a' }], [{ id: 1, v: 'a' }]);
+    eq(_stableStr(same.merged), _stableStr([{ id: 1, v: 'a' }]), 'merge: identical data → unchanged result (no loop)');
   })();
   // Invoices activity filter: all "Summer Camp · X" variants collapse to one option
   (function () {

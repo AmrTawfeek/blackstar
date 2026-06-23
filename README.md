@@ -1,4 +1,18 @@
 # Black Stars CRM
+Version 6.122.0 - FIX: constant screen refresh loop from multi-device sync.
+
+## 6.122.0 note - stop the refresh loop
+A bug introduced with the multi-device merge (v6.117) caused the screen to refresh
+constantly: the remote-update handler always called save() after merging, that save
+echoed back through the cloud listener as another "remote update", which merged + saved
+again — an endless loop that re-rendered the page over and over.
+Fix: the merge now reports whether it ACTUALLY changed any data. The handler only
+saves + re-renders when something genuinely changed (a real edit from another device).
+The echo of our own save, or any identical snapshot, changes nothing → no save, no
+re-render → the loop is broken. Multi-device merge safety is unchanged. No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.121.0 - Camp duration: presets (auto business days) + Custom days.
 
 ## 6.121.0 note - presets AND custom day count
