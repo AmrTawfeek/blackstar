@@ -1,4 +1,21 @@
 # Black Stars CRM
+Version 6.123.0 - Sync: ask to refresh instead of auto-refreshing the screen.
+
+## 6.123.0 note - refresh prompt on remote change
+When another device makes a real change, the data is now merged + saved silently in
+the background (nothing is lost), and instead of the screen refreshing on its own, a
+banner appears at the bottom:
+  "🔄 Data was updated on another device. Your work is saved. Refresh to see the
+   latest, or keep working." — with [Refresh now] and [Keep working] buttons.
+- Refresh now → re-renders with the latest merged data.
+- Keep working → dismisses the banner; you continue uninterrupted (the data is already
+  saved).
+The screen never refreshes by itself anymore. Echoes of your own save or identical
+snapshots do nothing (no banner, no loop). If both devices edited the SAME record, the
+banner notes how many were kept as your version to double-check. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.122.0 - FIX: constant screen refresh loop from multi-device sync.
 
 ## 6.122.0 note - stop the refresh loop
