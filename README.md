@@ -1,4 +1,52 @@
 # Black Stars CRM
+Version 6.140.0 - FIX: camp validity reverted to 8 on edit + expiry didn't update.
+
+## 6.140.0 note - camp validity + expiry on edit
+Two linked bugs when editing a camp member's validity:
+1. Set Validity to "1 month", saved, re-opened → it showed 8 again. Cause: the edit
+   form derived the validity from the member's saved expiry date via start→end. Since
+   the saved expiry was a stale wrong value (from the pre-6.136 expiry bug), start→end
+   came out as 8 days. Fix: the edit form now reads the validity from the stored
+   subscription's own `validity` field (the real 30-day window) first, only deriving
+   from start→end as a last resort.
+2. Changing the Validity dropdown didn't update the Membership expiry field. Cause: the
+   expiry field was flagged as a "manual override" (because the saved expiry no longer
+   matched the freshly-computed auto value), which locks it. Fix: changing the camp
+   validity now clears that manual override so the expiry auto-recomputes from the new
+   window (e.g. 17 Jun + 1 month → 17 Jul).
+Together: editing a camp member, picking a validity, and saving now stores the correct
+window and expiry, and re-opening shows the right validity. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.139.0 - FIX: Expiring "Attended" count disagreed with the Attendance grid.
+
+## 6.139.0 note - consistent attended count
+A member could show "6/8 attended" on the Expiring page but "9" present on the
+Attendance grid — three different numbers for the same person. Cause: the Expiring page
+counted only the present marks that fell INSIDE the member's start→expiry date window,
+so any marks dated before the start or after the expiry were excluded (6), while the
+Attendance grid counts all marks (9).
+Fix: the Expiring "Attended" cell now uses the same live, unwindowed count as the
+Attendance grid and the class-limit logic, and its denominator is the subscription's
+real class/day limit. So the same member now reads consistently everywhere (e.g. 9/8,
+which also makes an over-limit case obvious). No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.138.0 - Member profile: attendance report as IMAGE (English / Arabic).
+
+## 6.138.0 note - per-member attendance image
+The member profile's Attendance action now exports the member's attendance report as a
+PNG IMAGE, in English or Arabic, in addition to CSV. The profile footer now shows:
+- 🖼 Attendance (EN) — English image, left-to-right.
+- 🖼 Attendance (AR) — Arabic image, right-to-left, Arabic labels + the member's Arabic
+  name where available.
+- 📊 Attendance CSV — the existing CSV export.
+The image lists every marked day grouped by sport (with per-sport and overall totals and
+percentages), rendered offline via SVG foreignObject + canvas at retina (2x) quality.
+Downloads as <name>_attendance_<en|ar>.png. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.137.0 - Attendance: flag camp members over their enrolled day count.
 
 ## 6.137.0 note - camp over-limit attendance flag

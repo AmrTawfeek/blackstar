@@ -1408,6 +1408,114 @@ window.viewMemberAttendance = function(id) {
 
 // Export ONE member's full attendance history (every recorded day across all
 // months and sports) to CSV. dailyAttendance is keyed YYYY-MM → sport → dayOfMonth.
+// Export ONE member's attendance as a PNG image (English or Arabic). Lists every
+// marked day grouped by sport, with per-sport and overall totals. Uses the same
+// offline SVG-foreignObject → canvas technique as the grid image export.
+window.exportMemberAttendanceImage = function(id, lang) {
+  const m = state.members.find(x => x.id === id);
+  if (!m) { toast('Member not found', 'error'); return; }
+  const ar = lang === 'ar';
+  const L = ar ? {
+    brand: '★ نادي بلاك ستارز الرياضي', sub: 'الوعب، الدوحة · تقرير الحضور',
+    generated: 'تاريخ الإصدار', date: 'التاريخ', attendance: 'الحضور', present: 'حاضر',
+    absent: 'غائب', coach: 'المدرب', overall: 'الإجمالي', noData: 'لا يوجد حضور مسجّل لهذا العضو',
+    noMarks: 'لا أيام مسجّلة هذا الشهر',
+  } : {
+    brand: '★ Black Stars Sports Club', sub: 'Waab, Doha · Attendance Report',
+    generated: 'Generated', date: 'Date', attendance: 'Attendance', present: 'Present',
+    absent: 'Absent', coach: 'Coach', overall: 'Overall', noData: 'No attendance recorded yet for this member',
+    noMarks: 'No days marked this month',
+  };
+  const da = m.dailyAttendance || {};
+  const months = Object.keys(da).sort();
+  // Build sections per month → per sport.
+  let totalY = 0, totalN = 0;
+  const sections = [];
+  for (const mo of months) {
+    const sports = da[mo] || {};
+    for (const sp of Object.keys(sports).sort()) {
+      const dd = sports[sp] || {};
+      const marked = [];
+      let y = 0, n = 0;
+      Object.keys(dd).sort((a, b) => parseInt(a) - parseInt(b)).forEach(day => {
+        const v = dd[day];
+        if (v === 'Y') { y++; marked.push({ day, v }); }
+        else if (v === 'N') { n++; marked.push({ day, v }); }
+      });
+      if (!marked.length) continue;
+      totalY += y; totalN += n;
+      const sTot = y + n; const sRate = sTot ? Math.round(y / sTot * 100) : 0;
+      const enr = (m.enrollments || []).find(e => e.sport === sp);
+      const cid = enr?.coachId ?? m.coachId;
+      const rows = marked.map(c => {
+        const dateStr = fmtDate(`${mo}-${String(parseInt(c.day)).padStart(2, '0')}`);
+        const present = c.v === 'Y';
+        return `<tr>
+          <td style="border:1px solid #e5e5ea;padding:6px 10px;font-size:12px;text-align:${ar ? 'right' : 'left'}">${dateStr}</td>
+          <td style="border:1px solid #e5e5ea;padding:6px 10px;text-align:center;font-weight:700;font-size:12px;background:${present ? '#d1fae5' : '#fee2e2'};color:${present ? '#065f46' : '#991b1b'}">${present ? L.present : L.absent}</td>
+        </tr>`;
+      }).join('');
+      sections.push(`
+        <div style="margin-bottom:18px">
+          <div style="font-size:14px;font-weight:700;color:#f26060;margin-bottom:6px">${escapeHtml(sp)}${sp === SUMMER_CAMP ? '' : ' · ' + L.coach + ' ' + escapeHtml(coachName(cid))} · <span style="color:#666;font-weight:500">${fmtMonth(mo)} · ${y}/${sTot} · ${sTot ? sRate + '%' : '—'}</span></div>
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr>
+              <th style="border:1px solid #e5e5ea;padding:6px 10px;font-size:10px;color:#777;background:#fafafa;text-align:${ar ? 'right' : 'left'};text-transform:uppercase;letter-spacing:.5px">${L.date}</th>
+              <th style="border:1px solid #e5e5ea;padding:6px 10px;font-size:10px;color:#777;background:#fafafa;text-align:center;text-transform:uppercase;letter-spacing:.5px">${L.attendance}</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`);
+    }
+  }
+  if (!sections.length) { toast(L.noData, 'info'); return; }
+  const total = totalY + totalN;
+  const rate = total ? Math.round(totalY / total * 100) : 0;
+  const dir = ar ? 'rtl' : 'ltr';
+  const W = 560;
+  const html = `
+    <div xmlns="http://www.w3.org/1999/xhtml" dir="${dir}" style="width:${W}px;background:#fff;font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:18px;box-sizing:border-box">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f26060;padding-bottom:10px;margin-bottom:12px">
+        <div><div style="font-size:17px;font-weight:800">${L.brand}</div><div style="color:#777;font-size:11px;margin-top:2px">${L.sub}</div></div>
+        <div style="text-align:${ar ? 'left' : 'right'};font-size:11px;color:#777">${L.generated}<br><b>${fmtDate(TODAY)}</b></div>
+      </div>
+      <div style="font-size:15px;font-weight:700;margin-bottom:2px">${escapeHtml(ar && m.nameArabic ? m.nameArabic : m.name)}</div>
+      <div style="font-size:12px;color:#555;margin-bottom:14px">${L.overall}: <b>${totalY}/${total}</b> · <b>${rate}%</b></div>
+      ${sections.join('')}
+      <div style="margin-top:8px;font-size:9px;color:#aaa;text-align:center;border-top:1px solid #eee;padding-top:6px">Black Stars CRM</div>
+    </div>`;
+  // Off-screen measure → SVG foreignObject → canvas → PNG.
+  const probe = document.createElement('div');
+  probe.style.cssText = `position:fixed;left:-99999px;top:0;width:${W}px`;
+  probe.innerHTML = html;
+  document.body.appendChild(probe);
+  const H = Math.ceil(probe.firstElementChild.getBoundingClientRect().height) + 4;
+  document.body.removeChild(probe);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><foreignObject width="100%" height="100%">${html}</foreignObject></svg>`;
+  const img = new Image();
+  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+  img.onload = () => {
+    const canvas = document.createElement('canvas');
+    const scale = 2;
+    canvas.width = W * scale; canvas.height = H * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(scale, scale); ctx.drawImage(img, 0, 0);
+    URL.revokeObjectURL(url);
+    canvas.toBlob(blob => {
+      if (!blob) { toast('Image export failed — try the PDF instead', 'error'); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${(m.name || 'member').replace(/[^a-z0-9]+/gi, '_')}_attendance_${ar ? 'ar' : 'en'}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      toast(ar ? 'صورة الحضور' : 'Attendance image saved');
+    }, 'image/png');
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); toast('Image export failed — try the PDF instead', 'error'); };
+  img.src = url;
+};
+
 window.exportMemberAttendance = function(id) {
   const m = state.members.find(x => x.id === id);
   if (!m) { toast('Member not found', 'error'); return; }
@@ -1701,7 +1809,9 @@ function viewMember(id) {
         return [{ label: multi ? `🧾 Get Invoice (${memberInvs.length} sports)` : '🧾 Get Invoice', class: 'btn ghost', onclick: () => { closeModal(); printMemberInvoicePDF(id); } }];
       })(),
       ...(isViewerRole() ? [] : [{ label: '📜 Full History', class: 'btn ghost', onclick: () => { closeModal(); openMemberHistory(id); } }]),
-      { label: '📊 Attendance', class: 'btn ghost', onclick: () => { exportMemberAttendance(id); } },
+      { label: '🖼 ' + t('Attendance (EN)', 'الحضور (EN)'), class: 'btn ghost', onclick: () => { exportMemberAttendanceImage(id, 'en'); } },
+      { label: '🖼 ' + t('Attendance (AR)', 'الحضور (AR)'), class: 'btn ghost', onclick: () => { exportMemberAttendanceImage(id, 'ar'); } },
+      { label: '📊 ' + t('Attendance CSV', 'حضور CSV'), class: 'btn ghost', onclick: () => { exportMemberAttendance(id); } },
       { label: '👨‍👩‍👧 Family', class: 'btn ghost', onclick: () => { closeModal(); assignFamily(id); } },
       { label: 'Edit', class: 'btn ghost', onclick: () => { closeModal(); editMember(id); } },
       { label: 'Close', class: 'btn primary', onclick: closeModal },
@@ -2224,6 +2334,9 @@ function renderEnrollRows() {
       } else if (key === 'campValidity') {
         // Camp time window (calendar days) — independent of the class limit.
         row.validity = Math.max(1, parseInt(val) || DEFAULT_VALIDITY);
+        // Changing the validity is an explicit intent to reset the window, so drop
+        // any manual expiry override and let the expiry auto-recompute from it.
+        window._expiryManual = false;
         renderEnrollRows();
         return;
       } else {
@@ -2398,9 +2511,11 @@ function showMemberForm(m) {
         classes: e.classes ?? '', price: e.price ?? '',
         durationLabel: e.durationLabel || (sub && sub.durationLabel) || null,
         _campCustom: (e.durationLabel === 'Custom') || (sub && sub.durationLabel === 'Custom') || false,
-        // Each sport carries its OWN start date + validity (from its subscription)
+        // Each sport carries its OWN start date + validity (from its subscription).
+        // Prefer the explicitly stored validity (the real window). Only fall back to
+        // deriving from start→end when there's no stored validity at all.
         start: (sub && sub.start) || m.startDate || TODAY,
-        validity: (sub && sub.validity) || (sub && daysBetween(sub.start, sub.end)) || m.validity || DEFAULT_VALIDITY,
+        validity: (sub && parseInt(sub.validity)) || (sub && sub.start && sub.end ? daysBetween(sub.start, sub.end) : 0) || parseInt(m.validity) || DEFAULT_VALIDITY,
         // Track if this enrollment has an associated paid invoice. If yes, the
         // × delete button is replaced with a "Withdraw" action that creates a
         // refund invoice + coach commission deduction (see withdrawSport()).
@@ -15023,25 +15138,20 @@ PAGES.expiring = (main) => {
 
   // Attended Y-marks per enrolled sport within the member's current cycle window.
   function attendedBySport(m) {
-    const da = m.dailyAttendance || {};
-    const start = m.startDate || null, end = m.expiryDate || null;
     const enrolls = (m.enrollments && m.enrollments.length) ? m.enrollments : (m.sport ? [{ sport: m.sport, classes: 0 }] : []);
     const out = [];
     for (const e of enrolls) {
       if (!e.sport) continue;
-      let y = 0;
-      for (const mk of Object.keys(da)) {
-        const sportMap = da[mk] && da[mk][e.sport];
-        if (!sportMap) continue;
-        for (const d of Object.keys(sportMap)) {
-          if (sportMap[d] !== 'Y') continue;
-          const iso = mk + '-' + String(d).padStart(2, '0');
-          if (start && iso < start) continue;
-          if (end && iso > end) continue;
-          y++;
-        }
-      }
-      out.push({ sport: e.sport, attended: y, planned: e.classes || 0 });
+      // Count ALL present marks for this sport (live, unwindowed) so it matches the
+      // Attendance grid and the class-limit logic — not just marks inside the
+      // member's date window (which under-counted, e.g. showing 6 when 9 attended).
+      const attended = (typeof liveAttendanceCount === 'function')
+        ? (liveAttendanceCount(m, e.sport, null, null).y || 0) : 0;
+      // Planned = the enrolled class/day limit. Prefer the subscription's
+      // totalClasses (the real cap) over the enrollment's classes.
+      const sub = (m.subscriptions || []).filter(s => (s.activity || '') === e.sport).slice(-1)[0];
+      const planned = (sub && parseInt(sub.totalClasses)) || parseInt(e.classes) || 0;
+      out.push({ sport: e.sport, attended, planned });
     }
     return out;
   }

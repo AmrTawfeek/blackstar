@@ -2318,6 +2318,34 @@ ${seed}
     eq(over(mk(8)), true, 'camp flag: 8 of 8 → over (red flag + Completed)');
     eq(over(mk(9)), true, 'camp flag: 9 of 8 → over');
   })();
+  // Expiring "attended" count must match the live total (not a windowed subset)
+  (function () {
+    var attendedFor = function (m, sport) {
+      var attended = liveAttendanceCount(m, sport, null, null).y || 0;
+      var sub = (m.subscriptions || []).filter(function (s) { return (s.activity || '') === sport; }).slice(-1)[0];
+      var planned = (sub && parseInt(sub.totalClasses)) || 0;
+      return { attended: attended, planned: planned };
+    };
+    var m = {
+      startDate: '2026-06-17', expiryDate: '2026-06-25',
+      enrollments: [{ sport: 'Summer Camp', classes: 8 }],
+      subscriptions: [{ activity: 'Summer Camp', totalClasses: 8 }],
+      dailyAttendance: { '2026-06': { 'Summer Camp': { '10': 'Y', '11': 'Y', '12': 'Y', '18': 'Y', '21': 'Y', '22': 'Y', '23': 'Y', '24': 'Y', '30': 'Y' } } },
+    };
+    var r = attendedFor(m, 'Summer Camp');
+    eq(r.attended, 9, 'expiring attended: counts ALL marks (not windowed → would be 6)');
+    eq(r.planned, 8, 'expiring attended: planned = subscription limit');
+  })();
+  // Edit form loads camp validity from the stored subscription window (not class count)
+  (function () {
+    var loadValidity = function (sub) {
+      return (parseInt(sub.validity)) || (sub.start && sub.end ? daysBetween(sub.start, sub.end) : 0) || DEFAULT_VALIDITY;
+    };
+    eq(loadValidity({ start: '2026-06-17', end: '2026-07-17', validity: 30, totalClasses: 8 }), 30,
+      'edit load: camp validity = stored 30, not the 8-day count');
+    eq(loadValidity({ start: '2026-06-17', end: '2026-07-17', totalClasses: 8 }), 30,
+      'edit load: camp validity derived from start→end when not stored');
+  })();
   // Invoices activity filter: all "Summer Camp · X" variants collapse to one option
   (function () {
     var isCamp = function (s) { return typeof s === 'string' && (s === 'Summer Camp' || s.indexOf('Summer Camp') === 0); };
