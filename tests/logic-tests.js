@@ -2250,6 +2250,74 @@ ${seed}
     eq(pickKind(false, 'expired'), 'expired', 'reminder kind: truly expired → expired message');
     eq(pickKind(false, 'soon'), 'expiring', 'reminder kind: expiring soon → expiring message');
   })();
+  // Trial follow-up message: bilingual, fills name + sport
+  (function () {
+    if (typeof buildTrialFollowupMessage === 'function') {
+      var msg = buildTrialFollowupMessage({ name: 'Mohammed', nameArabic: 'محمد', sport: 'Kick Boxing', coachId: null });
+      ok(msg.indexOf('Mohammed') >= 0, 'trial msg: includes English name');
+      ok(msg.indexOf('محمد') >= 0, 'trial msg: includes Arabic name');
+      ok(msg.indexOf('Kick Boxing') >= 0, 'trial msg: includes the sport');
+      ok(msg.indexOf('Black Stars') >= 0, 'trial msg: includes club name');
+      ok(msg.indexOf('— — —') >= 0, 'trial msg: has Arabic + English split');
+    }
+  })();
+  // Invoice line detail: camp shows days, membership shows classes, both show validity
+  (function () {
+    var lineUnit = function (sport, count) {
+      var isCamp = sport === 'Summer Camp';
+      return isCamp ? (count === 1 ? 'day' : 'days') : (count === 1 ? 'class' : 'classes');
+    };
+    eq(lineUnit('Summer Camp', 8), 'days', 'invoice line: camp counts in days');
+    eq(lineUnit('Summer Camp', 1), 'day', 'invoice line: camp singular day');
+    eq(lineUnit('Gymnastic', 12), 'classes', 'invoice line: membership counts in classes');
+    eq(lineUnit('Boxing', 1), 'class', 'invoice line: membership singular class');
+  })();
+  // Carry-forward credit: unused classes from an expired period, capped at 2
+  (function () {
+    var mk = function (total, attended) { return { subscriptions: [{ activity: 'Boxing', totalClasses: total, attendedClasses: attended, end: '2026-01-01', status: 'expired' }], dailyAttendance: {} }; };
+    eq(carryForwardCredit(mk(8, 6), 'Boxing'), 2, 'carry: 2 unused → carry 2');
+    eq(carryForwardCredit(mk(8, 3), 'Boxing'), 2, 'carry: 5 unused → capped at 2');
+    eq(carryForwardCredit(mk(8, 8), 'Boxing'), 0, 'carry: 0 unused → carry 0');
+    eq(carryForwardCredit(mk(8, 7), 'Boxing'), 1, 'carry: 1 unused → carry 1');
+    eq(carryForwardCredit(mk(8, 6), 'Karate'), 0, 'carry: different sport → no credit');
+    // An active (not expired) period gives no carry yet.
+    var active = { subscriptions: [{ activity: 'Boxing', totalClasses: 8, attendedClasses: 2, end: '2099-01-01', status: 'active' }], dailyAttendance: {} };
+    eq(carryForwardCredit(active, 'Boxing'), 0, 'carry: active period → no credit until finished');
+  })();
+  // Camp edit-form auto-expiry uses the VALIDITY window, not the class-day count
+  (function () {
+    var autoExp = function (rows) {
+      var ends = rows.map(function (r) {
+        var isCamp = r.sport === 'Summer Camp';
+        var days = isCamp ? (parseInt(r.validity) || parseInt(r.classes) || 0) : (parseInt(r.validity) || 0);
+        if (!(r.start && days > 0)) return null;
+        return addDays(r.start, days);
+      }).filter(Boolean).sort();
+      return ends.length ? ends[ends.length - 1] : '';
+    };
+    eq(autoExp([{ sport: 'Summer Camp', start: '2026-06-17', classes: 8, validity: 30 }]), '2026-07-17',
+      'camp expiry: start + 1-month validity (not the 8-day count)');
+    eq(autoExp([{ sport: 'Summer Camp', start: '2026-06-17', classes: 8, validity: 7 }]), '2026-06-24',
+      'camp expiry: start + 1-week validity');
+  })();
+  // Camp attendance over-limit flag: marked >= enrolled day count → flagged
+  (function () {
+    var over = function (m) {
+      var sub = (m.subscriptions || []).filter(function (s) { return (s.activity || '') === 'Summer Camp'; }).slice(-1)[0];
+      var limit = sub ? (parseInt(sub.totalClasses) || 0) : 0;
+      if (limit <= 0) return false;
+      var marked = liveAttendanceCount(m, 'Summer Camp', null, null).y || 0;
+      return marked >= limit;
+    };
+    var mk = function (n) {
+      var days = {};
+      for (var i = 1; i <= n; i++) days[String(i)] = 'Y';
+      return { subscriptions: [{ activity: 'Summer Camp', totalClasses: 8 }], dailyAttendance: { '2026-06': { 'Summer Camp': days } } };
+    };
+    eq(over(mk(7)), false, 'camp flag: 7 of 8 → not over');
+    eq(over(mk(8)), true, 'camp flag: 8 of 8 → over (red flag + Completed)');
+    eq(over(mk(9)), true, 'camp flag: 9 of 8 → over');
+  })();
   // Invoices activity filter: all "Summer Camp · X" variants collapse to one option
   (function () {
     var isCamp = function (s) { return typeof s === 'string' && (s === 'Summer Camp' || s.indexOf('Summer Camp') === 0); };

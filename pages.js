@@ -1065,17 +1065,25 @@ PAGES.members = (main) => {
     <div class="topbar">
       <div>
         <h1>Members</h1>
-        <div class="subtitle"><span id="members-count">${activeMembers().length} of ${activeMembers().length}</span> · ${(() => {
+        <div class="subtitle" style="margin-top:6px"><span id="members-count" style="font-size:13px;font-weight:600;color:var(--text)">${activeMembers().length} of ${activeMembers().length}</span></div>
+        <div class="member-stat-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
+          ${(() => {
           const mc = memberCounts();
+          const chip = (n, label, color, bg, icon) => `
+            <div style="display:flex;align-items:center;gap:7px;padding:6px 12px;border-radius:10px;background:${bg};border:1px solid ${color}33">
+              <span style="font-size:20px;font-weight:800;line-height:1;color:${color}">${n}</span>
+              <span style="font-size:12px;font-weight:600;color:${color};opacity:.95">${icon ? icon + ' ' : ''}${label}</span>
+            </div>`;
           const parts = [
-            `<span style="color:var(--green)">${mc.active} active</span>`,
-            `<span style="color:var(--red)">${mc.expired} expired</span>`,
+            chip(mc.active, 'Active', 'var(--green)', 'rgba(34,197,94,.12)', ''),
+            chip(mc.expired, 'Expired', 'var(--red)', 'rgba(239,68,68,.12)', ''),
           ];
-          if (mc.frozen) parts.push(`<span style="color:var(--blue)">❄️ ${mc.frozen} frozen</span>`);
-          if (mc.completed) parts.push(`<span style="color:var(--purple)">${mc.completed} completed</span>`);
-          if (mc.withdrawn) parts.push(`<span style="color:var(--accent-2)">↩ ${mc.withdrawn} withdrawn</span>`);
-          return parts.join(' · ');
-        })()}</div>
+          if (mc.frozen) parts.push(chip(mc.frozen, 'Frozen', 'var(--blue)', 'rgba(59,130,246,.12)', '❄️'));
+          if (mc.completed) parts.push(chip(mc.completed, 'Completed', 'var(--purple)', 'rgba(139,92,246,.12)', ''));
+          if (mc.withdrawn) parts.push(chip(mc.withdrawn, 'Withdrawn', 'var(--accent-2)', 'rgba(245,158,11,.12)', '↩'));
+          return parts.join('');
+        })()}
+        </div>
       </div>
       <div class="topbar-actions">
         <button class="btn ghost" id="find-duplicates" title="Scan all members for duplicate phone numbers">🔍 Find Duplicates</button>
@@ -2098,9 +2106,15 @@ function enrollRowHtml(row, idx) {
 // Summer Camp uses its day count). Returns 'YYYY-MM-DD' or '' if not computable.
 function autoExpiryFromRows() {
   const ends = (window._enrollRows || []).map(r => {
-    const days = r.sport === SUMMER_CAMP ? (parseInt(r.classes) || 0) : (parseInt(r.validity) || 0);
+    // Camp expiry = start + VALIDITY window (calendar days), independent of the
+    // class-day count. Other sports = start + validity. (Camp duration/class count
+    // is the attendance limit, NOT the time window — see v6.115.)
+    const isCamp = r.sport === SUMMER_CAMP;
+    const days = isCamp
+      ? (parseInt(r.validity) || parseInt(r.classes) || 0)   // window; fall back to class count only if no validity
+      : (parseInt(r.validity) || 0);
     if (!(r.start && days > 0)) return null;
-    return r.sport === SUMMER_CAMP ? campEndDate(r.start, days) : addDays(r.start, days);
+    return addDays(r.start, days);
   }).filter(Boolean).sort();
   return ends.length ? ends[ends.length - 1] : '';
 }
@@ -8603,18 +8617,59 @@ window.printInvoicePDF = function(id) {
       </tr>
     </thead>
     <tbody>
-      ${(inv.lineItems && inv.lineItems.length) ? inv.lineItems.map(li => `
+      ${(inv.lineItems && inv.lineItems.length) ? inv.lineItems.map(li => {
+        const isCamp = li.sport === SUMMER_CAMP;
+        // Find the matching subscription period (start → expiry) for this line, by
+        // invoice ref + activity, so the customer sees exactly what they paid for.
+        let period = null, count = null;
+        if (matchedMember && Array.isArray(matchedMember.subscriptions)) {
+          const sub = matchedMember.subscriptions.find(s =>
+            (s.activity || '') === li.sport &&
+            ((s.invoiceNumber && (s.invoiceNumber === inv.ref || s.invoiceNumber === inv.invoiceNumber)) || false));
+          const subAny = sub || matchedMember.subscriptions.filter(s => (s.activity || '') === li.sport).slice(-1)[0];
+          if (subAny) {
+            period = { start: subAny.start, end: subAny.end };
+            count = parseInt(subAny.totalClasses) || parseInt(li.classes) || null;
+          }
+        }
+        if (count == null) count = parseInt(li.classes) || 1;
+        // Camp counts DAYS; everything else counts CLASSES.
+        const unitEn = isCamp ? (count === 1 ? 'day' : 'days') : (count === 1 ? 'class' : 'classes');
+        const unitAr = isCamp ? 'يوم' : 'حصة';
+        const countLine = `${count} ${unitEn} · <bdi>${count} ${unitAr}</bdi>`;
+        const validityLine = period && period.start
+          ? `Valid · <bdi>صالح</bdi>: ${fmtDate(period.start)} → ${period.end ? fmtDate(period.end) : '—'}`
+          : '';
+        return `
       <tr>
         <td>
-          <div class="item-desc">${escapeHtml(li.sport)} subscription</div>
+          <div class="item-desc">${escapeHtml(li.sport)}${isCamp ? '' : ' subscription'}</div>
+          <div class="item-sub" dir="ltr">${countLine}</div>
+          ${validityLine ? `<div class="item-sub" dir="ltr">${validityLine}</div>` : ''}
           <div class="item-sub" dir="ltr">Coach · <bdi>المدرب</bdi>: ${escapeHtml(li.coach || '—')} · Issued on ${issueDate}</div>
         </td>
-        <td class="right">${li.classes || 1}</td>
+        <td class="right">${count}</td>
         <td class="right">${Number(li.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-      </tr>`).join('') : `
+      </tr>`;
+      }).join('') : `
       <tr>
         <td>
           <div class="item-desc">${escapeHtml(itemLabel)}</div>
+          ${(() => {
+            // For a membership-style single-item invoice, show the count + validity
+            // from the member's latest matching subscription so it's clear too.
+            if (!matchedMember || !Array.isArray(matchedMember.subscriptions) || !matchedMember.subscriptions.length) return '';
+            const sub = matchedMember.subscriptions.filter(s => !s.activity || itemLabel.toLowerCase().includes((s.activity || '').toLowerCase())).slice(-1)[0]
+                      || matchedMember.subscriptions.slice(-1)[0];
+            if (!sub) return '';
+            const isCamp = (sub.activity || '') === SUMMER_CAMP;
+            const count = parseInt(sub.totalClasses) || 0;
+            const unitEn = isCamp ? (count === 1 ? 'day' : 'days') : (count === 1 ? 'class' : 'classes');
+            const unitAr = isCamp ? 'يوم' : 'حصة';
+            const countLine = count ? `<div class="item-sub" dir="ltr">${count} ${unitEn} · <bdi>${count} ${unitAr}</bdi></div>` : '';
+            const validityLine = sub.start ? `<div class="item-sub" dir="ltr">Valid · <bdi>صالح</bdi>: ${fmtDate(sub.start)} → ${sub.end ? fmtDate(sub.end) : '—'}</div>` : '';
+            return countLine + validityLine;
+          })()}
           <div class="item-sub">Issued on ${issueDate}</div>
         </td>
         <td class="right">1</td>
@@ -11719,6 +11774,17 @@ PAGES.settings = (main, section) => {
         </div>
       </div>
 
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div class="field" style="margin:0">
+          <label style="display:flex;align-items:center;gap:6px"><span style="background:rgba(16,185,129,.15);color:#10b981;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700">TRIAL FOLLOW-UP</span> English</label>
+          <textarea id="tpl-trial-en" rows="8" style="width:100%;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;line-height:1.5;resize:vertical">${escapeHtml(reminderTemplate('trial_en'))}</textarea>
+        </div>
+        <div class="field" style="margin:0">
+          <label style="display:flex;align-items:center;gap:6px"><span style="background:rgba(16,185,129,.15);color:#10b981;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700">TRIAL FOLLOW-UP</span> العربية</label>
+          <textarea id="tpl-trial-ar" rows="8" dir="rtl" style="width:100%;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;line-height:1.5;resize:vertical">${escapeHtml(reminderTemplate('trial_ar'))}</textarea>
+        </div>
+      </div>
+
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button class="btn primary" id="save-tpls">💾 Save templates</button>
         <button class="btn ghost" id="reset-tpls" title="Restore the default English + Arabic messages">↻ Restore defaults</button>
@@ -11908,6 +11974,8 @@ PAGES.settings = (main, section) => {
       expiring_ar: $('#tpl-expiring-ar').value,
       completed_en: $('#tpl-completed-en')?.value ?? reminderTemplate('completed_en'),
       completed_ar: $('#tpl-completed-ar')?.value ?? reminderTemplate('completed_ar'),
+      trial_en: $('#tpl-trial-en')?.value ?? reminderTemplate('trial_en'),
+      trial_ar: $('#tpl-trial-ar')?.value ?? reminderTemplate('trial_ar'),
     };
     save();
     toast('💬 Reminder templates saved');
@@ -12449,20 +12517,40 @@ PAGES.attendance = (main) => {
       const sportEsc = sport.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
       const status = memberStatus(m);
       const isExpired = status === 'Expired';
+      const isCompleted = status === 'Completed';
+      // Camp over-limit flag: a Summer Camp member whose total present marks have
+      // reached (or passed) their enrolled day count. They've finished their days —
+      // flag the row red and surface the "Completed" status so it's obvious.
+      let campOver = false, campLimit = 0, campMarked = 0;
+      if (sport === SUMMER_CAMP) {
+        const sub = (m.subscriptions || []).filter(s => (s.activity || '') === SUMMER_CAMP).slice(-1)[0];
+        campLimit = sub ? (parseInt(sub.totalClasses) || 0) : 0;
+        if (campLimit > 0 && typeof liveAttendanceCount === 'function') {
+          campMarked = liveAttendanceCount(m, SUMMER_CAMP, null, null).y || 0;
+          campOver = campMarked >= campLimit;
+        }
+      }
       const _due = (currentRole() === 'coach' || typeof memberOutstanding !== 'function') ? 0 : memberOutstanding(m.id);
       // Expired but fully paid → a renewal candidate: highlight in amber so reception
       // is prompted to extend the membership (distinct from the red UNPAID case).
       const needsRenewal = isExpired && _due <= 0.5 && currentRole() !== 'coach';
-      const rowStyle = needsRenewal
+      const rowStyle = campOver
+        ? 'background:rgba(242,96,96,.12);box-shadow:inset 3px 0 0 var(--red)'
+        : needsRenewal
         ? 'background:rgba(245,158,11,.10);box-shadow:inset 3px 0 0 var(--accent-2)'
         : (isExpired ? 'background:rgba(120,120,140,.06)' : '');
+      const campOverBadge = campOver
+        ? `<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(242,96,96,.18);color:var(--red);margin-left:4px" title="Attended ${campMarked} of ${campLimit} enrolled days — limit reached. Any extra day is over the enrolled count.">🚩 ${t('OVER LIMIT', 'تجاوز الحد')} ${campMarked}/${campLimit}</span>`
+        : '';
       const unpaidBadge = _due > 0.5
         ? `<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(242,96,96,.15);color:var(--red);margin-left:4px" title="Not fully paid — ${fmt(_due)} QAR due">💳 ${t('UNPAID', 'غير مدفوع')}</span>`
         : '';
       const renewBadge = needsRenewal
         ? `<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(245,158,11,.18);color:var(--accent-2);margin-left:4px" title="Paid up but membership expired — offer a renewal">🔄 ${t('RENEW', 'تجديد')}</span>`
         : '';
-      const statusBadge = isExpired
+      const statusBadge = isCompleted
+        ? '<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(139,92,246,.16);color:var(--purple);margin-left:4px" title="Finished all enrolled camp days">✓ COMPLETED</span>'
+        : isExpired
         ? '<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(242,96,96,.15);color:var(--red);margin-left:4px">EXPIRED</span>'
         : (status === 'Frozen'
           ? '<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(96,165,250,.15);color:var(--blue);margin-left:4px">FROZEN</span>'
@@ -12470,7 +12558,7 @@ PAGES.attendance = (main) => {
       return `
         <tr style="${rowStyle}">
           <td class="att-name-cell" title="${escapeHtml(m.name)} · ${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}${isExpired ? ' · expired ' + fmtDate(m.expiryDate) : ''}${_due > 0.5 ? ' · ' + fmt(_due) + ' QAR due' : ''}">
-            <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.name)}${statusBadge}${renewBadge}${unpaidBadge}</div>
+            <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.name)}${statusBadge}${campOverBadge}${renewBadge}${unpaidBadge}</div>
             ${m.nameArabic ? `<div dir="rtl" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isExpired ? 'color:var(--text-mute)' : ''}">${escapeHtml(m.nameArabic)}</div>` : ''}
             <div class="text-mute" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(sport)}${sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : ''}</div>
           </td>
@@ -14461,6 +14549,7 @@ window.addRenewal = function(memberId) {
         <div class="field"><label>Expiry date <span class="text-mute" style="font-size:10px;font-weight:400">(auto · override allowed)</span></label><input id="rn-end" type="date" /><div id="rn-end-hint" class="text-mute" style="font-size:10px;margin-top:3px"></div></div>
       </div>
       <div id="rn-deduct-banner" style="display:none"></div>
+      <div id="rn-carry-banner" style="display:none"></div>
       <div class="field"><label>Status</label><select id="rn-status"><option value="active">Active</option><option value="expired">Expired</option></select></div>
     `,
     actions: [
@@ -14488,6 +14577,16 @@ window.addRenewal = function(memberId) {
         if (applyDeduction && pending > 0 && classesRaw > 0) {
           deductedCount = Math.min(pending, classesRaw);
           classes = classesRaw - deductedCount;
+        }
+
+        // ── Carry-forward credit ──
+        // If the member had unused (paid-but-unattended) classes on their previous
+        // finished period for this sport, ADD up to 2 of them onto this renewal.
+        let carried = 0;
+        const applyCarry = document.getElementById('rn-apply-carry')?.checked;
+        if (applyCarry && classes > 0) {
+          carried = carryForwardCredit(m, renewedSport);
+          if (carried > 0) classes = classes + carried;
         }
 
         // 1) Record in renewals[] (audit trail of manual entries)
@@ -14581,7 +14680,7 @@ window.addRenewal = function(memberId) {
         // Clear modal-scoped state so a later renewal doesn't carry over
         window._rnPendingDeduction = 0;
         render();
-        toast(`Renewal recorded — ${renewedSport} (#${m.renewalsBySport[renewedSport]} for this sport) · invoice ${ref}${amount > 0 ? ' · ' + fmt(amount) + ' QAR' : ''}${deductedCount > 0 ? ' · −' + deductedCount + ' post-expiry class' + (deductedCount === 1 ? '' : 'es') : ''}`);
+        toast(`Renewal recorded — ${renewedSport} (#${m.renewalsBySport[renewedSport]} for this sport) · invoice ${ref}${amount > 0 ? ' · ' + fmt(amount) + ' QAR' : ''}${deductedCount > 0 ? ' · −' + deductedCount + ' post-expiry class' + (deductedCount === 1 ? '' : 'es') : ''}${carried > 0 ? ' · +' + carried + ' carried class' + (carried === 1 ? '' : 'es') : ''}`);
       }},
     ],
   });
@@ -14709,16 +14808,45 @@ window.addRenewal = function(memberId) {
       </div>
     `;
   }
-  // Hide the Coach field whenever Summer Camp is the chosen activity (camp has
-  // no coach); show it for any other sport.
+  // Carry-forward credit banner — runs independently so it shows whether or not
+  // there's post-expiry attendance to deduct.
+  function recalcRnCarry() {
+    const actEl = document.getElementById('rn-act');
+    const carryBanner = document.getElementById('rn-carry-banner');
+    if (!actEl || !carryBanner) return;
+    const sport = actEl.value;
+    const credit = carryForwardCredit(m, sport);
+    if (credit > 0) {
+      carryBanner.style.display = 'block';
+      carryBanner.innerHTML = `
+        <div style="margin:4px 0 10px;padding:10px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.3);border-radius:8px">
+          <div style="display:flex;align-items:flex-start;gap:8px">
+            <div style="font-size:18px">🎁</div>
+            <div style="flex:1;font-size:12px;line-height:1.5">
+              <b>Carry-forward credit available.</b><br>
+              Member has <b style="color:#10b981">${credit} unused class${credit === 1 ? '' : 'es'}</b> from their expired ${escapeHtml(sport)} period (max ${CARRY_FORWARD_MAX} carried).
+              <label style="display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer">
+                <input type="checkbox" id="rn-apply-carry" checked />
+                <span>Add ${credit} class${credit === 1 ? '' : 'es'} to this renewal</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      `;
+    } else {
+      carryBanner.style.display = 'none';
+      carryBanner.innerHTML = '';
+    }
+  }
   const syncRnCoachVisibility = () => {
     const actEl2 = document.getElementById('rn-act');
     const coachField = document.getElementById('rn-coach-field');
     if (actEl2 && coachField) coachField.style.display = (actEl2.value === SUMMER_CAMP) ? 'none' : '';
   };
-  document.getElementById('rn-act')?.addEventListener('change', () => { syncRnCoachVisibility(); recalcRnDeduction(); });
+  document.getElementById('rn-act')?.addEventListener('change', () => { syncRnCoachVisibility(); recalcRnDeduction(); recalcRnCarry(); });
   syncRnCoachVisibility();
   recalcRnDeduction();
+  recalcRnCarry();
 };
 
 // Delete ONE specific subscription period (by _sid) — for fixing a duplicate or a
@@ -15376,7 +15504,7 @@ PAGES.trials = (main) => {
           <td>${t.followUpDate ? fmtDate(t.followUpDate) : '<span class="text-mute">—</span>'}</td>
           <td><span style="color:${statusColor};font-weight:600;text-transform:capitalize">${t.status || 'new'}</span></td>
           <td class="text-right" style="white-space:nowrap">
-            ${phone ? `<a class="btn ghost sm" href="https://wa.me/${phone.replace(/[^\d]/g, '')}" target="_blank" title="WhatsApp">💬</a>` : ''}
+            ${phone ? `<a class="btn ghost sm" href="https://wa.me/${phone.replace(/[^\d]/g, '')}?text=${encodeURIComponent(buildTrialFollowupMessage(t))}" target="_blank" title="${t.status === 'converted' ? 'WhatsApp' : 'Send an encouraging follow-up to join'}" onclick="event.stopPropagation();_logTrialFollowup(${t.id})">💬</a>` : ''}
             <button class="btn ghost sm" onclick="editTrial(${t.id})" title="Edit">✏️</button>
             <button class="btn primary sm" onclick="convertTrialToMember(${t.id})" title="Convert to member">→ Convert</button>
             <button class="btn ghost sm" onclick="deleteTrial(${t.id})" title="Delete">🗑</button>
@@ -15509,6 +15637,22 @@ function addTrial() {
     status: 'new', source: '', notes: '',
   });
 }
+
+// When the encouraging WhatsApp message is sent to a NEW trial, move it into the
+// "in follow-up" stage and stamp today's date. Already-progressed trials (follow-up,
+// converted, declined) are left as-is. Runs as the WhatsApp link opens.
+window._logTrialFollowup = function(id) {
+  const t = (state.trials || []).find(x => x.id === id);
+  if (!t) return;
+  if (t.status === 'new' || !t.status) {
+    t.status = 'follow-up';
+    if (!t.followUpDate) t.followUpDate = TODAY;
+    if (typeof audit === 'function') audit('trial.followup', 'trial:' + id, `Sent WhatsApp follow-up to ${t.name}`);
+    save();
+    // Soft refresh so the KPI counts + status update without disturbing the click.
+    setTimeout(() => { try { render(); } catch (_) {} }, 50);
+  }
+};
 
 window.editTrial = function(id) {
   const t = (state.trials || []).find(x => x.id === id);

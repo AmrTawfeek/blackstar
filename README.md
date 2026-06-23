@@ -1,4 +1,92 @@
 # Black Stars CRM
+Version 6.137.0 - Attendance: flag camp members over their enrolled day count.
+
+## 6.137.0 note - camp over-limit attendance flag
+On the Attendance grid, a Summer Camp member who has been marked present for as many
+days as their enrolled duration (e.g. 8 of 8) is now clearly flagged:
+- The row is tinted RED with a red left bar.
+- A "🚩 OVER LIMIT 8/8" badge appears next to their name.
+- Their status shows "✓ COMPLETED" (they finished their enrolled days).
+You can still mark extra days if needed (the existing confirm prompt appears at the
+limit), but the red row + flag make it obvious they've used all the days they paid for,
+so nobody accidentally keeps marking a finished camp member. The "Completed" status was
+already set by the class-limit logic; this adds the visual flag on the attendance row.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.136.0 - FIX: camp expiry wrongly used the day-count, not the validity window.
+
+## 6.136.0 note - camp expiry in edit form
+Critical bug: editing a Summer Camp member with e.g. duration 8 days + validity 1 month
+set the membership expiry to ~8 business days after the start (e.g. 17 Jun → 25 Jun)
+instead of start + the 1-month validity window (17 Jul).
+Cause: the edit form's auto-expiry helper (autoExpiryFromRows) still computed camp end
+from the class-DAY count via campEndDate, even though camp duration and validity were
+decoupled back in v6.115 (duration = class limit, validity = time window). The SAVE
+path was already correct; only the live auto-fill preview was stale, and since the
+field auto-fills, the wrong date got saved.
+Fix: camp expiry now = start + VALIDITY (calendar days), matching the save path. So
+duration 8 + validity 1 month from 17 Jun → expiry 17 Jul. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.135.0 - Members header: bigger, more readable status counts.
+
+## 6.135.0 note - member status count chips
+The Members header status counts (active / expired / frozen / completed / withdrawn)
+were a small one-line subtitle that was hard to read. They're now shown as larger
+colored CHIPS — each with a big bold number and a clear labelled status — so the
+breakdown is easy to scan at a glance. The "X of Y" total sits just above them in a
+slightly larger weight. Same numbers, just far more readable. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.134.0 - Carry-forward credit: up to 2 unused classes onto a renewal.
+
+## 6.134.0 note - carry-forward credit
+When a member's previous period for a sport EXPIRED with classes still unused (paid but
+not attended), they can now carry up to 2 of those classes into their next membership.
+- Credit = unused classes on the latest finished period = totalClasses − attended
+  (live), capped at a maximum of 2 (even if 5 were unused, only 2 carry).
+- On the Renew dialog, when credit exists a green "🎁 Carry-forward credit available"
+  banner appears with a checked box: "Add N classes to this renewal". With it ticked,
+  the carried classes are ADDED to the new package's class count (e.g. renew 8 + carry
+  2 → 10 total). Untick to skip.
+- Only applies to a finished/expired period; an active period gives no credit yet. The
+  credit follows the sport being renewed. The success message notes "+N carried class".
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.133.0 - Clearer invoices: show days/classes + validity period per line.
+
+## 6.133.0 note - invoice line detail
+Each invoice line now spells out exactly what the customer paid for and the period it
+covers, so any customer can read it at a glance:
+- Summer Camp lines show the number of DAYS (e.g. "8 days · ٨ يوم").
+- Normal membership lines show the number of CLASSES (e.g. "12 classes · ١٢ حصة").
+- Both show the validity window: "Valid · صالح: <start> → <expiry>" pulled from the
+  member's matching subscription (by invoice ref + activity).
+This applies to multi-sport (line-item) invoices and to single-item membership
+invoices. Quantity column reflects the same day/class count. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.132.0 - Trials: encouraging WhatsApp follow-up message.
+
+## 6.132.0 note - trial follow-up WhatsApp
+The 💬 WhatsApp button on each Trial row now opens WhatsApp pre-filled with an
+encouraging bilingual (Arabic + English) follow-up message inviting the prospect to
+join — it greets them by name, references the sport they tried, and warmly nudges them
+to sign up. (Before, the button opened an empty chat.)
+Bonus: sending the message to a NEW trial automatically moves it into the "In follow-up"
+stage and stamps today's date, so the Trials KPI ("In follow-up") and status stay
+accurate without extra clicks. Trials already in follow-up / converted / declined are
+left unchanged.
+The TRIAL FOLLOW-UP template (EN + AR) is editable in Settings → reminder templates,
+using {name} / {nameArabic} / {sport} / {coach} placeholders. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.131.0 - Attendance sheet: export as IMAGE (English / Arabic).
 
 ## 6.131.0 note - attendance image export
