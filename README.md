@@ -1,4 +1,55 @@
 # Black Stars CRM
+Version 6.126.0 - Review fix: merge never drops id-less records (schedule safety).
+
+## 6.126.0 note - code review pass
+Did a full review of the recent changes (sync merge, camp duration/validity, transfer,
+attendance cap, role privacy). Found and fixed ONE real bug:
+- Multi-device merge: the record-level merge keyed everything by `id`. Any record
+  WITHOUT an id (e.g. legacy Summer schedule rows, or any id-less collection entry)
+  was silently dropped during a merge — a data-loss risk when two devices sync. The
+  merge now preserves id-less records (keeps them from whichever side has more), so
+  they can never be wiped.
+Everything else reviewed clean: the attendance cap correctly counts all present marks
+and only triggers on a new "present" (not absent); the first cloud snapshot after load
+does NOT show a false "updated on another device" banner (change-detection guard); the
+transfer over-attendance edge clamps safely (no negative classes, no money created);
+currentRole() can't throw. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.125.0 - Transfer keeps A's attendance; moves only remaining classes (live).
+
+## 6.125.0 note - transfer attendance handling
+Two clarifications applied to Membership Transfer (A → B):
+1. The transferring member (A) KEEPS their own attendance marks — they are never wiped
+   — and A's status becomes "Transferred" (when they have no sports left). This was
+   already the case; confirmed and tested.
+2. Only the REMAINING (unattended) classes move to B, so B's total = the original class
+   count − what A already attended, and B starts at 0 attended. The count of A's
+   attended classes now uses LIVE attendance (the actual roll-call marks), taking the
+   greater of the live marks and the stored counter, so it's accurate even when the
+   stored counter was never updated. Example: A had 12 classes and attended 5 → 7
+   classes move to B; A keeps their 5 marks.
+
+(Re. deleting a member: archived members already keep ALL their data, including
+attendance — delete is a soft archive that can be restored, nothing is destroyed.)
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.124.0 - FIX: camp attendance could exceed its class-day limit.
+
+## 6.124.0 note - attendance limit bypass fixed
+Critical bug: a Summer Camp member set to e.g. 8 class days could be marked present far
+more than 8 times (seen as 25/25). Cause: the "already attended all classes" cap, and
+the Completed/Expired status check, counted ONLY the present marks that fell inside the
+subscription's date window (start→end). Marks dated BEFORE the start (or after the end)
+were not counted, so they slipped past the limit entirely.
+Fix: both the attendance cap warning and campLimitReached now count ALL present marks
+for that sport, regardless of date. So an 8-day camp warns on the 9th mark wherever it
+falls, and the member correctly flips to Completed once 8 are marked. (totalClasses is
+also parsed defensively in case it was stored as text.) No schema change (SCHEMA_VERSION
+stays 9).
+
+# Black Stars CRM
 Version 6.123.0 - Sync: ask to refresh instead of auto-refreshing the screen.
 
 ## 6.123.0 note - refresh prompt on remote change

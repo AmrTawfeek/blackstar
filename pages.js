@@ -12293,10 +12293,12 @@ PAGES.attendance = (main) => {
     // member can't be marked present more times than classes they paid for.
     if (next === 'Y') {
       const sub = (m.subscriptions || []).filter(s => (s.activity || '') === sport).slice(-1)[0];
-      const planned = sub ? (sub.totalClasses || 0) : 0;
+      const planned = sub ? (parseInt(sub.totalClasses) || 0) : 0;
       if (planned > 0) {
-        const fromDate = sub.start || null, toDate = sub.end || null;
-        const live = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(m, sport, fromDate, toDate) : { y: 0 };
+        // Count ALL present marks for this sport, not just those inside the
+        // subscription's date window — otherwise marks dated before the start (or
+        // after the end) bypass the class limit. The limit is "N classes", period.
+        const live = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(m, sport, null, null) : { y: 0 };
         const alreadyY = live.y || 0;
         // Only block if this cell isn't already counted as Y (it's a NEW present).
         const cellWasY = m.dailyAttendance[mo][sport][String(day)] === 'Y';
@@ -19722,9 +19724,12 @@ window.transferMembership = function(fromId, sport, toId) {
   const coachId = enr.coachId;
   const fullClasses = enr.classes || (found && found.li && found.li.classes) || 0;
   // Account for attendance: only the UNATTENDED (remaining) classes transfer, since
-  // the attended ones were already consumed by A.
+  // the attended ones were already consumed by A. Use LIVE attendance (the actual
+  // roll-call marks) so this is accurate even if the stored counter is stale.
   const aSub = (A.subscriptions || []).find(s => (s.activity || '') === sport);
-  const attended = aSub ? (parseInt(aSub.attendedClasses) || 0) : 0;
+  const liveAtt = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(A, sport, null, null).y : 0;
+  const storedAtt = aSub ? (parseInt(aSub.attendedClasses) || 0) : 0;
+  const attended = Math.max(liveAtt, storedAtt);   // whichever reflects more attendance
   const classes = Math.max(0, fullClasses - attended);
   const price = enr.price || (found && found.li && found.li.price) || 0;
   // Split the price by attendance so the ORIGINAL coach keeps commission for the

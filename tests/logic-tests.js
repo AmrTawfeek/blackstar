@@ -1824,6 +1824,14 @@ ${seed}
     eq(r.keep + r.move, 500, 'transfer: value split sums to the original price');
     eq(splitVal(500, 0, 12).move, 500, 'transfer: nothing attended → full value moves');
     eq(splitVal(500, 12, 12).keep, 500, 'transfer: all attended → full value stays');
+    // Only REMAINING (unattended) classes move to B; B's total = original − A attended.
+    var attendedMove = function (full, liveAtt, storedAtt) {
+      var att = Math.max(liveAtt, storedAtt);
+      return { aAttended: att, movesToB: Math.max(0, full - att) };
+    };
+    eq(attendedMove(12, 5, 0).movesToB, 7, 'transfer: only remaining classes move to B (12−5)');
+    eq(attendedMove(12, 0, 5).movesToB, 7, 'transfer: uses stored count when live is 0');
+    eq(attendedMove(8, 8, 0).movesToB, 0, 'transfer: fully attended → nothing moves');
     // memberStatus recognises Transferred only when no enrollments remain
     eq(memberStatus({ status: 'Transferred', enrollments: [] }), 'Transferred', 'status: transferred-out member shows Transferred');
     eq(memberStatus({ status: 'Transferred', enrollments: [{ sport: 'Boxing' }], expiryDate: '2099-01-01' }), 'Active', 'status: still-enrolled member is not Transferred');
@@ -1862,6 +1870,15 @@ ${seed}
       subscriptions: [{ activity: 'Summer Camp', totalClasses: 8, start: '2026-06-14', end: '2099-01-01', status: 'active' }],
       dailyAttendance: { '2026-06': { 'Summer Camp': { '14': 'Y', '15': 'Y', '16': 'Y', '17': 'Y', '18': 'Y', '21': 'Y', '22': 'Y', '23': 'Y' } } } };
     eq(memberStatus(early), 'Completed', 'camp: finished classes before window ends → Completed');
+    // Cap must count ALL present marks, not just those inside the date window —
+    // otherwise marks dated before the start bypass the limit (the 8-vs-25 bug).
+    var spread = { enrollments: [{ sport: 'Summer Camp' }],
+      subscriptions: [{ activity: 'Summer Camp', totalClasses: 8, start: '2026-06-23', end: '2026-07-23', status: 'active' }],
+      dailyAttendance: { '2026-06': { 'Summer Camp': {} } } };
+    for (var dd = 10; dd <= 20; dd++) spread.dailyAttendance['2026-06']['Summer Camp'][String(dd)] = 'Y'; // 11 marks, mostly before start
+    var allY = liveAttendanceCount(spread, 'Summer Camp', null, null).y;
+    eq(allY >= 8, true, 'cap: all marks counted (over the 8 limit) regardless of date window');
+    eq(campLimitReached(spread), true, 'cap: camp over its class limit via marks outside the window');
   })();
   // Camp recalc: legacy calendar counts are flagged and fixed to business days
   (function () {
@@ -2164,6 +2181,12 @@ ${seed}
     // the save→remote-update→save refresh loop).
     var same = _mergeCollection([{ id: 1, v: 'a' }], [{ id: 1, v: 'a' }], [{ id: 1, v: 'a' }]);
     eq(_stableStr(same.merged), _stableStr([{ id: 1, v: 'a' }]), 'merge: identical data → unchanged result (no loop)');
+    // Records WITHOUT an id (e.g. legacy schedule rows) must never be dropped.
+    var noId = _mergeCollection([], [{ day: 'mon' }, { day: 'tue' }], [{ day: 'mon' }]);
+    eq(noId.merged.length, 2, 'merge: id-less records preserved (kept from the larger side)');
+    var mixed = _mergeCollection([{ id: 1, v: 'a' }], [{ id: 1, v: 'L' }, { day: 'x' }], [{ id: 1, v: 'a' }, { day: 'x' }, { day: 'y' }]);
+    eq(mixed.merged.filter(function (r) { return r.id === 1; })[0].v, 'L', 'merge: id record merges while id-less preserved');
+    eq(mixed.merged.filter(function (r) { return r.id == null; }).length, 2, 'merge: id-less kept from larger (remote) side');
   })();
   // Invoices activity filter: all "Summer Camp · X" variants collapse to one option
   (function () {
