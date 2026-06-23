@@ -1,4 +1,48 @@
 # Black Stars CRM
+Version 6.146.0 - Members header status chips are now clickable filters.
+
+## 6.146.0 note - clickable status chips
+The status count chips in the Members header (Active / Expired / Frozen / Completed /
+Withdrawn) are now CLICKABLE. Clicking one filters the member list to just that status;
+the active chip gets a highlight ring. Clicking the same chip again clears the filter
+(toggle). This is a quick shortcut for the existing status filter dropdown — both stay
+in sync. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.145.0 - FIX: another device's stale save could revert your edit.
+
+## 6.145.0 note - multi-device stale-overwrite protection
+With two machines using the app, an edit saved on one could be silently reverted when
+the OTHER device later saved while holding older data — e.g. you set a camp validity to
+1 month (expiry 17 Jul), then the second device pushed its full state with the old 8-day
+value, and the merge treated it as "only remote changed" and took the stale value.
+Root cause: the cloud stores ONE document that each device overwrites wholesale; the
+app-layer merge compares against a base, but after your own save the base equals your
+value, so a stale remote looks like the only change.
+Fix: every record that changes now carries a per-record revision timestamp (_rev). The
+multi-device merge uses it as a tiebreaker — a remote record with an OLDER _rev can no
+longer overwrite a fresher local edit, while a genuinely newer remote still wins. This
+makes edits much more resilient when two devices are active. Records without a _rev keep
+the previous merge behaviour (no regression).
+Note: this is a strong mitigation, not a full multi-writer backend. For complete safety
+when two people edit the SAME record at the same second, a per-record cloud store is
+still the ultimate step. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.144.0 - Families: collapsible cards + search.
+
+## 6.144.0 note - families collapse/expand + search
+The Families page is now easier to navigate when there are many households:
+- Each family card is COLLAPSIBLE — click the family header (or its ▼ caret) to fold/
+  unfold its member table. Collapsed cards show just the family name, member count and
+  contact, so you can scan all households at a glance.
+- "⊕ Expand all" / "⊖ Collapse all" buttons toggle every card at once.
+- A SEARCH box filters families live by family name, member name (English or Arabic),
+  or phone number. Matching families auto-expand so the matching member is visible, and
+  a "N / total shown" counter + a "no matches" message keep it clear.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.143.0 - Expiring: green Remind button once reminded (+ reminded filter confirmed).
 
 ## 6.143.0 note - reminded button colour + filter

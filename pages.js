@@ -711,6 +711,23 @@ window.downloadBackup = function() {
 };
 
 // ─── MEMBERS ──────────────────────────────────────────────────
+// Clicking a status chip in the Members header filters the table to that status.
+// Clicking the same chip again clears the filter (toggle). Persists the filter and
+// re-renders the Members page.
+window._filterByStatus = function(status) {
+  const f = loadFilter('members', { search: '', status: 'all', sports: [], coach: 'all', nationality: 'all', incomplete: 'all', balance: 'all', expiry: 'all' });
+  const cur = Array.isArray(f.statuses) ? f.statuses : [];
+  // Toggle: if this status is already the only one selected, clear it.
+  if (cur.length === 1 && cur[0] === status) {
+    f.statuses = [];
+  } else {
+    f.statuses = [status];
+  }
+  f.status = 'all';   // keep legacy field neutral; statuses[] drives filtering
+  saveFilter('members', f);
+  if (typeof navigate === 'function') navigate('members');
+};
+
 PAGES.members = (main) => {
   let filter = loadFilter('members', { search: '', status: 'all', sports: [], coach: 'all', nationality: 'all', incomplete: 'all', balance: 'all', expiry: 'all' });
   if (!Array.isArray(filter.sports)) filter.sports = filter.sport && filter.sport !== 'all' ? [filter.sport] : [];  // migrate old single-sport filter
@@ -1069,18 +1086,23 @@ PAGES.members = (main) => {
         <div class="member-stat-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
           ${(() => {
           const mc = memberCounts();
-          const chip = (n, label, color, bg, icon) => `
-            <div style="display:flex;align-items:center;gap:7px;padding:6px 12px;border-radius:10px;background:${bg};border:1px solid ${color}33">
+          // Each chip is clickable → filters the table to that status (toggles off if
+          // it's already the only active filter). The active one gets a ring.
+          const chip = (n, label, status, color, bg, icon) => {
+            const active = (filter.statuses || []).length === 1 && filter.statuses[0] === status;
+            return `
+            <div onclick="window._filterByStatus('${status}')" title="${t('Click to filter by', 'اضغط للتصفية حسب')} ${label}" style="display:flex;align-items:center;gap:7px;padding:6px 12px;border-radius:10px;background:${bg};border:1px solid ${color}${active ? ';box-shadow:0 0 0 2px ' + color : '33'};cursor:pointer;user-select:none;transition:transform .08s" onmousedown="this.style.transform='scale(.96)'" onmouseup="this.style.transform=''" onmouseleave="this.style.transform=''">
               <span style="font-size:20px;font-weight:800;line-height:1;color:${color}">${n}</span>
               <span style="font-size:12px;font-weight:600;color:${color};opacity:.95">${icon ? icon + ' ' : ''}${label}</span>
             </div>`;
+          };
           const parts = [
-            chip(mc.active, 'Active', 'var(--green)', 'rgba(34,197,94,.12)', ''),
-            chip(mc.expired, 'Expired', 'var(--red)', 'rgba(239,68,68,.12)', ''),
+            chip(mc.active, 'Active', 'Active', 'var(--green)', 'rgba(34,197,94,.12)', ''),
+            chip(mc.expired, 'Expired', 'Expired', 'var(--red)', 'rgba(239,68,68,.12)', ''),
           ];
-          if (mc.frozen) parts.push(chip(mc.frozen, 'Frozen', 'var(--blue)', 'rgba(59,130,246,.12)', '❄️'));
-          if (mc.completed) parts.push(chip(mc.completed, 'Completed', 'var(--purple)', 'rgba(139,92,246,.12)', ''));
-          if (mc.withdrawn) parts.push(chip(mc.withdrawn, 'Withdrawn', 'var(--accent-2)', 'rgba(245,158,11,.12)', '↩'));
+          if (mc.frozen) parts.push(chip(mc.frozen, 'Frozen', 'Frozen', 'var(--blue)', 'rgba(59,130,246,.12)', '❄️'));
+          if (mc.completed) parts.push(chip(mc.completed, 'Completed', 'Completed', 'var(--purple)', 'rgba(139,92,246,.12)', ''));
+          if (mc.withdrawn) parts.push(chip(mc.withdrawn, 'Withdrawn', 'Withdrawn', 'var(--accent-2)', 'rgba(245,158,11,.12)', '↩'));
           return parts.join('');
         })()}
         </div>
@@ -4130,18 +4152,25 @@ PAGES.families = (main) => {
         <td style="padding:6px 8px;text-align:right" class="num" style="color:${mOut > 0 ? 'var(--red)' : 'var(--text-mute)'}">${mOut > 0 ? fmt(mOut) : '—'}</td>
       </tr>`;
     }).join('');
-    return `<div class="card" style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:10px">
-        <div style="flex:1;min-width:200px">
-          <div style="font-weight:800;font-size:16px;cursor:pointer" onclick="viewFamily(${f.id})">👨‍👩‍👧 ${escapeHtml(familyName(f.id))}</div>
+    // Searchable haystack: family name + each member's EN/AR name + phones.
+    const hay = [
+      familyName(f.id),
+      phone || '',
+      ...members.map(m => `${m.name || ''} ${m.nameArabic || ''} ${m.phone || ''} ${m.phone2 || ''}`),
+    ].join(' ').toLowerCase();
+    return `<div class="card fam-card" data-fam="${f.id}" data-hay="${escapeHtml(hay)}" style="margin-bottom:12px">
+      <div class="fam-head" style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+        <div style="flex:1;min-width:200px;cursor:pointer" onclick="window._toggleFam(${f.id})">
+          <div style="font-weight:800;font-size:16px;display:flex;align-items:center;gap:6px"><span class="fam-caret" data-fam-caret="${f.id}" style="display:inline-block;transition:transform .15s;font-size:12px;color:var(--text-mute)">▼</span>👨‍👩‍👧 ${escapeHtml(familyName(f.id))}</div>
           <div class="text-mute" style="font-size:12px;margin-top:2px">${members.length} ${t('members', 'عضو')}${expiringSoon ? ` · <span style="color:var(--accent-2)">${expiringSoon} ${t('expiring soon', 'قرب الانتهاء')}</span>` : ''}${phone ? ` · ${escapeHtml(String(phone))}` : ''}</div>
         </div>
         <div style="display:flex;gap:6px;align-items:flex-start">
           ${phone && isRealPhone(phone) ? `<a class="btn ghost sm" href="${waLink(phone)}" target="_blank" title="WhatsApp the family">💬</a>` : ''}
-          <button class="btn ghost sm" onclick="viewFamily(${f.id})">👁 ${t('View', 'عرض')}</button>
-          <button class="btn ghost sm" onclick="editFamily(${f.id})" title="${t('Rename / edit', 'تعديل الاسم')}">✏️</button>
+          <button class="btn ghost sm" onclick="event.stopPropagation();viewFamily(${f.id})">👁 ${t('View', 'عرض')}</button>
+          <button class="btn ghost sm" onclick="event.stopPropagation();editFamily(${f.id})" title="${t('Rename / edit', 'تعديل الاسم')}">✏️</button>
         </div>
       </div>
+      <div class="fam-body" data-fam-body="${f.id}">
       <div class="table-wrap">
         <table style="width:100%">
           <thead><tr>
@@ -4159,6 +4188,7 @@ PAGES.families = (main) => {
           </tr></tfoot>
         </table>
       </div>
+      </div>
     </div>`;
   }).join('') : `<div class="card text-mute" style="text-align:center;padding:30px">${t('No households yet. Open a member, tap', 'لا توجد عائلات بعد. افتح عضواً واضغط')} <b>👨‍👩‍👧 ${t('Family', 'العائلة')}</b> ${t('to group siblings together, or select members and use Add to family.', 'لجمع الإخوة معاً، أو اختر أعضاء واستخدم إضافة إلى عائلة.')}</div>`;
 
@@ -4173,7 +4203,58 @@ PAGES.families = (main) => {
       <div class="kpi green"><div class="kpi-label">${t('Total paid', 'إجمالي المدفوع')}</div><div class="kpi-value num">${fmt(totalPaid)}</div></div>
       <div class="kpi ${totalOut > 0 ? 'red' : 'green'}"><div class="kpi-label">${t('Combined balance', 'إجمالي المستحق')}</div><div class="kpi-value num">${fmt(totalOut)}</div></div>
     </div>
-    ${cards}`;
+    ${rows.length ? `<div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px">
+      <input id="fam-search" type="search" placeholder="🔍 ${t('Search family, member, or phone…', 'ابحث عن عائلة أو عضو أو هاتف…')}" style="flex:1;min-width:200px;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:13px" />
+      <button class="btn ghost sm" id="fam-expand-all">⊕ ${t('Expand all', 'توسيع الكل')}</button>
+      <button class="btn ghost sm" id="fam-collapse-all">⊖ ${t('Collapse all', 'طي الكل')}</button>
+      <span id="fam-count" class="text-mute" style="font-size:11px;margin-left:auto"></span>
+    </div>` : ''}
+    <div id="fam-list">${cards}</div>
+    <div id="fam-noresults" class="card text-mute" style="display:none;text-align:center;padding:24px">${t('No families match your search.', 'لا توجد عائلات مطابقة لبحثك.')}</div>`;
+
+  // ── Collapse / expand + search wiring ──
+  window._toggleFam = function(fid) {
+    const body = document.querySelector(`[data-fam-body="${fid}"]`);
+    const caret = document.querySelector(`[data-fam-caret="${fid}"]`);
+    if (!body) return;
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? '' : 'none';
+    if (caret) caret.style.transform = hidden ? '' : 'rotate(-90deg)';
+  };
+  const setAllFams = (collapsed) => {
+    document.querySelectorAll('[data-fam-body]').forEach(b => { b.style.display = collapsed ? 'none' : ''; });
+    document.querySelectorAll('[data-fam-caret]').forEach(c => { c.style.transform = collapsed ? 'rotate(-90deg)' : ''; });
+  };
+  document.getElementById('fam-expand-all')?.addEventListener('click', () => setAllFams(false));
+  document.getElementById('fam-collapse-all')?.addEventListener('click', () => setAllFams(true));
+  const famCountEl = document.getElementById('fam-count');
+  const updateFamCount = () => {
+    const shown = [...document.querySelectorAll('.fam-card')].filter(c => c.style.display !== 'none').length;
+    if (famCountEl) famCountEl.textContent = `${shown} / ${totalHouseholds} ${t('shown', 'ظاهرة')}`;
+    const nores = document.getElementById('fam-noresults');
+    if (nores) nores.style.display = shown === 0 ? '' : 'none';
+  };
+  const searchEl = document.getElementById('fam-search');
+  if (searchEl) {
+    searchEl.addEventListener('input', () => {
+      const q = searchEl.value.trim().toLowerCase();
+      document.querySelectorAll('.fam-card').forEach(card => {
+        const hay = (card.getAttribute('data-hay') || '');
+        const match = !q || hay.indexOf(q) >= 0;
+        card.style.display = match ? '' : 'none';
+        // When searching, auto-expand matches so the matching member is visible.
+        if (q && match) {
+          const fid = card.getAttribute('data-fam');
+          const body = card.querySelector('[data-fam-body]');
+          const caret = card.querySelector('[data-fam-caret]');
+          if (body) body.style.display = '';
+          if (caret) caret.style.transform = '';
+        }
+      });
+      updateFamCount();
+    });
+  }
+  updateFamCount();
 };
 
 // ─── Summer Camp members list (admin) + transportation flag ─────────────────
