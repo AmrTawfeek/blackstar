@@ -2188,6 +2188,68 @@ ${seed}
     eq(mixed.merged.filter(function (r) { return r.id === 1; })[0].v, 'L', 'merge: id record merges while id-less preserved');
     eq(mixed.merged.filter(function (r) { return r.id == null; }).length, 2, 'merge: id-less kept from larger (remote) side');
   })();
+  // Search normalization: phone formats + Arabic alef folding
+  (function () {
+    var m = { name: 'Anas', nameArabic: 'انس محمد', phone: '+97450413948', phone2: null, qid: '288' };
+    var fields = [m.name, m.nameArabic, m.phone, m.phone2, m.qid];
+    var phones = [m.phone, m.phone2];
+    // Phone: every way of writing the number matches.
+    eq(searchMatchesFields('+97450413948', fields, phones), true, 'search: +974 phone matches');
+    eq(searchMatchesFields('50413948', fields, phones), true, 'search: local 8-digit phone matches');
+    eq(searchMatchesFields('5041 3948', fields, phones), true, 'search: spaced phone matches');
+    eq(searchMatchesFields('00974 50413948', fields, phones), true, 'search: 00974 phone matches');
+    eq(normalizePhoneForCompare('+97450413948'), '50413948', 'phone canonical: +974 → local 8');
+    eq(normalizePhoneForCompare('0097450413948'), '50413948', 'phone canonical: 00974 → local 8');
+    // Arabic alef folding: أنس matches stored انس.
+    eq(searchMatchesFields('أنس', fields, phones), true, 'search: أنس matches stored انس');
+    eq(searchMatchesFields('انس', fields, phones), true, 'search: انس matches');
+    eq(normalizeArabicForSearch('أنس'), normalizeArabicForSearch('انس'), 'arabic: أ folds to ا');
+    eq(normalizeArabicForSearch('فاطمة'), normalizeArabicForSearch('فاطمه'), 'arabic: ة folds to ه');
+  })();
+  // Expiring: reminder count + reminded filter
+  (function () {
+    var none = { startDate: '2026-05-01' };
+    var once = { startDate: '2026-05-01', reminderDates: ['2026-06-22'] };
+    var twice = { startDate: '2026-05-01', reminderDates: ['2026-06-16', '2026-06-22'] };
+    eq(reminderInfo(none).count, 0, 'reminder count: none → 0');
+    eq(reminderInfo(once).count, 1, 'reminder count: once → 1');
+    eq(reminderInfo(twice).count, 2, 'reminder count: twice → 2');
+    var passRem = function (m, f) {
+      var rc = reminderInfo(m).count;
+      if (f === 'reminded' && rc < 1) return false;
+      if (f === 'notreminded' && rc >= 1) return false;
+      return true;
+    };
+    eq(passRem(twice, 'reminded'), true, 'reminded filter: keeps reminded');
+    eq(passRem(none, 'reminded'), false, 'reminded filter: drops not-reminded');
+    eq(passRem(none, 'notreminded'), true, 'not-reminded filter: keeps un-reminded');
+    eq(passRem(once, 'notreminded'), false, 'not-reminded filter: drops reminded');
+  })();
+  // Per-subscription delete: only allowed when that period has 0 attendance
+  (function () {
+    var canDelete = function (sub) { return (parseInt(sub.attendedClasses) || 0) <= 0; };
+    eq(canDelete({ attendedClasses: 0 }), true, 'sub delete: 0 attended → allowed');
+    eq(canDelete({ attendedClasses: 6 }), false, 'sub delete: attended → blocked');
+    // Deleting one sub leaves the others and recomputes expiry to the latest end.
+    var subs = [
+      { _sid: 's1', activity: 'Gymnastic', end: '2026-06-12', attendedClasses: 6 },
+      { _sid: 's2', activity: 'Gymnastic', end: '2026-07-22', attendedClasses: 0 },
+      { _sid: 's3', activity: 'Gymnastic', end: '2026-07-23', attendedClasses: 0 },
+    ];
+    var after = subs.filter(function (s) { return s._sid !== 's3'; });
+    eq(after.map(function (s) { return s._sid; }).join(','), 's1,s2', 'sub delete: only the chosen period removed');
+    var ends = after.map(function (s) { return s.end; }).filter(Boolean).sort();
+    eq(ends[ends.length - 1], '2026-07-22', 'sub delete: expiry recomputed to latest remaining end');
+  })();
+  // Reminder message kind: completed members get the "completed" template, not "expired"
+  (function () {
+    var pickKind = function (completed, bucket) {
+      return completed ? 'completed' : (bucket === 'expired' ? 'expired' : 'expiring');
+    };
+    eq(pickKind(true, 'expired'), 'completed', 'reminder kind: class-completed → completed message');
+    eq(pickKind(false, 'expired'), 'expired', 'reminder kind: truly expired → expired message');
+    eq(pickKind(false, 'soon'), 'expiring', 'reminder kind: expiring soon → expiring message');
+  })();
   // Invoices activity filter: all "Summer Camp · X" variants collapse to one option
   (function () {
     var isCamp = function (s) { return typeof s === 'string' && (s === 'Summer Camp' || s.indexOf('Summer Camp') === 0); };

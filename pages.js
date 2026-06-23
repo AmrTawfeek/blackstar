@@ -893,15 +893,9 @@ PAGES.members = (main) => {
       if (f.dupNames && dupNameInfo && !dupNameInfo.ids.has(m.id)) return false;
       if (f.search) {
         const raw = f.search.trim();
-        const q = raw.toLowerCase();
-        const hay = [m.name, m.nameArabic, m.phone, m.phone2, m.qid, m.email, m.nationality].filter(Boolean).join(' ').toLowerCase();
-        let hit = hay.includes(q);
-        if (!hit) {
-          // Phone-aware fallback: match by digits, ignoring spaces and +974.
-          const qDigits = raw.replace(/\D/g, '');
-          if (qDigits.length >= 4) hit = phoneSearchMatches(m.phone, qDigits) || phoneSearchMatches(m.phone2, qDigits);
-        }
+        let hit = searchMatchesFields(raw, [m.name, m.nameArabic, m.phone, m.phone2, m.qid, m.email, m.nationality], [m.phone, m.phone2]);
         // Fuzzy (typo-tolerant) fallback on the names, e.g. "mohamed" → "Mohammed".
+        const q = raw.toLowerCase();
         if (!hit && q.length >= 3 && !/\d/.test(q)) hit = fuzzyMatch(m.name, q) || fuzzyMatch(m.nameArabic, q);
         if (!hit) return false;
       }
@@ -1501,7 +1495,12 @@ function viewMember(id) {
           else if (s.start && s.end) { label = 'active'; cls = 'active'; }
           else if (s.status) { label = s.status.toLowerCase(); cls = label === 'expired' ? 'expired' : 'active'; }
           else { return '—'; }
-          return `<span class="badge ${cls}">${label}</span>`;
+          const sid = s._sid || s._rid || '';
+          const canDelete = currentRole() === 'admin' && (attended == null || attended <= 0) && (liveForSport.y || 0) <= 0 && sid;
+          const delBtn = canDelete
+            ? ` <button onclick="event.stopPropagation();deleteSubscription(${m.id}, '${sid}')" title="Delete this subscription period (0 attended) — fixes a duplicate or a not-started entry" style="background:transparent;border:0;color:var(--red);opacity:.7;cursor:pointer;padding:0 2px;font-size:11px">🗑</button>`
+            : '';
+          return `<span class="badge ${cls}">${label}</span>${delBtn}`;
         })()}</td>
       </tr>
     `;
@@ -4978,8 +4977,7 @@ PAGES.duepayment = (main) => {
     }
     if (f.search) {
       const q = f.search.toLowerCase();
-      const hay = ((r.m.name || '') + ' ' + (r.m.nameArabic || '') + ' ' + (r.m.phone || '')).toLowerCase();
-      if (!hay.includes(q)) return false;
+      if (!searchMatchesFields(q, [r.m.name, r.m.nameArabic, r.m.phone, r.m.phone2, r.m.qid], [r.m.phone, r.m.phone2])) return false;
     }
     return true;
   }).sort((a, b) => b.total - a.total);
@@ -5328,8 +5326,7 @@ PAGES.campmembers = (main) => {
     if (f.expiring === 'soon' && !isExpiringSoon(m)) return false;
     if (f.search) {
       const q = f.search.toLowerCase();
-      const hay = ((m.name || '') + ' ' + (m.nameArabic || '') + ' ' + (m.phone || '')).toLowerCase();
-      if (!hay.includes(q)) return false;
+      if (!searchMatchesFields(q, [m.name, m.nameArabic, m.phone, m.phone2, m.qid], [m.phone, m.phone2])) return false;
     }
     return true;
   });
@@ -10623,7 +10620,7 @@ PAGES.sales = (main) => {
         const cust = customerInfo(s);
         const itemsText = (s.items || []).map(it => it.name).join(' ');
         const hay = [cust.name, cust.nameArabic, cust.phone, cust.phone2, cust.qid, itemsText, s.notes].filter(Boolean).join(' ').toLowerCase();
-        if (!hay.includes(q)) return false;
+        if (!searchMatchesFields(q, [cust.name, cust.nameArabic, cust.phone, cust.phone2, cust.qid, itemsText, s.notes], [cust.phone, cust.phone2])) return false;
       }
       if (filter.month !== 'all' && s.month !== filter.month) return false;
       if (filter.method !== 'all' && s.method !== filter.method) return false;
@@ -11711,6 +11708,17 @@ PAGES.settings = (main, section) => {
         </div>
       </div>
 
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div class="field" style="margin:0">
+          <label style="display:flex;align-items:center;gap:6px"><span style="background:rgba(139,92,246,.15);color:#8b5cf6;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700">COMPLETED</span> English</label>
+          <textarea id="tpl-completed-en" rows="8" style="width:100%;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;line-height:1.5;resize:vertical">${escapeHtml(reminderTemplate('completed_en'))}</textarea>
+        </div>
+        <div class="field" style="margin:0">
+          <label style="display:flex;align-items:center;gap:6px"><span style="background:rgba(139,92,246,.15);color:#8b5cf6;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700">COMPLETED</span> العربية</label>
+          <textarea id="tpl-completed-ar" rows="8" dir="rtl" style="width:100%;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;line-height:1.5;resize:vertical">${escapeHtml(reminderTemplate('completed_ar'))}</textarea>
+        </div>
+      </div>
+
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button class="btn primary" id="save-tpls">💾 Save templates</button>
         <button class="btn ghost" id="reset-tpls" title="Restore the default English + Arabic messages">↻ Restore defaults</button>
@@ -11898,6 +11906,8 @@ PAGES.settings = (main, section) => {
       expired_ar:  $('#tpl-expired-ar').value,
       expiring_en: $('#tpl-expiring-en').value,
       expiring_ar: $('#tpl-expiring-ar').value,
+      completed_en: $('#tpl-completed-en')?.value ?? reminderTemplate('completed_en'),
+      completed_ar: $('#tpl-completed-ar')?.value ?? reminderTemplate('completed_ar'),
     };
     save();
     toast('💬 Reminder templates saved');
@@ -11921,6 +11931,8 @@ PAGES.settings = (main, section) => {
       expired_ar:  $('#tpl-expired-ar').value,
       expiring_en: $('#tpl-expiring-en').value,
       expiring_ar: $('#tpl-expiring-ar').value,
+      completed_en: $('#tpl-completed-en')?.value ?? reminderTemplate('completed_en'),
+      completed_ar: $('#tpl-completed-ar')?.value ?? reminderTemplate('completed_ar'),
     };
     // Temporarily inject live values
     const prevSaved = state.settings?.reminderTemplates;
@@ -12194,11 +12206,7 @@ PAGES.attendance = (main) => {
         const raw = filter.search.trim();
         const q = raw.toLowerCase();
         const hay = [m.name, m.nameArabic, m.phone, m.phone2, m.qid].filter(Boolean).join(' ').toLowerCase();
-        let hit = hay.includes(q);
-        if (!hit) {
-          const qDigits = raw.replace(/\D/g, '');   // match phone ignoring spaces / +974
-          if (qDigits.length >= 4) hit = phoneSearchMatches(m.phone, qDigits) || phoneSearchMatches(m.phone2, qDigits);
-        }
+        let hit = searchMatchesFields(raw, [m.name, m.nameArabic, m.phone, m.phone2, m.qid], [m.phone, m.phone2]);
         if (!hit && q.length >= 3 && !/\d/.test(q)) hit = fuzzyMatch(m.name, q) || fuzzyMatch(m.nameArabic, q);
         if (!hit) continue;
       }
@@ -12601,6 +12609,8 @@ PAGES.attendance = (main) => {
         <button class="btn ghost" id="att-import">📂 Import CSV</button>
         <button class="btn ghost" id="att-export">📥 Export CSV</button>
         <button class="btn ghost" id="att-export-pdf">📄 Export PDF</button>
+        <button class="btn ghost" id="att-export-img-en" title="Download the sheet as an image (English)">🖼 Image (EN)</button>
+        <button class="btn ghost" id="att-export-img-ar" title="تحميل الورقة كصورة (عربي)">🖼 صورة (AR)</button>
       </div>
     </div>
 
@@ -12904,6 +12914,119 @@ PAGES.attendance = (main) => {
     toast(`PDF report · ${rows.length} rows`);
   });
 
+  // ─── Attendance sheet → IMAGE (PNG), English or Arabic ─────────────────
+  // Builds the same grid as the PDF, but renders it to a PNG via an SVG
+  // foreignObject → canvas (no external libraries, works offline). Two buttons
+  // pick the language for the labels/heading and the text direction.
+  function exportAttendanceImage(lang) {
+    const ar = lang === 'ar';
+    const L = ar ? {
+      brand: '★ نادي بلاك ستارز الرياضي', sub: 'الوعب، الدوحة · تقرير الحضور',
+      generated: 'تاريخ الإصدار', student: 'الطالب · الرياضة', yTot: 'حضور/إجمالي',
+      rate: 'النسبة', students: 'طالب', rows: 'صف', overall: 'الإجمالي',
+      allCoaches: 'كل المدربين', allSports: 'كل الرياضات', present: 'حاضر', absent: 'غائب',
+      legend: 'حاضر = Y · غائب = N · لم يُسجّل = ·', noData: 'لا يوجد طلاب للتصدير',
+    } : {
+      brand: '★ Black Stars Sports Club', sub: 'Waab, Doha · Attendance Report',
+      generated: 'Generated', student: 'Student · Sport', yTot: 'Y/Tot',
+      rate: 'Rate', students: 'students', rows: 'rows', overall: 'overall',
+      allCoaches: 'All coaches', allSports: 'All sports', present: 'P', absent: 'A',
+      legend: 'Y = present · N = absent · · = not marked', noData: 'No students to export',
+    };
+    const rows = getRows();
+    if (!rows.length) { toast(L.noData, 'error'); return; }
+    if (filter.month === 'all') { toast(ar ? 'اختر شهراً محدداً لتصدير الصورة' : 'Pick a specific month for image export', 'error'); return; }
+    const gM = gridMonth();
+    const totalDays = daysInMonth(gM);
+    const selDays = (filter.days || []).filter(d => d >= 1 && d <= totalDays);
+    const baseDays = selDays.length ? selDays.slice().sort((a, b) => a - b) : Array.from({ length: totalDays }, (_, i) => i + 1);
+    const dayCols = visibleDays(rows, baseDays, gM);
+    const dir = ar ? 'rtl' : 'ltr';
+    const align = ar ? 'right' : 'left';
+
+    const dayHeads = dayCols.map(d => `<th style="border:1px solid #e5e5ea;padding:3px 1px;font-size:8px;color:#777">${d}</th>`).join('');
+    let grandY = 0, grandSlots = 0;
+    const bodyRows = rows.map(({ m, sport, coachId }) => {
+      const dd = m.dailyAttendance?.[gM]?.[sport] || {};
+      let y = 0, n = 0;
+      baseDays.forEach(d => { const v = dd[String(d)]; if (v === 'Y') y++; if (v === 'N') n++; });
+      const cells = dayCols.map(d => {
+        const v = dd[String(d)];
+        const bg = v === 'Y' ? '#d1fae5' : v === 'N' ? '#fee2e2' : '#fff';
+        const col = v === 'Y' ? '#065f46' : v === 'N' ? '#991b1b' : '#ccc';
+        return `<td style="border:1px solid #eee;text-align:center;font-size:8px;background:${bg};color:${col};font-weight:600">${v || '·'}</td>`;
+      }).join('');
+      const tot = y + n; const rate = tot ? Math.round(y / tot * 100) : 0;
+      grandY += y; grandSlots += tot;
+      const rcol = rate >= 75 ? '#059669' : rate >= 40 ? '#d97706' : rate > 0 ? '#dc2626' : '#999';
+      const sportCoach = escapeHtml(sport) + (sport !== SUMMER_CAMP ? ' · ' + escapeHtml(coachName(coachId)) : '');
+      return `<tr>
+        <td style="border:1px solid #e5e5ea;padding:4px 6px;font-size:9px;font-weight:600;text-align:${align}"><div style="white-space:nowrap">${escapeHtml(ar && m.nameArabic ? m.nameArabic : m.name)}</div><div style="font-size:7.5px;color:#999;font-weight:400;white-space:nowrap">${sportCoach}</div></td>
+        ${cells}
+        <td style="border:1px solid #e5e5ea;text-align:center;font-size:9px;font-weight:700">${y}/${tot || '—'}</td>
+        <td style="border:1px solid #e5e5ea;text-align:center;font-size:9px;font-weight:700;color:${rcol}">${tot ? rate + '%' : '—'}</td>
+      </tr>`;
+    }).join('');
+
+    const coachLabel = filter.coach !== 'all' ? coachName(parseInt(filter.coach)) : L.allCoaches;
+    const sportLabel = filter.sports.length ? filter.sports.join(', ') : L.allSports;
+    const overallRate = grandSlots ? Math.round(grandY / grandSlots * 100) : 0;
+    const distinctMembers = new Set(rows.map(r => r.m.id)).size;
+    const monthLabel = ar ? monthNameAR(new Date(gM + '-01')) : fmtMonth(gM);
+
+    // Width scales with the number of day columns so everything stays legible.
+    const W = Math.max(900, 220 + dayCols.length * 26 + 90);
+    const html = `
+      <div xmlns="http://www.w3.org/1999/xhtml" dir="${dir}" style="width:${W}px;background:#fff;font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:18px;box-sizing:border-box">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f26060;padding-bottom:10px;margin-bottom:12px">
+          <div><div style="font-size:18px;font-weight:800">${L.brand}</div><div style="color:#777;font-size:11px;margin-top:2px">${L.sub}</div></div>
+          <div style="text-align:${ar ? 'left' : 'right'};font-size:11px;color:#777">${L.generated}<br><b>${fmtDate(TODAY)}</b></div>
+        </div>
+        <div style="font-size:11px;color:#555;margin-bottom:10px"><b>${monthLabel}</b> · ${escapeHtml(coachLabel)} · ${escapeHtml(sportLabel)} · <b>${distinctMembers}</b> ${L.students} · <b>${rows.length}</b> ${L.rows} · ${L.overall} <b>${overallRate}%</b></div>
+        <table style="border-collapse:collapse;width:100%">
+          <thead><tr><th style="border:1px solid #e5e5ea;padding:4px 6px;font-size:9px;color:#777;text-align:${align}">${L.student}</th>${dayHeads}<th style="border:1px solid #e5e5ea;font-size:9px;color:#777">${L.yTot}</th><th style="border:1px solid #e5e5ea;font-size:9px;color:#777">${L.rate}</th></tr></thead>
+          <tbody>${bodyRows}</tbody>
+        </table>
+        <div style="margin-top:14px;font-size:9px;color:#aaa;text-align:center;border-top:1px solid #eee;padding-top:6px">${L.legend}</div>
+      </div>`;
+
+    // Measure height by rendering off-screen first.
+    const probe = document.createElement('div');
+    probe.style.cssText = `position:fixed;left:-99999px;top:0;width:${W}px`;
+    probe.innerHTML = html;
+    document.body.appendChild(probe);
+    const H = Math.ceil(probe.firstElementChild.getBoundingClientRect().height) + 4;
+    document.body.removeChild(probe);
+
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><foreignObject width="100%" height="100%">${html}</foreignObject></svg>`;
+    const img = new Image();
+    const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const scale = 2;   // retina quality
+      canvas.width = W * scale; canvas.height = H * scale;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(blob => {
+        if (!blob) { toast('Image export failed — try the PDF instead', 'error'); return; }
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `attendance_${gM}_${ar ? 'ar' : 'en'}.png`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        toast(ar ? `صورة الحضور · ${rows.length} صف` : `Attendance image · ${rows.length} rows`);
+      }, 'image/png');
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); toast('Image export failed — try the PDF instead', 'error'); };
+    img.src = url;
+  }
+  $('#att-export-img-en')?.addEventListener('click', () => exportAttendanceImage('en'));
+  $('#att-export-img-ar')?.addEventListener('click', () => exportAttendanceImage('ar'));
+
   $('#att-export').addEventListener('click', () => {
     const rows = getRows();
     if (filter.month === 'all') {
@@ -13184,7 +13307,7 @@ PAGES.history = (main) => {
   function memberFilter(m) {
     if (!state2.search) return true;
     const q = state2.search.toLowerCase();
-    return [m.name, m.nameArabic, m.phone, m.phone2, m.qid, m.email].filter(Boolean).join(' ').toLowerCase().includes(q);
+    return searchMatchesFields(q, [m.name, m.nameArabic, m.phone, m.phone2, m.qid, m.email], [m.phone, m.phone2]);
   }
 
   // ─ Build subscription history rows (chronological) ─
@@ -14598,6 +14721,59 @@ window.addRenewal = function(memberId) {
   recalcRnDeduction();
 };
 
+// Delete ONE specific subscription period (by _sid) — for fixing a duplicate or a
+// not-yet-started entry without touching the member's other subscriptions of the
+// same sport. Only allowed when that subscription has ZERO attendance (nothing was
+// consumed). Also removes its linked invoice (or that sport's line) so PAID drops.
+window.deleteSubscription = function(memberId, sid) {
+  if (currentRole() !== 'admin') { toast('Only admins can delete a subscription', 'error'); return; }
+  const m = state.members.find(x => x.id === memberId);
+  if (!m || !Array.isArray(m.subscriptions)) return;
+  const sub = m.subscriptions.find(s => (s._sid || s._rid) === sid);
+  if (!sub) { toast('Subscription not found', 'error'); return; }
+  // Guard: never delete a subscription that has real attendance.
+  const liveAtt = (typeof liveAttendanceCount === 'function')
+    ? liveAttendanceCount(m, sub.activity, sub.start || null, sub.end || null).y : 0;
+  const attended = Math.max(parseInt(sub.attendedClasses) || 0, liveAtt);
+  if (attended > 0) {
+    toast(`Can't delete — ${attended} class${attended === 1 ? '' : 'es'} already attended on this period. Use Withdraw / Switch Sport instead.`, 'error');
+    return;
+  }
+  const label = `${sub.activity || 'sport'} (${sub.start ? fmtDate(sub.start) : '?'} → ${sub.end ? fmtDate(sub.end) : '?'})`;
+  if (!confirm(`Delete this subscription period?\n\n${label}\nPaid: ${fmt(sub.amountPaid || 0)} QAR · 0 attended\n\nThis removes just this one period and its linked invoice (no refund record). The member's other subscriptions are untouched.`)) return;
+
+  // Remove the linked invoice line / invoice for this sub, so PAID drops.
+  const ref = sub.invoiceNumber || null;
+  if (ref) {
+    for (const inv of (state.invoices || [])) {
+      if (inv.deleted) continue;
+      if (inv.customerId !== m.id) continue;
+      if ((inv.ref || '') !== ref && inv.invoiceNumber !== ref) continue;
+      const items = (inv.lineItems && inv.lineItems.length) ? inv.lineItems : null;
+      if (items && items.length > 1) {
+        // Shrink: drop just this sport's line.
+        const keep = items.filter(li => li.sport !== sub.activity);
+        const removed = items.filter(li => li.sport === sub.activity).reduce((s, li) => s + (Number(li.price) || 0), 0);
+        inv.lineItems = keep;
+        inv.amount = Math.max(0, (inv.amount || 0) - removed);
+      } else {
+        inv.deleted = true;   // whole invoice was for this sub
+      }
+    }
+  }
+  // Remove the subscription + any matching renewal entry.
+  m.subscriptions = m.subscriptions.filter(s => (s._sid || s._rid) !== sid);
+  if (sub._rid && Array.isArray(m.renewals)) m.renewals = m.renewals.filter(r => r._rid !== sub._rid);
+  // Recompute the member's expiry from whatever subscriptions remain (latest end).
+  const ends = (m.subscriptions || []).map(s => s.end).filter(Boolean).sort();
+  if (ends.length) m.expiryDate = ends[ends.length - 1];
+  else m.expiryDate = m.expiryDate;   // leave as-is if nothing left to derive from
+  if (typeof audit === 'function') audit('member.subscription.delete', 'member:' + memberId, `Deleted subscription ${label} (0 attended)`);
+  save();
+  render();
+  toast(`Deleted subscription: ${label}`);
+};
+
 window.deleteRenewal = function(memberId, rid) {
   const m = state.members.find(x => x.id === memberId);
   if (!m || !m.renewals) return;
@@ -14649,7 +14825,7 @@ window.exportMemberHistoryCSV = function(memberId) {
 
 PAGES.expiring = (main) => {
   const threshold = state.settings?.expiringSoonDays || 3;
-  let filter = { sport: 'all', coach: 'all', search: '', bucket: 'all', sort: 'expiry' };
+  let filter = { sport: 'all', coach: 'all', search: '', bucket: 'all', sort: 'expiry', reminded: 'all' };
   // Which sections are collapsed (default: all open)
   const collapsed = { soon: false, expired: false, upcoming: false };
   // Bulk-selected member IDs (across all sections)
@@ -14703,10 +14879,16 @@ PAGES.expiring = (main) => {
       if (!ms.has(filter.sport)) return false;
     }
     if (filter.coach !== 'all' && m.coachId !== parseInt(filter.coach)) return false;
+    // Reminded filter: show only reminded, only not-yet-reminded, or all.
+    if (filter.reminded && filter.reminded !== 'all') {
+      const rc = (typeof reminderInfo === 'function') ? reminderInfo(m).count : 0;
+      if (filter.reminded === 'reminded' && rc < 1) return false;
+      if (filter.reminded === 'notreminded' && rc >= 1) return false;
+    }
     if (filter.search) {
       const q = filter.search.toLowerCase();
       const hay = [m.name, m.nameArabic, m.phone, m.phone2, m.qid].filter(Boolean).join(' ').toLowerCase();
-      if (!hay.includes(q)) return false;
+      if (!searchMatchesFields(q, [m.name, m.nameArabic, m.phone, m.phone2, m.qid], [m.phone, m.phone2])) return false;
     }
     return true;
   }
@@ -14748,7 +14930,7 @@ PAGES.expiring = (main) => {
     return `<span style="font-weight:700;cursor:help;border-bottom:1px dotted var(--text-mute)" title="${escapeHtml(tip)}">🏅 ${total} <span class="text-mute" style="font-weight:400;font-size:11px">(${list.length} ${t('sports', 'رياضات')}) ⓘ</span></span>`;
   }
 
-  function rowHtml({ m, days }, bucket) {
+  function rowHtml({ m, days, completed }, bucket) {
     const color = bucket === 'expired' ? 'var(--red)' : bucket === 'soon' ? 'var(--accent-2)' : 'var(--text-dim)';
     const label = bucket === 'expired' ? `${Math.abs(days)}d ago` : bucket === 'soon' ? `in ${days}d` : `in ${days}d`;
     const phone = m.phone && !m.phone.startsWith('+9747000') ? m.phone : null;
@@ -14757,7 +14939,7 @@ PAGES.expiring = (main) => {
     // Pre-build the WhatsApp reminder link (bilingual template, EN + AR)
     let reminderHref = '';
     if (phone) {
-      const kind = bucket === 'expired' ? 'expired' : 'expiring';
+      const kind = completed ? 'completed' : (bucket === 'expired' ? 'expired' : 'expiring');
       const msg = buildReminderMessage(m, kind, days);
       const cleanPhone = String(phone).replace(/[^\d]/g, '');
       reminderHref = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
@@ -14793,7 +14975,7 @@ PAGES.expiring = (main) => {
             : `<span class="text-mute" style="font-size:11px">No phone</span>`}
           <button class="btn ghost sm" onclick="event.stopPropagation();addRenewal(${m.id})" title="Record renewal">🔄 Renew</button>
           <button class="btn ghost sm" onclick="event.stopPropagation();window._attPdfSubscription(${m.id})" title="Attendance sheet for the last subscription (covers up to two months)">📄 Sheet</button>
-          <div id="rem-label-${m.id}" class="text-mute" style="font-size:10px;margin-top:4px;${m.lastRemindedAt ? '' : 'display:none'}">${m.lastRemindedAt ? '✓ Reminded ' + escapeHtml(fmtDateTime(m.lastRemindedAt)) : ''}</div>
+          <div id="rem-label-${m.id}" class="text-mute" style="font-size:10px;margin-top:4px;${m.lastRemindedAt ? '' : 'display:none'}">${m.lastRemindedAt ? '✓ ' + t('Reminded', 'تذكير') + ' ' + (reminderInfo(m).count > 1 ? reminderInfo(m).count + '× · ' : '') + t('last', 'آخر') + ' ' + escapeHtml(fmtDateTime(m.lastRemindedAt)) : ''}</div>
         </td>
       </tr>
     `;
@@ -14903,6 +15085,11 @@ PAGES.expiring = (main) => {
         <select id="exp-coach" class="btn ghost">
           <option value="all">All coaches</option>
           ${coachesInList.map(cid => `<option value="${cid}">${escapeHtml(coachName(cid))}</option>`).join('')}
+        </select>
+        <select id="exp-reminded" class="btn ghost" title="${t('Filter by reminder status', 'تصفية حسب حالة التذكير')}">
+          <option value="all">🔔 ${t('All (reminded or not)', 'الكل (مذكّر أو لا)')}</option>
+          <option value="reminded">✓ ${t('Reminded', 'تم تذكيره')}</option>
+          <option value="notreminded">○ ${t('Not reminded yet', 'لم يُذكّر بعد')}</option>
         </select>
         <select id="exp-sort" class="btn ghost" title="Sort each section">
           <option value="expiry">↕ Sort: Expiry (default)</option>
@@ -15039,6 +15226,7 @@ PAGES.expiring = (main) => {
   $('#exp-bucket').addEventListener('change', e => { filter.bucket = e.target.value; renderSections(); });
   $('#exp-sport').addEventListener('change', e => { filter.sport = e.target.value; renderSections(); });
   $('#exp-coach').addEventListener('change', e => { filter.coach = e.target.value; renderSections(); });
+  $('#exp-reminded')?.addEventListener('change', e => { filter.reminded = e.target.value; renderSections(); });
   $('#exp-sort').addEventListener('change', e => { filter.sort = e.target.value; renderSections(); });
   $('#exp-search').addEventListener('input', e => { filter.search = e.target.value; renderSections(); });
   attachRecentSearch('exp-search', 'campmembers');
@@ -15156,7 +15344,7 @@ PAGES.trials = (main) => {
       if (filter.search) {
         const q = filter.search.toLowerCase();
         const hay = [t.name, t.nameArabic, t.phone, t.email, t.notes].filter(Boolean).join(' ').toLowerCase();
-        if (!hay.includes(q)) return false;
+        if (!searchMatchesFields(q, [t.name, t.nameArabic, t.phone, t.email, t.notes], [t.phone])) return false;
       }
       return true;
     });
@@ -16517,8 +16705,7 @@ window.editUserRole = function(email) {
       const qd = q.replace(/\D/g, '');
       const matches = (state.members || []).filter(m => !m.deleted).filter(m => {
         const hay = [m.name, m.nameArabic, m.phone, m.phone2, m.qid, m.email].filter(Boolean).join(' ').toLowerCase();
-        if (hay.includes(q)) return true;
-        if (qd.length >= 4 && (phoneSearchMatches(m.phone, qd) || phoneSearchMatches(m.phone2, qd))) return true;
+        if (searchMatchesFields(q, [m.name, m.nameArabic, m.phone, m.phone2, m.qid, m.email], [m.phone, m.phone2])) return true;
         return false;
       }).slice(0, 12);
       mres.innerHTML = matches.length
@@ -16614,15 +16801,6 @@ window.previewAsMember = function() {
 };
 
 // Stamp when a member was last reminded (on clicking 💬 Remind) and show it inline.
-window.markReminded = function(id) {
-  const m = state.members.find(x => x.id === id);
-  if (!m) return;
-  m.lastRemindedAt = new Date().toISOString();
-  save();
-  const lbl = document.getElementById('rem-label-' + id);
-  if (lbl) { lbl.textContent = '✓ Reminded ' + fmtDateTime(m.lastRemindedAt); lbl.style.display = ''; }
-};
-
 window.convertTrialToMember = function(id) {
   const t = (state.trials || []).find(x => x.id === id);
   if (!t) return;
@@ -17081,7 +17259,7 @@ PAGES.enrolled = (main) => {
       if (filter.search) {
         const q = filter.search.toLowerCase();
         const hay = [r.m.name, r.m.nameArabic, r.m.phone, r.m.phone2, r.m.qid].filter(Boolean).join(' ').toLowerCase();
-        if (!hay.includes(q)) return false;
+        if (!searchMatchesFields(q, [r.m.name, r.m.nameArabic, r.m.phone, r.m.phone2, r.m.qid], [r.m.phone, r.m.phone2])) return false;
       }
       if (filter.sport !== 'all' && r.sport !== filter.sport) return false;
       if (filter.coach !== 'all' && String(r.coachId || '') !== filter.coach) return false;

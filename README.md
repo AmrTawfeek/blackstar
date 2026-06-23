@@ -1,4 +1,89 @@
 # Black Stars CRM
+Version 6.131.0 - Attendance sheet: export as IMAGE (English / Arabic).
+
+## 6.131.0 note - attendance image export
+The Attendance screen can now export the sheet as a PNG IMAGE, in addition to PDF and
+CSV. Two new buttons sit next to Export PDF:
+- 🖼 Image (EN) — English sheet, left-to-right.
+- 🖼 صورة (AR) — Arabic sheet, right-to-left, with Arabic headings/labels and the
+  member's Arabic name where available.
+The image is built from the same grid as the PDF (respecting the current month, day,
+coach, sport and attended/absent filters), rendered to a PNG via an SVG foreignObject +
+canvas — no external libraries, works offline. It downloads as
+attendance_<month>_<en|ar>.png at retina (2x) quality. Image export needs a specific
+month selected (not "All months"); use the PDF for the all-months summary. No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.130.0 - Distinct reminder message for completed-camp members.
+
+## 6.130.0 note - completed vs expired reminder wording
+A Summer Camp member who finished ALL their classes early was getting the "expired N
+days ago" message (e.g. "expired 0 days ago") because completed members are surfaced in
+the expired bucket of the Expiring screen. That wording was wrong for someone who
+actually completed their sessions.
+Added a third reminder template — COMPLETED (English + Arabic) — with congratulatory
+wording ("you've completed all your sessions! 🎉 Ready for the next round?"). The
+Remind button now picks:
+  • completed  → for class-completed members (finished all sessions),
+  • expired    → for members whose date has actually passed,
+  • expiring   → for members expiring soon (future date).
+The new COMPLETED templates are editable in Settings → reminder templates, alongside
+the existing ones. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.129.0 - Delete a single (not-started) subscription period.
+
+## 6.129.0 note - per-subscription delete + the duplicate-sub question
+Q: why couldn't I delete a sport that hasn't started, and how does one member have two
+subscriptions for the same sport on overlapping dates?
+- The "two same-sport subscriptions" happen when a member is renewed while a current
+  period is still active — the renewal adds a NEW subscription without removing the old
+  one, so both show as active. (This is by design for history, but creates the overlap
+  you saw.)
+- Previously the only delete worked by SPORT NAME, so for a member with 3 Gymnastic
+  periods it was all-or-nothing — and it was blocked because one of those periods had
+  6 attended classes.
+Fix: the Subscription History table (member profile) now has a 🗑 on each row that has
+ZERO attendance (admin only). It deletes just THAT one period and its linked invoice
+(or that sport's invoice line, so PAID drops), leaves the member's other subscriptions
+intact, and recomputes the expiry from what remains. Periods WITH attendance stay
+protected (use Withdraw / Switch Sport). So you can now remove a not-started or
+duplicate period cleanly. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.128.0 - Expiring: reminded filter + reminder count.
+
+## 6.128.0 note - reminder filter & count
+On the Expiring screen:
+1. New "reminded" filter dropdown: All / ✓ Reminded / ○ Not reminded yet — so you can
+   focus on members you still need to chase, or review who's already been contacted.
+2. Each reminded row now shows the reminder COUNT, e.g. "✓ Reminded 2× · last 22 Jun
+   2026" (the count appears once there's more than one).
+Also fixed a latent bug: there were two markReminded() functions and the simpler one
+(which only set a timestamp and did NOT track the count) was overriding the proper one.
+Removed the duplicate, so reminders now correctly increment the per-cycle count (up to
+the MAX_REMINDERS limit, with the "send a 2nd/final reminder?" confirmation). No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.127.0 - Smarter search: phone formats + Arabic letter folding.
+
+## 6.127.0 note - search normalization everywhere
+Two search improvements applied across ALL search fields (Members, Attendance,
+Expiring, History, Trials, Product Sales, Coach detail, Camp list, user pickers,
+quick views):
+1. Phone numbers match regardless of format: +97450413948, 50413948, "5041 3948",
+   and 00974 50413948 are all treated as the same number. Phones canonicalise to the
+   local 8-digit form (country code 974 / 00974 / +974 and spaces are stripped).
+2. Arabic letter folding: أ إ آ ٱ all match ا (so أنس == انس), ة matches ه, ى matches
+   ي, and diacritics/tatweel are ignored. Searching either spelling now finds the
+   member.
+Implemented via shared helpers (normalizePhoneForCompare, normalizeArabicForSearch,
+searchMatchesFields) so every screen behaves the same. No schema change (SCHEMA_VERSION
+stays 9).
+
+# Black Stars CRM
 Version 6.126.0 - Review fix: merge never drops id-less records (schedule safety).
 
 ## 6.126.0 note - code review pass
