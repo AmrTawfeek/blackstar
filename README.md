@@ -1,5 +1,50 @@
 # Black Stars CRM
-Version 6.140.0 - FIX: camp validity reverted to 8 on edit + expiry didn't update.
+Version 6.143.0 - Expiring: green Remind button once reminded (+ reminded filter confirmed).
+
+## 6.143.0 note - reminded button colour + filter
+On the Expiring page:
+- The "Remind" button now turns GREEN and reads "✓ Remind again" once the member has
+  been reminded at least once. It stays fully clickable, so you can always send another
+  reminder. Members not yet reminded keep the red "💬 Remind" button.
+- The reminded/not-reminded FILTER already exists in the toolbar (🔔 All · ✓ Reminded ·
+  ○ Not reminded yet) and filters the list by reminder status — confirmed working.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.142.0 - FIX: attendance image export failed ("try the PDF instead").
+
+## 6.142.0 note - attendance image export reliability
+The attendance image export (member profile 🖼 Attendance EN/AR, and the Attendance
+page image buttons) failed with "Image export failed — try the PDF instead".
+Cause: the image is built by rendering HTML inside an SVG <foreignObject>, which
+requires WELL-FORMED XHTML. The header contained an unclosed <br> tag, which made the
+SVG invalid, so the browser refused to load it and the export aborted.
+Fixes:
+- Self-closed the <br/> tag so the SVG is valid XHTML.
+- Switched from a blob URL to a UTF-8 data URI (encodeURIComponent) which encodes
+  Arabic + emoji reliably across browsers.
+- Wrapped the canvas/render steps in try/catch, and the member export now falls back to
+  opening the PDF automatically if the image still can't be produced.
+Image export (English + Arabic) now works for both the per-member report and the
+attendance grid. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.141.0 - FIX: editing validity on a locked sport didn't persist (reverted on re-open).
+
+## 6.141.0 note - validity edit not saved on locked/attended sports
+Critical bug: on a sport LOCKED because the member already attended classes, changing
+the Validity (e.g. to 1 month) and saving appeared to work (the in-dialog expiry even
+showed the right date) but re-opening showed the OLD validity again.
+Root cause: for an existing member, a matched sport is synced via syncSubToEnrollment(),
+whose final step recomputed the subscription window with
+  eValidity = isCamp ? e.classes : e.validity
+— i.e. for Summer Camp it used the CLASS-DAY count (8) as the validity instead of the
+real validity window (30). So every save forced the camp validity/end back to the
+day-count (8 days → 25 Jun), silently reverting the edit.
+Fix: that line now uses e.validity (the window) for camp, falling back to the class
+count only if no validity is set. Editing a locked camp member's validity now persists:
+validity sticks and expiry recomputes (17 Jun + 1 month → 17 Jul). No schema change
+(SCHEMA_VERSION stays 9).
 
 ## 6.140.0 note - camp validity + expiry on edit
 Two linked bugs when editing a camp member's validity:

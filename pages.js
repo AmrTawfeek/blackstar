@@ -1477,7 +1477,7 @@ window.exportMemberAttendanceImage = function(id, lang) {
     <div xmlns="http://www.w3.org/1999/xhtml" dir="${dir}" style="width:${W}px;background:#fff;font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:18px;box-sizing:border-box">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f26060;padding-bottom:10px;margin-bottom:12px">
         <div><div style="font-size:17px;font-weight:800">${L.brand}</div><div style="color:#777;font-size:11px;margin-top:2px">${L.sub}</div></div>
-        <div style="text-align:${ar ? 'left' : 'right'};font-size:11px;color:#777">${L.generated}<br><b>${fmtDate(TODAY)}</b></div>
+        <div style="text-align:${ar ? 'left' : 'right'};font-size:11px;color:#777">${L.generated}<br/><b>${fmtDate(TODAY)}</b></div>
       </div>
       <div style="font-size:15px;font-weight:700;margin-bottom:2px">${escapeHtml(ar && m.nameArabic ? m.nameArabic : m.name)}</div>
       <div style="font-size:12px;color:#555;margin-bottom:14px">${L.overall}: <b>${totalY}/${total}</b> · <b>${rate}%</b></div>
@@ -1485,34 +1485,44 @@ window.exportMemberAttendanceImage = function(id, lang) {
       <div style="margin-top:8px;font-size:9px;color:#aaa;text-align:center;border-top:1px solid #eee;padding-top:6px">Black Stars CRM</div>
     </div>`;
   // Off-screen measure → SVG foreignObject → canvas → PNG.
-  const probe = document.createElement('div');
-  probe.style.cssText = `position:fixed;left:-99999px;top:0;width:${W}px`;
-  probe.innerHTML = html;
-  document.body.appendChild(probe);
-  const H = Math.ceil(probe.firstElementChild.getBoundingClientRect().height) + 4;
-  document.body.removeChild(probe);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><foreignObject width="100%" height="100%">${html}</foreignObject></svg>`;
-  const img = new Image();
-  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
-  img.onload = () => {
-    const canvas = document.createElement('canvas');
-    const scale = 2;
-    canvas.width = W * scale; canvas.height = H * scale;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.scale(scale, scale); ctx.drawImage(img, 0, 0);
-    URL.revokeObjectURL(url);
-    canvas.toBlob(blob => {
-      if (!blob) { toast('Image export failed — try the PDF instead', 'error'); return; }
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `${(m.name || 'member').replace(/[^a-z0-9]+/gi, '_')}_attendance_${ar ? 'ar' : 'en'}.png`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-      toast(ar ? 'صورة الحضور' : 'Attendance image saved');
-    }, 'image/png');
+  const fallbackToPdf = () => {
+    toast(ar ? 'تعذّر تصدير الصورة — جارٍ فتح PDF' : 'Image failed — opening PDF instead', 'info');
+    try { if (typeof window._attPdf === 'function') window._attPdf(id, null, null); } catch (_) {}
   };
-  img.onerror = () => { URL.revokeObjectURL(url); toast('Image export failed — try the PDF instead', 'error'); };
+  let H = 600;
+  try {
+    const probe = document.createElement('div');
+    probe.style.cssText = `position:fixed;left:-99999px;top:0;width:${W}px`;
+    probe.innerHTML = html;
+    document.body.appendChild(probe);
+    H = Math.ceil((probe.firstElementChild ? probe.firstElementChild.getBoundingClientRect().height : 600)) + 4;
+    document.body.removeChild(probe);
+  } catch (_) {}
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><foreignObject x="0" y="0" width="${W}" height="${H}">${html}</foreignObject></svg>`;
+  const img = new Image();
+  // Use a UTF-8 data URI (encodeURIComponent handles Arabic + emoji safely) rather
+  // than a blob URL — more reliable for foreignObject across browsers.
+  const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  img.onload = () => {
+    try {
+      const canvas = document.createElement('canvas');
+      const scale = 2;
+      canvas.width = W * scale; canvas.height = H * scale;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale); ctx.drawImage(img, 0, 0);
+      canvas.toBlob(blob => {
+        if (!blob) { fallbackToPdf(); return; }
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `${(m.name || 'member').replace(/[^a-z0-9]+/gi, '_')}_attendance_${ar ? 'ar' : 'en'}.png`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        toast(ar ? 'صورة الحضور' : 'Attendance image saved');
+      }, 'image/png');
+    } catch (_) { fallbackToPdf(); }
+  };
+  img.onerror = () => { fallbackToPdf(); };
   img.src = url;
 };
 
@@ -13183,7 +13193,7 @@ PAGES.attendance = (main) => {
       <div xmlns="http://www.w3.org/1999/xhtml" dir="${dir}" style="width:${W}px;background:#fff;font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:18px;box-sizing:border-box">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f26060;padding-bottom:10px;margin-bottom:12px">
           <div><div style="font-size:18px;font-weight:800">${L.brand}</div><div style="color:#777;font-size:11px;margin-top:2px">${L.sub}</div></div>
-          <div style="text-align:${ar ? 'left' : 'right'};font-size:11px;color:#777">${L.generated}<br><b>${fmtDate(TODAY)}</b></div>
+          <div style="text-align:${ar ? 'left' : 'right'};font-size:11px;color:#777">${L.generated}<br/><b>${fmtDate(TODAY)}</b></div>
         </div>
         <div style="font-size:11px;color:#555;margin-bottom:10px"><b>${monthLabel}</b> · ${escapeHtml(coachLabel)} · ${escapeHtml(sportLabel)} · <b>${distinctMembers}</b> ${L.students} · <b>${rows.length}</b> ${L.rows} · ${L.overall} <b>${overallRate}%</b></div>
         <table style="border-collapse:collapse;width:100%">
@@ -13201,30 +13211,30 @@ PAGES.attendance = (main) => {
     const H = Math.ceil(probe.firstElementChild.getBoundingClientRect().height) + 4;
     document.body.removeChild(probe);
 
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><foreignObject width="100%" height="100%">${html}</foreignObject></svg>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><foreignObject x="0" y="0" width="${W}" height="${H}">${html}</foreignObject></svg>`;
     const img = new Image();
-    const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(svgBlob);
+    const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
     img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const scale = 2;   // retina quality
-      canvas.width = W * scale; canvas.height = H * scale;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.scale(scale, scale);
-      ctx.drawImage(img, 0, 0);
-      URL.revokeObjectURL(url);
-      canvas.toBlob(blob => {
-        if (!blob) { toast('Image export failed — try the PDF instead', 'error'); return; }
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `attendance_${gM}_${ar ? 'ar' : 'en'}.png`;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-        toast(ar ? `صورة الحضور · ${rows.length} صف` : `Attendance image · ${rows.length} rows`);
-      }, 'image/png');
+      try {
+        const canvas = document.createElement('canvas');
+        const scale = 2;   // retina quality
+        canvas.width = W * scale; canvas.height = H * scale;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.scale(scale, scale);
+        ctx.drawImage(img, 0, 0);
+        canvas.toBlob(blob => {
+          if (!blob) { toast('Image export failed — try the PDF instead', 'error'); return; }
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `attendance_${gM}_${ar ? 'ar' : 'en'}.png`;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+          toast(ar ? `صورة الحضور · ${rows.length} صف` : `Attendance image · ${rows.length} rows`);
+        }, 'image/png');
+      } catch (_) { toast('Image export failed — try the PDF instead', 'error'); }
     };
-    img.onerror = () => { URL.revokeObjectURL(url); toast('Image export failed — try the PDF instead', 'error'); };
+    img.onerror = () => { toast('Image export failed — try the PDF instead', 'error'); };
     img.src = url;
   }
   $('#att-export-img-en')?.addEventListener('click', () => exportAttendanceImage('en'));
@@ -15209,7 +15219,15 @@ PAGES.expiring = (main) => {
         })()}</td>
         <td class="text-right" style="white-space:nowrap">
           ${phone
-            ? `<a class="btn primary sm" href="${reminderHref}" target="_blank" onclick="event.stopPropagation();markReminded(${m.id})" title="Send bilingual reminder via WhatsApp">💬 Remind</a>`
+            ? (() => {
+                const wasReminded = reminderInfo(m).count > 0;
+                // Already reminded → green button (but still clickable to remind again).
+                const btnStyle = wasReminded
+                  ? 'background:var(--green);border-color:var(--green);color:#fff'
+                  : '';
+                const btnLabel = wasReminded ? `✓ ${t('Remind again', 'تذكير مجدداً')}` : `💬 Remind`;
+                return `<a class="btn primary sm" style="${btnStyle}" href="${reminderHref}" target="_blank" onclick="event.stopPropagation();markReminded(${m.id})" title="${wasReminded ? 'Already reminded — click to send another reminder' : 'Send bilingual reminder via WhatsApp'}">${btnLabel}</a>`;
+              })()
             : `<span class="text-mute" style="font-size:11px">No phone</span>`}
           <button class="btn ghost sm" onclick="event.stopPropagation();addRenewal(${m.id})" title="Record renewal">🔄 Renew</button>
           <button class="btn ghost sm" onclick="event.stopPropagation();window._attPdfSubscription(${m.id})" title="Attendance sheet for the last subscription (covers up to two months)">📄 Sheet</button>

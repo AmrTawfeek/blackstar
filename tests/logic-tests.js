@@ -2346,6 +2346,21 @@ ${seed}
     eq(loadValidity({ start: '2026-06-17', end: '2026-07-17', totalClasses: 8 }), 30,
       'edit load: camp validity derived from start→end when not stored');
   })();
+  // Editing a locked sport's validity must persist to the subscription (validity + end)
+  (function () {
+    if (typeof syncSubToEnrollment === 'function') {
+      var sub = { activity: 'Summer Camp', start: '2026-06-17', validity: 8, end: '2026-06-25', totalClasses: 8 };
+      var e = { sport: 'Summer Camp', start: '2026-06-17', validity: 30, classes: 8 };
+      syncSubToEnrollment(sub, e, {}, []);
+      eq(sub.validity, 30, 'edit save: subscription validity updated to 30');
+      eq(sub.end, '2026-07-17', 'edit save: subscription end recomputed to 17 Jul');
+      // Non-camp sport too
+      var sub2 = { activity: 'Boxing', start: '2026-06-01', validity: 30, end: '2026-07-01', totalClasses: 12 };
+      var e2 = { sport: 'Boxing', start: '2026-06-01', validity: 60, classes: 12 };
+      syncSubToEnrollment(sub2, e2, {}, []);
+      eq(sub2.end, '2026-07-31', 'edit save: non-camp validity change updates end');
+    }
+  })();
   // Invoices activity filter: all "Summer Camp · X" variants collapse to one option
   (function () {
     var isCamp = function (s) { return typeof s === 'string' && (s === 'Summer Camp' || s.indexOf('Summer Camp') === 0); };
