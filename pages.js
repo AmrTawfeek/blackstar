@@ -2028,18 +2028,10 @@ function enrollRowHtml(row, idx) {
     ? (row.durationLabel || campLabelForClasses(classesNum) || '')
     : '';
 
-  const isCustomDur = isCamp && (row.durationLabel === 'Custom' || row._campCustom);
   const classesField = isCamp
-    ? `<div class="field" style="margin:0"><label style="font-size:10px">Duration <span style="color:var(--accent)">*</span></label>
-         <select data-en="durationLabel" data-i="${idx}" style="${classesNum <= 0 && !isCustomDur ? classesStyle : ''}">
-           <option value="">— pick —</option>
-           ${campPrices.map(p => `<option value="${escapeHtml(p.label)}" ${matchedLabel === p.label ? 'selected' : ''}>${escapeHtml(p.label)} · ${fmt(p.price)} QAR</option>`).join('')}
-           <option value="Custom" ${isCustomDur ? 'selected' : ''}>✏️ Custom (days)…</option>
-         </select>
-         ${isCustomDur ? `<div style="display:flex;gap:6px;margin-top:6px">
-           <input data-en="campCustomDays" data-i="${idx}" type="number" min="1" max="120" step="1" value="${row.classes ?? ''}" placeholder="days" title="Business days (Sun–Thu) — this is also the class limit" style="flex:1;${classesNum <= 0 ? classesStyle : ''}" />
-           <input data-en="campCustomPrice" data-i="${idx}" type="number" min="0" step="0.01" value="${row.price ?? ''}" placeholder="price QAR" style="flex:1" />
-         </div><div class="text-mute" style="font-size:10px;margin-top:3px">${t('Business days (Sun–Thu). This is the class limit.', 'أيام العمل (الأحد–الخميس). هذا هو حد الحصص.')}</div>` : ''}
+    ? `<div class="field" style="margin:0"><label style="font-size:10px">${t('Duration (days)', 'المدة (أيام)')} <span style="color:var(--accent)">*</span></label>
+         <input data-en="campDays" data-i="${idx}" type="number" min="1" max="120" step="1" value="${row.classes ?? ''}" placeholder="${t('e.g. 8', 'مثال ٨')}" title="${t('Number of class days — counts attendance against this many days', 'عدد أيام الحصص — يحتسب الحضور مقابل هذا العدد')}" style="${classesNum <= 0 ? classesStyle : ''}" />
+         <div class="text-mute" style="font-size:10px;margin-top:3px">${t('Number of class days the member can attend.', 'عدد أيام الحصص التي يمكن للعضو حضورها.')}</div>
        </div>`
     : `<div class="field" style="margin:0"><label style="font-size:10px">Classes <span style="color:var(--accent)">*</span></label><input data-en="classes" data-i="${idx}" type="number" min="0" max="${MAX_CLASSES_HARD}" step="1" value="${row.classes ?? ''}" placeholder="6" style="${classesStyle}" /></div>`;
 
@@ -2178,48 +2170,19 @@ function renderEnrollRows() {
         }
         renderEnrollRows();
         return;
-      } else if (key === 'durationLabel') {
-        // "Custom" lets the admin type a number of business days (also the class
-        // limit) and a price. Otherwise match a preset and auto-fill.
-        if (val === 'Custom') {
-          row.durationLabel = 'Custom';
-          row._campCustom = true;
-          // Keep any existing classes/price; leave blank for the admin to fill.
-          renderEnrollRows();
-          return;
-        }
-        row._campCustom = false;
-        const prices = (state.settings?.summerCampPrices) || DEFAULT_SUMMER_CAMP_PRICES;
-        const match = prices.find(p => p.label === val);
-        if (match) {
-          row.durationLabel = match.label;
-          row.classes = campClassCount(match.days);   // business-day class count
-          const currentPrice = parseFloat(row.price);
-          if (!currentPrice || currentPrice === 0) {
-            row.price = match.price;
-          }
-        } else {
-          row.durationLabel = null;
-          row.classes = '';
-        }
-        renderEnrollRows();
-        return;
-      } else if (key === 'campCustomDays') {
-        // Custom camp duration: the typed number IS the business-day class limit.
-        row.durationLabel = 'Custom';
-        row._campCustom = true;
+      } else if (key === 'campDays') {
+        // Summer Camp duration: a plain number of class days. This number is the
+        // class limit — attendance is counted against it.
         row.classes = Math.max(0, parseInt(val) || 0);
-        row.campCustomDays = row.classes;
-        renderEnrollRows();
+        row.durationLabel = 'Custom';   // mark as a free-typed day count
+        row._campCustom = true;
+        // Don't re-render on every keystroke (it would steal focus); just store.
+        updatePaidNowHint();
         return;
       } else if (key === 'campValidity') {
         // Camp time window (calendar days) — independent of the class limit.
         row.validity = Math.max(1, parseInt(val) || DEFAULT_VALIDITY);
         renderEnrollRows();
-        return;
-      } else if (key === 'campCustomPrice') {
-        row.price = parseFloat(val) || 0;
-        updatePaidNowHint();
         return;
       } else {
         row[key] = val;
@@ -2232,6 +2195,14 @@ function renderEnrollRows() {
       if (e.target.tagName === 'INPUT') {
         const i = parseInt(e.target.dataset.i);
         const key = e.target.dataset.en;
+        if (key === 'campDays') {
+          // Live-typing the camp day count → store as the class limit.
+          window._enrollRows[i].classes = Math.max(0, parseInt(e.target.value) || 0);
+          window._enrollRows[i].durationLabel = 'Custom';
+          window._enrollRows[i]._campCustom = true;
+          updatePaidNowHint();
+          return;
+        }
         window._enrollRows[i][key] = key === 'coachId' ? parseInt(e.target.value) : e.target.value;
         if (key === 'price') updatePaidNowHint();
       }
@@ -3034,7 +3005,8 @@ function showMemberForm(m) {
           newSubs.forEach((e, i) => {
             const isCamp = e.sport === SUMMER_CAMP;
             const eStart = startOf(e);                          // this sport's own start date
-            const subValidity = isCamp ? (e.classes || DEFAULT_VALIDITY) : (e.validity || DEFAULT_VALIDITY);
+            // Camp: window is the validity (calendar days), class limit is e.classes.
+            const subValidity = isCamp ? (e.validity || e.classes || DEFAULT_VALIDITY) : (e.validity || DEFAULT_VALIDITY);
             const subEnd = addDays(eStart, subValidity);
             subs.push({
               _sid: 's' + Date.now() + '_add' + i,

@@ -1,4 +1,17 @@
 # Black Stars CRM
+Version 6.120.0 - Summer Camp duration: simple free-text day count.
+
+## 6.120.0 note - simpler camp duration field
+The Summer Camp "Duration" field is now a single, plain number input: type the number
+of class days (e.g. 8). That number is the class limit — attendance is counted against
+it, and the member is Completed once they've attended that many days. Removed the
+cramped Custom dropdown + squeezed-in price box; the camp Price keeps its own field and
+Validity keeps its own window dropdown (e.g. 1 month). So a camp row is just:
+Duration (days) + Price + Start + Validity (window). Both the add and add-sibling save
+paths now consistently treat camp validity as the time window, independent of the day
+count. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.119.0 - Generate latest invoice: payment method from membership data.
 
 ## 6.119.0 note - auto payment method
