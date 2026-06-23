@@ -1,4 +1,18 @@
 # Black Stars CRM
+Version 6.121.0 - Camp duration: presets (auto business days) + Custom days.
+
+## 6.121.0 note - presets AND custom day count
+The Summer Camp Duration field is back to a dropdown that offers BOTH:
+- Presets: 1 week, 2 weeks, 3 weeks, 1 month, 6 weeks, 2 months — each shown with its
+  auto-calculated business-day class count (1 week = 5, 2 weeks = 10, 1 month = 22,
+  2 months = 44) and price, which auto-fills when picked.
+- "✏️ Custom (days)…": reveals a clean number input where you type the exact class-day
+  count (e.g. 8), used as-is. Attendance is counted against whichever number applies.
+Price keeps its own field and Validity keeps its own window dropdown, so no cramped
+layout. Works on new registration and when editing a member. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.120.0 - Summer Camp duration: simple free-text day count.
 
 ## 6.120.0 note - simpler camp duration field

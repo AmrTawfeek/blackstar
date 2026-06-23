@@ -2028,10 +2028,16 @@ function enrollRowHtml(row, idx) {
     ? (row.durationLabel || campLabelForClasses(classesNum) || '')
     : '';
 
+  const isCustomDur = isCamp && (row.durationLabel === 'Custom' || row._campCustom);
   const classesField = isCamp
-    ? `<div class="field" style="margin:0"><label style="font-size:10px">${t('Duration (days)', 'المدة (أيام)')} <span style="color:var(--accent)">*</span></label>
-         <input data-en="campDays" data-i="${idx}" type="number" min="1" max="120" step="1" value="${row.classes ?? ''}" placeholder="${t('e.g. 8', 'مثال ٨')}" title="${t('Number of class days — counts attendance against this many days', 'عدد أيام الحصص — يحتسب الحضور مقابل هذا العدد')}" style="${classesNum <= 0 ? classesStyle : ''}" />
-         <div class="text-mute" style="font-size:10px;margin-top:3px">${t('Number of class days the member can attend.', 'عدد أيام الحصص التي يمكن للعضو حضورها.')}</div>
+    ? `<div class="field" style="margin:0"><label style="font-size:10px">${t('Duration', 'المدة')} <span style="color:var(--accent)">*</span></label>
+         <select data-en="durationLabel" data-i="${idx}" style="${classesNum <= 0 && !isCustomDur ? classesStyle : ''}">
+           <option value="">${t('— pick —', '— اختر —')}</option>
+           ${campPrices.map(p => `<option value="${escapeHtml(p.label)}" ${(!isCustomDur && matchedLabel === p.label) ? 'selected' : ''}>${escapeHtml(p.label)} · ${campClassCount(p.days)} ${t('days', 'يوم')} · ${fmt(p.price)} QAR</option>`).join('')}
+           <option value="Custom" ${isCustomDur ? 'selected' : ''}>✏️ ${t('Custom (days)…', 'مخصص (أيام)…')}</option>
+         </select>
+         ${isCustomDur ? `<input data-en="campDays" data-i="${idx}" type="number" min="1" max="120" step="1" value="${row.classes ?? ''}" placeholder="${t('number of days, e.g. 8', 'عدد الأيام، مثال ٨')}" title="${t('Number of class days — counts attendance against this many days', 'عدد أيام الحصص — يحتسب الحضور مقابل هذا العدد')}" style="margin-top:6px;${classesNum <= 0 ? classesStyle : ''}" />
+         <div class="text-mute" style="font-size:10px;margin-top:3px">${t('Number of class days the member can attend.', 'عدد أيام الحصص التي يمكن للعضو حضورها.')}</div>` : ''}
        </div>`
     : `<div class="field" style="margin:0"><label style="font-size:10px">Classes <span style="color:var(--accent)">*</span></label><input data-en="classes" data-i="${idx}" type="number" min="0" max="${MAX_CLASSES_HARD}" step="1" value="${row.classes ?? ''}" placeholder="6" style="${classesStyle}" /></div>`;
 
@@ -2170,9 +2176,32 @@ function renderEnrollRows() {
         }
         renderEnrollRows();
         return;
+      } else if (key === 'durationLabel') {
+        // Preset duration → auto-convert to business-day class count + auto-fill price.
+        // "Custom" reveals a free-text day input (handled by campDays below).
+        if (val === 'Custom') {
+          row.durationLabel = 'Custom';
+          row._campCustom = true;
+          renderEnrollRows();   // reveal the days input
+          return;
+        }
+        row._campCustom = false;
+        const prices = (state.settings?.summerCampPrices) || DEFAULT_SUMMER_CAMP_PRICES;
+        const match = prices.find(p => p.label === val);
+        if (match) {
+          row.durationLabel = match.label;
+          row.classes = campClassCount(match.days);   // auto business-day class count
+          const currentPrice = parseFloat(row.price);
+          if (!currentPrice || currentPrice === 0) row.price = match.price;
+        } else {
+          row.durationLabel = null;
+          row.classes = '';
+        }
+        renderEnrollRows();
+        return;
       } else if (key === 'campDays') {
-        // Summer Camp duration: a plain number of class days. This number is the
-        // class limit — attendance is counted against it.
+        // Summer Camp CUSTOM duration: a plain number of class days. This number is
+        // the class limit — attendance is counted against it.
         row.classes = Math.max(0, parseInt(val) || 0);
         row.durationLabel = 'Custom';   // mark as a free-typed day count
         row._campCustom = true;
