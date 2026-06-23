@@ -2174,18 +2174,6 @@ ${seed}
     // Remote deleted a record local EDITED → keep it (no silent loss)
     var r5 = _mergeCollection([{ id: 1, v: 'a' }, { id: 2, v: 'a' }], [{ id: 1, v: 'a' }, { id: 2, v: 'E' }], [{ id: 1, v: 'a' }]);
     eq(idsOf(r5.merged), '1:a,2:E', 'merge: delete-vs-edit → edited record kept (no loss)');
-    // Stale remote can't revert a fresh local edit (record-level _rev timestamp).
-    var rStale = _mergeCollection(
-      [{ id: 1, v: 'fresh', _rev: 2000 }],            // base = our recent save
-      [{ id: 1, v: 'fresh', _rev: 2000 }],            // local = our recent save
-      [{ id: 1, v: 'stale', _rev: 1000 }]);           // remote = an older save from another device
-    eq(rStale.merged[0].v, 'fresh', 'merge: stale remote (older _rev) cannot overwrite fresh local edit');
-    // But a genuinely newer remote DOES win.
-    var rNewer = _mergeCollection(
-      [{ id: 1, v: 'old', _rev: 1000 }],
-      [{ id: 1, v: 'old', _rev: 1000 }],
-      [{ id: 1, v: 'newer', _rev: 3000 }]);
-    eq(rNewer.merged[0].v, 'newer', 'merge: newer remote (higher _rev) wins');
     // Local addition survives
     var r6 = _mergeCollection([{ id: 1, v: 'a' }], [{ id: 1, v: 'a' }, { id: 9, v: 'm' }], [{ id: 1, v: 'a' }]);
     eq(idsOf(r6.merged), '1:a,9:m', 'merge: local addition survives');

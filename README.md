@@ -1,4 +1,63 @@
 # Black Stars CRM
+Version 6.150.0 - FIX: Firestore "write stream exhausted" — the real cause of failed saves.
+
+## 6.150.0 note - cloud write throttling (resource-exhausted)
+The browser console revealed the true cause of saves not persisting:
+  FirebaseError [resource-exhausted]: Write stream exhausted maximum allowed queued writes.
+The app stores the whole dataset as one document and was firing a new Firestore write
+on every change WITHOUT waiting for the previous one to finish. During rapid editing
+these piled up, Firestore's write queue filled, and further writes were rejected — so
+changes silently failed and the console flooded with retries. (This was NOT the merge
+logic; sync was already simplified in 6.149.)
+Fixes in the cloud storage layer:
+- At most ONE Firestore write is outstanding at a time. If a save happens while a write
+  is still in flight, the newest state is queued and flushed once the current write
+  resolves (latest-wins) — so writes can never pile up and exhaust the stream.
+- Save debounce raised 1.5s → 3s so bursts of edits batch into fewer writes.
+- Every save still writes a local safety-net copy first, so data is never lost even if
+  the cloud write is delayed.
+- If cloud writes do fail (quota/connection), a clear notice now appears ("Cloud is
+  busy — your data is safe locally and will sync in a moment") instead of failing
+  silently. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.149.0 - Sync simplified: no live merge; just a "newer data available" note.
+
+## 6.149.0 note - safe, simple cloud sync
+Per the chosen design (sync as a convenience, not concurrent multi-user editing), the
+live background MERGE has been removed entirely. It was the source of every data scare,
+and it isn't needed for one person moving between two machines.
+New behaviour:
+- Your data saves to the cloud on every change and loads from the cloud when you open
+  the app — exactly as before.
+- When the cloud holds newer data than this device loaded (e.g. you saved on the other
+  machine), a small note appears: "Newer data is available — Refresh?". Clicking Refresh
+  does a clean full reload that pulls the latest. "Later" dismisses it.
+- The remote listener now ONLY reads the cloud snapshot to decide whether to show that
+  note. It never merges, never writes to your open session, and can never overwrite your
+  unsaved work. This removes the whole class of edit-loss bug.
+Tradeoff (accepted): if both machines are open and edited at the same time, the last
+save wins for the whole dataset — fine for single-user convenience sync. The old merge
+helpers remain defined but dormant. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.148.0 - HOTFIX: reverted the multi-device _rev change that risked edits not persisting.
+
+## 6.148.0 note - revert record-revision merge (data safety)
+After v6.145 introduced a per-record _rev timestamp into the multi-device merge, edits
+could appear not to persist (edit → save → reload → change gone). To protect data
+integrity, the _rev stamping in save() and the _rev tiebreaker in the merge have been
+FULLY REVERTED to the proven-stable behaviour from v6.144 and earlier:
+- save() no longer stamps _rev; it writes state as before.
+- The record-level 3-way merge is back to: changed-remote-only → remote; changed-local
+  -only → local; changed-both → keep local + flag conflict; deletes honoured only when
+  the other side is untouched.
+Edits now persist across reloads exactly as they did before today's sync experiment.
+The original goal (stopping a stale second device from reverting a fresh edit) is
+deferred to a proper per-record cloud backend rather than an app-layer timestamp. No
+schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.147.0 - FIX: attendance-report image showed 100% instead of attended/enrolled.
 
 ## 6.147.0 note - attendance image rate

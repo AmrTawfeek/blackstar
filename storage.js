@@ -20,7 +20,7 @@
 
 (function() {
   const LS_KEY = 'blackstars-crm-v1';
-  const SAVE_THROTTLE_MS = 1500;   // Debounce Firestore writes to limit billing
+  const SAVE_THROTTLE_MS = 3000;   // Debounce Firestore writes (also eases write-stream pressure)
 
   let activeBackend = null;
   let remoteUpdateCallback = null;
@@ -141,6 +141,39 @@
     const docRef = () => db.doc(cfg.dataPath || 'clubs/blackstars');
     let unsubscribe = null;
     let skipNextRemoteUpdate = false;   // suppress echo after our own writes
+    let writeInFlight = false;          // a Firestore write is currently pending
+    let pendingAfterWrite = null;       // newest state to write once the current one finishes
+    let lastWriteFailed = false;        // surfaced to the app for a "saving paused" notice
+
+    // Performs ONE Firestore write and, only after it settles, flushes the most
+    // recent pending state (if any). Keeping a single write outstanding at a time is
+    // what prevents "resource-exhausted: write stream exhausted maximum allowed
+    // queued writes" when many saves happen quickly.
+    function _flushWrite(state) {
+      const persistable = { ...state, _updatedAt: Date.now() };
+      delete persistable.user;
+      delete persistable.route;
+      delete persistable.session;
+      writeInFlight = true;
+      skipNextRemoteUpdate = true;
+      docRef().set(persistable, { merge: false })
+        .then(() => { lastWriteFailed = false; })
+        .catch(e => {
+          lastWriteFailed = true;
+          console.warn('[Storage:firebase] save failed (kept locally, will retry on next change):', e && e.code || e);
+          try { if (typeof window !== 'undefined' && typeof window.__onCloudSaveError === 'function') window.__onCloudSaveError(e); } catch (_) {}
+        })
+        .finally(() => {
+          writeInFlight = false;
+          // If newer data arrived while we were writing, write that now (one more,
+          // single, outstanding write — never a pile-up).
+          if (pendingAfterWrite) {
+            const next = pendingAfterWrite;
+            pendingAfterWrite = null;
+            _flushWrite(next);
+          }
+        });
+    }
 
     return {
       name: 'firebase',
@@ -166,16 +199,15 @@
       },
       save(state) {
         if (blockEmptyWrite(state)) return;   // guard: never wipe good cloud data with empty
-        const persistable = { ...state, _updatedAt: Date.now() };
-        delete persistable.user;
-        delete persistable.route;
-        delete persistable.session;
-        skipNextRemoteUpdate = true;
-        docRef().set(persistable, { merge: false })
-          .catch(e => console.warn('[Storage:firebase] save failed (will retry on next save):', e));
-        // Also save locally as a safety net (in case Firestore offline cache misses)
+        // Always keep a local safety-net copy first (instant, free, never lost).
         try { localBackend.save(state); }
         catch (e) { console.warn('[Storage:firebase] local safety-net save failed:', e); }
+        // Coalesce: if a Firestore write is already in flight, DON'T fire another one
+        // (that's what exhausts the write-stream queue). Just remember the newest state
+        // and flush it once the current write resolves. This guarantees at most ONE
+        // outstanding write at a time, with the latest data always winning.
+        if (writeInFlight) { pendingAfterWrite = state; return; }
+        _flushWrite(state);
       },
       onRemoteUpdate(callback) {
         remoteUpdateCallback = callback;
