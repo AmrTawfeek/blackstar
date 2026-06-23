@@ -822,6 +822,7 @@ tbody tr:last-child td {
 .badge.frozen   { background: color-mix(in srgb, var(--blue) 14%, transparent);    color: var(--blue);     border-color: color-mix(in srgb, var(--blue) 30%, transparent); }
 .badge.pending  { background: color-mix(in srgb, var(--accent-2) 14%, transparent); color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 30%, transparent); }
 .badge.withdrawn{ background: color-mix(in srgb, var(--accent-2) 16%, transparent); color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 34%, transparent); }
+.badge.transferred{ background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue); border-color: color-mix(in srgb, var(--blue) 30%, transparent); }
 .badge.blue     { background: color-mix(in srgb, var(--blue) 14%, transparent);    color: var(--blue);     border-color: color-mix(in srgb, var(--blue) 30%, transparent); }
 .badge.purple   { background: color-mix(in srgb, var(--purple) 14%, transparent);  color: var(--purple);   border-color: color-mix(in srgb, var(--purple) 30%, transparent); }
 .badge.cyan     { background: color-mix(in srgb, var(--cyan) 14%, transparent);    color: var(--cyan);     border-color: color-mix(in srgb, var(--cyan) 30%, transparent); }

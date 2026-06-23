@@ -712,7 +712,7 @@ window.downloadBackup = function() {
 
 // ─── MEMBERS ──────────────────────────────────────────────────
 PAGES.members = (main) => {
-  let filter = loadFilter('members', { search: '', status: 'all', sports: [], coach: 'all', nationality: 'all', incomplete: 'all' });
+  let filter = loadFilter('members', { search: '', status: 'all', sports: [], coach: 'all', nationality: 'all', incomplete: 'all', balance: 'all', expiry: 'all' });
   if (!Array.isArray(filter.sports)) filter.sports = filter.sport && filter.sport !== 'all' ? [filter.sport] : [];  // migrate old single-sport filter
   if (!Array.isArray(filter.statuses)) filter.statuses = (filter.status && filter.status !== 'all') ? [filter.status] : [];
   if (!Array.isArray(filter.coaches)) filter.coaches = (filter.coach && filter.coach !== 'all') ? [String(filter.coach)] : [];
@@ -936,6 +936,10 @@ PAGES.members = (main) => {
         else if (f.incomplete === 'birthdate' && hasBirthdate) return false;
         else if (f.incomplete === 'nationality' && hasNationality) return false;
       }
+      // Balance / expiry quick filters.
+      if (f.balance === 'due' && !(memberOutstanding(m.id) > 0.5)) return false;
+      if (f.expiry === 'soon') { const d = m.expiryDate ? daysUntil(m.expiryDate) : null; if (!(d != null && d >= 0 && d <= 7)) return false; }
+      if (f.expiry === 'expired') { if (memberStatus(m) !== 'Expired') return false; }
       return true;
     });
   }
@@ -957,10 +961,11 @@ PAGES.members = (main) => {
     // "Filters hiding rows" banner — same helper as the Enrolled report. The
     // baseline is the default (unfiltered) view; we clamp so the Archived view
     // (a different set, not a subset) never shows a negative count.
-    const DEFAULT_F = { search: '', statuses: [], sports: [], coaches: [], nationalities: [], incomplete: 'all' };
+    const DEFAULT_F = { search: '', statuses: [], sports: [], coaches: [], nationalities: [], incomplete: 'all', balance: 'all', expiry: 'all' };
     const baseline = applyFilter(DEFAULT_F).length;
     const anyFilterActive = filter.search || (filter.statuses && filter.statuses.length) || (filter.sports && filter.sports.length) ||
-      (filter.coaches && filter.coaches.length) || (filter.nationalities && filter.nationalities.length) || filter.incomplete !== 'all';
+      (filter.coaches && filter.coaches.length) || (filter.nationalities && filter.nationalities.length) || filter.incomplete !== 'all' ||
+      (filter.balance && filter.balance !== 'all') || (filter.expiry && filter.expiry !== 'all');
     const hiddenByFilters = Math.max(0, baseline - allRows.length);
     const banner = $('#members-filter-banner');
     if (banner) {
@@ -978,6 +983,8 @@ PAGES.members = (main) => {
           pg.page = 1;
           const si = $('#search-input'); if (si) si.value = '';
           const fi = $('#filter-incomplete'); if (fi) fi.value = 'all';
+          const fb = $('#filter-balance'); if (fb) fb.value = 'all';
+          const fe = $('#filter-expiry'); if (fe) fe.value = 'all';
           $$('.filter-status-cb, .filter-sport-cb, .filter-coach-cb, .filter-nat-cb').forEach(cb => { cb.checked = false; });
           const labs = { 'filter-status-label': 'All status', 'filter-sport-label': 'All sports', 'filter-coach-label': 'All coaches', 'filter-nat-label': '🌍 All nationalities' };
           Object.entries(labs).forEach(([id, txt]) => { const el = $('#' + id); if (el) el.textContent = txt; });
@@ -1166,6 +1173,15 @@ PAGES.members = (main) => {
           <option value="birthdate" ${filter.incomplete === 'birthdate' ? 'selected' : ''}>⚠️ No birthdate</option>
           <option value="nationality" ${filter.incomplete === 'nationality' ? 'selected' : ''}>⚠️ No nationality</option>
         </select>
+        <select id="filter-balance" class="btn ghost" title="${t('Filter by payment balance', 'تصفية حسب الرصيد')}">
+          <option value="all" ${filter.balance === 'all' || !filter.balance ? 'selected' : ''}>💳 ${t('All payments', 'كل المدفوعات')}</option>
+          <option value="due" ${filter.balance === 'due' ? 'selected' : ''}>🔴 ${t('Has balance due', 'عليه مبلغ مستحق')}</option>
+        </select>
+        <select id="filter-expiry" class="btn ghost" title="${t('Filter by membership expiry', 'تصفية حسب انتهاء العضوية')}">
+          <option value="all" ${filter.expiry === 'all' || !filter.expiry ? 'selected' : ''}>⏳ ${t('Any expiry', 'أي انتهاء')}</option>
+          <option value="soon" ${filter.expiry === 'soon' ? 'selected' : ''}>⏰ ${t('Expiring ≤ 7 days', 'ينتهي خلال ٧ أيام')}</option>
+          <option value="expired" ${filter.expiry === 'expired' ? 'selected' : ''}>⛔ ${t('Expired', 'منتهٍ')}</option>
+        </select>
         <button type="button" id="filter-dupnames" class="btn ${filter.dupNames ? 'primary' : 'ghost'}" title="Find members whose names are the same or very similar (likely duplicates)">🔁 ${filter.dupNames ? 'Similar names ✓' : 'Similar names'}</button>
       </div>
       ${filter.dupNames && dupNameInfo ? `<div class="text-mute" style="font-size:12px;padding:0 2px 10px">${t('Showing members with same / near-identical names', 'عرض الأعضاء ذوي الأسماء المتطابقة أو المتشابهة')} · ${dupNameInfo.groupCount} ${t('groups', 'مجموعة')} · ${dupNameInfo.ids.size} ${t('members', 'عضو')}. ${t('Open each to compare and merge/archive duplicates.', 'افتح كل عضو للمقارنة ودمج/أرشفة المكررين.')}</div>` : ''}
@@ -1213,6 +1229,8 @@ PAGES.members = (main) => {
   wireMultiFilter('coaches', 'filter-coach-cb', 'filter-coach-btn', 'filter-coach-menu', 'filter-coach-label', 'All coaches', v => coachName(parseInt(v)));
   wireMultiFilter('nationalities', 'filter-nat-cb', 'filter-nat-btn', 'filter-nat-menu', 'filter-nat-label', 'All nationalities', v => v);
   $('#filter-incomplete').addEventListener('change', e => { filter.incomplete = e.target.value; pg.page = 1; refreshAndSave(); });
+  $('#filter-balance')?.addEventListener('change', e => { filter.balance = e.target.value; pg.page = 1; refreshAndSave(); });
+  $('#filter-expiry')?.addEventListener('change', e => { filter.expiry = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#filter-dupnames')?.addEventListener('click', () => { filter.dupNames = !filter.dupNames; pg.page = 1; refreshAndSave(); });
   $('#add-member').addEventListener('click', () => addMember());
   $('#export-members').addEventListener('click', () => exportMembersChoice());
@@ -2010,12 +2028,18 @@ function enrollRowHtml(row, idx) {
     ? (row.durationLabel || campLabelForClasses(classesNum) || '')
     : '';
 
+  const isCustomDur = isCamp && (row.durationLabel === 'Custom' || row._campCustom);
   const classesField = isCamp
     ? `<div class="field" style="margin:0"><label style="font-size:10px">Duration <span style="color:var(--accent)">*</span></label>
-         <select data-en="durationLabel" data-i="${idx}" style="${classesNum <= 0 ? classesStyle : ''}">
+         <select data-en="durationLabel" data-i="${idx}" style="${classesNum <= 0 && !isCustomDur ? classesStyle : ''}">
            <option value="">— pick —</option>
            ${campPrices.map(p => `<option value="${escapeHtml(p.label)}" ${matchedLabel === p.label ? 'selected' : ''}>${escapeHtml(p.label)} · ${fmt(p.price)} QAR</option>`).join('')}
+           <option value="Custom" ${isCustomDur ? 'selected' : ''}>✏️ Custom (days)…</option>
          </select>
+         ${isCustomDur ? `<div style="display:flex;gap:6px;margin-top:6px">
+           <input data-en="campCustomDays" data-i="${idx}" type="number" min="1" max="120" step="1" value="${row.classes ?? ''}" placeholder="days" title="Business days (Sun–Thu) — this is also the class limit" style="flex:1;${classesNum <= 0 ? classesStyle : ''}" />
+           <input data-en="campCustomPrice" data-i="${idx}" type="number" min="0" step="0.01" value="${row.price ?? ''}" placeholder="price QAR" style="flex:1" />
+         </div><div class="text-mute" style="font-size:10px;margin-top:3px">${t('Business days (Sun–Thu). This is the class limit.', 'أيام العمل (الأحد–الخميس). هذا هو حد الحصص.')}</div>` : ''}
        </div>`
     : `<div class="field" style="margin:0"><label style="font-size:10px">Classes <span style="color:var(--accent)">*</span></label><input data-en="classes" data-i="${idx}" type="number" min="0" max="${MAX_CLASSES_HARD}" step="1" value="${row.classes ?? ''}" placeholder="6" style="${classesStyle}" /></div>`;
 
@@ -2030,11 +2054,23 @@ function enrollRowHtml(row, idx) {
 
   // Per-sport validity. Summer Camp uses its duration (days) as its validity.
   const valSel = parseInt(row.validity) || DEFAULT_VALIDITY;
+  // Camp now has an INDEPENDENT validity (the time window) separate from its
+  // duration (the class limit). e.g. duration 8 + validity 1 month = attend 8
+  // classes any time within one month. Validity is in calendar days; presets map
+  // 1 week→7, 2 weeks→14, 1 month→30, 2 months→60, plus a custom day count.
+  const CAMP_VALIDITY_PRESETS = [{ label: '1 week', days: 7 }, { label: '2 weeks', days: 14 }, { label: '3 weeks', days: 21 }, { label: '1 month', days: 30 }, { label: '6 weeks', days: 42 }, { label: '2 months', days: 60 }];
+  const campVal = parseInt(row.validity) || (classesNum > 0 ? classesNum : DEFAULT_VALIDITY);
   const validityField = isCamp
-    ? `<div class="field" style="margin:0"><label style="font-size:10px;color:var(--text-mute)">Validity</label><div style="padding:10px 12px;background:var(--surface);border:1px dashed var(--border);border-radius:8px;color:var(--text-mute);font-size:11px;font-style:italic">${classesNum > 0 ? classesNum + ' days (duration)' : 'set duration'}</div></div>`
+    ? `<div class="field" style="margin:0"><label style="font-size:10px">Validity <span class="text-mute" style="font-weight:400">(window)</span></label>
+         <select data-en="campValidity" data-i="${idx}">
+           ${CAMP_VALIDITY_PRESETS.map(v => `<option value="${v.days}" ${v.days === campVal ? 'selected' : ''}>${v.label} (${v.days}d)</option>`).join('')}
+           ${CAMP_VALIDITY_PRESETS.some(v => v.days === campVal) ? '' : `<option value="${campVal}" selected>${campVal} days</option>`}
+         </select>
+       </div>`
     : `<div class="field" style="margin:0"><label style="font-size:10px">Validity <span style="color:var(--accent)">*</span></label><select data-en="validity" data-i="${idx}">${VALIDITY_OPTIONS.map(v => `<option value="${v}" ${v === valSel ? 'selected' : ''}>${v} days</option>`).join('')}</select></div>`;
-  // This sport's own expiry = its start + its validity (days)
-  const eDays = isCamp ? classesNum : valSel;
+  // This sport's own expiry = its start + its window. For camp the window is the
+  // validity (calendar days); for other sports it's the validity too.
+  const eDays = isCamp ? campVal : valSel;
   const expiryHint = (row.start && eDays > 0) ? `⏳ ${escapeHtml(row.sport)} expires <b>${fmtDate(addDays(row.start, eDays))}</b>` : '';
 
   const buttonCell = row.paid
@@ -2143,13 +2179,21 @@ function renderEnrollRows() {
         renderEnrollRows();
         return;
       } else if (key === 'durationLabel') {
-        // Find the matching price entry and auto-fill classes (days) + price
+        // "Custom" lets the admin type a number of business days (also the class
+        // limit) and a price. Otherwise match a preset and auto-fill.
+        if (val === 'Custom') {
+          row.durationLabel = 'Custom';
+          row._campCustom = true;
+          // Keep any existing classes/price; leave blank for the admin to fill.
+          renderEnrollRows();
+          return;
+        }
+        row._campCustom = false;
         const prices = (state.settings?.summerCampPrices) || DEFAULT_SUMMER_CAMP_PRICES;
         const match = prices.find(p => p.label === val);
         if (match) {
           row.durationLabel = match.label;
           row.classes = campClassCount(match.days);   // business-day class count
-          // Only auto-fill price if user hasn't typed one yet
           const currentPrice = parseFloat(row.price);
           if (!currentPrice || currentPrice === 0) {
             row.price = match.price;
@@ -2159,6 +2203,23 @@ function renderEnrollRows() {
           row.classes = '';
         }
         renderEnrollRows();
+        return;
+      } else if (key === 'campCustomDays') {
+        // Custom camp duration: the typed number IS the business-day class limit.
+        row.durationLabel = 'Custom';
+        row._campCustom = true;
+        row.classes = Math.max(0, parseInt(val) || 0);
+        row.campCustomDays = row.classes;
+        renderEnrollRows();
+        return;
+      } else if (key === 'campValidity') {
+        // Camp time window (calendar days) — independent of the class limit.
+        row.validity = Math.max(1, parseInt(val) || DEFAULT_VALIDITY);
+        renderEnrollRows();
+        return;
+      } else if (key === 'campCustomPrice') {
+        row.price = parseFloat(val) || 0;
+        updatePaidNowHint();
         return;
       } else {
         row[key] = val;
@@ -2309,6 +2370,8 @@ function showMemberForm(m) {
       window._enrollRows = m.enrollments.map(e => ({
         sport: e.sport, coachId: e.coachId,
         classes: e.classes ?? '', price: e.price ?? '',
+        durationLabel: e.durationLabel || null,
+        _campCustom: e.durationLabel === 'Custom',
         start: TODAY, validity: DEFAULT_VALIDITY, paid: false,
       }));
     } else {
@@ -2320,6 +2383,8 @@ function showMemberForm(m) {
       return {
         sport: e.sport, coachId: e.coachId,
         classes: e.classes ?? '', price: e.price ?? '',
+        durationLabel: e.durationLabel || (sub && sub.durationLabel) || null,
+        _campCustom: (e.durationLabel === 'Custom') || (sub && sub.durationLabel === 'Custom') || false,
         // Each sport carries its OWN start date + validity (from its subscription)
         start: (sub && sub.start) || m.startDate || TODAY,
         validity: (sub && sub.validity) || (sub && daysBetween(sub.start, sub.end)) || m.validity || DEFAULT_VALIDITY,
@@ -2637,9 +2702,10 @@ function showMemberForm(m) {
           price: parseFloat(r.price) || 0,
           // Summer Camp keeps its duration label for display in invoices + member detail
           durationLabel: r.sport === SUMMER_CAMP ? (r.durationLabel || null) : null,
-          // Each sport carries its OWN start date + validity (its own expiry)
+          // Each sport carries its OWN start date + validity (its own expiry).
+          // Camp: validity is the time window (calendar days), class limit is classes.
           start: r.start || null,
-          validity: r.sport === SUMMER_CAMP ? (parseInt(r.classes) || DEFAULT_VALIDITY) : (parseInt(r.validity) || DEFAULT_VALIDITY),
+          validity: r.sport === SUMMER_CAMP ? (parseInt(r.validity) || parseInt(r.classes) || DEFAULT_VALIDITY) : (parseInt(r.validity) || DEFAULT_VALIDITY),
           _originalSport: r.originalSport || null,   // for paid-but-unattended sport rename
           _paid: !!r.paid,
           _attended: r.attended || 0,
@@ -2744,9 +2810,11 @@ function showMemberForm(m) {
             enrollments.forEach((e, i) => {
               const isCamp = e.sport === SUMMER_CAMP;
               const eStart = enrollmentStartDate(e, data);   // per-sport start (defaults to member start)
-              const subValidity = isCamp ? (e.classes || DEFAULT_VALIDITY) : (e.validity || DEFAULT_VALIDITY);
-              // Camp "weeks" are five business days (Sun–Thu); regular sports use calendar days.
-              const subEnd = isCamp ? campEndDate(eStart, subValidity) : addDays(eStart, subValidity);
+              // Camp: the time WINDOW is the validity (calendar days, e.g. 1 month),
+              // independent of the class limit (e.classes). The class limit caps how
+              // many sessions can be attended within that window.
+              const subValidity = isCamp ? (e.validity || e.classes || DEFAULT_VALIDITY) : (e.validity || DEFAULT_VALIDITY);
+              const subEnd = addDays(eStart, subValidity);
               data.subscriptions.push({
                 month: ymToShort(eStart.slice(0, 7)) || eStart.slice(0, 7),
                 activity: e.sport,
@@ -6392,10 +6460,10 @@ PAGES.coaches = (main) => {
         <td colspan="3">Total (${coaches.length} shown)</td>
         <td class="text-right num">${coaches.reduce((s,c) => s + aprStats[c.id].students, 0)}</td>
         <td class="text-right num">${coaches.reduce((s,c) => s + mayStats[c.id].students, 0)}</td>
-        <td class="text-right num">${fmt(coaches.reduce((s,c) => s + aprStats[c.id].revenue, 0))}</td>
+        ${isViewerRole() ? '' : `<td class="text-right num">${fmt(coaches.reduce((s,c) => s + aprStats[c.id].revenue, 0))}</td>
         <td class="text-right num">${fmt(coaches.reduce((s,c) => s + mayStats[c.id].revenue, 0))}</td>
         <td class="text-right num">${fmt(coaches.reduce((s,c) => s + (aprStats[c.id].commissionBase ?? aprStats[c.id].revenue) * c.rate / 100, 0))}</td>
-        <td class="text-right num">${fmt(coaches.reduce((s,c) => s + (mayStats[c.id].commissionBase ?? mayStats[c.id].revenue) * c.rate / 100, 0))}</td>
+        <td class="text-right num">${fmt(coaches.reduce((s,c) => s + (mayStats[c.id].commissionBase ?? mayStats[c.id].revenue) * c.rate / 100, 0))}</td>`}
         <td></td>
       </tr>
     `;
@@ -6505,6 +6573,8 @@ window.toggleCoachActive = function(coachId) {
 
 // ─── INVOICES ──────────────────────────────────────────────────
 PAGES.invoices = (main) => {
+  // Treat every "Summer Camp · <duration>" variant as Summer Camp for filtering.
+  const _isCampActivity = s => typeof s === 'string' && (s === SUMMER_CAMP || s.indexOf(SUMMER_CAMP) === 0);
   let filter = { search: '', month: 'all', day: '', method: 'all', sport: 'all', coach: 'all', category: 'all' };
   const pg = makePager(10);
   const selected = new Set();   // invoice ids ticked for merging
@@ -6532,7 +6602,12 @@ PAGES.invoices = (main) => {
       if (filter.month !== 'all' && i.month !== filter.month) return false;
       if (filter.day && i.date !== filter.day) return false;
       if (filter.method !== 'all' && i.method !== filter.method) return false;
-      if (filter.sport !== 'all' && i.sport !== filter.sport) return false;
+      if (filter.sport !== 'all') {
+        // "Summer Camp" matches every camp duration variant (Summer Camp · 1 week, …).
+        if (filter.sport === SUMMER_CAMP) {
+          if (!_isCampActivity(i.sport)) return false;
+        } else if (i.sport !== filter.sport) return false;
+      }
       if (filter.coach !== 'all' && i.coach !== filter.coach) return false;
       if (filter.category !== 'all' && (i.category || 'Membership') !== filter.category) return false;
       return true;
@@ -6641,7 +6716,14 @@ PAGES.invoices = (main) => {
   }
 
   // Build unique sport + coach options from data
-  const sportsInInvoices = [...new Set(state.invoices.map(i => i.sport).filter(Boolean))].sort();
+  // Collapse all "Summer Camp · <duration>" variants into a single "Summer Camp"
+  // entry so the activity filter isn't cluttered with one row per camp duration.
+  const _rawActivities = [...new Set(state.invoices.map(i => i.sport).filter(Boolean))];
+  const _hasCamp = _rawActivities.some(_isCampActivity);
+  const sportsInInvoices = [
+    ...(_hasCamp ? [SUMMER_CAMP] : []),
+    ..._rawActivities.filter(s => !_isCampActivity(s)),
+  ].sort();
   const coachesInInvoices = [...new Set(state.invoices.map(i => i.coach).filter(Boolean))].sort();
 
   main.innerHTML = `
@@ -7167,7 +7249,6 @@ function generateLatestInvoice(onDone) {
       <div id="gli-preview" style="margin-top:12px;display:none;background:var(--surface-2);border-radius:8px;padding:12px;font-size:13px"></div>
       <div class="form-row" style="margin-top:10px">
         <div class="field"><label>Invoice date <span class="text-mute" style="font-size:10px">(defaults to sport start date)</span></label><input type="date" id="gli-date" value="${TODAY}" oninput="this.dataset.touched='1'" /></div>
-        <div class="field"><label>Method</label><select id="gli-method"><option value="cash">Cash</option><option value="card">Card</option></select></div>
       </div>
     `,
     actions: [
@@ -7193,7 +7274,21 @@ function generateLatestInvoice(onDone) {
         if (!enrollments.length) { toast('No enrollments found for this member', 'error'); return; }
 
         const date = $('#gli-date').value || TODAY;
-        const method = $('#gli-method').value || 'cash';
+        // Payment method comes from the member's MEMBERSHIP DATA — their most recent
+        // membership invoice's method (or a payment's method) — not a manual picker.
+        const method = (function () {
+          const prior = state.invoices
+            .filter(inv => inv.customerId === m.id && !inv.deleted && (inv.category || 'Membership') === 'Membership')
+            .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+          for (const inv of prior) {
+            // Prefer the method on the latest recorded payment, else the invoice's.
+            const pm = Array.isArray(inv.payments) && inv.payments.length
+              ? inv.payments[inv.payments.length - 1].method : null;
+            if (pm) return pm;
+            if (inv.method) return inv.method;
+          }
+          return 'cash';   // sensible default when the member has no prior invoice
+        })();
         const totalAmt = enrollments.reduce((s, e) => s + (e.price || 0), 0);
         if (totalAmt <= 0) { toast('Enrollment prices are 0 — nothing to invoice', 'error'); return; }
 
@@ -8820,6 +8915,125 @@ window.deleteCashCollection = function(id) {
   if (typeof audit === 'function') audit('cash.collection.delete', 'expense:' + id, `Deleted cash collection ${fmt(ex.amount)} QAR`);
   save(); render();
   toast('✓ Cash collection deleted');
+};
+
+PAGES.cashinhand = (main) => {
+  if (currentRole() !== 'admin') {
+    main.innerHTML = `<div class="topbar"><div><h1>🧮 ${t('Cash in Hand', 'النقد في الصندوق')}</h1></div></div>
+      <div class="card"><div class="text-mute" style="font-size:13px">${t('Only an admin can view or update the cash count.', 'يمكن للمشرف فقط عرض أو تحديث جرد النقد.')}</div></div>`;
+    return;
+  }
+  const counts = (state.cashCounts || []).slice().sort((a, b) => (b.createdAt || b.date || '').localeCompare(a.createdAt || a.date || ''));
+  const latest = counts[0] || null;
+  const prev = counts[1] || null;
+  const delta = latest && prev ? (Number(latest.amount) || 0) - (Number(prev.amount) || 0) : null;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🧮 ${t('Cash in Hand', 'النقد في الصندوق')}</h1>
+        <div class="subtitle">${t('Record what you physically counted in the drawer', 'سجّل ما قمت بعدّه فعلياً في الصندوق')}</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn primary" id="cih-add">➕ ${t('Record cash count', 'تسجيل جرد النقد')}</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;text-align:center;padding:28px 18px;background:linear-gradient(135deg,rgba(16,185,129,.10),transparent 70%)">
+      <div class="text-mute" style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;font-weight:700">${t('Current cash in hand', 'النقد الحالي في الصندوق')}</div>
+      <div style="font-size:46px;font-weight:800;color:var(--green);line-height:1.1;margin:6px 0">${latest ? fmtMoney(latest.amount) : '—'}</div>
+      ${latest ? `<div class="text-mute" style="font-size:12px">${t('Last counted', 'آخر جرد')}: <b>${fmtDate(latest.date)}</b>${latest.by ? ' · ' + escapeHtml(latest.by) : ''}${latest.note ? ' · ' + escapeHtml(latest.note) : ''}</div>` : `<div class="text-mute" style="font-size:13px">${t('No cash count recorded yet. Click “Record cash count” to enter your first one.', 'لا يوجد جرد مسجّل بعد. اضغط «تسجيل جرد النقد» لإدخال أول جرد.')}</div>`}
+      ${delta != null ? `<div style="font-size:12px;margin-top:6px;color:${delta >= 0 ? 'var(--green)' : 'var(--red)'}">${delta >= 0 ? '▲' : '▼'} ${fmtMoney(Math.abs(delta))} ${t('vs previous count', 'مقارنة بالجرد السابق')}</div>` : ''}
+      <div style="display:flex;gap:8px;justify-content:center;align-items:center;margin-top:16px;flex-wrap:wrap">
+        <input id="cih-quick" type="number" inputmode="decimal" min="0" step="0.01" placeholder="${t('Enter today\\u2019s count…', 'أدخل جرد اليوم…')}" style="max-width:180px;text-align:center;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:15px" />
+        <button class="btn primary" id="cih-quick-save">✓ ${t('Update', 'تحديث')}</button>
+      </div>
+      <div class="text-mute" style="font-size:11px;margin-top:6px">${t('Quick-record today\\u2019s drawer count, or use the button above for date/notes.', 'سجّل جرد اليوم بسرعة، أو استخدم الزر بالأعلى للتاريخ والملاحظات.')}</div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">🧾 ${t('Count history', 'سجل الجرد')}</div><div class="card-subtitle">${t('Every cash count you have recorded, newest first', 'كل عمليات جرد النقد المسجّلة، الأحدث أولاً')}</div></div></div>
+      ${counts.length ? `<div style="overflow:auto"><table class="data-table" style="width:100%"><thead><tr>
+        <th>${t('Date', 'التاريخ')}</th><th class="text-right">${t('Amount', 'المبلغ')}</th><th class="text-right">${t('Change', 'التغير')}</th><th>${t('Counted by', 'الجرد بواسطة')}</th><th>${t('Note', 'ملاحظة')}</th><th></th>
+      </tr></thead><tbody>
+      ${counts.map((c, i) => {
+        const p = counts[i + 1];
+        const d = p ? (Number(c.amount) || 0) - (Number(p.amount) || 0) : null;
+        return `<tr${i === 0 ? ' style="background:rgba(16,185,129,.06)"' : ''}>
+          <td>${fmtDate(c.date)}${i === 0 ? ` <span class="badge active" style="font-size:9px">${t('current', 'الحالي')}</span>` : ''}</td>
+          <td class="text-right num font-bold">${fmtMoney(c.amount)}</td>
+          <td class="text-right num" style="${d == null ? 'color:var(--text-mute)' : d >= 0 ? 'color:var(--green)' : 'color:var(--red)'}">${d == null ? '—' : (d >= 0 ? '+' : '−') + fmtMoney(Math.abs(d))}</td>
+          <td class="text-mute">${c.by ? escapeHtml(c.by) : '—'}</td>
+          <td class="text-mute">${c.note ? escapeHtml(c.note) : '—'}</td>
+          <td class="text-right"><button class="btn ghost sm" onclick="window.deleteCashCount('${c.id}')" title="${t('Delete this entry', 'حذف هذا السجل')}">🗑</button></td>
+        </tr>`;
+      }).join('')}
+      </tbody></table></div>` : `<div class="text-mute" style="font-size:13px;padding:8px">${t('No entries yet.', 'لا توجد سجلات بعد.')}</div>`}
+    </div>
+  `;
+
+  $('#cih-add')?.addEventListener('click', () => openCashCountDialog());
+  const quickSave = () => {
+    const el = document.getElementById('cih-quick');
+    const amount = parseFloat(el && el.value);
+    if (isNaN(amount) || amount < 0) { toast('Enter a valid amount', 'error'); return; }
+    const entry = { id: 'cc_' + Date.now(), amount, date: TODAY, by: '', note: '', createdAt: new Date().toISOString() };
+    if (!Array.isArray(state.cashCounts)) state.cashCounts = [];
+    state.cashCounts.push(entry);
+    if (typeof audit === 'function') audit('cash.count', 'cashinhand', `Recorded cash count ${fmt(amount)} QAR (quick)`);
+    save(); render();
+    toast(`✓ ${t('Cash count recorded', 'تم تسجيل الجرد')}: ${fmt(amount)} QAR`);
+  };
+  $('#cih-quick-save')?.addEventListener('click', quickSave);
+  $('#cih-quick')?.addEventListener('keydown', e => { if (e.key === 'Enter') quickSave(); });
+};
+
+window.openCashCountDialog = function() {
+  if (currentRole() !== 'admin') { toast('Admins only', 'error'); return; }
+  showModal({
+    title: '🧮 ' + t('Record cash count', 'تسجيل جرد النقد'),
+    body: `
+      <div class="field"><label>${t('Amount counted (QAR)', 'المبلغ المعدود (ريال)')} <span style="color:var(--accent)">*</span></label>
+        <input id="cih-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" /></div>
+      <div class="field"><label>${t('Date', 'التاريخ')}</label>
+        <input id="cih-date" type="date" value="${TODAY}" /></div>
+      <div class="field"><label>${t('Counted by', 'الجرد بواسطة')}</label>
+        <input id="cih-by" type="text" placeholder="${t('Your name (optional)', 'اسمك (اختياري)')}" /></div>
+      <div class="field"><label>${t('Note', 'ملاحظة')}</label>
+        <input id="cih-note" type="text" placeholder="${t('e.g. end of day, after bank deposit…', 'مثال: نهاية اليوم، بعد الإيداع البنكي…')}" /></div>
+    `,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: t('Save count', 'حفظ الجرد'), class: 'btn primary', onclick: () => {
+        const amount = parseFloat(document.getElementById('cih-amount').value);
+        if (isNaN(amount) || amount < 0) { toast('Enter a valid amount', 'error'); return; }
+        const entry = {
+          id: 'cc_' + Date.now(),
+          amount,
+          date: document.getElementById('cih-date').value || TODAY,
+          by: (document.getElementById('cih-by').value || '').trim(),
+          note: (document.getElementById('cih-note').value || '').trim(),
+          createdAt: new Date().toISOString(),
+        };
+        if (!Array.isArray(state.cashCounts)) state.cashCounts = [];
+        state.cashCounts.push(entry);
+        if (typeof audit === 'function') audit('cash.count', 'cashinhand', `Recorded cash count ${fmt(amount)} QAR`);
+        save(); closeModal(); render();
+        toast(`✓ ${t('Cash count recorded', 'تم تسجيل الجرد')}: ${fmt(amount)} QAR`);
+      }},
+    ],
+  });
+};
+
+window.deleteCashCount = function(id) {
+  if (currentRole() !== 'admin') { toast('Admins only', 'error'); return; }
+  const entry = (state.cashCounts || []).find(c => c.id === id);
+  if (!entry) return;
+  if (!confirm(`Delete this cash count (${fmt(entry.amount)} QAR on ${fmtDate(entry.date)})?`)) return;
+  state.cashCounts = state.cashCounts.filter(c => c.id !== id);
+  if (typeof audit === 'function') audit('cash.count_delete', 'cashinhand', `Deleted cash count ${fmt(entry.amount)} QAR`);
+  save(); render();
+  toast('Cash count deleted');
 };
 
 PAGES.cashcollection = (main) => {
@@ -12173,8 +12387,8 @@ PAGES.attendance = (main) => {
         }).join('');
         const status = memberStatus(m);
         const isExpired = status === 'Expired';
-        const _due2 = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0;
-        const needsRenewal2 = isExpired && _due2 <= 0.5;
+        const _due2 = (currentRole() === 'coach' || typeof memberOutstanding !== 'function') ? 0 : memberOutstanding(m.id);
+        const needsRenewal2 = isExpired && _due2 <= 0.5 && currentRole() !== 'coach';
         const statusBadge = isExpired ? '<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(242,96,96,.15);color:var(--red);margin-left:4px">EXPIRED</span>' : '';
         const renewBadge2 = needsRenewal2 ? `<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(245,158,11,.18);color:var(--accent-2);margin-left:4px" title="Paid up but membership expired — offer a renewal">🔄 ${t('RENEW', 'تجديد')}</span>` : '';
         const unpaidBadge2 = _due2 > 0.5 ? `<span class="badge" style="font-size:9px;padding:1px 6px;background:rgba(242,96,96,.15);color:var(--red);margin-left:4px" title="Not fully paid — ${fmt(_due2)} QAR due">💳 ${t('UNPAID', 'غير مدفوع')}</span>` : '';
@@ -12224,10 +12438,10 @@ PAGES.attendance = (main) => {
       const sportEsc = sport.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
       const status = memberStatus(m);
       const isExpired = status === 'Expired';
-      const _due = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0;
+      const _due = (currentRole() === 'coach' || typeof memberOutstanding !== 'function') ? 0 : memberOutstanding(m.id);
       // Expired but fully paid → a renewal candidate: highlight in amber so reception
       // is prompted to extend the membership (distinct from the red UNPAID case).
-      const needsRenewal = isExpired && _due <= 0.5;
+      const needsRenewal = isExpired && _due <= 0.5 && currentRole() !== 'coach';
       const rowStyle = needsRenewal
         ? 'background:rgba(245,158,11,.10);box-shadow:inset 3px 0 0 var(--accent-2)'
         : (isExpired ? 'background:rgba(120,120,140,.06)' : '');
@@ -14451,6 +14665,13 @@ PAGES.expiring = (main) => {
     if (memberStatus(m) === 'Withdrawn') continue;  // withdrawn members aren't renewing
     const d = daysUntil(m.expiryDate);
     if (d == null) continue;
+    // A camp member who has used up all their classes is DONE (Completed) and needs
+    // renewal — surface them in the expired bucket even if their validity window
+    // hasn't ended yet.
+    if (memberStatus(m) === 'Completed' && (typeof campLimitReached === 'function' && campLimitReached(m))) {
+      expired.push({ m, days: Math.min(d, 0), completed: true });
+      continue;
+    }
     if (d < 0) expired.push({ m, days: d });
     else if (d <= threshold) expiringSoon.push({ m, days: d });
     else if (d <= 30) upcoming.push({ m, days: d });
@@ -19505,6 +19726,10 @@ window.transferMembership = function(fromId, sport, toId) {
   const attended = aSub ? (parseInt(aSub.attendedClasses) || 0) : 0;
   const classes = Math.max(0, fullClasses - attended);
   const price = enr.price || (found && found.li && found.li.price) || 0;
+  // Split the price by attendance so the ORIGINAL coach keeps commission for the
+  // classes A already took, and only the unattended value moves to the new coach.
+  const attendedValue = fullClasses > 0 ? Math.round(price * (attended / fullClasses)) : 0;
+  const transferValue = Math.max(0, price - attendedValue);
   const validity = enr.validity || DEFAULT_VALIDITY;
   const start = TODAY;
   const end = addDays(start, validity);
@@ -19532,23 +19757,74 @@ window.transferMembership = function(fromId, sport, toId) {
     A.coachId = nextEnr ? nextEnr.coachId : null;
   }
   if (A.enrollments && A.enrollments.length) {
+    if (A.status === 'Transferred') A.status = 'Active';   // still has sports → not transferred-out
     const d = deriveMemberDates(A.enrollments, A.firstRegistration);
     A.startDate = d.startDate;
     A.expiryDate = d.expiryDate;
   } else {
-    // No sports left — clear the window so they don't show a phantom expiry.
+    // No sports left — clear the window so they don't show a phantom expiry, and
+    // mark the member as Transferred (they moved their membership to someone else).
     A.expiryDate = null;
+    A.status = 'Transferred';
   }
-  // 3) Re-point the money to B.
+  // 3) Re-point the money to B — but KEEP the attended portion's value on A so the
+  //    original coach still earns commission for the classes A actually took. Only
+  //    the unattended value (transferValue) moves to B / B's coach.
   let invId = null;
   if (found && found.inv) {
     const inv = found.inv;
     const items = found.items;
+    const moved = items.find(x => x.sport === sport);
+    const origCoachId = (moved && moved.coachId != null) ? moved.coachId : coachId;
+    const fullLinePrice = Math.max(0, Number(moved && moved.price) || price || 0);
+    const keepValue = fullLinePrice > 0 && attended > 0 && fullClasses > 0
+      ? Math.round(fullLinePrice * (attended / fullClasses)) : 0;
+    const moveValue = Math.max(0, fullLinePrice - keepValue);
+
     if (items.length <= 1) {
-      // Single-sport invoice — just re-point the whole invoice to B.
-      inv.customerId = B.id;
-      inv.customerName = B.name;
-      invId = inv.id;
+      // Single-sport invoice. If A attended some classes, KEEP an invoice on A for
+      // the consumed value (credits A's original coach); otherwise move it wholesale.
+      if (keepValue > 0) {
+        const paidBefore = invoicePaid(inv);
+        const keepFactor = fullLinePrice > 0 ? keepValue / fullLinePrice : 0;
+        const movePaid = Math.max(0, paidBefore - paidBefore * keepFactor);
+        // Shrink A's invoice to the attended (consumed) value, keep A's coach.
+        inv.amount = keepValue;
+        inv.lineItems = [{ sport, coach: coachName(origCoachId), coachId: origCoachId, classes: attended, price: keepValue, durationLabel: 'transferred · consumed' }];
+        inv.description = `${A.name} — ${sport} (classes taken before transfer)`;
+        if (Array.isArray(inv.payments) && inv.payments.length) {
+          inv.payments = inv.payments.map(p => ({ ...p, amount: (p.amount || 0) * keepFactor })).filter(p => Math.abs(p.amount) > 0.001);
+          inv.amountPaid = inv.payments.reduce((s, p) => s + (p.amount || 0), 0);
+        } else if (inv.amountPaid != null) {
+          inv.amountPaid = paidBefore * keepFactor;
+        }
+        // New invoice on B for the unattended (transferred) value + B's coach.
+        if (moveValue > 0) {
+          const newInv = {
+            id: nextId(state.invoices), date: start,
+            description: `${B.name} — membership transfer in: ${sport} (from ${A.name})`,
+            amount: moveValue, method: inv.method || 'transfer',
+            month: start.slice(0, 7), ref: 'TR-' + Date.now().toString().slice(-6),
+            sport, coach: coachName(coachId), coachId,
+            customerId: B.id, customerName: B.name,
+            category: 'Membership', activityType: 'subscription',
+            amountPaid: Math.max(0, movePaid),
+            payments: movePaid > 0 ? [{ amount: movePaid, date: start, method: inv.method || 'transfer' }] : [],
+            lineItems: [{ sport, coach: coachName(coachId), coachId, classes, price: moveValue }],
+          };
+          state.invoices.push(newInv);
+          invId = newInv.id;
+        } else { invId = inv.id; }
+      } else {
+        // Nothing attended — move the whole invoice to B as before.
+        inv.customerId = B.id;
+        inv.customerName = B.name;
+        if (coachId !== origCoachId) {
+          inv.coachId = coachId; inv.coach = coachName(coachId);
+          if (Array.isArray(inv.lineItems)) inv.lineItems = inv.lineItems.map(li => li.sport === sport ? { ...li, coachId, coach: coachName(coachId), classes } : li);
+        }
+        invId = inv.id;
+      }
     } else {
       // Multi-sport invoice — split out this sport's line into a NEW invoice for B,
       // shrink A's invoice (prorate the paid amount), same pattern as deleteMemberSport.
@@ -19556,10 +19832,16 @@ window.transferMembership = function(fromId, sport, toId) {
       const movedPrice = Math.max(0, Number(moved && moved.price) || 0);
       const oldAmount = inv.amount || items.reduce((s, li) => s + (Number(li.price) || 0), 0);
       const paidBefore = invoicePaid(inv);
-      const movedPaid = oldAmount > 0 ? paidBefore * (movedPrice / oldAmount) : 0;
-      // Shrink A's invoice
+      // Keep the attended value of THIS sport's line on A (as a consumed line, A's
+      // original coach), and move only the unattended value to B.
+      const keepHere = (movedPrice > 0 && attended > 0 && fullClasses > 0)
+        ? Math.round(movedPrice * (attended / fullClasses)) : 0;
+      const moveOut = Math.max(0, movedPrice - keepHere);
+      const movedPaid = oldAmount > 0 ? paidBefore * (moveOut / oldAmount) : 0;
+      // A keeps the other sports' lines + (if any) the consumed portion of this one.
       const remaining = items.filter(x => x.sport !== sport);
-      const newAmount = Math.max(0, oldAmount - movedPrice);
+      if (keepHere > 0) remaining.push({ sport, coach: coachName(origCoachId), coachId: origCoachId, classes: attended, price: keepHere, durationLabel: 'transferred · consumed' });
+      const newAmount = Math.max(0, oldAmount - moveOut);
       const factor = oldAmount > 0 ? newAmount / oldAmount : 0;
       inv.lineItems = remaining;
       inv.amount = newAmount;
@@ -19570,21 +19852,23 @@ window.transferMembership = function(fromId, sport, toId) {
         inv.amountPaid = inv.amountPaid * factor;
       }
       if (inv.sport === sport && remaining[0]) inv.sport = remaining[0].sport;
-      // New invoice for B
-      const newInv = {
-        id: nextId(state.invoices), date: start,
-        description: `${B.name} — membership transfer in: ${sport} (from ${A.name})`,
-        amount: movedPrice, method: inv.method || 'transfer',
-        month: start.slice(0, 7), ref: 'TR-' + Date.now().toString().slice(-6),
-        sport, coach: coachName(coachId), coachId,
-        customerId: B.id, customerName: B.name,
-        category: 'Membership', activityType: 'subscription',
-        amountPaid: movedPaid,
-        payments: movedPaid > 0 ? [{ amount: movedPaid, date: start, method: inv.method || 'transfer' }] : [],
-        lineItems: [{ sport, coach: coachName(coachId), coachId, classes, price: movedPrice }],
-      };
-      state.invoices.push(newInv);
-      invId = newInv.id;
+      // New invoice for B (only the unattended value moves)
+      if (moveOut > 0) {
+        const newInv = {
+          id: nextId(state.invoices), date: start,
+          description: `${B.name} — membership transfer in: ${sport} (from ${A.name})`,
+          amount: moveOut, method: inv.method || 'transfer',
+          month: start.slice(0, 7), ref: 'TR-' + Date.now().toString().slice(-6),
+          sport, coach: coachName(coachId), coachId,
+          customerId: B.id, customerName: B.name,
+          category: 'Membership', activityType: 'subscription',
+          amountPaid: movedPaid,
+          payments: movedPaid > 0 ? [{ amount: movedPaid, date: start, method: inv.method || 'transfer' }] : [],
+          lineItems: [{ sport, coach: coachName(coachId), coachId, classes, price: moveOut }],
+        };
+        state.invoices.push(newInv);
+        invId = newInv.id;
+      }
     }
   }
 

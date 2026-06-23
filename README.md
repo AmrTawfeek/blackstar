@@ -1,4 +1,200 @@
 # Black Stars CRM
+Version 6.119.0 - Generate latest invoice: payment method from membership data.
+
+## 6.119.0 note - auto payment method
+The "Generate latest invoice" dialog no longer shows a Cash/Card picker. The payment
+method is now taken automatically from the member's membership data — specifically the
+method on their most recent membership invoice (or its latest recorded payment),
+defaulting to cash if they have no prior invoice. One less thing to set, and it stays
+consistent with how the member usually pays. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.118.0 - Invoices: single "Summer Camp" activity filter.
+
+## 6.118.0 note - collapse camp variants in invoices filter
+The Invoices "activity" filter listed a separate option for every camp duration
+(Summer Camp · 1 week, · 1 month, · 2 months, …), cluttering the dropdown. It now
+shows a SINGLE "Summer Camp" option that matches invoices of any camp duration.
+Regular sports are unaffected. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.117.0 - Multi-device safe sync: record-level merge (no data loss).
+
+## 6.117.0 note - smarter multi-device sync
+Previously the cloud stored everything as ONE document and every save overwrote it
+wholesale (last-write-wins). With two machines open, whoever saved last could silently
+wipe the other's recent change — even when they edited completely different records.
+
+This release replaces the blind "remote replaces local" behaviour with a record-level
+3-WAY MERGE that runs whenever another device's update arrives:
+- It keeps a snapshot of the data as last loaded/saved (the "base").
+- For every record (members, invoices, coaches, expenses, salaries, sales, advices,
+  trials, rentals, schedule, audit, products, families, notes, cash counts) it compares
+  base vs this device vs the other device:
+  * changed on only one device  → that change is kept
+  * a new record on either side  → kept
+  * the SAME record changed on BOTH → this device's version is kept AND a warning is
+    shown so you can double-check it
+  * a delete is only honoured if the other side didn't also edit that record (so a
+    concurrent edit is never silently dropped)
+- Result: two people editing DIFFERENT members/invoices at the same time no longer lose
+  each other's work; only a true same-record clash raises a notice.
+
+Safety: the merge only ever UNIONS records from both sides — it can never turn a
+populated dataset into an empty one, and the existing "block empty overwrite" guard
+still stands. On any merge error the app keeps local data untouched rather than risk a
+bad write. This is a big safety improvement but not a full real-time multi-writer
+database; for heavy simultaneous editing a per-record backend would still be the
+ultimate step. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.116.0 - Camp: finishing classes early = Completed + shows for renewal.
+
+## 6.116.0 note - completed vs expired for camp
+When a Summer Camp member uses up ALL their classes BEFORE their validity window
+ends, their status is now "Completed" (purple badge) rather than "Expired" — they
+finished everything they paid for. If instead their validity WINDOW passes (whether or
+not all classes were used), they show as "Expired" as usual.
+Either way they now appear on the Expiring page's expired list so reception can chase
+the renewal: a class-completed member is surfaced in the "expired" bucket even though
+their date hasn't passed yet. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.115.0 - Camp: duration (class limit) and validity (window) are now separate.
+
+## 6.115.0 note - camp duration vs validity decoupled
+Summer Camp now has TWO independent settings:
+- Duration = the CLASS LIMIT (how many sessions the member may attend). Pick a preset
+  (1 week = 5, 2 weeks = 10, 1 month = 22, 2 months = 44 business days) or "Custom"
+  and type the exact number of class days.
+- Validity = the TIME WINDOW the membership is valid for (calendar days). This field
+  is now editable for camp (1 week / 2 weeks / 1 month / 2 months …), where before it
+  was locked to the duration.
+Example: Duration 8 + Validity 1 month → the member may attend 8 classes ANY time
+within one month. They expire when EITHER all 8 classes are used OR the month ends —
+whichever comes first. Attendance still warns + allows override at the limit, and the
+status flips to Expired once the class limit is reached or the window passes.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.114.0 - Custom camp duration also works when EDITING members.
+
+## 6.114.0 note - edit existing members with custom camp duration
+The "✏️ Custom (days)" camp duration option (v6.113) is available in the Edit Member
+dialog too, not just on new registration — they share the same enrollment editor.
+Fixed: the edit form now carries each camp enrollment's durationLabel into the editor,
+so:
+- An existing camp member already on a Custom duration shows "Custom" pre-selected
+  with their day count, instead of guessing a preset.
+- You can open any existing camp member, switch their Duration to "Custom (days)",
+  type a number of business days + price, and Save — it stores the custom class limit
+  and a business-day expiry, exactly like a new registration.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.113.0 - Summer Camp: custom duration (free-text days) + class limit.
+
+## 6.113.0 note - custom camp duration & class limit
+Summer Camp enrollment now has a "✏️ Custom (days)..." option in the Duration picker
+(in addition to 1 week / 2 weeks / 1 month / etc.). Choosing it reveals two inputs:
+- Days: the admin types a number of BUSINESS days (Sun–Thu). This number is BOTH the
+  class limit (totalClasses) and the length of the window — the expiry is set that
+  many business days from the start (e.g. 10 days from a Sunday → ends the second
+  Thursday).
+- Price: free-text price for the custom package.
+Attendance behaviour at the limit (camp): marking a member present once they've
+already attended all their allotted classes still WARNS and lets you override (as
+before). And once a camp-only member has attended all their classes, their status
+automatically becomes Expired (they completed the camp). Members who also have a
+regular sport are unaffected by the camp limit. Custom duration applies to Summer
+Camp only. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.112.0 - Transfer: 'Transferred' status + attended classes credit original coach.
+
+## 6.112.0 note - transfer status & coach salary
+When a member transfers their membership to someone else:
+1. STATUS: if they have no sports of their own left afterward, their status now shows
+   "Transferred" (a distinct blue badge), instead of silently going Expired. If they
+   still have other sports, they stay Active. (Re-enrolling clears it.)
+2. COACH SALARY: the classes the member already ATTENDED before transferring now stay
+   credited to their ORIGINAL coach. The sport's price is split by attendance — the
+   attended share remains on an invoice line for the original coach (a "consumed"
+   line), and only the UNATTENDED share's value (and the remaining classes) move to
+   the receiver and the new coach. So commission follows who actually taught the
+   classes. Example: 12 classes / 500 QAR, 5 attended → original coach keeps 208 QAR,
+   new coach gets 292 QAR + 7 classes.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.111.0 - Tighter money privacy for reception & coach roles.
+
+## 6.111.0 note - hide money from limited roles
+Reception keeps Invoices and Cash Collection (they collect at the desk), but money
+that isn't needed for front-desk work is now hidden:
+- Coach Performance ("Team") page: the TOTALS row revenue + commission cells are now
+  hidden from reception (the per-row revenue/commission columns and "May Pay" quick
+  card were already hidden). Reception sees students + attendance only.
+Coaches (who can open the Attendance roll-call) no longer see member MONEY:
+- The "💳 UNPAID" badge and its QAR-due amount are hidden from coaches (still shown to
+  reception/admin who collect payments).
+- The one-tap "🔄 Renew" button is hidden from coaches (renewal involves pricing).
+Already enforced and verified: coaches can't open Coach Performance, Salaries,
+Invoices, Cash Collection, or the members list; only admins can add/edit coach pay or
+commission; the member-profile money card and invoice header totals are hidden from
+reception. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.110.0 - Members: balance-due & expiry quick filters.
+
+## 6.110.0 note - new Members filters
+Added two quick-filter dropdowns to the Members screen toolbar:
+- "Has balance due" — show only members who still owe money (membership balance > 0).
+- Expiry — "Expiring within 7 days" or "Expired" — for fast renewal chasing.
+Both combine with the existing status/sport/coach/nationality/search filters and the
+"Similar names" toggle, are reset by "Clear filters", and persist with the screen's
+saved filter. The toolbar wraps cleanly on narrow screens. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.109.0 - Fix: camp recalc now correctly converts legacy 1-month (30) records.
+
+## 6.109.0 note - camp business-day recalc fix
+Camp class counts should be business-day based: 1 week = 5, 2 weeks = 10, 1 month = 22,
+2 months = 44 (also 3 weeks = 15, 6 weeks = 30). The "Recalculate camp" Cleanup tool
+already handled most cases, but a member stored with the OLD value 30 ("1 month" in
+calendar days) was wrongly matched to "6 weeks" (whose business-day count is also 30),
+so it was NOT converted to 22. Now the resolver disambiguates an ambiguous stored
+count using the amount PAID (1 month = 1750 vs 6 weeks = 2500), defaulting to the
+legacy "1 month" reading when there's no price — so old /30 camp members correctly
+recalculate to /22, while genuine 6-week (30-class) members are left as-is. Existing
+camp members are fixed via Cleanup Center -> "Recalculate camp (business days)";
+attendance is never changed. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.108.0 - Cash in Hand: quick-record on the screen.
+
+## 6.108.0 note - cash in hand
+The Cash in Hand screen (Finance · admin-only) lets you record what you physically
+counted in the drawer and shows the current total prominently, with a change-vs-
+previous indicator and a full count history.
+This release adds an inline QUICK-RECORD box right on the total card: type today's
+drawer amount and press Enter (or tap Update) to log a new count dated today, without
+opening the full dialog. The detailed dialog (with date / counted-by / note) is still
+available via the top button. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.108.0 - New: Cash in Hand screen (manual drawer count).
+
+## 6.108.0 note - cash in hand
+Added a new admin-only Finance screen, "Cash in Hand" (🧮). You record what you
+physically counted in the drawer (amount, date, optional counted-by + note), and the
+screen shows the CURRENT total in big figures = your most recent count. It also keeps
+a history of every count (newest first) with the change vs the previous count, and you
+can delete an entry. Stored in a new state.cashCounts list (no migration; existing
+data untouched). Admin-only, audit-logged. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.107.0 - Portrait attendance report (mobile) + more Arabic labels.
 
 ## 6.107.0 note

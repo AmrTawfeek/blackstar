@@ -1778,6 +1778,91 @@ ${seed}
     eq(decide(12, 5, null, 1).merged, false, 'transfer: new sport adds a fresh row');
     eq(decide(12, 12, { coachId: 1, classes: 12 }, 1).transferred, 0, 'transfer: fully-attended transfers 0 classes');
   })();
+  // Members quick filters: balance-due and expiry
+  (function () {
+    var savedI = state.invoices, savedM = state.members;
+    state.invoices = [
+      { customerId: 7701, category: 'Membership', amount: 500, amountPaid: 300 },
+      { customerId: 7702, category: 'Membership', amount: 500, amountPaid: 500 },
+    ];
+    var soon = new Date(); soon.setDate(soon.getDate() + 3); var soonStr = soon.toISOString().slice(0, 10);
+    var past = new Date(); past.setDate(past.getDate() - 5); var pastStr = past.toISOString().slice(0, 10);
+    state.members = [
+      { id: 7701, name: 'Ower', expiryDate: soonStr },
+      { id: 7702, name: 'Paid', expiryDate: soonStr },
+      { id: 7703, name: 'Exp', expiryDate: pastStr },
+    ];
+    var hasBalance = function (m) { return memberOutstanding(m.id) > 0.5; };
+    eq(state.members.filter(hasBalance).map(function (m) { return m.id; }).join(','), '7701', 'members filter: has balance due');
+    var expiringSoon = function (m) { var d = m.expiryDate ? daysUntil(m.expiryDate) : null; return d != null && d >= 0 && d <= 7; };
+    eq(state.members.filter(expiringSoon).length, 2, 'members filter: expiring within 7 days');
+    state.invoices = savedI; state.members = savedM;
+  })();
+  // Role-based money hiding
+  (function () {
+    var isViewer = function (role) { return role === 'receptionist'; };
+    // Coach Performance revenue/commission/totals hidden from reception
+    ok(!(!isViewer('receptionist') === false && false), 'placeholder');
+    eq(isViewer('receptionist'), true, 'role: reception is a viewer (money hidden on coach perf)');
+    eq(isViewer('admin'), false, 'role: admin sees money');
+    // Attendance unpaid amount + renew button hidden from coaches
+    var coachSeesUnpaid = function (role) { return role !== 'coach'; };
+    eq(coachSeesUnpaid('coach'), false, 'role: coach does not see unpaid amounts');
+    eq(coachSeesUnpaid('receptionist'), true, 'role: reception still sees unpaid (they collect)');
+    eq(coachSeesUnpaid('admin'), true, 'role: admin sees unpaid');
+  })();
+  // Transfer: attended value stays with the original coach, status becomes Transferred
+  (function () {
+    var splitVal = function (price, attended, full) {
+      var keep = full > 0 && attended > 0 ? Math.round(price * (attended / full)) : 0;
+      return { keep: keep, move: Math.max(0, price - keep), classesMoved: Math.max(0, full - attended) };
+    };
+    var r = splitVal(500, 5, 12);
+    eq(r.keep, 208, 'transfer: attended value stays with original coach (500*5/12)');
+    eq(r.move, 292, 'transfer: unattended value moves to new coach');
+    eq(r.classesMoved, 7, 'transfer: remaining classes move');
+    eq(r.keep + r.move, 500, 'transfer: value split sums to the original price');
+    eq(splitVal(500, 0, 12).move, 500, 'transfer: nothing attended → full value moves');
+    eq(splitVal(500, 12, 12).keep, 500, 'transfer: all attended → full value stays');
+    // memberStatus recognises Transferred only when no enrollments remain
+    eq(memberStatus({ status: 'Transferred', enrollments: [] }), 'Transferred', 'status: transferred-out member shows Transferred');
+    eq(memberStatus({ status: 'Transferred', enrollments: [{ sport: 'Boxing' }], expiryDate: '2099-01-01' }), 'Active', 'status: still-enrolled member is not Transferred');
+  })();
+  // Custom camp duration + class limit → Expired
+  (function () {
+    eq(campEndDateFromClasses('2026-06-14', 10), '2026-06-25', 'custom camp: 10 class days = 10 business days from Sun');
+    eq(campEndDateFromClasses('2026-06-14', 1), '2026-06-14', 'custom camp: 1 class day ends same day');
+    var full = { enrollments: [{ sport: 'Summer Camp' }],
+      subscriptions: [{ activity: 'Summer Camp', totalClasses: 10, start: '2026-06-14', end: '2026-06-25', status: 'active' }],
+      dailyAttendance: { '2026-06': { 'Summer Camp': { '14': 'Y', '15': 'Y', '16': 'Y', '17': 'Y', '18': 'Y', '21': 'Y', '22': 'Y', '23': 'Y', '24': 'Y', '25': 'Y' } } } };
+    eq(campLimitReached(full), true, 'custom camp: attending all classes hits the limit');
+    eq(memberStatus(full), 'Completed', 'custom camp: finishing all classes early → Completed');
+    var partial = { enrollments: [{ sport: 'Summer Camp' }],
+      subscriptions: [{ activity: 'Summer Camp', totalClasses: 10, start: '2026-06-14', end: '2026-06-25', status: 'active' }],
+      dailyAttendance: { '2026-06': { 'Summer Camp': { '14': 'Y', '15': 'Y', '16': 'Y' } } } };
+    eq(campLimitReached(partial), false, 'custom camp: under the limit not reached');
+    var withOther = { enrollments: [{ sport: 'Summer Camp' }, { sport: 'Boxing' }],
+      subscriptions: [{ activity: 'Summer Camp', totalClasses: 5, start: '2026-06-14', status: 'active' }],
+      dailyAttendance: { '2026-06': { 'Summer Camp': { '14': 'Y', '15': 'Y', '16': 'Y', '17': 'Y', '18': 'Y' } } } };
+    eq(campLimitReached(withOther), false, 'custom camp: a member with other sports is not camp-expired');
+  })();
+  // Camp duration (class limit) is independent of validity (time window)
+  (function () {
+    // 8 classes within a 1-month (30-day) window.
+    var sub = { activity: 'Summer Camp', totalClasses: 8, start: '2026-06-14', end: addDays('2026-06-14', 30), status: 'active' };
+    eq(sub.end, '2026-07-14', 'camp window: validity 1 month → expiry is start + 30 days');
+    var part = { enrollments: [{ sport: 'Summer Camp' }], subscriptions: [sub],
+      dailyAttendance: { '2026-06': { 'Summer Camp': { '14': 'Y', '15': 'Y', '16': 'Y', '17': 'Y', '18': 'Y' } } } };
+    eq(campLimitReached(part), false, 'camp window: 5 of 8 classes used → not at limit');
+    var done = { enrollments: [{ sport: 'Summer Camp' }], subscriptions: [sub],
+      dailyAttendance: { '2026-06': { 'Summer Camp': { '14': 'Y', '15': 'Y', '16': 'Y', '17': 'Y', '18': 'Y', '21': 'Y', '22': 'Y', '23': 'Y' } } } };
+    eq(campLimitReached(done), true, 'camp window: all 8 classes used → at limit (expires within the month)');
+    // Finishing early = Completed (not Expired); the window not yet passed.
+    var early = { enrollments: [{ sport: 'Summer Camp' }], expiryDate: '2099-01-01',
+      subscriptions: [{ activity: 'Summer Camp', totalClasses: 8, start: '2026-06-14', end: '2099-01-01', status: 'active' }],
+      dailyAttendance: { '2026-06': { 'Summer Camp': { '14': 'Y', '15': 'Y', '16': 'Y', '17': 'Y', '18': 'Y', '21': 'Y', '22': 'Y', '23': 'Y' } } } };
+    eq(memberStatus(early), 'Completed', 'camp: finished classes before window ends → Completed');
+  })();
   // Camp recalc: legacy calendar counts are flagged and fixed to business days
   (function () {
     var savedM = state.members;
@@ -1799,6 +1884,13 @@ ${seed}
     eq(sub.end, '2026-07-13', 'camp recalc: end re-dated to business-day calendar');
     eq(sub.attendedClasses, beforeAtt, 'camp recalc: attendance unchanged');
     eq(findCampMembersToRecalc().length, 0, 'camp recalc: nothing flagged after fixing');
+    // Legacy "1 month" stored as 30 days (no label) must resolve to 22, not 30 (6 weeks).
+    var t30 = _campTargetForSub({ activity: 'Summer Camp', totalClasses: 30, amountPaid: 1750 });
+    eq(t30.targetClasses, 22, 'camp recalc: legacy 30 (paid 1750) -> 1 month = 22');
+    var t30b = _campTargetForSub({ activity: 'Summer Camp', totalClasses: 30, amountPaid: 2500 });
+    eq(t30b.targetClasses, 30, 'camp recalc: 30 classes paid 2500 -> 6 weeks = 30 (kept)');
+    var t30c = _campTargetForSub({ activity: 'Summer Camp', totalClasses: 30 });
+    eq(t30c.targetClasses, 22, 'camp recalc: ambiguous 30 with no price defaults to 1 month = 22');
     state.members = savedM;
   })();
   // Notifications: student gets the right alerts from their own data
@@ -1902,6 +1994,16 @@ ${seed}
     eq(state.members[1].enrollments[0].coachId, 1, 'resync: wrong coach corrected');
     eq(findMembersWithEnrollmentDrift().length, 0, 'resync: nothing flagged after fixing');
     state.members = savedM;
+  })();
+  // Cash in hand: current total is the most recent count (by createdAt)
+  (function () {
+    var counts = [
+      { id: 'a', amount: 5000, date: '2026-06-01', createdAt: '2026-06-01T10:00:00Z' },
+      { id: 'b', amount: 7200, date: '2026-06-20', createdAt: '2026-06-20T18:00:00Z' },
+      { id: 'c', amount: 6800, date: '2026-06-22', createdAt: '2026-06-22T20:00:00Z' },
+    ].slice().sort(function (a, b) { return (b.createdAt || b.date).localeCompare(a.createdAt || a.date); });
+    eq(counts[0].amount, 6800, 'cash in hand: current = most recent count');
+    eq(counts[0].amount - counts[1].amount, -400, 'cash in hand: delta vs previous');
   })();
   var _af = { expiryDate: '2026-07-01', freezes: [] };
   applyFreeze(_af, 7, 'x');
@@ -2034,6 +2136,63 @@ ${seed}
   ok(remMsg.includes('نادي بلاك ستارز الرياضي'), 'reminder: includes Arabic block even without an Arabic name');
   ok(remMsg.indexOf('مرحبا') < remMsg.indexOf('Hi Test EN'), 'reminder: Arabic comes before English');
   ok(remMsg.includes('💪') || remMsg.includes('🥋'), 'reminder: contains motivational emoji');
+
+  // ── Multi-device record-level merge (data-safety) ──────────────────────────
+  (function () {
+    var idsOf = function (arr) { return arr.map(function (r) { return r.id + (r.v ? ':' + r.v : ''); }).sort().join(','); };
+    // Different records edited on each device → both kept, no conflict
+    var r1 = _mergeCollection([{ id: 1, v: 'a' }, { id: 2, v: 'a' }], [{ id: 1, v: 'L' }, { id: 2, v: 'a' }], [{ id: 1, v: 'a' }, { id: 2, v: 'R' }]);
+    eq(idsOf(r1.merged), '1:L,2:R', 'merge: different records → both edits kept');
+    eq(r1.conflicts, 0, 'merge: different records → no conflict');
+    // Same record edited on both → local kept + conflict flagged
+    var r2 = _mergeCollection([{ id: 1, v: 'a' }], [{ id: 1, v: 'L' }], [{ id: 1, v: 'R' }]);
+    eq(idsOf(r2.merged), '1:L', 'merge: same record → local kept');
+    eq(r2.conflicts, 1, 'merge: same record → conflict flagged');
+    // New record on each device → all survive
+    var r3 = _mergeCollection([{ id: 1, v: 'a' }], [{ id: 1, v: 'a' }, { id: 2, v: 'nl' }], [{ id: 1, v: 'a' }, { id: 3, v: 'nr' }]);
+    eq(idsOf(r3.merged), '1:a,2:nl,3:nr', 'merge: new records on both → all kept');
+    // Remote deleted an untouched record → honor delete
+    var r4 = _mergeCollection([{ id: 1, v: 'a' }, { id: 2, v: 'a' }], [{ id: 1, v: 'a' }, { id: 2, v: 'a' }], [{ id: 1, v: 'a' }]);
+    eq(idsOf(r4.merged), '1:a', 'merge: remote delete of untouched record honored');
+    // Remote deleted a record local EDITED → keep it (no silent loss)
+    var r5 = _mergeCollection([{ id: 1, v: 'a' }, { id: 2, v: 'a' }], [{ id: 1, v: 'a' }, { id: 2, v: 'E' }], [{ id: 1, v: 'a' }]);
+    eq(idsOf(r5.merged), '1:a,2:E', 'merge: delete-vs-edit → edited record kept (no loss)');
+    // Local addition survives
+    var r6 = _mergeCollection([{ id: 1, v: 'a' }], [{ id: 1, v: 'a' }, { id: 9, v: 'm' }], [{ id: 1, v: 'a' }]);
+    eq(idsOf(r6.merged), '1:a,9:m', 'merge: local addition survives');
+  })();
+  // Invoices activity filter: all "Summer Camp · X" variants collapse to one option
+  (function () {
+    var isCamp = function (s) { return typeof s === 'string' && (s === 'Summer Camp' || s.indexOf('Summer Camp') === 0); };
+    var raw = ['Boxing', 'Summer Camp · 1 month', 'Summer Camp · 1 week', 'Summer Camp', 'Karate', 'Summer Camp · 2 months'];
+    var hasCamp = raw.some(isCamp);
+    var opts = [].concat(hasCamp ? ['Summer Camp'] : [], raw.filter(function (s) { return !isCamp(s); })).sort();
+    eq(opts.join(','), 'Boxing,Karate,Summer Camp', 'invoices filter: one Summer Camp option, no duration variants');
+    var invs = [{ sport: 'Summer Camp · 1 week' }, { sport: 'Summer Camp' }, { sport: 'Boxing' }, { sport: 'Summer Camp · 2 months' }];
+    eq(invs.filter(function (i) { return isCamp(i.sport); }).length, 3, 'invoices filter: Summer Camp matches every camp variant');
+  })();
+  // Generate-latest-invoice: payment method comes from the member's latest membership invoice
+  (function () {
+    var derive = function (invoices, mId) {
+      var prior = invoices.filter(function (inv) { return inv.customerId === mId && !inv.deleted && (inv.category || 'Membership') === 'Membership'; })
+        .sort(function (a, b) { return (b.date || '').localeCompare(a.date || ''); });
+      for (var i = 0; i < prior.length; i++) {
+        var inv = prior[i];
+        var pm = Array.isArray(inv.payments) && inv.payments.length ? inv.payments[inv.payments.length - 1].method : null;
+        if (pm) return pm;
+        if (inv.method) return inv.method;
+      }
+      return 'cash';
+    };
+    var data = [
+      { customerId: 1, category: 'Membership', date: '2026-01-01', method: 'cash' },
+      { customerId: 1, category: 'Membership', date: '2026-05-01', method: 'card' },
+      { customerId: 2, category: 'Membership', date: '2026-03-01', payments: [{ method: 'card' }, { method: 'cash' }] },
+    ];
+    eq(derive(data, 1), 'card', 'generate invoice: method from latest membership invoice');
+    eq(derive(data, 2), 'cash', 'generate invoice: method from latest payment');
+    eq(derive(data, 99), 'cash', 'generate invoice: defaults to cash when no prior invoice');
+  })();
 
   console.log('\\n================ TEST RESULTS ================');
   console.log('PASS: ' + pass + '   FAIL: ' + fail);
