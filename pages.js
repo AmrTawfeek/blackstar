@@ -1642,7 +1642,18 @@ function viewMember(id) {
       </div>` : '<span class="text-mute">—</span>';
     return `
       <tr>
-        <td><span class="badge blue">${(s.month || '').toUpperCase()}</span></td>
+        <td><span class="badge blue">${(() => {
+          // Month chip = the month the subscription STARTED, derived from the start
+          // date so it always matches the Start column. (The stored s.month could
+          // drift — e.g. set from the payment/expiry month — and show the wrong
+          // month, like "JUL" for a 22 Jun start.)
+          const src = s.start || s.end || '';
+          if (src) {
+            const d = new Date(src + 'T00:00:00');
+            if (!isNaN(d)) return d.toLocaleString('en', { month: 'short' }).toUpperCase();
+          }
+          return (s.month || '').toUpperCase();
+        })()}</span></td>
         <td>${escapeHtml(s.activity || '—')}${s.activity === SUMMER_CAMP && s.durationLabel ? ` <span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-2);font-size:9px;padding:1px 6px">🌞 ${escapeHtml(s.durationLabel)}</span>` : ''}</td>
         <td>${s.activity === SUMMER_CAMP ? '<span class="text-mute" style="font-size:11px;font-style:italic">no coach</span>' : escapeHtml(s.coach || '—')}</td>
         <td>${s.start ? fmtDate(s.start) : '—'}</td>
@@ -5878,6 +5889,299 @@ PAGES.camproutes = (main) => {
       ${unassigned.map(studentRow).join('')}
     </div>` : ''}`;
 };
+
+// ─── SWIMMING GROUPS ────────────────────────────────────────────────
+// Organise swimming members into small groups (3–7 each). Admin can build
+// groups by drag-and-drop OR multi-select-and-assign, then print or share a
+// group over WhatsApp. Groups persist in state.swimGroups and sync to cloud.
+//   swimGroups[]: { id, name, coachId, memberIds:[], order, createdAt }
+PAGES.swimgroups = (main) => {
+  const SWIM = 'Swimming';
+  const GROUP_MIN = 3, GROUP_MAX = 7;
+  if (!Array.isArray(state.swimGroups)) state.swimGroups = [];
+
+  // All members currently enrolled in Swimming (active records).
+  const swimmers = (state.members || []).filter(m => !m.deleted &&
+    ([m.sport, ...((m.enrollments || []).map(e => e.sport))].filter(Boolean).includes(SWIM)));
+  const swimmerById = new Map(swimmers.map(m => [m.id, m]));
+  const groups = state.swimGroups.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+  // Which swimmers are already in a group?
+  const assigned = new Set();
+  groups.forEach(g => (g.memberIds || []).forEach(id => assigned.add(id)));
+  const unassigned = swimmers.filter(m => !assigned.has(m.id));
+
+  const memberChip = (m, groupId) => {
+    const ar = m.nameArabic ? `<div style="font-size:10px;color:var(--text-mute);direction:rtl">${escapeHtml(m.nameArabic)}</div>` : '';
+    return `<div class="swim-chip" draggable="true" data-mid="${m.id}" data-from="${groupId || ''}"
+        style="display:flex;align-items:center;gap:8px;padding:7px 9px;background:var(--surface);border:1px solid var(--border);border-radius:8px;cursor:grab;user-select:none">
+      <input type="checkbox" class="swim-cb" data-mid="${m.id}" onclick="event.stopPropagation()" style="cursor:pointer" />
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(m.name)}</div>
+        ${ar}
+      </div>
+      ${groupId ? `<button onclick="event.stopPropagation();window._swimRemove('${groupId}',${m.id})" title="Remove from group" style="background:transparent;border:0;color:var(--red);opacity:.6;cursor:pointer;font-size:13px">✕</button>` : ''}
+    </div>`;
+  };
+
+  const groupCard = (g) => {
+    const mems = (g.memberIds || []).map(id => swimmerById.get(id)).filter(Boolean);
+    const n = mems.length;
+    const sizeColor = n < GROUP_MIN ? 'var(--accent-2)' : n > GROUP_MAX ? 'var(--red)' : 'var(--green)';
+    const sizeNote = n < GROUP_MIN ? `${t('needs', 'يحتاج')} ${GROUP_MIN - n} ${t('more', 'أكثر')}` : n > GROUP_MAX ? `${t('over by', 'زائد')} ${n - GROUP_MAX}` : t('good size', 'حجم مناسب');
+    return `<div class="swim-group card" data-gid="${g.id}" style="margin:0;display:flex;flex-direction:column;min-height:120px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:16px">🏊</span>
+            <input value="${escapeHtml(g.name || '')}" onchange="window._swimRename('${g.id}', this.value)" placeholder="${t('Group name', 'اسم المجموعة')}"
+              style="font-weight:800;font-size:15px;background:transparent;border:0;border-bottom:1px dashed transparent;color:var(--text);min-width:0;flex:1" onfocus="this.style.borderBottomColor='var(--border)'" onblur="this.style.borderBottomColor='transparent'" />
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+            <span style="font-size:11px;font-weight:700;color:${sizeColor}">${n} ${t('members', 'عضو')} · ${sizeNote}</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:4px;flex-shrink:0">
+          <button class="btn ghost sm" onclick="window._swimShare('${g.id}')" title="${t('Share this group on WhatsApp', 'مشاركة المجموعة عبر واتساب')}">💬</button>
+          <button class="btn ghost sm" onclick="window._swimPrint('${g.id}')" title="${t('Print this group', 'طباعة المجموعة')}">🖨</button>
+          <button class="btn ghost sm" style="color:var(--red)" onclick="window._swimDeleteGroup('${g.id}')" title="${t('Delete group', 'حذف المجموعة')}">🗑</button>
+        </div>
+      </div>
+      <div class="swim-dropzone" data-gid="${g.id}" style="flex:1;display:flex;flex-direction:column;gap:6px;min-height:48px;padding:6px;border:2px dashed var(--border);border-radius:8px;transition:background .1s">
+        ${mems.length ? mems.map(m => memberChip(m, g.id)).join('') : `<div class="text-mute" style="font-size:11px;text-align:center;padding:10px">${t('Drag swimmers here, or select & assign', 'اسحب السبّاحين هنا، أو حدّد وأسند')}</div>`}
+      </div>
+    </div>`;
+  };
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div><h1>🏊 ${t('Swimming Groups', 'مجموعات السباحة')}</h1>
+        <div class="subtitle">${t('Organise swimmers into groups of', 'نظّم السبّاحين في مجموعات من')} ${GROUP_MIN}–${GROUP_MAX} · ${swimmers.length} ${t('swimmers', 'سبّاح')} · ${groups.length} ${t('groups', 'مجموعة')}</div></div>
+      <div class="topbar-actions">
+        <button class="btn ghost" id="swim-auto" title="${t('Auto-split unassigned swimmers into groups', 'توزيع تلقائي للسبّاحين')}">✨ ${t('Auto-group', 'توزيع تلقائي')}</button>
+        <button class="btn primary" id="swim-add">+ ${t('New group', 'مجموعة جديدة')}</button>
+      </div>
+    </div>
+
+    <div id="swim-selbar" style="display:none;position:sticky;top:0;z-index:5;background:var(--accent);color:#fff;border-radius:10px;padding:10px 14px;margin-bottom:12px;align-items:center;gap:12px;box-shadow:0 4px 16px rgba(0,0,0,.15)">
+      <span id="swim-selcount" style="font-weight:700"></span>
+      <span style="opacity:.9;font-size:12px">${t('Assign selected to:', 'أسند المحدد إلى:')}</span>
+      <select id="swim-selgroup" style="padding:6px 10px;border-radius:8px;border:0;font-size:13px;color:var(--text);background:#fff"></select>
+      <button class="btn sm" id="swim-assign" style="background:#fff;color:var(--accent)">${t('Assign', 'إسناد')}</button>
+      <button class="btn ghost sm" id="swim-clearsel" style="color:#fff;border-color:rgba(255,255,255,.4);margin-left:auto">${t('Clear', 'إلغاء')}</button>
+    </div>
+
+    <div style="display:grid;grid-template-columns:280px 1fr;gap:16px;align-items:start">
+      <div class="card" style="position:sticky;top:12px">
+        <div style="font-weight:800;font-size:14px;margin-bottom:8px">🏊 ${t('Unassigned', 'غير مُسند')} <span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-2)">${unassigned.length}</span></div>
+        <input id="swim-search" type="search" placeholder="🔍 ${t('Search swimmer…', 'ابحث عن سبّاح…')}" style="width:100%;padding:8px 10px;margin-bottom:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px" />
+        <div class="swim-dropzone" data-gid="__pool__" id="swim-pool" style="display:flex;flex-direction:column;gap:6px;min-height:80px;padding:6px;border:2px dashed var(--border);border-radius:8px">
+          ${unassigned.length ? unassigned.map(m => memberChip(m, '')).join('') : `<div class="text-mute" style="font-size:11px;text-align:center;padding:14px">${swimmers.length ? t('All swimmers are grouped 🎉', 'كل السبّاحين في مجموعات 🎉') : t('No swimming members yet', 'لا يوجد أعضاء سباحة بعد')}</div>`}
+        </div>
+      </div>
+
+      <div id="swim-groups-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px">
+        ${groups.length ? groups.map(groupCard).join('') : `<div class="card text-mute" style="text-align:center;padding:30px;grid-column:1/-1">${t('No groups yet — click "New group" to start.', 'لا توجد مجموعات — اضغط "مجموعة جديدة" للبدء.')}</div>`}
+      </div>
+    </div>`;
+
+  // ── Selection bar ──
+  const selBar = document.getElementById('swim-selbar');
+  const updateSelBar = () => {
+    const checked = [...document.querySelectorAll('.swim-cb:checked')];
+    if (checked.length) {
+      selBar.style.display = 'flex';
+      document.getElementById('swim-selcount').textContent = `${checked.length} ${t('selected', 'محدد')}`;
+      const sel = document.getElementById('swim-selgroup');
+      sel.innerHTML = groups.map(g => `<option value="${g.id}">${escapeHtml(g.name || t('Group', 'مجموعة'))} (${(g.memberIds || []).length})</option>`).join('')
+        || `<option value="">${t('— create a group first —', '— أنشئ مجموعة أولاً —')}</option>`;
+    } else selBar.style.display = 'none';
+  };
+  main.querySelectorAll('.swim-cb').forEach(cb => cb.addEventListener('change', updateSelBar));
+  document.getElementById('swim-clearsel')?.addEventListener('click', () => {
+    main.querySelectorAll('.swim-cb:checked').forEach(cb => { cb.checked = false; });
+    updateSelBar();
+  });
+  document.getElementById('swim-assign')?.addEventListener('click', () => {
+    const gid = document.getElementById('swim-selgroup').value;
+    if (!gid) { toast(t('Create a group first', 'أنشئ مجموعة أولاً'), 'error'); return; }
+    const ids = [...document.querySelectorAll('.swim-cb:checked')].map(cb => parseInt(cb.dataset.mid));
+    window._swimAssign(gid, ids);
+  });
+
+  // ── Search filter (pool) ──
+  document.getElementById('swim-search')?.addEventListener('input', e => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll('#swim-pool .swim-chip').forEach(chip => {
+      const m = swimmerById.get(parseInt(chip.dataset.mid));
+      const hay = `${m?.name || ''} ${m?.nameArabic || ''} ${m?.phone || ''}`.toLowerCase();
+      chip.style.display = (!q || hay.indexOf(q) >= 0) ? '' : 'none';
+    });
+  });
+
+  // ── Drag and drop ──
+  let dragMid = null, dragFrom = null;
+  main.querySelectorAll('.swim-chip').forEach(chip => {
+    chip.addEventListener('dragstart', e => {
+      dragMid = parseInt(chip.dataset.mid); dragFrom = chip.dataset.from || '__pool__';
+      chip.style.opacity = '.4';
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    chip.addEventListener('dragend', () => { chip.style.opacity = ''; });
+  });
+  main.querySelectorAll('.swim-dropzone').forEach(zone => {
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.style.background = 'rgba(91,141,239,.12)'; });
+    zone.addEventListener('dragleave', () => { zone.style.background = ''; });
+    zone.addEventListener('drop', e => {
+      e.preventDefault(); zone.style.background = '';
+      if (dragMid == null) return;
+      const toGid = zone.dataset.gid;
+      window._swimMove(dragMid, dragFrom, toGid);
+    });
+  });
+
+  // ── Toolbar ──
+  document.getElementById('swim-add')?.addEventListener('click', () => window._swimAddGroup());
+  document.getElementById('swim-auto')?.addEventListener('click', () => window._swimAuto());
+};
+
+// ── Group operations (persist + re-render) ──
+function _swimRerender() { if (state.route === 'swimgroups') navigate('swimgroups'); }
+
+window._swimAddGroup = function() {
+  if (!Array.isArray(state.swimGroups)) state.swimGroups = [];
+  const n = state.swimGroups.length + 1;
+  state.swimGroups.push({ id: 'sg' + Date.now() + '_' + Math.floor(Math.random() * 999), name: `Group ${n}`, coachId: null, memberIds: [], order: n, createdAt: new Date().toISOString() });
+  if (typeof audit === 'function') audit('swim.group.add', 'swimgroup', `Created swimming group ${n}`);
+  save(); _swimRerender();
+};
+
+window._swimRename = function(gid, name) {
+  const g = (state.swimGroups || []).find(x => x.id === gid);
+  if (!g) return;
+  g.name = (name || '').trim() || g.name;
+  save();   // no re-render (keep focus flow); name already in the input
+};
+
+window._swimDeleteGroup = function(gid) {
+  const g = (state.swimGroups || []).find(x => x.id === gid);
+  if (!g) return;
+  const n = (g.memberIds || []).length;
+  const note = n ? `\n\n${n} ${t('member(s) will return to Unassigned.', 'عضو سيعود إلى غير المُسند.')}` : '';
+  if (!confirm(`${t('Delete group', 'حذف مجموعة')} "${g.name || ''}"?${note}`)) return;
+  state.swimGroups = (state.swimGroups || []).filter(x => x.id !== gid);
+  if (typeof audit === 'function') audit('swim.group.delete', 'swimgroup', `Deleted swimming group ${g.name}`);
+  save(); _swimRerender();
+  toast(t('Group deleted', 'تم حذف المجموعة'));
+};
+
+window._swimMove = function(mid, fromGid, toGid) {
+  mid = parseInt(mid);
+  if (fromGid === toGid) return;
+  // Remove from source group (if any)
+  if (fromGid && fromGid !== '__pool__') {
+    const src = (state.swimGroups || []).find(x => x.id === fromGid);
+    if (src) src.memberIds = (src.memberIds || []).filter(id => id !== mid);
+  }
+  // Add to destination (unless it's the pool = unassign)
+  if (toGid && toGid !== '__pool__') {
+    const dst = (state.swimGroups || []).find(x => x.id === toGid);
+    if (dst) {
+      dst.memberIds = dst.memberIds || [];
+      if (!dst.memberIds.includes(mid)) dst.memberIds.push(mid);
+    }
+  }
+  save(); _swimRerender();
+};
+
+window._swimAssign = function(gid, ids) {
+  const g = (state.swimGroups || []).find(x => x.id === gid);
+  if (!g) return;
+  g.memberIds = g.memberIds || [];
+  // Remove these ids from any OTHER group first (a swimmer is in one group).
+  (state.swimGroups || []).forEach(other => {
+    if (other.id !== gid) other.memberIds = (other.memberIds || []).filter(id => !ids.includes(id));
+  });
+  ids.forEach(id => { if (!g.memberIds.includes(id)) g.memberIds.push(id); });
+  save(); _swimRerender();
+  toast(`${ids.length} ${t('assigned to', 'أُسند إلى')} ${escapeHtml(g.name || '')}`);
+};
+
+window._swimRemove = function(gid, mid) {
+  const g = (state.swimGroups || []).find(x => x.id === gid);
+  if (!g) return;
+  g.memberIds = (g.memberIds || []).filter(id => id !== parseInt(mid));
+  save(); _swimRerender();
+};
+
+// Auto-split unassigned swimmers into balanced groups of ~5 (within 3–7).
+window._swimAuto = function() {
+  const SWIM = 'Swimming';
+  if (!Array.isArray(state.swimGroups)) state.swimGroups = [];
+  const swimmers = (state.members || []).filter(m => !m.deleted &&
+    ([m.sport, ...((m.enrollments || []).map(e => e.sport))].filter(Boolean).includes(SWIM)));
+  const assigned = new Set();
+  state.swimGroups.forEach(g => (g.memberIds || []).forEach(id => assigned.add(id)));
+  const pool = swimmers.filter(m => !assigned.has(m.id)).map(m => m.id);
+  if (!pool.length) { toast(t('No unassigned swimmers', 'لا يوجد سبّاحون غير مُسندين'), 'info'); return; }
+  const TARGET = 5;
+  const numGroups = Math.max(1, Math.ceil(pool.length / TARGET));
+  if (!confirm(`${t('Auto-group swimmers?', 'توزيع تلقائي؟')}\n\n${pool.length} ${t('unassigned swimmers will be split into', 'سبّاح سيُوزّعون على')} ${numGroups} ${t('new groups of about 5.', 'مجموعات بحوالي 5 لكل منها.')}`)) return;
+  const base = state.swimGroups.length;
+  for (let i = 0; i < numGroups; i++) {
+    state.swimGroups.push({ id: 'sg' + Date.now() + '_' + i, name: `Group ${base + i + 1}`, coachId: null, memberIds: [], order: base + i + 1, createdAt: new Date().toISOString() });
+  }
+  const newGroups = state.swimGroups.slice(base);
+  pool.forEach((mid, idx) => { newGroups[idx % numGroups].memberIds.push(mid); });
+  if (typeof audit === 'function') audit('swim.group.auto', 'swimgroup', `Auto-grouped ${pool.length} swimmers into ${numGroups} groups`);
+  save(); _swimRerender();
+  toast(`${t('Created', 'تم إنشاء')} ${numGroups} ${t('groups', 'مجموعات')}`);
+};
+
+// Build a shareable text block for a group (bilingual).
+function _swimGroupText(g) {
+  const mems = (g.memberIds || []).map(id => (state.members || []).find(m => m.id === id)).filter(Boolean);
+  const lines = mems.map((m, i) => `${i + 1}. ${m.name}${m.nameArabic ? ' · ' + m.nameArabic : ''}`);
+  return `🏊 ${g.name || 'Swimming Group'} — Black Stars Sports Club\n${t('Members', 'الأعضاء')} (${mems.length}):\n${lines.join('\n')}`;
+}
+
+window._swimShare = function(gid) {
+  const g = (state.swimGroups || []).find(x => x.id === gid);
+  if (!g) return;
+  const mems = (g.memberIds || []);
+  if (!mems.length) { toast(t('Group is empty', 'المجموعة فارغة'), 'error'); return; }
+  const text = _swimGroupText(g);
+  // Open WhatsApp share (no specific number — user picks the group chat).
+  window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+};
+
+window._swimPrint = function(gid) {
+  const g = (state.swimGroups || []).find(x => x.id === gid);
+  if (!g) return;
+  const mems = (g.memberIds || []).map(id => (state.members || []).find(m => m.id === id)).filter(Boolean);
+  const rows = mems.map((m, i) => `<tr>
+    <td style="border:1px solid #ddd;padding:8px 10px;text-align:center;width:40px">${i + 1}</td>
+    <td style="border:1px solid #ddd;padding:8px 10px">${escapeHtml(m.name)}</td>
+    <td style="border:1px solid #ddd;padding:8px 10px;direction:rtl">${escapeHtml(m.nameArabic || '')}</td>
+    <td style="border:1px solid #ddd;padding:8px 10px">${escapeHtml(m.phone || '')}</td>
+  </tr>`).join('');
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(g.name || 'Swimming Group')}</title>
+    <style>body{font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:28px;max-width:720px;margin:auto}
+      h1{font-size:22px;margin:0 0 4px} .sub{color:#777;font-size:13px;border-bottom:3px solid #f26060;padding-bottom:10px;margin-bottom:16px}
+      table{border-collapse:collapse;width:100%} th{background:#fafafa;border:1px solid #ddd;padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#777}
+      .foot{margin-top:18px;color:#aaa;font-size:11px;text-align:center}</style></head>
+    <body>
+      <h1>🏊 ${escapeHtml(g.name || 'Swimming Group')}</h1>
+      <div class="sub">Black Stars Sports Club · Waab, Doha · ${mems.length} members · ${fmtDate(TODAY)}</div>
+      <table><thead><tr><th>#</th><th>Name</th><th>الاسم</th><th>Mobile</th></tr></thead><tbody>${rows || '<tr><td colspan="4" style="padding:14px;text-align:center;color:#999">No members</td></tr>'}</tbody></table>
+      <div class="foot">Black Stars CRM</div>
+      <script>window.onload=function(){setTimeout(function(){window.print();},250);};</script>
+    </body></html>`;
+  const w = window.open('', '_blank');
+  if (w) { w.document.write(html); w.document.close(); }
+  else toast(t('Allow pop-ups to print', 'اسمح بالنوافذ المنبثقة للطباعة'), 'error');
+};
+
 
 PAGES.schedule = (main) => {
   // The class schedule is VIEWABLE by everyone (admin, receptionist, coach, student)
@@ -19610,8 +19914,8 @@ function rentalFormHtml(r) {
   return `
     <div class="form-row">
       <div class="field"><label>Facility</label><select id="r-facility">${facOpts}</select></div>
-      <div class="field"><label>Date <span style="color:var(--accent)">*</span></label><input type="date" id="r-date" value="${r.date || TODAY}" min="${r.date && r.date < TODAY ? r.date : TODAY}" /></div>
-      <div class="field"><label>Start time <span style="color:var(--accent)">*</span></label><input type="time" id="r-time" value="${r.startTime || ''}" /></div>
+      <div class="field"><label>Date <span style="color:var(--accent)">*</span></label><input type="date" id="r-date" value="${r.date || TODAY}" /></div>
+      <div class="field"><label>Start time <span class="text-mute" style="font-size:10px">(optional)</span></label><input type="time" id="r-time" value="${r.startTime || ''}" /></div>
     </div>
     <div class="form-row">
       <div class="field"><label>Hours</label><input type="number" min="0.5" step="0.5" id="r-hours" value="${r.hours ?? 1}" /></div>
@@ -20066,18 +20370,19 @@ function saveRental(existingId, onDone) {
   const hourlyRate = parseFloat($('#r-rate').value) || 0;
   const amount = parseFloat($('#r-amount').value) || (hours * hourlyRate);
   if (hours <= 0 || hourlyRate <= 0) { toast('Hours and rate must be > 0', 'error'); return; }
-  // Start time is mandatory — it's what lets us detect double-bookings.
-  if (!startTime) { toast('Start time is required (it prevents double-booking the facility)', 'error'); $('#r-time')?.focus(); return; }
-  // No booking a date in the past (new bookings).
-  if (!existingId && date < TODAY) { toast('You can\u2019t book a date in the past', 'error'); $('#r-date')?.focus(); return; }
-  // No overlapping booking of the same facility on the same date.
-  const toMin = t => { const [h, mm] = String(t || '').split(':').map(Number); return (h || 0) * 60 + (mm || 0); };
-  const startMin = toMin(startTime), endMin = startMin + Math.round(hours * 60);
-  const clash = (state.rentals || []).find(x => x.id !== existingId && x.facility === facility && x.date === date && x.startTime && (() => {
-    const s2 = toMin(x.startTime), e2 = s2 + Math.round((x.hours || 0) * 60);
-    return startMin < e2 && s2 < endMin;
-  })());
-  if (clash) { toast(`${facility} is already booked at ${clash.startTime} on ${fmtDate(date)} — overlapping bookings aren\u2019t allowed.`, 'error'); return; }
+  // Start time is OPTIONAL now. Back-dating is allowed (record a past rental / issue an
+  // old-dated invoice). When a start time is given we still guard against overlaps.
+  // Back-dating is allowed (record past rentals / old-dated invoices).
+  if (startTime) {
+    // No overlapping booking of the same facility on the same date.
+    const toMin = t => { const [h, mm] = String(t || '').split(':').map(Number); return (h || 0) * 60 + (mm || 0); };
+    const startMin = toMin(startTime), endMin = startMin + Math.round(hours * 60);
+    const clash = (state.rentals || []).find(x => x.id !== existingId && x.facility === facility && x.date === date && x.startTime && (() => {
+      const s2 = toMin(x.startTime), e2 = s2 + Math.round((x.hours || 0) * 60);
+      return startMin < e2 && s2 < endMin;
+    })());
+    if (clash) { toast(`${facility} is already booked at ${clash.startTime} on ${fmtDate(date)} — overlapping bookings aren\u2019t allowed.`, 'error'); return; }
+  }
   const qid = $('#r-qid').value.trim() || null;
   const method = $('#r-method').value || 'cash';
   const notes = $('#r-notes').value.trim() || null;

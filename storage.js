@@ -87,6 +87,11 @@
       }
     },
     onRemoteUpdate() { /* no-op — localStorage has no remote */ },
+    // Session lock is a no-op locally (single device = always the sole writer).
+    async getLock() { return null; },
+    async setLock() { return true; },
+    async clearLock() {},
+    onLockChange() {},
     async signIn(email, password) {
       // Local backend: just accept the legacy admin/admin123 check
       if ((email === 'admin' || email === 'admin@blackstars.qa') && password === 'admin123') {
@@ -139,6 +144,8 @@
     }
 
     const docRef = () => db.doc(cfg.dataPath || 'clubs/blackstars');
+    const lockRef = () => db.doc((cfg.dataPath || 'clubs/blackstars') + '_session');
+    let lockUnsub = null;
     let unsubscribe = null;
     let skipNextRemoteUpdate = false;   // suppress echo after our own writes
     let writeInFlight = false;          // a Firestore write is currently pending
@@ -178,6 +185,28 @@
     return {
       name: 'firebase',
       isCloud: true,
+      // ── Session lock (single active writer) ──────────────────────────────
+      // Stored in a SEPARATE small doc so heartbeats never churn the main data
+      // document. Shape: { sessionId, holderName, role, ts (epoch ms) }.
+      async getLock() {
+        try { const s = await lockRef().get({ source: 'server' }); return s.exists ? s.data() : null; }
+        catch (e) { try { const s = await lockRef().get(); return s.exists ? s.data() : null; } catch (_) { return null; } }
+      },
+      async setLock(lock) {
+        try { await lockRef().set(lock, { merge: false }); return true; }
+        catch (e) { console.warn('[Storage:firebase] setLock failed:', e && e.code || e); return false; }
+      },
+      async clearLock(sessionId) {
+        // Only clear if we still hold it (avoid stomping a newer holder).
+        try {
+          const s = await lockRef().get();
+          if (s.exists && s.data() && s.data().sessionId === sessionId) await lockRef().set({ sessionId: null, ts: 0 }, { merge: false });
+        } catch (_) {}
+      },
+      onLockChange(cb) {
+        try { if (lockUnsub) lockUnsub(); lockUnsub = lockRef().onSnapshot(s => cb(s.exists ? s.data() : null), () => {}); }
+        catch (e) { console.warn('[Storage:firebase] onLockChange failed:', e); }
+      },
       async load() {
         try {
           const snap = await docRef().get({ source: 'default' });
@@ -319,6 +348,11 @@
       if (!activeBackend) this.init();
       activeBackend.onRemoteUpdate(cb);
     },
+    // ── Session lock pass-throughs ──
+    async getLock() { if (!activeBackend) this.init(); return activeBackend.getLock ? await activeBackend.getLock() : null; },
+    async setLock(lock) { if (!activeBackend) this.init(); return activeBackend.setLock ? await activeBackend.setLock(lock) : true; },
+    async clearLock(sessionId) { if (!activeBackend) this.init(); if (activeBackend.clearLock) await activeBackend.clearLock(sessionId); },
+    onLockChange(cb) { if (!activeBackend) this.init(); if (activeBackend.onLockChange) activeBackend.onLockChange(cb); },
     async signIn(email, password) {
       if (!activeBackend) this.init();
       return await activeBackend.signIn(email, password);

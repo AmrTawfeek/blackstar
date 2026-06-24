@@ -1,4 +1,83 @@
 # Black Stars CRM
+Version 6.155.0 - Session lock: per-device name (staff share one admin login).
+
+## 6.155.0 note - device label for the session lock
+Since all staff sign in with the SAME admin account, the lock holder couldn't be told
+apart ("held by Administrator" for everyone). Now each browser is asked once for a short
+DEVICE/STAFF NAME (e.g. "Reception", "Ahmed"), remembered locally on that device.
+- The read-only bar now reads "session held by Reception" so staff know who to ask.
+- The bar also shows "This device: <name> (rename)" so anyone can relabel their browser.
+- The name is stored only in that browser's localStorage (bs-device-name) — it is NOT
+  synced and never affects member data.
+Everything else about the single-writer lock (6.154.0) is unchanged. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.154.0 - NEW: single-writer session lock (bank-style) to prevent multi-device data loss.
+
+## 6.154.0 note - session lock (one active writer)
+To stop two devices overwriting each other (the cause of the data loss), the app now
+enforces ONE active editing session at a time, like a bank app:
+- The first session to claim the lock is the WRITER and can edit/save normally.
+- Any other open session is READ-ONLY: it can view everything, but saves are blocked
+  with a clear message, and a red bar at the top shows "Read-only — session held by
+  <name>".
+- Only an ADMIN can TAKE OVER: the read-only bar shows a "Take over session" button
+  (with a confirm). Taking over puts the previous writer into read-only. Non-admin staff
+  wait until the holder releases.
+- The lock has a heartbeat and AUTO-RELEASES after ~5 minutes of inactivity, and is also
+  released when the holder closes the tab — so nobody is locked out for long.
+Implementation: the lock lives in a SEPARATE small cloud document (clubs/blackstars_session)
+so heartbeats never churn the main data document. In local-only mode it's a no-op (single
+device is always the sole writer). save() is blocked while read-only.
+This is a strong, practical fix for 2–3 staff. The ultimate durability step remains a
+per-record cloud store. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.153.0 - Court Rental: allow back-dated invoices + optional start time.
+
+## 6.153.0 note - rental back-date + optional time
+Two changes to the Court Rental booking form (🏟 Add Rental):
+1. BACK-DATING is now allowed. The date field no longer forces today-or-later, and the
+   "you can't book a date in the past" block was removed. The auto-created invoice, its
+   month, and the revenue all follow the chosen date — so you can record a past rental or
+   issue an old-dated invoice correctly.
+2. START TIME is now OPTIONAL. Its label reads "(optional)" and the "start time is
+   required" validation was removed. The double-booking overlap check still runs WHEN a
+   time is given; with no time, the booking simply saves without an overlap check.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.152.0 - NEW: Swimming Groups board (drag-and-drop / select, print, WhatsApp share).
+
+## 6.152.0 note - swimming groups
+New "🏊 Swimming Groups" screen (Activities section) to organise swimming members into
+small groups of 3–7:
+- Lists all Swimming members in an "Unassigned" pool with a quick search.
+- Build groups two ways: DRAG a swimmer card into a group (or back to the pool to
+  unassign), OR tick several swimmers and "Assign" them to a chosen group. Each swimmer
+  belongs to exactly one group.
+- Each group card shows a live size indicator (needs N more / good size / over by N),
+  an editable name, and per-group actions.
+- "✨ Auto-group" splits all unassigned swimmers into balanced new groups of ~5.
+- Per group: "💬" shares a clean member list to a WhatsApp group chat, and "🖨" prints a
+  bilingual roster (name / الاسم / mobile) for posting or sharing.
+Groups persist in state.swimGroups and sync to the cloud like everything else. No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.151.0 - FIX: subscription-history Month chip showed the wrong month.
+
+## 6.151.0 note - sub-history month chip from start date
+A subscription row could show a Month chip that disagreed with its Start date — e.g.
+"JUL" on a row that starts 22 Jun 2026. Cause: the chip used a separately-stored
+s.month field that could drift (e.g. set from the payment or expiry month) and no longer
+match the actual start.
+Fix: the Month chip is now derived from the subscription's START date, so it always
+matches the Start column (22 Jun → JUN). Falls back to the stored month only when a row
+has no start date. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.150.0 - FIX: Firestore "write stream exhausted" — the real cause of failed saves.
 
 ## 6.150.0 note - cloud write throttling (resource-exhausted)

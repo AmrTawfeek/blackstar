@@ -2350,6 +2350,52 @@ ${seed}
     eq(enrolled, 8, 'att image: denominator = enrolled count');
     eq(rate, 25, 'att image: 2 of 8 enrolled → 25% (not 100%)');
   })();
+  // Subscription-history month chip comes from the START date (not a stale stored month)
+  (function () {
+    var monthChip = function (s) {
+      var src = s.start || s.end || '';
+      if (src) { var d = new Date(src + 'T00:00:00'); if (!isNaN(d)) return d.toLocaleString('en', { month: 'short' }).toUpperCase(); }
+      return (s.month || '').toUpperCase();
+    };
+    eq(monthChip({ start: '2026-06-22', end: '2026-07-22', month: 'Jul' }), 'JUN', 'sub month chip: 22 Jun start → JUN (not stored JUL)');
+    eq(monthChip({ start: '2026-05-12', month: 'May' }), 'MAY', 'sub month chip: 12 May start → MAY');
+    eq(monthChip({ month: 'Aug' }), 'AUG', 'sub month chip: no start → falls back to stored month');
+  })();
+  // Swimming groups: move + assign keep each swimmer in exactly one group
+  (function () {
+    var sg = [{ id: 'g1', memberIds: [1, 2] }, { id: 'g2', memberIds: [3] }];
+    var move = function (mid, from, to) {
+      if (from === to) return;
+      if (from && from !== '__pool__') { var src = sg.find(function (x) { return x.id === from; }); if (src) src.memberIds = src.memberIds.filter(function (id) { return id !== mid; }); }
+      if (to && to !== '__pool__') { var dst = sg.find(function (x) { return x.id === to; }); if (dst) { if (!dst.memberIds.includes(mid)) dst.memberIds.push(mid); } }
+    };
+    move(1, 'g1', 'g2');
+    eq(sg[0].memberIds.join(','), '2', 'swim move: member leaves source group');
+    eq(sg[1].memberIds.join(','), '3,1', 'swim move: member joins target group');
+    move(2, 'g1', '__pool__');
+    eq(sg[0].memberIds.join(','), '', 'swim move: drag to pool unassigns');
+    var assign = function (gid, ids) {
+      var g = sg.find(function (x) { return x.id === gid; });
+      sg.forEach(function (o) { if (o.id !== gid) o.memberIds = o.memberIds.filter(function (id) { return !ids.includes(id); }); });
+      ids.forEach(function (id) { if (!g.memberIds.includes(id)) g.memberIds.push(id); });
+    };
+    assign('g1', [3]);
+    eq(sg[0].memberIds.join(','), '3', 'swim assign: member added to target');
+    eq(sg[1].memberIds.join(','), '1', 'swim assign: member removed from previous group (one group each)');
+  })();
+  // Session lock: stale detection + read-only decision
+  (function () {
+    var STALE_MS = 5 * 60 * 1000;
+    var isStale = function (lock) { return !lock || !lock.sessionId || (Date.now() - (lock.ts || 0) > STALE_MS); };
+    var iHoldIt = function (lock, sid) { return lock && lock.sessionId === sid; };
+    var now = Date.now();
+    eq(isStale(null), true, 'lock: no lock → claimable');
+    eq(isStale({ sessionId: 'x', ts: now }), false, 'lock: fresh other lock → held');
+    eq(isStale({ sessionId: 'x', ts: now - 6 * 60 * 1000 }), true, 'lock: 6-min-old → stale (auto-release)');
+    eq(iHoldIt({ sessionId: 'me', ts: now }, 'me'), true, 'lock: my own lock recognised');
+    var readOnly = !isStale({ sessionId: 'x', ts: now }) && !iHoldIt({ sessionId: 'x', ts: now }, 'me');
+    eq(readOnly, true, 'lock: fresh other holder → this session read-only');
+  })();
   // Edit form loads camp validity from the stored subscription window (not class count)
   (function () {
     var loadValidity = function (sub) {
