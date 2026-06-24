@@ -2396,6 +2396,34 @@ ${seed}
     var readOnly = !isStale({ sessionId: 'x', ts: now }) && !iHoldIt({ sessionId: 'x', ts: now }, 'me');
     eq(readOnly, true, 'lock: fresh other holder → this session read-only');
   })();
+  // Membership card shows CURRENT active membership classes, not lifetime sum
+  (function () {
+    var curClasses = function (allSubs) {
+      var today = '2026-06-23';
+      var active = allSubs.filter(function (x) {
+        var ended = x.end && x.end < today;
+        var withdrawn = (x.status || '').toLowerCase() === 'withdrawn';
+        return !ended && !withdrawn;
+      });
+      var cur = active.length ? active : allSubs.slice(-1);
+      var total = cur.reduce(function (s, x) { return s + (x.totalClasses || 0); }, 0);
+      var att = cur.reduce(function (a, x) { return a + (x.attendedClasses || 0); }, 0);
+      return att + '/' + total;
+    };
+    var m = [{ totalClasses: 8, attendedClasses: 5, end: '2026-02-01', status: 'expired' }, { totalClasses: 8, attendedClasses: 2, end: '2026-07-17', status: 'active' }];
+    eq(curClasses(m), '2/8', 'card classes: current membership only (not 7/16 lifetime)');
+    // Carry-forward only from the LAST finished membership (your example)
+    var cff = function (subs) {
+      var today = '2026-06-23', CAP = 2;
+      var finished = subs.filter(function (s) { return s.status !== 'active' || (s.end && s.end < today); }).sort(function (a, b) { return (a.end || '').localeCompare(b.end || ''); });
+      var src = finished.length ? finished[finished.length - 1] : null;
+      if (!src) return 0;
+      var unused = Math.max(0, (src.totalClasses || 0) - (src.attendedClasses || 0));
+      return Math.min(CAP, unused);
+    };
+    eq(cff([{ totalClasses: 8, attendedClasses: 5, end: '2026-02-01', status: 'expired' }, { totalClasses: 8, attendedClasses: 7, end: '2026-04-01', status: 'expired' }]), 1,
+      'carry-forward: only last membership (7/8 → 1, not 3 from first)');
+  })();
   // Edit form loads camp validity from the stored subscription window (not class count)
   (function () {
     var loadValidity = function (sub) {

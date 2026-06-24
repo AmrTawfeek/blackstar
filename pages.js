@@ -1693,6 +1693,21 @@ function viewMember(id) {
     const lw = liveAttendanceCount(m, x.activity, x.start || null, x.end || null);
     return acc + (lw.total > 0 ? lw.y : (x.attendedClasses || 0));
   }, 0);
+  // CURRENT-membership classes for the headline card: count only the ACTIVE
+  // subscription period(s) — the one(s) not yet ended — so the card reflects the
+  // member's current package, not the lifetime total across all renewals.
+  const _today = (typeof TODAY !== 'undefined' ? TODAY : '9999-99-99');
+  const activeSubs = allSubs.filter(x => {
+    const ended = x.end && x.end < _today;
+    const withdrawn = (x.status || '').toLowerCase() === 'withdrawn';
+    return !ended && !withdrawn;
+  });
+  const curSubs = activeSubs.length ? activeSubs : allSubs.slice(-1);   // fallback: latest period
+  const curTotalClasses = curSubs.reduce((s, x) => s + (x.totalClasses || 0), 0);
+  const curAttended = curSubs.reduce((acc, x) => {
+    const lw = liveAttendanceCount(m, x.activity, x.start || null, x.end || null);
+    return acc + (lw.total > 0 ? lw.y : (x.attendedClasses || 0));
+  }, 0);
   const paidSum = allSubs.reduce((s,x) => s + (x.amountPaid || 0), 0);
   // Money figures from INVOICES (the source of truth), so the card reflects what's
   // actually been paid vs the full charge — not the subscription's stored amount,
@@ -1706,7 +1721,7 @@ function viewMember(id) {
   const balanceDue = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : Math.max(0, totalCharged - totalPaid);
   const anyLiveMarks = allSubs.some(x => liveAttendanceCount(m, x.activity, x.start || null, x.end || null).total > 0);
   const liveCount = { total: anyLiveMarks ? 1 : 0 };   // flag for the "· live" label
-  const attRatePct = totalClassesSum ? Math.min(100, Math.round(attendedSum / totalClassesSum * 100)) : 0;
+  const attRatePct = curTotalClasses ? Math.min(100, Math.round(curAttended / curTotalClasses * 100)) : 0;
 
   showModal({
     title: `Member: ${escapeHtml(m.name)}`,
@@ -1763,7 +1778,7 @@ function viewMember(id) {
       <div class="kpi-grid mb-3" style="grid-template-columns:repeat(${isViewerRole() ? 3 : 4},1fr);gap:8px">
         <div class="kpi" style="padding:10px 12px"><div class="kpi-label" style="font-size:10px">Subs</div><div class="kpi-value" style="font-size:18px">${totalSubs}</div></div>
         <div class="kpi blue" style="padding:10px 12px;cursor:pointer" onclick="viewMemberAttendance(${m.id})" title="See this member's attendance">
-          <div class="kpi-label" style="font-size:10px">Classes ${liveCount.total ? '· live' : ''} ›</div><div class="kpi-value" style="font-size:18px">${attendedSum}/${totalClassesSum}</div></div>
+          <div class="kpi-label" style="font-size:10px">Classes ${liveCount.total ? '· live' : ''} ›</div><div class="kpi-value" style="font-size:18px">${curAttended}/${curTotalClasses}</div></div>
         ${isViewerRole() ? '' : `<div class="kpi ${balanceDue > 0.5 ? 'orange' : 'green'}" style="padding:10px 12px" title="${balanceDue > 0.5 ? `Paid ${fmt(totalPaid)} of ${fmt(totalCharged)} — ${fmt(balanceDue)} still due` : 'Fully paid'}"><div class="kpi-label" style="font-size:10px">${balanceDue > 0.5 ? 'Total · due' : 'Paid'}</div><div class="kpi-value" style="font-size:18px">${fmt(totalCharged)}</div>${balanceDue > 0.5 ? `<div style="font-size:9px;color:var(--red);font-weight:700;margin-top:1px">${fmt(balanceDue)} due · ${fmt(totalPaid)} paid</div>` : ''}</div>`}
         <div class="kpi orange" style="padding:10px 12px;cursor:pointer;position:relative" onclick="viewMemberAttendance(${m.id})" title="See this member's attendance">
           <div class="kpi-label" style="font-size:10px">Att Rate ›</div><div class="kpi-value" style="font-size:18px">${attRatePct}%</div>

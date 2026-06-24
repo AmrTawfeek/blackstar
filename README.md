@@ -1,4 +1,23 @@
 # Black Stars CRM
+Version 6.156.0 - Membership card: show CURRENT membership classes only.
+
+## 6.156.0 note - card classes = current membership
+On the member profile card, the "Classes" stat (and the Att Rate beside it) summed
+attendance across the member's ENTIRE history of renewals — so a member on their 2nd
+package showed a lifetime figure instead of their current package.
+Fix: the card now counts only the CURRENT ACTIVE membership period(s) — the
+subscription(s) not yet ended/withdrawn (falling back to the most recent period if none
+is currently active). So a member who has attended 2 of their current 8 classes shows
+"2/8", not the lifetime "7/16". The Subscription History table below still lists every
+past period as before.
+
+## carry-forward already correct
+Confirmed the renewal carry-forward credit already counts ONLY the last finished
+membership (not the sum of all previous credit), capped at 2 — e.g. 1st 5/8 then 2nd
+7/8 → the 3rd renewal carries 1 (from the 2nd), not 3. No change needed there; added a
+test to lock the behaviour. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.155.0 - Session lock: per-device name (staff share one admin login).
 
 ## 6.155.0 note - device label for the session lock
