@@ -2424,6 +2424,70 @@ ${seed}
     eq(cff([{ totalClasses: 8, attendedClasses: 5, end: '2026-02-01', status: 'expired' }, { totalClasses: 8, attendedClasses: 7, end: '2026-04-01', status: 'expired' }]), 1,
       'carry-forward: only last membership (7/8 → 1, not 3 from first)');
   })();
+  // Swim group schedule formatter (days + from–to time)
+  (function () {
+    var DAYS = [{ en: 'Sun', ar: 'أحد' }, { en: 'Mon', ar: 'إثنين' }, { en: 'Tue', ar: 'ثلاثاء' }, { en: 'Wed', ar: 'أربعاء' }, { en: 'Thu', ar: 'خميس' }, { en: 'Fri', ar: 'جمعة' }, { en: 'Sat', ar: 'سبت' }];
+    var sched = function (g, ar) {
+      var days = (g.days || []).map(function (i) { return DAYS[i] ? (ar ? DAYS[i].ar : DAYS[i].en) : ''; }).filter(Boolean);
+      var daysStr = days.length ? days.join(ar ? '، ' : ', ') : '';
+      var timeStr = '';
+      if (g.timeFrom && g.timeTo) timeStr = g.timeFrom + '–' + g.timeTo;
+      else if (g.timeFrom) timeStr = (ar ? 'من ' : 'from ') + g.timeFrom;
+      if (!daysStr && !timeStr) return '';
+      return [daysStr, timeStr].filter(Boolean).join(' · ');
+    };
+    eq(sched({ days: [6, 1], timeFrom: '17:00', timeTo: '18:00' }, false), 'Sat, Mon · 17:00–18:00', 'swim schedule: days + time EN');
+    eq(sched({}, false), '', 'swim schedule: empty when nothing set');
+    eq(sched({ days: [0] }, false), 'Sun', 'swim schedule: days only, no time');
+  })();
+  // Member statement consolidates all invoices; switch-credit excluded from totals
+  (function () {
+    var invoicePaid = function (i) { return (i.payments || []).reduce(function (s, p) { return s + (p.amount || 0); }, 0); };
+    var invs = [
+      { id: 1, amount: 800, payments: [{ amount: 800 }] },
+      { id: 2, amount: 1750, payments: [{ amount: 1000 }] },
+      { id: 3, amount: -200, switchCredit: true, payments: [] },
+    ];
+    var totCharged = 0, totPaid = 0;
+    invs.forEach(function (i) {
+      var amount = Number(i.amount) || 0; var paid = invoicePaid(i);
+      var isCredit = i.switchCredit || amount < 0;
+      if (!isCredit) { totCharged += amount; totPaid += paid; }
+    });
+    eq(totCharged, 2550, 'statement: total charged excludes switch-credit');
+    eq(totPaid, 1800, 'statement: total paid summed across invoices');
+    eq(totCharged - totPaid, 750, 'statement: balance = charged − paid');
+  })();
+  // Payments analysis: cash + card + transfer = revenue; cash-in-hand = cash − cash expenses
+  (function () {
+    var invoicePaid = function (i) { return (i.payments || []).reduce(function (s, p) { return s + (p.amount || 0); }, 0); };
+    var normMethod = function (mRaw) {
+      var x = String(mRaw || '').toLowerCase();
+      if (x.indexOf('card') >= 0 || x.indexOf('credit') >= 0) return 'card';
+      if (x.indexOf('transfer') >= 0 || x.indexOf('bank') >= 0) return 'transfer';
+      if (x.indexOf('cash') >= 0) return 'cash';
+      return x ? 'cash' : '';
+    };
+    var invoiceMethod = function (i) {
+      var byM = {};
+      (i.payments || []).forEach(function (p) { var k = normMethod(p.method); if (!k) return; byM[k] = (byM[k] || 0) + (p.amount || 0); });
+      var keys = Object.keys(byM);
+      if (keys.length) return keys.sort(function (a, b) { return byM[b] - byM[a]; })[0];
+      return normMethod(i.method);
+    };
+    var invs = [
+      { id: 1, amount: 800, payments: [{ amount: 800, method: 'Cash' }] },
+      { id: 2, amount: 1750, payments: [{ amount: 1750, method: 'card' }] },
+      { id: 3, amount: 500, payments: [{ amount: 500, method: 'bank transfer' }] },
+      { id: 4, amount: 300, payments: [{ amount: 300, method: 'cash' }] },
+    ];
+    var byMethod = { cash: 0, card: 0, transfer: 0 };
+    invs.forEach(function (i) { byMethod[invoiceMethod(i)] += invoicePaid(i); });
+    var revenue = byMethod.cash + byMethod.card + byMethod.transfer;
+    eq(revenue, 3350, 'payments: cash+card+transfer = total revenue');
+    eq(byMethod.cash, 1100, 'payments: cash collected summed');
+    eq(byMethod.cash - 200, 900, 'payments: cash-in-hand = cash − cash expenses');
+  })();
   // Edit form loads camp validity from the stored subscription window (not class count)
   (function () {
     var loadValidity = function (sub) {

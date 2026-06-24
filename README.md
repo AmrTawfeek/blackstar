@@ -1,4 +1,48 @@
 # Black Stars CRM
+Version 6.159.0 - NEW: Payments Analysis screen (revenue by method, expenses, cash position).
+
+## 6.159.0 note - payments analysis
+New "💳 Payments Analysis" screen under Insights. One row per invoice showing Txn #,
+date, customer, activity, payment method, and value (amount paid).
+Top summary cards reconcile the money:
+- Cash collected + Card + Bank transfer = TOTAL REVENUE (revenue split by method).
+- Expenses (paid out) shown separately.
+- Cash in Hand = Cash collected − cash expenses.
+Filters: single day, date range (from/to), payment method, activity, and a search box
+(ref / customer / activity). The cards and the table both respond to the filters, and a
+running "Filtered total" is shown. A "🖨 Print report" button outputs a clean printable
+report of the filtered results with the summary cards and a totals footer.
+Methods are normalised to cash / card / bank-transfer (so "Visa", "credit", "bank" all
+map correctly). Switch-credit invoices are listed but excluded from totals. No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.158.0 - NEW: consolidated Member Statement (printable PDF of all invoices).
+
+## 6.158.0 note - member statement
+Added a "📄 Member Statement" button to the Invoices screen toolbar. Pick a member from a
+search/dropdown and it opens a printable, consolidated statement listing EVERY invoice on
+record (full history) — Ref, Date, Item, Method, Amount, Paid, Balance per row — with
+footer totals and three summary boxes: Total charged, Total paid, Balance due.
+Switch-credit (negative) invoices are listed but excluded from the charge totals, so the
+balance reconciles with the member's outstanding figure. Opens in a new tab and triggers
+the print dialog (save as PDF or print). No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.157.0 - Swimming Groups: per-group days + time, schedule on print, no phone in print.
+
+## 6.157.0 note - swim group schedule + print
+Three changes to Swimming Groups (🏊):
+1. Each group now has a SCHEDULE: tap day buttons (Sun–Sat) and set a FROM–TO time. Saved
+   per group and synced. Bilingual day labels.
+2. PRINT now shows the schedule prominently — a banner with the days and from–to time
+   (English + Arabic) above the member list.
+3. PRINT no longer includes the phone number. The printed roster columns are now just
+   # / Name / الاسم.
+The WhatsApp share text also gained a 🗓 schedule line. No schema change (SCHEMA_VERSION
+stays 9).
+
+# Black Stars CRM
 Version 6.156.0 - Membership card: show CURRENT membership classes only.
 
 ## 6.156.0 note - card classes = current membership

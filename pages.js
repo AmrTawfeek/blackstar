@@ -5910,6 +5910,241 @@ PAGES.camproutes = (main) => {
 // groups by drag-and-drop OR multi-select-and-assign, then print or share a
 // group over WhatsApp. Groups persist in state.swimGroups and sync to cloud.
 //   swimGroups[]: { id, name, coachId, memberIds:[], order, createdAt }
+// ─── PAYMENTS ANALYSIS ──────────────────────────────────────────────────
+// One row per invoice: ref, value (paid), customer, activity, method. Top cards
+// reconcile revenue by method (cash + card + transfer = revenue) plus expenses
+// and cash-in-hand (cash collected − cash expenses). Filters + print report.
+PAGES.payanalysis = (main) => {
+  // Normalise a payment-method string to one of: cash | card | transfer.
+  const normMethod = (mRaw) => {
+    const x = String(mRaw || '').toLowerCase();
+    if (x.indexOf('card') >= 0 || x.indexOf('visa') >= 0 || x.indexOf('credit') >= 0) return 'card';
+    if (x.indexOf('transfer') >= 0 || x.indexOf('bank') >= 0) return 'transfer';
+    if (x.indexOf('cash') >= 0) return 'cash';
+    return x ? 'cash' : '';   // default unknown→cash (most receipts are cash)
+  };
+  const METHOD_LABEL = { cash: t('Cash', 'نقداً'), card: t('Card', 'بطاقة'), transfer: t('Bank transfer', 'تحويل بنكي') };
+
+  // Derive a single representative method for an invoice from its payments (the
+  // method that paid the most), falling back to inv.method.
+  const invoiceMethod = (i) => {
+    const byM = {};
+    (i.payments || []).forEach(p => { const k = normMethod(p.method); if (!k) return; byM[k] = (byM[k] || 0) + (p.amount || 0); });
+    const keys = Object.keys(byM);
+    if (keys.length) return keys.sort((a, b) => byM[b] - byM[a])[0];
+    return normMethod(i.method);
+  };
+
+  // Load filters (persisted per page).
+  const filter = loadFilter('payanalysis', { day: '', from: '', to: '', method: '', activity: '', search: '' });
+
+  // Build the row set: all non-deleted invoices that have an actual paid amount.
+  const allInvoices = (state.invoices || []).filter(i => !i.deleted);
+  const rowsAll = allInvoices.map(i => {
+    const paid = invoicePaid(i);
+    const m = state.members.find(x => x.id === i.customerId);
+    const isRental = i.activityType === 'rental';
+    const activity = isRental ? '🏟 ' + (i.sport || t('Rental', 'إيجار')) : (i.sport || i.activity || i.category || t('Other', 'أخرى'));
+    // Representative date = latest payment date, else invoice date.
+    const payDates = (i.payments || []).map(p => p.date).filter(Boolean).sort();
+    const date = payDates.length ? payDates[payDates.length - 1] : (i.date || '');
+    return {
+      id: i.id, ref: i.ref || ('INV' + i.id), date,
+      value: paid, amount: Number(i.amount) || 0,
+      customer: m ? m.name : (i.customerName || t('Walk-in', 'زائر')),
+      customerAr: m ? (m.nameArabic || '') : '',
+      activity, method: invoiceMethod(i),
+      isCredit: i.switchCredit || i.activityType === 'switch-credit' || (Number(i.amount) || 0) < 0,
+    };
+  });
+
+  // Distinct activities for the filter dropdown.
+  const activities = [...new Set(rowsAll.map(r => r.activity))].sort();
+
+  // Apply filters.
+  const applyFilters = (rows) => rows.filter(r => {
+    if (filter.day && r.date !== filter.day) return false;
+    if (filter.from && r.date && r.date < filter.from) return false;
+    if (filter.to && r.date && r.date > filter.to) return false;
+    if (filter.method && r.method !== filter.method) return false;
+    if (filter.activity && r.activity !== filter.activity) return false;
+    if (filter.search) {
+      const q = filter.search.toLowerCase();
+      const hay = `${r.ref} ${r.customer} ${r.customerAr} ${r.activity}`.toLowerCase();
+      if (hay.indexOf(q) < 0) return false;
+    }
+    return true;
+  });
+
+  const rows = applyFilters(rowsAll).sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.id - a.id));
+
+  // ── Totals (on the FILTERED set, excluding switch-credit) ──
+  const paidRows = rows.filter(r => !r.isCredit);
+  const byMethod = { cash: 0, card: 0, transfer: 0 };
+  paidRows.forEach(r => { if (byMethod[r.method] != null) byMethod[r.method] += r.value; });
+  const totalRevenue = byMethod.cash + byMethod.card + byMethod.transfer;
+
+  // Expenses: respect the same day/range filter. Cash expenses reduce cash-in-hand.
+  const expensesAll = (state.expenses || []).filter(e => !e.deleted);
+  const expFiltered = expensesAll.filter(e => {
+    const d = e.date || (e.month ? e.month + '-01' : '');
+    if (filter.day && d !== filter.day) return false;
+    if (filter.from && d && d < filter.from) return false;
+    if (filter.to && d && d > filter.to) return false;
+    return true;
+  });
+  const totalExpenses = expFiltered.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const cashExpenses = expFiltered.filter(e => normMethod(e.method || 'cash') === 'cash').reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const cashInHand = byMethod.cash - cashExpenses;
+
+  const card = (label, value, color, sub) => `
+    <div class="kpi" style="border-top:3px solid ${color}">
+      <div class="kpi-label">${label}</div>
+      <div class="kpi-value num" style="color:${color}">${fmt(value)}</div>
+      ${sub ? `<div class="text-mute" style="font-size:10px;margin-top:2px">${sub}</div>` : ''}
+    </div>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div><h1>💳 ${t('Payments Analysis', 'تحليل المدفوعات')}</h1>
+        <div class="subtitle">${t('Revenue by method, expenses, and cash position', 'الإيرادات حسب طريقة الدفع والمصروفات والنقد')}</div></div>
+      <div class="topbar-actions">
+        <button class="btn primary" id="pa-print">🖨 ${t('Print report', 'طباعة التقرير')}</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:10px">
+      ${card(t('Total Revenue', 'إجمالي الإيرادات'), totalRevenue, 'var(--accent)', t('cash + card + transfer', 'نقد + بطاقة + تحويل'))}
+      ${card(t('Expenses', 'المصروفات'), totalExpenses, 'var(--red)', t('paid out', 'مدفوعة'))}
+      ${card(t('Cash in Hand', 'النقد في الصندوق'), cashInHand, cashInHand >= 0 ? 'var(--green)' : 'var(--red)', t('cash collected − cash expenses', 'النقد المُحصّل − مصروفات نقدية'))}
+    </div>
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      ${card('💵 ' + t('Cash collected', 'نقد محصّل'), byMethod.cash, 'var(--green)')}
+      ${card('💳 ' + t('Card', 'بطاقة'), byMethod.card, 'var(--blue)')}
+      ${card('🏦 ' + t('Bank transfer', 'تحويل بنكي'), byMethod.transfer, 'var(--purple)')}
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div class="field" style="margin:0"><label style="font-size:10px">${t('Day', 'يوم')}</label><input type="date" id="pa-day" value="${filter.day || ''}" /></div>
+        <div class="field" style="margin:0"><label style="font-size:10px">${t('From', 'من')}</label><input type="date" id="pa-from" value="${filter.from || ''}" /></div>
+        <div class="field" style="margin:0"><label style="font-size:10px">${t('To', 'إلى')}</label><input type="date" id="pa-to" value="${filter.to || ''}" /></div>
+        <div class="field" style="margin:0"><label style="font-size:10px">${t('Method', 'الطريقة')}</label>
+          <select id="pa-method">
+            <option value="">${t('All methods', 'كل الطرق')}</option>
+            <option value="cash" ${filter.method === 'cash' ? 'selected' : ''}>${METHOD_LABEL.cash}</option>
+            <option value="card" ${filter.method === 'card' ? 'selected' : ''}>${METHOD_LABEL.card}</option>
+            <option value="transfer" ${filter.method === 'transfer' ? 'selected' : ''}>${METHOD_LABEL.transfer}</option>
+          </select></div>
+        <div class="field" style="margin:0"><label style="font-size:10px">${t('Activity', 'النشاط')}</label>
+          <select id="pa-activity"><option value="">${t('All activities', 'كل الأنشطة')}</option>
+            ${activities.map(a => `<option value="${escapeHtml(a)}" ${filter.activity === a ? 'selected' : ''}>${escapeHtml(a)}</option>`).join('')}
+          </select></div>
+        <div class="field" style="margin:0;flex:1;min-width:160px"><label style="font-size:10px">${t('Search', 'بحث')}</label><input type="search" id="pa-search" placeholder="${t('Ref, customer, activity…', 'رقم، عميل، نشاط…')}" value="${escapeHtml(filter.search || '')}" /></div>
+        <button class="btn ghost sm" id="pa-clear">${t('Clear', 'مسح')}</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div style="font-weight:700;font-size:14px">${rows.length} ${t('transactions', 'معاملة')}</div>
+        <div style="font-weight:800;font-size:14px;color:var(--accent)">${t('Filtered total:', 'الإجمالي المُصفّى:')} ${fmt(paidRows.reduce((s, r) => s + r.value, 0))}</div>
+      </div>
+      <div class="table-wrap" id="pa-table">
+        <table style="width:100%">
+          <thead><tr>
+            <th style="padding:6px 8px;font-size:10px">${t('Txn #', 'رقم')}</th>
+            <th style="padding:6px 8px;font-size:10px">${t('Date', 'التاريخ')}</th>
+            <th style="padding:6px 8px;font-size:10px">${t('Customer', 'العميل')}</th>
+            <th style="padding:6px 8px;font-size:10px">${t('Activity', 'النشاط')}</th>
+            <th style="padding:6px 8px;font-size:10px">${t('Method', 'الطريقة')}</th>
+            <th style="padding:6px 8px;font-size:10px;text-align:right">${t('Value', 'القيمة')}</th>
+          </tr></thead>
+          <tbody>
+            ${rows.length ? rows.map(r => `<tr>
+              <td style="padding:6px 8px;font-size:12px;white-space:nowrap">${escapeHtml(r.ref)}</td>
+              <td style="padding:6px 8px;font-size:12px;white-space:nowrap">${r.date ? fmtDate(r.date) : '—'}</td>
+              <td style="padding:6px 8px;font-size:12px">${escapeHtml(r.customer)}</td>
+              <td style="padding:6px 8px;font-size:12px">${escapeHtml(r.activity)}</td>
+              <td style="padding:6px 8px;font-size:11px"><span class="badge ${r.method === 'cash' ? 'success' : r.method === 'card' ? '' : 'pending'}">${METHOD_LABEL[r.method] || '—'}</span></td>
+              <td style="padding:6px 8px;font-size:12px;text-align:right;font-weight:700${r.isCredit ? ';color:var(--red)' : ''}">${fmt(r.value)}</td>
+            </tr>`).join('') : `<tr><td colspan="6" style="padding:24px;text-align:center;color:var(--text-mute)">${t('No transactions match the filters.', 'لا توجد معاملات مطابقة.')}</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+
+  // ── Wire filters ──
+  const saveAndRerender = () => { saveFilter('payanalysis', filter); navigate('payanalysis'); };
+  $('#pa-day').addEventListener('change', e => { filter.day = e.target.value; if (filter.day) { filter.from = ''; filter.to = ''; } saveAndRerender(); });
+  $('#pa-from').addEventListener('change', e => { filter.from = e.target.value; if (filter.from) filter.day = ''; saveAndRerender(); });
+  $('#pa-to').addEventListener('change', e => { filter.to = e.target.value; if (filter.to) filter.day = ''; saveAndRerender(); });
+  $('#pa-method').addEventListener('change', e => { filter.method = e.target.value; saveAndRerender(); });
+  $('#pa-activity').addEventListener('change', e => { filter.activity = e.target.value; saveAndRerender(); });
+  let searchT;
+  $('#pa-search').addEventListener('input', e => { clearTimeout(searchT); filter.search = e.target.value; searchT = setTimeout(saveAndRerender, 350); });
+  $('#pa-clear').addEventListener('click', () => { ['day', 'from', 'to', 'method', 'activity', 'search'].forEach(k => filter[k] = ''); saveAndRerender(); });
+
+  // ── Print report ──
+  $('#pa-print').addEventListener('click', () => {
+    const periodLabel = filter.day ? fmtDate(filter.day)
+      : (filter.from || filter.to) ? `${filter.from ? fmtDate(filter.from) : '…'} → ${filter.to ? fmtDate(filter.to) : '…'}`
+      : t('All time', 'كل الفترات');
+    const fLabels = [
+      filter.method ? `${t('Method', 'الطريقة')}: ${METHOD_LABEL[filter.method]}` : '',
+      filter.activity ? `${t('Activity', 'النشاط')}: ${filter.activity}` : '',
+      filter.search ? `${t('Search', 'بحث')}: ${filter.search}` : '',
+    ].filter(Boolean).join(' · ');
+    const trRows = rows.map(r => `<tr>
+      <td style="border:1px solid #ddd;padding:6px 9px">${escapeHtml(r.ref)}</td>
+      <td style="border:1px solid #ddd;padding:6px 9px;white-space:nowrap">${r.date ? fmtDate(r.date) : '—'}</td>
+      <td style="border:1px solid #ddd;padding:6px 9px">${escapeHtml(r.customer)}</td>
+      <td style="border:1px solid #ddd;padding:6px 9px">${escapeHtml(r.activity)}</td>
+      <td style="border:1px solid #ddd;padding:6px 9px">${METHOD_LABEL[r.method] || '—'}</td>
+      <td style="border:1px solid #ddd;padding:6px 9px;text-align:right">${fmt(r.value)}</td>
+    </tr>`).join('');
+    const filteredTotal = paidRows.reduce((s, r) => s + r.value, 0);
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${t('Payments Report', 'تقرير المدفوعات')}</title>
+      <style>body{font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:26px;max-width:900px;margin:auto}
+        h1{font-size:21px;margin:0} .sub{color:#888;font-size:12px;border-bottom:3px solid #7a1f2b;padding-bottom:10px;margin-bottom:6px}
+        .meta{font-size:12px;color:#444;margin:8px 0 16px}
+        .cards{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+        .c{flex:1;min-width:120px;border:1px solid #e3e3e8;border-radius:8px;padding:9px 11px}
+        .c .l{font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:#888} .c .v{font-size:16px;font-weight:800;margin-top:2px}
+        table{border-collapse:collapse;width:100%;font-size:12px} th{background:#faf7f8;border:1px solid #ddd;padding:6px 9px;text-align:left;font-size:10px;text-transform:uppercase;color:#7a1f2b}
+        tfoot td{border:1px solid #ddd;padding:8px 9px;font-weight:800;background:#fafafa}
+        .foot{margin-top:18px;color:#aaa;font-size:11px;text-align:center}</style></head>
+      <body>
+        <h1>★ Black Stars Sports Club</h1>
+        <div class="sub">Waab, Doha · ${t('Payments Report', 'تقرير المدفوعات')}</div>
+        <div class="meta"><b>${t('Period', 'الفترة')}:</b> ${periodLabel}${fLabels ? ' &nbsp;·&nbsp; ' + escapeHtml(fLabels) : ''} &nbsp;·&nbsp; <b>${t('Generated', 'تاريخ الإصدار')}:</b> ${fmtDate(TODAY)}</div>
+        <div class="cards">
+          <div class="c"><div class="l">${t('Total Revenue', 'إجمالي الإيرادات')}</div><div class="v">${fmt(totalRevenue)}</div></div>
+          <div class="c"><div class="l">${t('Cash', 'نقد')}</div><div class="v" style="color:#0a7d33">${fmt(byMethod.cash)}</div></div>
+          <div class="c"><div class="l">${t('Card', 'بطاقة')}</div><div class="v" style="color:#1a4d8f">${fmt(byMethod.card)}</div></div>
+          <div class="c"><div class="l">${t('Transfer', 'تحويل')}</div><div class="v" style="color:#6b3fa0">${fmt(byMethod.transfer)}</div></div>
+          <div class="c"><div class="l">${t('Expenses', 'مصروفات')}</div><div class="v" style="color:#c0392b">${fmt(totalExpenses)}</div></div>
+          <div class="c"><div class="l">${t('Cash in Hand', 'النقد بالصندوق')}</div><div class="v">${fmt(cashInHand)}</div></div>
+        </div>
+        <table>
+          <thead><tr><th>${t('Txn #', 'رقم')}</th><th>${t('Date', 'التاريخ')}</th><th>${t('Customer', 'العميل')}</th><th>${t('Activity', 'النشاط')}</th><th>${t('Method', 'الطريقة')}</th><th style="text-align:right">${t('Value', 'القيمة')}</th></tr></thead>
+          <tbody>${trRows || '<tr><td colspan="6" style="padding:14px;text-align:center;color:#999">No transactions</td></tr>'}</tbody>
+          <tfoot><tr><td colspan="5" style="text-align:right">${t('Total', 'الإجمالي')} (${rows.length})</td><td style="text-align:right">${fmt(filteredTotal)}</td></tr></tfoot>
+        </table>
+        <div class="foot">Black Stars CRM · ${fmtDate(TODAY)}</div>
+        <script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script>
+      </body></html>`;
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); }
+    else toast(t('Allow pop-ups to print', 'اسمح بالنوافذ المنبثقة للطباعة'), 'error');
+  });
+};
+
+// Days of week for swimming group schedules (Qatar week order: Sun–Sat).
+const SWIM_DAYS = [
+  { en: 'Sun', ar: 'أحد' }, { en: 'Mon', ar: 'إثنين' }, { en: 'Tue', ar: 'ثلاثاء' },
+  { en: 'Wed', ar: 'أربعاء' }, { en: 'Thu', ar: 'خميس' }, { en: 'Fri', ar: 'جمعة' }, { en: 'Sat', ar: 'سبت' },
+];
 PAGES.swimgroups = (main) => {
   const SWIM = 'Swimming';
   const GROUP_MIN = 3, GROUP_MAX = 7;
@@ -5960,6 +6195,21 @@ PAGES.swimgroups = (main) => {
           <button class="btn ghost sm" onclick="window._swimShare('${g.id}')" title="${t('Share this group on WhatsApp', 'مشاركة المجموعة عبر واتساب')}">💬</button>
           <button class="btn ghost sm" onclick="window._swimPrint('${g.id}')" title="${t('Print this group', 'طباعة المجموعة')}">🖨</button>
           <button class="btn ghost sm" style="color:var(--red)" onclick="window._swimDeleteGroup('${g.id}')" title="${t('Delete group', 'حذف المجموعة')}">🗑</button>
+        </div>
+      </div>
+      <div style="margin-bottom:8px;padding:8px;background:var(--surface-2);border-radius:8px">
+        <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">${t('Days', 'الأيام')}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">
+          ${SWIM_DAYS.map((d, i) => {
+            const on = (g.days || []).includes(i);
+            return `<button onclick="window._swimToggleDay('${g.id}',${i})" style="font-size:11px;font-weight:600;padding:4px 8px;border-radius:6px;cursor:pointer;border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};background:${on ? 'var(--accent)' : 'transparent'};color:${on ? '#fff' : 'var(--text-mute)'}">${t(d.en, d.ar)}</button>`;
+          }).join('')}
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px">
+          <span style="color:var(--text-mute)">${t('From', 'من')}</span>
+          <input type="time" value="${g.timeFrom || ''}" onchange="window._swimSetTime('${g.id}','from',this.value)" style="padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px" />
+          <span style="color:var(--text-mute)">${t('to', 'إلى')}</span>
+          <input type="time" value="${g.timeTo || ''}" onchange="window._swimSetTime('${g.id}','to',this.value)" style="padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px" />
         </div>
       </div>
       <div class="swim-dropzone" data-gid="${g.id}" style="flex:1;display:flex;flex-direction:column;gap:6px;min-height:48px;padding:6px;border:2px dashed var(--border);border-radius:8px;transition:background .1s">
@@ -6078,6 +6328,23 @@ window._swimRename = function(gid, name) {
   save();   // no re-render (keep focus flow); name already in the input
 };
 
+window._swimToggleDay = function(gid, dayIdx) {
+  const g = (state.swimGroups || []).find(x => x.id === gid);
+  if (!g) return;
+  g.days = Array.isArray(g.days) ? g.days : [];
+  if (g.days.includes(dayIdx)) g.days = g.days.filter(d => d !== dayIdx);
+  else { g.days.push(dayIdx); g.days.sort((a, b) => a - b); }
+  save(); _swimRerender();
+};
+
+window._swimSetTime = function(gid, which, val) {
+  const g = (state.swimGroups || []).find(x => x.id === gid);
+  if (!g) return;
+  if (which === 'from') g.timeFrom = val || '';
+  else g.timeTo = val || '';
+  save();   // no re-render (keep the time inputs as-is)
+};
+
 window._swimDeleteGroup = function(gid) {
   const g = (state.swimGroups || []).find(x => x.id === gid);
   if (!g) return;
@@ -6154,10 +6421,23 @@ window._swimAuto = function() {
 };
 
 // Build a shareable text block for a group (bilingual).
+// Format a group's schedule (days + time) for display/print/share. Bilingual.
+function _swimScheduleText(g, ar) {
+  const days = (g.days || []).map(i => SWIM_DAYS[i] ? (ar ? SWIM_DAYS[i].ar : SWIM_DAYS[i].en) : '').filter(Boolean);
+  const daysStr = days.length ? days.join(ar ? '\u060c ' : ', ') : '';
+  let timeStr = '';
+  if (g.timeFrom && g.timeTo) timeStr = `${g.timeFrom}\u2013${g.timeTo}`;
+  else if (g.timeFrom) timeStr = `${ar ? '\u0645\u0646' : 'from'} ${g.timeFrom}`;
+  if (!daysStr && !timeStr) return '';
+  return [daysStr, timeStr].filter(Boolean).join(' \u00b7 ');
+}
+
 function _swimGroupText(g) {
   const mems = (g.memberIds || []).map(id => (state.members || []).find(m => m.id === id)).filter(Boolean);
-  const lines = mems.map((m, i) => `${i + 1}. ${m.name}${m.nameArabic ? ' · ' + m.nameArabic : ''}`);
-  return `🏊 ${g.name || 'Swimming Group'} — Black Stars Sports Club\n${t('Members', 'الأعضاء')} (${mems.length}):\n${lines.join('\n')}`;
+  const lines = mems.map((m, i) => `${i + 1}. ${m.name}${m.nameArabic ? ' \u00b7 ' + m.nameArabic : ''}`);
+  const sched = _swimScheduleText(g, true);
+  const schedLine = sched ? `\ud83d\uddd3 ${sched}\n` : '';
+  return `\ud83c\udfca ${g.name || 'Swimming Group'} \u2014 Black Stars Sports Club\n${schedLine}${t('Members', '\u0627\u0644\u0623\u0639\u0636\u0627\u0621')} (${mems.length}):\n${lines.join('\n')}`;
 }
 
 window._swimShare = function(gid) {
@@ -6174,23 +6454,32 @@ window._swimPrint = function(gid) {
   const g = (state.swimGroups || []).find(x => x.id === gid);
   if (!g) return;
   const mems = (g.memberIds || []).map(id => (state.members || []).find(m => m.id === id)).filter(Boolean);
+  // No phone column in the print (per request). Columns: # / Name / الاسم.
   const rows = mems.map((m, i) => `<tr>
-    <td style="border:1px solid #ddd;padding:8px 10px;text-align:center;width:40px">${i + 1}</td>
-    <td style="border:1px solid #ddd;padding:8px 10px">${escapeHtml(m.name)}</td>
-    <td style="border:1px solid #ddd;padding:8px 10px;direction:rtl">${escapeHtml(m.nameArabic || '')}</td>
-    <td style="border:1px solid #ddd;padding:8px 10px">${escapeHtml(m.phone || '')}</td>
+    <td style="border:1px solid #ddd;padding:9px 12px;text-align:center;width:44px;font-weight:600">${i + 1}</td>
+    <td style="border:1px solid #ddd;padding:9px 12px;font-size:14px">${escapeHtml(m.name)}</td>
+    <td style="border:1px solid #ddd;padding:9px 12px;direction:rtl;font-size:14px">${escapeHtml(m.nameArabic || '')}</td>
   </tr>`).join('');
+  // Schedule banner: days (EN + AR) and the from–to time, shown prominently.
+  const schedEn = _swimScheduleText(g, false);
+  const schedAr = _swimScheduleText(g, true);
+  const schedHtml = (schedEn || schedAr) ? `<div style="margin:0 0 16px;padding:12px 16px;background:#eef6ff;border:1px solid #cfe3ff;border-radius:10px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#3b6">Schedule · جدول التدريب</div>
+      <div style="font-size:18px;font-weight:800;color:#1a4d8f;margin-top:3px">🗓 ${escapeHtml(schedEn || schedAr)}</div>
+      ${schedEn && schedAr && schedEn !== schedAr ? `<div style="font-size:14px;color:#555;direction:rtl;margin-top:2px">${escapeHtml(schedAr)}</div>` : ''}
+    </div>` : '';
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(g.name || 'Swimming Group')}</title>
     <style>body{font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:28px;max-width:720px;margin:auto}
-      h1{font-size:22px;margin:0 0 4px} .sub{color:#777;font-size:13px;border-bottom:3px solid #f26060;padding-bottom:10px;margin-bottom:16px}
-      table{border-collapse:collapse;width:100%} th{background:#fafafa;border:1px solid #ddd;padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#777}
+      h1{font-size:24px;margin:0 0 4px} .sub{color:#777;font-size:13px;border-bottom:3px solid #f26060;padding-bottom:10px;margin-bottom:16px}
+      table{border-collapse:collapse;width:100%} th{background:#fafafa;border:1px solid #ddd;padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#777}
       .foot{margin-top:18px;color:#aaa;font-size:11px;text-align:center}</style></head>
     <body>
       <h1>🏊 ${escapeHtml(g.name || 'Swimming Group')}</h1>
       <div class="sub">Black Stars Sports Club · Waab, Doha · ${mems.length} members · ${fmtDate(TODAY)}</div>
-      <table><thead><tr><th>#</th><th>Name</th><th>الاسم</th><th>Mobile</th></tr></thead><tbody>${rows || '<tr><td colspan="4" style="padding:14px;text-align:center;color:#999">No members</td></tr>'}</tbody></table>
+      ${schedHtml}
+      <table><thead><tr><th style="width:44px">#</th><th>Name</th><th style="text-align:right">الاسم</th></tr></thead><tbody>${rows || '<tr><td colspan="3" style="padding:14px;text-align:center;color:#999">No members</td></tr>'}</tbody></table>
       <div class="foot">Black Stars CRM</div>
-      <script>window.onload=function(){setTimeout(function(){window.print();},250);};</script>
+      <script>window.onload=function(){setTimeout(function(){window.print();},250);};<\/script>
     </body></html>`;
   const w = window.open('', '_blank');
   if (w) { w.document.write(html); w.document.close(); }
@@ -7290,6 +7579,7 @@ PAGES.invoices = (main) => {
       <div class="topbar-actions">
         <button class="btn ghost" id="quick-rental-inv" title="Log a court/room rental with auto-invoice">🏟 + Add Rental</button>
         <button class="btn ghost" id="generate-latest-inv" title="Pick a member and auto-create an invoice from their latest enrollment">⚡ Generate latest invoice</button>
+        <button class="btn ghost" id="member-statement-btn" title="Generate a printable statement of all a member's invoices">📄 Member Statement</button>
         ${isViewerRole() ? '' : '<button class="btn ghost" id="export-inv">📥 Export</button>'}
         <button class="btn ghost" onclick="navigate('dupinvoices')" title="Review duplicate invoices side by side before deleting">🔍 Find duplicates</button>
         <button class="btn primary" id="add-inv">+ New Invoice</button>
@@ -7479,6 +7769,7 @@ PAGES.invoices = (main) => {
     });
   }
   $('#generate-latest-inv').addEventListener('click', () => generateLatestInvoice(refresh));
+  var _msBtn = document.getElementById('member-statement-btn'); if (_msBtn) _msBtn.addEventListener('click', function(){ memberStatement(); });
   $('#quick-rental-inv').addEventListener('click', () => addRental(refresh));
   $('#export-inv').addEventListener('click', () => {
     // Export the CURRENT filtered set (was: all invoices regardless of filter)
@@ -7945,6 +8236,118 @@ function generateLatestInvoice(onDone) {
 }
 
 // Lazy-load the OCR engine (only when the user actually scans an ID).
+
+// Generate a printable, consolidated STATEMENT of ALL a member's invoices (full
+// history) with charged / paid / balance totals. Member chosen via search picker.
+function memberStatement() {
+  showModal({
+    title: '📄 Member Statement',
+    body: `
+      <div style="margin-bottom:14px;color:var(--text-dim);font-size:13px">
+        Pick a member to generate a printable statement listing every invoice on record
+        with totals (charged, paid, balance).
+      </div>
+      <div class="field"><label>Member</label>${memberPickerHtml('ms-cust', { placeholder: 'Search member by name, mobile, or QID…' })}</div>
+    `,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      { label: '📄 Generate statement', class: 'btn primary', onclick: () => {
+        const custId = parseInt($('#ms-cust').value);
+        if (!custId) { toast('Pick a member first', 'error'); return; }
+        const m = state.members.find(x => x.id === custId);
+        if (!m) { toast('Member not found', 'error'); return; }
+        closeModal();
+        buildMemberStatementPDF(m);
+      } },
+    ],
+  });
+}
+
+function buildMemberStatementPDF(m) {
+  // All non-deleted invoices for this member, oldest → newest.
+  const invs = (state.invoices || [])
+    .filter(i => i.customerId === m.id && !i.deleted)
+    .sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.id - b.id));
+  if (!invs.length) { toast('This member has no invoices', 'info'); return; }
+
+  let totCharged = 0, totPaid = 0;
+  const rows = invs.map(i => {
+    const amount = Number(i.amount) || 0;
+    const paid = invoicePaid(i);
+    const bal = Math.max(0, amount - paid);
+    // Switch-credit (negative) invoices are shown but excluded from charge totals.
+    const isCredit = i.switchCredit || i.activityType === 'switch-credit' || amount < 0;
+    if (!isCredit) { totCharged += amount; totPaid += paid; }
+    const cat = i.category || 'Membership';
+    const act = i.sport || i.activity || i.activityType || '';
+    const method = i.method ? String(i.method) : '';
+    return `<tr>
+      <td style="border:1px solid #e3e3e8;padding:7px 9px;white-space:nowrap">${escapeHtml(i.ref || ('INV' + i.id))}</td>
+      <td style="border:1px solid #e3e3e8;padding:7px 9px;white-space:nowrap">${i.date ? fmtDate(i.date) : '—'}</td>
+      <td style="border:1px solid #e3e3e8;padding:7px 9px">${escapeHtml(cat)}${act ? ' · ' + escapeHtml(act) : ''}</td>
+      <td style="border:1px solid #e3e3e8;padding:7px 9px;text-transform:capitalize">${escapeHtml(method)}</td>
+      <td style="border:1px solid #e3e3e8;padding:7px 9px;text-align:right">${fmt(amount)}</td>
+      <td style="border:1px solid #e3e3e8;padding:7px 9px;text-align:right;color:#0a7d33">${fmt(paid)}</td>
+      <td style="border:1px solid #e3e3e8;padding:7px 9px;text-align:right;color:${bal > 0 ? '#c0392b' : '#999'}">${bal > 0 ? fmt(bal) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  const totBalance = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : Math.max(0, totCharged - totPaid);
+  const phone = m.phone ? escapeHtml(String(m.phone)) : '';
+  const qid = m.qid ? escapeHtml(String(m.qid)) : '';
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Statement — ${escapeHtml(m.name || '')}</title>
+    <style>
+      body{font-family:-apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;padding:30px;max-width:840px;margin:auto}
+      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #7a1f2b;padding-bottom:12px;margin-bottom:8px}
+      h1{font-size:22px;margin:0} .muted{color:#888;font-size:12px}
+      .who{margin:14px 0 18px;font-size:13px;color:#333}
+      .who b{font-size:16px}
+      table{border-collapse:collapse;width:100%;font-size:12.5px}
+      th{background:#faf7f8;border:1px solid #e3e3e8;padding:8px 9px;text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;color:#7a1f2b}
+      tfoot td{border:1px solid #e3e3e8;padding:9px;font-weight:800;background:#fafafa}
+      .totbox{display:flex;gap:10px;margin:18px 0 0;flex-wrap:wrap}
+      .tot{flex:1;min-width:150px;border:1px solid #e3e3e8;border-radius:10px;padding:12px 14px}
+      .tot .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;color:#888}
+      .tot .v{font-size:20px;font-weight:800;margin-top:3px}
+      .foot{margin-top:22px;color:#aaa;font-size:11px;text-align:center;border-top:1px solid #eee;padding-top:10px}
+    </style></head>
+    <body>
+      <div class="head">
+        <div><h1>★ Black Stars Sports Club</h1><div class="muted">Waab, Doha · Member Statement</div></div>
+        <div style="text-align:right" class="muted">Generated<br><b style="color:#1a1a1a;font-size:14px">${fmtDate(TODAY)}</b></div>
+      </div>
+      <div class="who">
+        <b>${escapeHtml(m.name || '')}</b>${m.nameArabic ? ' · <span style="direction:rtl">' + escapeHtml(m.nameArabic) + '</span>' : ''}<br>
+        ${[phone ? 'Mobile: ' + phone : '', qid ? 'QID: ' + qid : ''].filter(Boolean).join(' &nbsp;·&nbsp; ')}
+      </div>
+      <table>
+        <thead><tr>
+          <th>Ref</th><th>Date</th><th>Item</th><th>Method</th>
+          <th style="text-align:right">Amount</th><th style="text-align:right">Paid</th><th style="text-align:right">Balance</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr>
+          <td colspan="4" style="text-align:right">Totals (${invs.length} invoice${invs.length === 1 ? '' : 's'})</td>
+          <td style="text-align:right">${fmt(totCharged)}</td>
+          <td style="text-align:right;color:#0a7d33">${fmt(totPaid)}</td>
+          <td style="text-align:right;color:${totBalance > 0 ? '#c0392b' : '#999'}">${totBalance > 0 ? fmt(totBalance) : '—'}</td>
+        </tr></tfoot>
+      </table>
+      <div class="totbox">
+        <div class="tot"><div class="l">Total charged</div><div class="v">${fmt(totCharged)} <span style="font-size:12px;color:#888">QAR</span></div></div>
+        <div class="tot"><div class="l">Total paid</div><div class="v" style="color:#0a7d33">${fmt(totPaid)} <span style="font-size:12px;color:#888">QAR</span></div></div>
+        <div class="tot"><div class="l">Balance due</div><div class="v" style="color:${totBalance > 0 ? '#c0392b' : '#0a7d33'}">${fmt(totBalance)} <span style="font-size:12px;color:#888">QAR</span></div></div>
+      </div>
+      <div class="foot">Black Stars CRM · Statement generated ${fmtDate(TODAY)}</div>
+      <script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script>
+    </body></html>`;
+
+  const w = window.open('', '_blank');
+  if (w) { w.document.write(html); w.document.close(); }
+  else toast('Allow pop-ups to view the statement', 'error');
+}
+
 function loadTesseract() {
   if (window.Tesseract) return Promise.resolve(window.Tesseract);
   return new Promise((resolve, reject) => {
