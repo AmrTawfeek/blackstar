@@ -1449,6 +1449,24 @@ window.exportMemberAttendanceImage = function(id, lang) {
     noMarks: 'No days marked this month',
   };
   const da = m.dailyAttendance || {};
+  // CURRENT membership window: print only the active membership period's attendance
+  // (start → end). For the full lifetime report, use the Attendance screen.
+  const _today = (typeof TODAY !== 'undefined' ? TODAY : '9999-99-99');
+  const activeSubs = (m.subscriptions || []).filter(s =>
+    (!s.end || s.end >= _today) && (s.status || '').toLowerCase() !== 'withdrawn');
+  // Period bounds: earliest active start → latest active end (fallback to latest period).
+  let periodStart = null, periodEnd = null;
+  const useSubs = activeSubs.length ? activeSubs : (m.subscriptions || []).slice(-1);
+  useSubs.forEach(s => {
+    if (s.start && (!periodStart || s.start < periodStart)) periodStart = s.start;
+    if (s.end && (!periodEnd || s.end > periodEnd)) periodEnd = s.end;
+  });
+  // A YYYY-MM-DD date is in-window if within [periodStart, periodEnd] (open-ended if null).
+  const inWindow = (iso) => {
+    if (periodStart && iso < periodStart) return false;
+    if (periodEnd && iso > periodEnd) return false;
+    return true;
+  };
   const months = Object.keys(da).sort();
   // Enrolled count per sport (the class/day limit) → used as the rate denominator so
   // the % matches the profile (attended ÷ enrolled), not present ÷ marks.
@@ -1469,6 +1487,8 @@ window.exportMemberAttendanceImage = function(id, lang) {
       const marked = [];
       let y = 0, n = 0;
       Object.keys(dd).sort((a, b) => parseInt(a) - parseInt(b)).forEach(day => {
+        const iso = `${mo}-${String(parseInt(day)).padStart(2, '0')}`;
+        if (!inWindow(iso)) return;   // only this membership's period
         const v = dd[day];
         if (v === 'Y') { y++; marked.push({ day, v }); }
         else if (v === 'N') { n++; marked.push({ day, v }); }
@@ -1520,7 +1540,8 @@ window.exportMemberAttendanceImage = function(id, lang) {
         <div style="text-align:${ar ? 'left' : 'right'};font-size:11px;color:#777">${L.generated}<br/><b>${fmtDate(TODAY)}</b></div>
       </div>
       <div style="font-size:15px;font-weight:700;margin-bottom:2px">${escapeHtml(ar && m.nameArabic ? m.nameArabic : m.name)}</div>
-      <div style="font-size:12px;color:#555;margin-bottom:14px">${L.overall}: <b>${totalY}/${total}</b> · <b>${rate}%</b></div>
+      <div style="font-size:12px;color:#555;margin-bottom:2px">${L.overall}: <b>${totalY}/${total}</b> · <b>${rate}%</b></div>
+      ${(periodStart || periodEnd) ? `<div style="font-size:11px;color:#888;margin-bottom:14px">${ar ? 'الفترة الحالية' : 'Current membership'}: ${periodStart ? fmtDate(periodStart) : '…'} → ${periodEnd ? fmtDate(periodEnd) : '…'}</div>` : '<div style="margin-bottom:14px"></div>'}
       ${sections.join('')}
       <div style="margin-top:8px;font-size:9px;color:#aaa;text-align:center;border-top:1px solid #eee;padding-top:6px">Black Stars CRM</div>
     </div>`;
@@ -1884,6 +1905,22 @@ function viewMember(id) {
         const multi = memberInvs.length > 1;
         return [{ label: multi ? `🧾 Get Invoice (${memberInvs.length} sports)` : '🧾 Get Invoice', class: 'btn ghost', onclick: () => { closeModal(); printMemberInvoicePDF(id); } }];
       })(),
+      ...(isViewerRole() ? [] : (() => {
+        // Show "Apply carry-forward" only when the member has an ACTIVE membership for a
+        // sport AND eligible unused classes on the previous finished period for that sport
+        // that haven't been carried yet. Lets you fix a renewal where the carry box was
+        // missed (e.g. 8 → 10 when 2 classes were unused).
+        const sports = [...new Set([m.sport, ...((m.enrollments || []).map(e => e.sport)), ...((m.subscriptions || []).map(s => s.activity))].filter(Boolean))];
+        const eligible = sports.filter(sp => {
+          const credit = (typeof carryForwardCredit === 'function') ? carryForwardCredit(m, sp) : 0;
+          if (credit <= 0) return false;
+          // Needs an ACTIVE (not ended) subscription for this sport to add onto.
+          const active = (m.subscriptions || []).find(s => (s.activity || '') === sp && (!s.end || s.end >= TODAY) && (s.status || '').toLowerCase() !== 'withdrawn' && !s._carryApplied);
+          return !!active;
+        });
+        if (!eligible.length) return [];
+        return [{ label: '🎁 ' + t('Apply carry-forward', 'إضافة الرصيد المرحّل'), class: 'btn ghost', onclick: () => { applyCarryForwardToActive(id); } }];
+      })()),
       ...(isViewerRole() ? [] : [{ label: '📜 Full History', class: 'btn ghost', onclick: () => { closeModal(); openMemberHistory(id); } }]),
       { label: '🖼 ' + t('Attendance (EN)', 'الحضور (EN)'), class: 'btn ghost', onclick: () => { exportMemberAttendanceImage(id, 'en'); } },
       { label: '🖼 ' + t('Attendance (AR)', 'الحضور (AR)'), class: 'btn ghost', onclick: () => { exportMemberAttendanceImage(id, 'ar'); } },
@@ -2699,7 +2736,7 @@ function showMemberForm(m) {
       <div style="margin-top:6px;padding:14px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.30);border-radius:10px">
         <div style="font-size:11px;color:var(--green);text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin-bottom:10px">💳 ${t('First payment (auto-creates invoice)', 'الدفعة الأولى (تنشئ فاتورة تلقائياً)')}</div>
         <div class="form-row">
-          <div class="field"><label>${t('Payment method', 'طريقة الدفع')}</label><select id="f-method"><option value="cash">${t('Cash', 'نقداً')}</option><option value="card">${t('Card', 'بطاقة')}</option></select></div>
+          <div class="field"><label>${t('Payment method', 'طريقة الدفع')}</label><select id="f-method"><option value="cash">${t('Cash', 'نقداً')}</option><option value="card">${t('Card', 'بطاقة')}</option><option value="fawran">${t('Fawran', 'فوران')}</option></select></div>
           <div class="field"><label>💵 ${t('Paid now (QAR)', 'المدفوع الآن (ر.ق)')} <span class="text-mute" style="font-size:10px">${t('blank = pay full', 'فارغ = دفع كامل')}</span></label><input id="f-paidnow" type="number" min="0" step="0.01" placeholder="${t('e.g. 100', 'مثال: 100')}" style="font-size:16px;font-weight:600" /></div>
         </div>
         <div class="field" style="margin-top:8px"><label>📅 ${t('Payment date', 'تاريخ الدفع')} <span class="text-mute" style="font-size:10px;font-weight:400">${t('leave blank to use the start date — set only if cash was collected on a different day', 'اتركه فارغاً لاستخدام تاريخ البداية — حدده فقط إذا حُصّل في يوم مختلف')}</span></label><input id="f-paydate" type="date" value="" /><div class="text-mute" style="font-size:10px;margin-top:4px">${t('Revenue is counted in this date\u2019s month. The membership window still starts from each sport\u2019s Start date above.', 'تُحتسب الإيرادات في شهر هذا التاريخ. تبدأ مدة الاشتراك من تاريخ بداية كل رياضة بالأعلى.')}</div></div>
@@ -5919,11 +5956,13 @@ PAGES.payanalysis = (main) => {
   const normMethod = (mRaw) => {
     const x = String(mRaw || '').toLowerCase();
     if (x.indexOf('card') >= 0 || x.indexOf('visa') >= 0 || x.indexOf('credit') >= 0) return 'card';
+    // Fawran is Qatar's instant bank transfer — treat as a transfer-type method.
+    if (x.indexOf('fawran') >= 0 || x.indexOf('fawran') >= 0 || x.indexOf('فوران') >= 0) return 'fawran';
     if (x.indexOf('transfer') >= 0 || x.indexOf('bank') >= 0) return 'transfer';
     if (x.indexOf('cash') >= 0) return 'cash';
     return x ? 'cash' : '';   // default unknown→cash (most receipts are cash)
   };
-  const METHOD_LABEL = { cash: t('Cash', 'نقداً'), card: t('Card', 'بطاقة'), transfer: t('Bank transfer', 'تحويل بنكي') };
+  const METHOD_LABEL = { cash: t('Cash', 'نقداً'), card: t('Card', 'بطاقة'), transfer: t('Bank transfer', 'تحويل بنكي'), fawran: t('Fawran', 'فوران') };
 
   // Derive a single representative method for an invoice from its payments (the
   // method that paid the most), falling back to inv.method.
@@ -5945,6 +5984,13 @@ PAGES.payanalysis = (main) => {
     const m = state.members.find(x => x.id === i.customerId);
     const isRental = i.activityType === 'rental';
     const activity = isRental ? '🏟 ' + (i.sport || t('Rental', 'إيجار')) : (i.sport || i.activity || i.category || t('Other', 'أخرى'));
+    // Grouped activity for the FILTER: collapse any "Summer Camp · 1 month / 1 week /
+    // Custom …" variant into a single "Summer Camp" so the dropdown isn't cluttered.
+    const activityGroup = (() => {
+      const a = activity || '';
+      if (a === SUMMER_CAMP || a.indexOf(SUMMER_CAMP) === 0) return SUMMER_CAMP;
+      return a;
+    })();
     // Representative date = latest payment date, else invoice date.
     const payDates = (i.payments || []).map(p => p.date).filter(Boolean).sort();
     const date = payDates.length ? payDates[payDates.length - 1] : (i.date || '');
@@ -5953,13 +5999,14 @@ PAGES.payanalysis = (main) => {
       value: paid, amount: Number(i.amount) || 0,
       customer: m ? m.name : (i.customerName || t('Walk-in', 'زائر')),
       customerAr: m ? (m.nameArabic || '') : '',
-      activity, method: invoiceMethod(i),
+      activity, activityGroup, method: invoiceMethod(i),
       isCredit: i.switchCredit || i.activityType === 'switch-credit' || (Number(i.amount) || 0) < 0,
     };
   });
 
-  // Distinct activities for the filter dropdown.
-  const activities = [...new Set(rowsAll.map(r => r.activity))].sort();
+  // Distinct activities for the filter dropdown — use the GROUPED key so all
+  // Summer Camp variants appear as a single "Summer Camp" option.
+  const activities = [...new Set(rowsAll.map(r => r.activityGroup))].sort();
 
   // Apply filters.
   const applyFilters = (rows) => rows.filter(r => {
@@ -5967,7 +6014,7 @@ PAGES.payanalysis = (main) => {
     if (filter.from && r.date && r.date < filter.from) return false;
     if (filter.to && r.date && r.date > filter.to) return false;
     if (filter.method && r.method !== filter.method) return false;
-    if (filter.activity && r.activity !== filter.activity) return false;
+    if (filter.activity && r.activityGroup !== filter.activity) return false;
     if (filter.search) {
       const q = filter.search.toLowerCase();
       const hay = `${r.ref} ${r.customer} ${r.customerAr} ${r.activity}`.toLowerCase();
@@ -5980,9 +6027,12 @@ PAGES.payanalysis = (main) => {
 
   // ── Totals (on the FILTERED set, excluding switch-credit) ──
   const paidRows = rows.filter(r => !r.isCredit);
-  const byMethod = { cash: 0, card: 0, transfer: 0 };
+  const byMethod = { cash: 0, card: 0, transfer: 0, fawran: 0 };
   paidRows.forEach(r => { if (byMethod[r.method] != null) byMethod[r.method] += r.value; });
-  const totalRevenue = byMethod.cash + byMethod.card + byMethod.transfer;
+  // Fawran is a bank-transfer service, so it counts within "transfer" money for the
+  // revenue reconciliation, while still being shown on its own card.
+  const transferAll = byMethod.transfer + byMethod.fawran;
+  const totalRevenue = byMethod.cash + byMethod.card + transferAll;
 
   // Expenses: respect the same day/range filter. Cash expenses reduce cash-in-hand.
   const expensesAll = (state.expenses || []).filter(e => !e.deleted);
@@ -6018,10 +6068,11 @@ PAGES.payanalysis = (main) => {
       ${card(t('Expenses', 'المصروفات'), totalExpenses, 'var(--red)', t('paid out', 'مدفوعة'))}
       ${card(t('Cash in Hand', 'النقد في الصندوق'), cashInHand, cashInHand >= 0 ? 'var(--green)' : 'var(--red)', t('cash collected − cash expenses', 'النقد المُحصّل − مصروفات نقدية'))}
     </div>
-    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+    <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
       ${card('💵 ' + t('Cash collected', 'نقد محصّل'), byMethod.cash, 'var(--green)')}
       ${card('💳 ' + t('Card', 'بطاقة'), byMethod.card, 'var(--blue)')}
       ${card('🏦 ' + t('Bank transfer', 'تحويل بنكي'), byMethod.transfer, 'var(--purple)')}
+      ${card('⚡ ' + t('Fawran', 'فوران'), byMethod.fawran, 'var(--accent-2)', t('instant transfer', 'تحويل فوري'))}
     </div>
 
     <div class="card" style="margin-bottom:14px">
@@ -6035,6 +6086,7 @@ PAGES.payanalysis = (main) => {
             <option value="cash" ${filter.method === 'cash' ? 'selected' : ''}>${METHOD_LABEL.cash}</option>
             <option value="card" ${filter.method === 'card' ? 'selected' : ''}>${METHOD_LABEL.card}</option>
             <option value="transfer" ${filter.method === 'transfer' ? 'selected' : ''}>${METHOD_LABEL.transfer}</option>
+            <option value="fawran" ${filter.method === 'fawran' ? 'selected' : ''}>${METHOD_LABEL.fawran}</option>
           </select></div>
         <div class="field" style="margin:0"><label style="font-size:10px">${t('Activity', 'النشاط')}</label>
           <select id="pa-activity"><option value="">${t('All activities', 'كل الأنشطة')}</option>
@@ -6123,6 +6175,7 @@ PAGES.payanalysis = (main) => {
           <div class="c"><div class="l">${t('Cash', 'نقد')}</div><div class="v" style="color:#0a7d33">${fmt(byMethod.cash)}</div></div>
           <div class="c"><div class="l">${t('Card', 'بطاقة')}</div><div class="v" style="color:#1a4d8f">${fmt(byMethod.card)}</div></div>
           <div class="c"><div class="l">${t('Transfer', 'تحويل')}</div><div class="v" style="color:#6b3fa0">${fmt(byMethod.transfer)}</div></div>
+          <div class="c"><div class="l">${t('Fawran', 'فوران')}</div><div class="v" style="color:#b8860b">${fmt(byMethod.fawran)}</div></div>
           <div class="c"><div class="l">${t('Expenses', 'مصروفات')}</div><div class="v" style="color:#c0392b">${fmt(totalExpenses)}</div></div>
           <div class="c"><div class="l">${t('Cash in Hand', 'النقد بالصندوق')}</div><div class="v">${fmt(cashInHand)}</div></div>
         </div>
@@ -7578,7 +7631,7 @@ PAGES.invoices = (main) => {
       </div>
       <div class="topbar-actions">
         <button class="btn ghost" id="quick-rental-inv" title="Log a court/room rental with auto-invoice">🏟 + Add Rental</button>
-        <button class="btn ghost" id="generate-latest-inv" title="Pick a member and auto-create an invoice from their latest enrollment">⚡ Generate latest invoice</button>
+        <button class="btn ghost" id="generate-latest-inv" title="Pick a member: re-prints their invoice for this month if one exists, otherwise creates it from their latest enrollment">⚡ Generate latest invoice</button>
         <button class="btn ghost" id="member-statement-btn" title="Generate a printable statement of all a member's invoices">📄 Member Statement</button>
         ${isViewerRole() ? '' : '<button class="btn ghost" id="export-inv">📥 Export</button>'}
         <button class="btn ghost" onclick="navigate('dupinvoices')" title="Review duplicate invoices side by side before deleting">🔍 Find duplicates</button>
@@ -7611,7 +7664,7 @@ PAGES.invoices = (main) => {
         <select id="inv-method" class="btn ghost">
           <option value="all">All methods</option>
           <option value="cash">Cash</option>
-          <option value="card">Card</option>
+          <option value="card">Card</option><option value="fawran">Fawran</option>
         </select>
       </div>
       <div id="inv-mergebar" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px">
@@ -7905,7 +7958,7 @@ function addInvoice() {
       </div>
       <div class="form-row">
         <div class="field"><label>Coach</label><select id="f-coach"><option value="">— select —</option>${coachOptions.map(c => `<option>${escapeHtml(c)}</option>`).join('')}</select></div>
-        <div class="field"><label>Method</label><select id="f-method"><option value="cash">Cash</option><option value="card">Card</option></select></div>
+        <div class="field"><label>Method</label><select id="f-method"><option value="cash">Cash</option><option value="card">Card</option><option value="fawran">Fawran</option></select></div>
       </div>
       <div class="form-row">
         <div class="field"><label>Date</label><input id="f-date" type="date" value="${TODAY}" /></div>
@@ -7964,7 +8017,7 @@ function addInvoice() {
 
           <div style="font-weight:700;font-size:13px;margin:14px 0 6px">📝 Details</div>
           <div class="field" style="margin-bottom:8px"><label>Date</label><input type="date" id="sale-date" value="${TODAY}" /></div>
-          <div class="field" style="margin-bottom:8px"><label>Method</label><select id="sale-method-pos"><option value="cash">Cash</option><option value="card">Card</option></select></div>
+          <div class="field" style="margin-bottom:8px"><label>Method</label><select id="sale-method-pos"><option value="cash">Cash</option><option value="card">Card</option><option value="fawran">Fawran</option></select></div>
           <div class="field" style="margin-bottom:8px"><label>Notes</label><input type="text" id="sale-notes" /></div>
         </div>
       </div>
@@ -8143,17 +8196,18 @@ function generateLatestInvoice(onDone) {
         const primary = enrollments[0];
         const coach = state.coaches.find(c => c.id === primary.coachId);
         const mth = date.slice(0, 7);
-        // Guard: don't silently re-invoice the same member in the same month —
-        // a second Membership invoice would DOUBLE the coach's commission base.
-        const dupes = state.invoices.filter(inv =>
-          inv.customerId === m.id && inv.month === mth && (inv.category || 'Membership') === 'Membership');
-        if (dupes.length) {
-          const refs = dupes.map(i => i.ref || ('INV' + i.id)).join(', ');
-          if (!confirm(`⚠️ ${m.name} already has a membership invoice in ${fmtMonth(mth)} (${refs}).\n\n` +
-              `Creating another one will count their fee twice and double the coach's commission for ${fmtMonth(mth)}. ` +
-              `Create it anyway?`)) {
-            return;
-          }
+        // If this member already has a membership invoice THIS month, don't create a
+        // new one (that would double the fee + coach commission). Re-print the existing
+        // one instead — which is what "Generate latest invoice" is expected to do.
+        const existing = state.invoices.filter(inv =>
+          inv.customerId === m.id && inv.month === mth && (inv.category || 'Membership') === 'Membership' && !inv.deleted);
+        if (existing.length) {
+          const latest = existing.sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.id - a.id))[0];
+          closeModal();
+          toast(`${m.name} already has an invoice for ${fmtMonth(mth)} \u2014 opening it`, 'info');
+          printInvoicePDF(latest.id);
+          if (onDone) onDone();
+          return;
         }
         const newInv = {
           id: nextId(state.invoices),
@@ -8243,17 +8297,20 @@ function memberStatement() {
   showModal({
     title: '📄 Member Statement',
     body: `
-      <div style="margin-bottom:14px;color:var(--text-dim);font-size:13px">
-        Pick a member to generate a printable statement listing every invoice on record
-        with totals (charged, paid, balance).
+      <div style="margin-bottom:12px;color:var(--text-dim);font-size:13px">
+        Search a member by <b>name (English/Arabic)</b>, <b>mobile</b>, or <b>QID</b>, then
+        click them to generate a printable statement of every invoice (charged, paid, balance).
       </div>
-      <div class="field"><label>Member</label>${memberPickerHtml('ms-cust', { placeholder: 'Search member by name, mobile, or QID…' })}</div>
+      <input type="search" id="ms-search" autocomplete="off" placeholder="🔍 Type name, mobile, or QID…"
+        style="width:100%;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:8px" />
+      <div id="ms-selected" style="display:none;margin-bottom:8px;padding:8px 12px;background:rgba(34,197,94,.1);border:1px solid var(--green);border-radius:8px;font-size:13px"></div>
+      <div id="ms-results" style="max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:8px"></div>
     `,
     actions: [
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
-      { label: '📄 Generate statement', class: 'btn primary', onclick: () => {
-        const custId = parseInt($('#ms-cust').value);
-        if (!custId) { toast('Pick a member first', 'error'); return; }
+      { label: '📄 Generate statement', class: 'btn primary', id: 'ms-gen', onclick: () => {
+        const custId = parseInt(document.getElementById('ms-results').getAttribute('data-selected') || '');
+        if (!custId) { toast('Search and pick a member first', 'error'); return; }
         const m = state.members.find(x => x.id === custId);
         if (!m) { toast('Member not found', 'error'); return; }
         closeModal();
@@ -8261,6 +8318,53 @@ function memberStatement() {
       } },
     ],
   });
+
+  const searchEl = document.getElementById('ms-search');
+  const resultsEl = document.getElementById('ms-results');
+  const selectedEl = document.getElementById('ms-selected');
+
+  const renderResults = (q) => {
+    const query = (q || '').trim().toLowerCase();
+    let matches = (state.members || []).filter(m => !m.deleted);
+    if (query) {
+      matches = matches.filter(m => {
+        const hay = [m.name, m.nameArabic, m.phone, m.phone2, m.qid].filter(Boolean).join(' ').toLowerCase();
+        return hay.indexOf(query) >= 0;
+      });
+    }
+    matches = matches.slice(0, 50);
+    if (!matches.length) {
+      resultsEl.innerHTML = `<div style="padding:14px;text-align:center;color:var(--text-mute);font-size:13px">${query ? 'No members match “' + escapeHtml(q) + '”' : 'No members'}</div>`;
+      return;
+    }
+    resultsEl.innerHTML = matches.map(m => {
+      const invCount = (state.invoices || []).filter(i => i.customerId === m.id && !i.deleted).length;
+      return `<div class="ms-row" data-mid="${m.id}" style="padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13px">${escapeHtml(m.name || '')}${m.nameArabic ? ' · <span dir="rtl" style="color:var(--text-dim);font-size:12px">' + escapeHtml(m.nameArabic) + '</span>' : ''}</div>
+          <div style="font-size:11px;color:var(--text-mute)">${escapeHtml(m.phone || '')}${m.qid ? ' · QID ' + escapeHtml(String(m.qid)) : ''} · ${invCount} invoice${invCount === 1 ? '' : 's'}</div>
+        </div>
+      </div>`;
+    }).join('');
+    resultsEl.querySelectorAll('.ms-row').forEach(row => {
+      row.addEventListener('mouseenter', () => row.style.background = 'rgba(91,141,239,.12)');
+      row.addEventListener('mouseleave', () => row.style.background = '');
+      row.addEventListener('click', () => {
+        const mid = parseInt(row.dataset.mid);
+        const m = state.members.find(x => x.id === mid);
+        resultsEl.setAttribute('data-selected', String(mid));
+        selectedEl.style.display = 'block';
+        selectedEl.innerHTML = `✓ <b>${escapeHtml(m.name || '')}</b>${m.nameArabic ? ' · ' + escapeHtml(m.nameArabic) : ''} — <span style="color:var(--text-dim)">${t('ready to generate', 'جاهز للإصدار')}</span>`;
+        // Highlight the chosen row.
+        resultsEl.querySelectorAll('.ms-row').forEach(r => r.style.background = '');
+        row.style.background = 'rgba(34,197,94,.15)';
+      });
+    });
+  };
+
+  searchEl.addEventListener('input', () => renderResults(searchEl.value));
+  renderResults('');           // show all members initially
+  setTimeout(() => searchEl.focus(), 50);
 }
 
 function buildMemberStatementPDF(m) {
@@ -8460,7 +8564,7 @@ window.recordPaymentUI = function(id) {
       <div id="pay-single" style="margin-top:8px">
         <div class="form-row">
           <div class="field"><label>${t('Amount (QAR)', 'المبلغ (ر.ق)')}</label><input id="pay-amt" type="number" min="0" step="0.01" value="${bal.toFixed(2)}" /></div>
-          <div class="field"><label>${t('Method', 'الطريقة')}</label><select id="pay-method"><option value="cash">${t('Cash', 'نقداً')}</option><option value="card">${t('Card', 'بطاقة')}</option></select></div>
+          <div class="field"><label>${t('Method', 'الطريقة')}</label><select id="pay-method"><option value="cash">${t('Cash', 'نقداً')}</option><option value="card">${t('Card', 'بطاقة')}</option><option value="fawran">${t('Fawran', 'فوران')}</option></select></div>
         </div>
       </div>
       <div id="pay-split-rows" style="display:none;margin-top:8px">
@@ -8646,7 +8750,7 @@ window.editInvoiceQuick = function(id) {
         <div class="field"><label>Customer</label>${memberPickerHtml('ef-cust', { placeholder: '— none —', selectedId: inv.customerId || null })}</div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Method</label><select id="ef-method"><option value="cash" ${inv.method==='cash'?'selected':''}>Cash</option><option value="card" ${inv.method==='card'?'selected':''}>Card</option></select></div>
+        <div class="field"><label>Method</label><select id="ef-method"><option value="cash" ${inv.method==='cash'?'selected':''}>Cash</option><option value="card" ${inv.method==='card'?'selected':''}>Card</option><option value="fawran" ${inv.method==='fawran'?'selected':''}>Fawran</option></select></div>
         <div class="field"><label>Amount / total (QAR)</label><input id="ef-amt" type="number" step="0.01" value="${inv.amount}" oninput="document.getElementById('ef-balance').textContent=Math.max(0,(parseFloat(document.getElementById('ef-amt').value)||0)-(parseFloat(document.getElementById('ef-paid').value)||0)).toFixed(2)" /></div>
       </div>
       <div class="form-row">
@@ -9153,6 +9257,16 @@ window.printInvoicePDF = function(id) {
   const ref = inv.ref || `INV-${String(inv.id).padStart(5,'0')}`;
   const issueDate = fmtDate(inv.date);
   const amountStr = Number(inv.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  // TRUE invoice total: when the invoice has multiple line items (e.g. Summer Camp +
+  // Gymnastic paid together), sum the line prices so the Subtotal/Total reflect ALL
+  // sports — not just inv.amount (which may hold only the first/primary line).
+  const lineSum = (Array.isArray(inv.lineItems) && inv.lineItems.length)
+    ? inv.lineItems.reduce((s, li) => s + (Number(li.price) || 0), 0)
+    : (Number(inv.amount) || 0);
+  // Use the larger of the stored amount and the line-item sum (guards against a
+  // stored amount that's already the correct combined total).
+  const invTotal = Math.max(Number(inv.amount) || 0, lineSum);
+  const invTotalStr = Number(invTotal).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   // Filename-safe customer name (strips slashes/punctuation that browsers reject in filenames)
   const fileName = (customerName || 'Invoice')
     .replace(/[\/\\:*?"<>|]/g, ' ')
@@ -9628,7 +9742,7 @@ window.printInvoicePDF = function(id) {
     <div class="totals-table">
       <div class="totals-row">
         <span>Subtotal · <bdi>المجموع الفرعي</bdi></span>
-        <span>${amountStr} QAR</span>
+        <span>${invTotalStr} QAR</span>
       </div>
       <div class="totals-row">
         <span>Tax · <bdi>الضريبة</bdi> (0%)</span>
@@ -9636,7 +9750,7 @@ window.printInvoicePDF = function(id) {
       </div>
       <div class="totals-row grand">
         <span>Total · <bdi>الإجمالي</bdi></span>
-        <span class="amount">${amountStr} QAR</span>
+        <span class="amount">${invTotalStr} QAR</span>
       </div>
       ${invoiceBalance(inv) > 0.001 ? `
       <div class="totals-row">
@@ -10430,7 +10544,7 @@ function showExpenseForm(id) {
           <select id="f-method">
             <option value="" ${!cur.method ? 'selected' : ''}>— pick a method —</option>
             <option value="cash" ${cur.method === 'cash' ? 'selected' : ''}>Cash</option>
-            <option value="card" ${cur.method === 'card' ? 'selected' : ''}>Card</option>
+            <option value="card" ${cur.method === 'card' ? 'selected' : ''}>Card</option><option value="fawran" ${cur.method === 'fawran' ? 'selected' : ''}>Fawran</option>
             <option value="transfer" ${cur.method === 'transfer' ? 'selected' : ''}>Bank transfer</option>
           </select>
         </div>
@@ -11691,7 +11805,7 @@ PAGES.sales = (main) => {
         <select id="sale-method" class="btn ghost">
           <option value="all">All methods</option>
           <option value="cash">Cash</option>
-          <option value="card">Card</option>
+          <option value="card">Card</option><option value="fawran">Fawran</option>
         </select>
         <select id="sale-cust" class="btn ghost">
           <option value="all">All customers</option>
@@ -11783,7 +11897,7 @@ function newSale(onDone) {
 
           <div style="font-weight:700;font-size:13px;margin:14px 0 6px">📝 Details</div>
           <div class="field" style="margin-bottom:8px"><label>Date</label><input type="date" id="sale-date" value="${TODAY}" /></div>
-          <div class="field" style="margin-bottom:8px"><label>Method</label><select id="sale-method-pos"><option value="cash">Cash</option><option value="card">Card</option></select></div>
+          <div class="field" style="margin-bottom:8px"><label>Method</label><select id="sale-method-pos"><option value="cash">Cash</option><option value="card">Card</option><option value="fawran">Fawran</option></select></div>
           <div class="field" style="margin-bottom:8px"><label>Notes</label><input type="text" id="sale-notes" /></div>
         </div>
       </div>
@@ -14848,7 +14962,7 @@ window.withdrawSport = function(memberId, sport) {
         <label>Refund method</label>
         <select id="wd-method">
           <option value="cash">Cash</option>
-          <option value="card">Card</option>
+          <option value="card">Card</option><option value="fawran">Fawran</option>
           <option value="transfer">Bank transfer</option>
         </select>
       </div>
@@ -15856,6 +15970,50 @@ window.deleteRenewal = function(memberId, rid) {
   save();
   render();
   toast('Renewal deleted');
+};
+
+// Add eligible carry-forward credit (unused classes from the previous finished period,
+// capped at CARRY_FORWARD_MAX) onto the member's CURRENT active membership for each sport
+// that qualifies. Used to fix a renewal where the carry-forward box was missed — e.g. a
+// new 8-class period becomes 10 when 2 classes were unused. Updates the subscription total
+// and the linked invoice line item, and marks the period so it can't be applied twice.
+window.applyCarryForwardToActive = function(memberId) {
+  const m = state.members.find(x => x.id === memberId);
+  if (!m) { toast('Member not found', 'error'); return; }
+  const sports = [...new Set([m.sport, ...((m.enrollments || []).map(e => e.sport)), ...((m.subscriptions || []).map(s => s.activity))].filter(Boolean))];
+  const plan = [];
+  for (const sp of sports) {
+    const credit = (typeof carryForwardCredit === 'function') ? carryForwardCredit(m, sp) : 0;
+    if (credit <= 0) continue;
+    const active = (m.subscriptions || []).find(s => (s.activity || '') === sp && (!s.end || s.end >= TODAY) && (s.status || '').toLowerCase() !== 'withdrawn' && !s._carryApplied);
+    if (active) plan.push({ sp, credit, active });
+  }
+  if (!plan.length) { toast('No carry-forward credit to apply', 'info'); return; }
+  const summary = plan.map(p => `${p.sp}: +${p.credit} (→ ${(parseInt(p.active.totalClasses) || 0) + p.credit})`).join('\n');
+  if (!confirm(`Apply carry-forward credit?\n\n${summary}\n\nThis adds the unused classes from the previous period onto the current membership and updates the linked invoice.`)) return;
+  let applied = 0;
+  for (const p of plan) {
+    const before = parseInt(p.active.totalClasses) || 0;
+    p.active.totalClasses = before + p.credit;
+    p.active._carryApplied = true;
+    p.active._carriedClasses = (p.active._carriedClasses || 0) + p.credit;
+    applied += p.credit;
+    // Update the linked invoice's line item class count + description, if present.
+    const inv = (state.invoices || []).find(i => !i.deleted && i.customerId === m.id &&
+      ((p.active.invoiceNumber && (i.ref === p.active.invoiceNumber || i.invoiceNumber === p.active.invoiceNumber))));
+    if (inv && Array.isArray(inv.lineItems)) {
+      const li = inv.lineItems.find(l => (l.sport || '') === p.sp);
+      if (li) li.classes = (parseInt(li.classes) || before) + p.credit;
+    }
+    // Mirror onto the matching enrollment classes too (so edit dialogs agree).
+    const enr = (m.enrollments || []).find(e => e.sport === p.sp);
+    if (enr && p.sp !== SUMMER_CAMP) enr.classes = (parseInt(enr.classes) || before) + p.credit;
+  }
+  if (typeof audit === 'function') audit('member.carry.apply', `member:${m.id}`, `Applied ${applied} carry-forward class(es) to ${m.name}`);
+  save();
+  toast(`✅ Added ${applied} carried class${applied === 1 ? '' : 'es'} to ${m.name}`);
+  closeModal();
+  viewMember(memberId);
 };
 
 window.openMemberHistory = function(memberId) {
@@ -17919,7 +18077,7 @@ window.convertTrialToMember = function(id) {
       <div class="form-row">
         <div class="field"><label>Start date</label><input id="cv-start" type="date" value="${TODAY}" /></div>
         <div class="field"><label>Payment method</label><select id="cv-method">
-          <option value="cash">Cash</option><option value="card">Card</option><option value="transfer">Transfer</option>
+          <option value="cash">Cash</option><option value="card">Card</option><option value="fawran">Fawran</option><option value="transfer">Transfer</option>
         </select></div>
       </div>
     `,
@@ -20361,7 +20519,7 @@ function rentalFormHtml(r) {
     </div>
 
     <div class="form-row">
-      <div class="field"><label>Method</label><select id="r-method"><option value="cash" ${r.method==='cash'?'selected':''}>Cash</option><option value="card" ${r.method==='card'?'selected':''}>Card</option></select></div>
+      <div class="field"><label>Method</label><select id="r-method"><option value="cash" ${r.method==='cash'?'selected':''}>Cash</option><option value="card" ${r.method==='card'?'selected':''}>Card</option><option value="fawran" ${r.method==='fawran'?'selected':''}>Fawran</option></select></div>
       <div class="field" style="flex:2"><label>Notes</label><input type="text" id="r-notes" value="${escapeHtml(r.notes || '')}" placeholder="e.g. Birthday party, weekly booking, etc." /></div>
     </div>
     <div style="background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:10px;margin-top:8px;font-size:12px">
@@ -21586,7 +21744,7 @@ PAGES.transactions = (main) => {
         <select id="txn-method" class="btn ghost">
           <option value="all">${t('All methods', 'كل الطرق')}</option>
           <option value="cash" ${st.method === 'cash' ? 'selected' : ''}>${t('Cash', 'نقداً')}</option>
-          <option value="card" ${st.method === 'card' ? 'selected' : ''}>${t('Card', 'بطاقة')}</option>
+          <option value="card" ${st.method === 'card' ? 'selected' : ''}>${t('Card', 'بطاقة')}</option><option value="fawran" ${st.method === 'fawran' ? 'selected' : ''}>${t('Fawran', 'فوران')}</option>
           <option value="transfer" ${st.method === 'transfer' ? 'selected' : ''}>${t('Transfer', 'تحويل')}</option>
         </select>
         <select id="txn-coach" class="btn ghost">

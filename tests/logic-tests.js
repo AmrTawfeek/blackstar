@@ -2488,6 +2488,90 @@ ${seed}
     eq(byMethod.cash, 1100, 'payments: cash collected summed');
     eq(byMethod.cash - 200, 900, 'payments: cash-in-hand = cash − cash expenses');
   })();
+  // Fawran payment method maps to its own bucket and still reconciles to revenue
+  (function () {
+    var normMethod = function (mRaw) {
+      var x = String(mRaw || '').toLowerCase();
+      if (x.indexOf('card') >= 0) return 'card';
+      if (x.indexOf('fawran') >= 0 || x.indexOf('فوران') >= 0) return 'fawran';
+      if (x.indexOf('transfer') >= 0 || x.indexOf('bank') >= 0) return 'transfer';
+      if (x.indexOf('cash') >= 0) return 'cash';
+      return x ? 'cash' : '';
+    };
+    eq(normMethod('Fawran'), 'fawran', 'method: Fawran recognised');
+    eq(normMethod('فوران'), 'fawran', 'method: Fawran (Arabic) recognised');
+    var byMethod = { cash: 800, card: 1750, transfer: 500, fawran: 600 };
+    var revenue = byMethod.cash + byMethod.card + byMethod.transfer + byMethod.fawran;
+    eq(revenue, 3650, 'fawran: cash+card+transfer+fawran = revenue');
+  })();
+  // Payments analysis: Summer Camp variants collapse to one filter option
+  (function () {
+    var SC = 'Summer Camp';
+    var group = function (a) { return (a === SC || a.indexOf(SC) === 0) ? SC : a; };
+    eq(group('Summer Camp · 1 month'), 'Summer Camp', 'activity group: 1 month → Summer Camp');
+    eq(group('Summer Camp · 1 week, Gymnastic'), 'Summer Camp', 'activity group: combined camp → Summer Camp');
+    eq(group('MMA'), 'MMA', 'activity group: non-camp unchanged');
+    var all = ['Summer Camp · 1 month', 'Summer Camp · 1 week', 'Summer Camp', 'MMA', 'Gymnastic'];
+    var opts = [...new Set(all.map(group))].sort();
+    eq(opts.join(','), 'Gymnastic,MMA,Summer Camp', 'activity dropdown: single Summer Camp option');
+  })();
+  // Printed invoice total = sum of ALL line items (multi-sport paid together)
+  (function () {
+    var invTotal = function (inv) {
+      var lineSum = (Array.isArray(inv.lineItems) && inv.lineItems.length)
+        ? inv.lineItems.reduce(function (s, li) { return s + (Number(li.price) || 0); }, 0)
+        : (Number(inv.amount) || 0);
+      return Math.max(Number(inv.amount) || 0, lineSum);
+    };
+    eq(invTotal({ amount: 650, lineItems: [{ price: 650 }, { price: 450 }] }), 1100, 'invoice total: sums all sports (650+450)');
+    eq(invTotal({ amount: 475, lineItems: [] }), 475, 'invoice total: single item unchanged');
+    eq(invTotal({ amount: 1100, lineItems: [{ price: 650 }, { price: 450 }] }), 1100, 'invoice total: stored combined amount respected');
+  })();
+  // Generate latest invoice: reprint existing month invoice, else create new
+  (function () {
+    var decide = function (invoices, memberId, mth) {
+      var existing = invoices.filter(function (inv) {
+        return inv.customerId === memberId && inv.month === mth && (inv.category || 'Membership') === 'Membership' && !inv.deleted;
+      });
+      return existing.length ? 'reprint' : 'create';
+    };
+    eq(decide([{ customerId: 1, month: '2026-06', category: 'Membership' }], 1, '2026-06'), 'reprint', 'latest invoice: existing this month → reprint');
+    eq(decide([{ customerId: 1, month: '2026-05', category: 'Membership' }], 1, '2026-06'), 'create', 'latest invoice: none this month → create');
+    eq(decide([{ customerId: 1, month: '2026-06', category: 'Membership', deleted: true }], 1, '2026-06'), 'create', 'latest invoice: deleted invoice ignored → create');
+  })();
+  // Apply carry-forward to active membership: 8 + 2 = 10, then blocked from re-applying
+  (function () {
+    var TODAY = '2026-06-24', CAP = 2;
+    var m = { subscriptions: [
+      { activity: 'Gymnastic', totalClasses: 8, attendedClasses: 6, start: '2026-05-12', end: '2026-06-12', status: 'expired' },
+      { activity: 'Gymnastic', totalClasses: 8, attendedClasses: 1, start: '2026-06-22', end: '2026-07-22', status: 'active' },
+    ] };
+    var credit = Math.min(CAP, 8 - 6);
+    var active = m.subscriptions.find(function (s) { return s.activity === 'Gymnastic' && (!s.end || s.end >= TODAY) && !s._carryApplied; });
+    active.totalClasses = (active.totalClasses || 0) + credit;
+    active._carryApplied = true;
+    eq(active.totalClasses, 10, 'carry apply: active 8 + 2 carried = 10');
+    var again = m.subscriptions.find(function (s) { return s.activity === 'Gymnastic' && (!s.end || s.end >= TODAY) && !s._carryApplied; });
+    eq(again ? 'found' : 'none', 'none', 'carry apply: cannot apply twice (_carryApplied guard)');
+  })();
+  // Member attendance report windows to the CURRENT membership period only
+  (function () {
+    var TODAY = '2026-06-24';
+    var subs = [
+      { activity: 'Gymnastic', start: '2026-05-12', end: '2026-06-12', status: 'expired' },
+      { activity: 'Gymnastic', start: '2026-06-22', end: '2026-07-22', status: 'active' },
+    ];
+    var activeSubs = subs.filter(function (s) { return (!s.end || s.end >= TODAY) && (s.status || '').toLowerCase() !== 'withdrawn'; });
+    var ps = null, pe = null;
+    (activeSubs.length ? activeSubs : subs.slice(-1)).forEach(function (s) {
+      if (s.start && (!ps || s.start < ps)) ps = s.start;
+      if (s.end && (!pe || s.end > pe)) pe = s.end;
+    });
+    var inWindow = function (iso) { if (ps && iso < ps) return false; if (pe && iso > pe) return false; return true; };
+    eq(ps + '→' + pe, '2026-06-22→2026-07-22', 'attendance report: current period window');
+    eq(inWindow('2026-05-15'), false, 'attendance report: excludes expired-period marks');
+    eq(inWindow('2026-06-25'), true, 'attendance report: includes current-period marks');
+  })();
   // Edit form loads camp validity from the stored subscription window (not class count)
   (function () {
     var loadValidity = function (sub) {

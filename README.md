@@ -1,4 +1,100 @@
 # Black Stars CRM
+Version 6.166.0 - Member Attendance (EN/AR) buttons print CURRENT membership only.
+
+## 6.166.0 note - attendance report = current membership period
+The profile's "🖼 Attendance (EN)" / "Attendance (AR)" buttons previously printed the
+member's ENTIRE attendance history across all renewals. They now print only the CURRENT
+active membership period — attendance marks are windowed to the active subscription's
+start → end (falling back to the most recent period if none is active). The report header
+shows that period, e.g. "Current membership: 22 Jun 2026 → 22 Jul 2026". For the full
+lifetime report, use the Attendance screen (and the per-member CSV still covers all
+months). No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.165.0 - Carry-forward: add to new period total + invoice; fix-it action for missed renewals.
+
+## 6.165.0 note - carry-forward into class total + invoice
+Confirmed and reinforced how unused classes carry into a renewal:
+- On renewal, ticking the carry-forward box (now shown 🎁 and CHECKED by default) ADDS the
+  unused classes (max 2) onto the new period — so an 8-class membership with 2 unused
+  becomes 10. The renewal invoice's line item and the subscription both show the combined
+  total (e.g. "10 classes") for the new period with its start–end dates. This already
+  worked; documented and tested.
+- NEW fix-it action: if a past renewal MISSED the carry (e.g. a member shows 1/8 when she
+  should be 1/10), the member profile now shows a "🎁 Apply carry-forward" button when
+  there's an active membership with eligible unused credit. It adds the carried classes
+  (capped at 2) to the current period, updates the linked invoice line item, and marks the
+  period so it can't be applied twice. Confirm dialog shows exactly what will change.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.164.0 - FIX: Member Statement search now works (name/mobile/QID + live results).
+
+## 6.164.0 note - member statement search rebuilt
+The Member Statement picker's search wasn't returning results. Rebuilt the dialog with a
+robust, self-contained search that filters by NAME (English or Arabic), MOBILE, or QID and
+shows a live, clickable results list — each row shows the member's name, Arabic name,
+phone, QID, and how many invoices they have. Click a member to select (a green confirmation
+appears), then "Generate statement". Typing Arabic (e.g. "أنس") or a phone fragment now
+filters correctly. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.163.0 - "Generate latest invoice" re-prints the month's invoice instead of duplicating.
+
+## 6.163.0 note - generate latest = reprint if exists
+"Generate latest invoice" was always trying to CREATE a new invoice, so when a member
+already had one for the current month it popped a "this will double the fee" warning.
+Now it behaves as expected:
+- If the member already has a membership invoice for the current month → it simply
+  RE-PRINTS that existing invoice (no new record, no duplicate, no doubled commission).
+- If there's NO invoice for the month yet → it creates one from their latest enrollment
+  (all sports, summed total) as before.
+Deleted invoices are ignored when checking. Tooltip updated to describe the behaviour.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.162.0 - FIX: multi-sport invoice total + statement search; latest-invoice covers all sports.
+
+## 6.162.0 note
+Three fixes around invoices:
+1. MULTI-SPORT INVOICE TOTAL (important): when a member paid for more than one sport in
+   the same invoice (e.g. Summer Camp 650 + Gymnastic 450), the printed invoice listed
+   both line items but the Subtotal/Total only showed the first sport's amount (650). The
+   total now SUMS all line items → 1,100. Single-item invoices are unchanged; if a stored
+   amount is already the correct combined total, it's respected.
+2. MEMBER STATEMENT SEARCH was not working — the search box in the "📄 Member Statement"
+   picker wasn't wired. It now filters members by name (EN/AR), mobile, or QID like the
+   other member pickers.
+3. "Generate latest invoice" already creates ONE invoice covering ALL of a member's
+   current sports for the month (line items + summed total) — confirmed and now matches
+   the corrected printed total. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.161.0 - Payments Analysis: Summer Camp is one activity filter option.
+
+## 6.161.0 note - collapse Summer Camp variants in activity filter
+The Activity filter on Payments Analysis listed every Summer Camp duration variant
+separately ("Summer Camp · 1 month", "· 1 week", "· Custom", "· 1 week, Gymnastic", …),
+cluttering the dropdown. Now all Summer Camp variants collapse into a SINGLE
+"Summer Camp" option; selecting it filters every camp transaction regardless of duration.
+The table rows still show the full activity label (e.g. "Summer Camp · 1 month") so the
+detail is preserved — only the filter dropdown is grouped. Other activities are
+unaffected. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.160.0 - NEW payment method: Fawran (instant bank transfer).
+
+## 6.160.0 note - Fawran payment option
+Added "Fawran" (Qatar's instant bank-transfer service) as a payment method everywhere a
+method is chosen — invoices, renewals, rentals, edits, product sales, payments, etc.
+(14 method dropdowns now include it, bilingual: Fawran / فوران).
+In Payments Analysis, Fawran is shown on its OWN summary card and, because it is a
+bank-transfer service, it counts within transfer-type money for the reconciliation —
+so Cash + Card + Bank transfer + Fawran still equals Total Revenue. It also appears in
+the method filter and the printed report. Method matching recognises "Fawran" and the
+Arabic "فوران". No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.159.0 - NEW: Payments Analysis screen (revenue by method, expenses, cash position).
 
 ## 6.159.0 note - payments analysis
