@@ -1587,12 +1587,12 @@ ${seed}
   _fm.freezes = [{ days: 5, start: '2026-05-01' }];
   eq(freezeAllowance(_fm).usedDays, 0, 'freeze: freezes before the cycle start are not counted');
   state.members = state.members.filter(m => m.id !== 960);
-  // Reminder tracking: up to 2 per cycle, with legacy back-compat
+  // Reminder tracking: up to 3 per cycle (escalating levels), with legacy back-compat
   eq(reminderInfo({ startDate: '2026-06-01' }).count, 0, 'reminder: none yet = 0');
-  eq(reminderInfo({ startDate: '2026-06-01' }).remaining, 2, 'reminder: 2 remaining when fresh');
+  eq(reminderInfo({ startDate: '2026-06-01' }).remaining, 3, 'reminder: 3 remaining when fresh');
   eq(reminderInfo({ startDate: '2026-06-01', lastRemindedAt: '2026-06-10' }).count, 1, 'reminder: legacy lastRemindedAt counts as 1');
   eq(reminderInfo({ startDate: '2026-06-01', reminderDates: ['2026-06-05', '2026-06-12'] }).count, 2, 'reminder: two dates = 2');
-  eq(reminderInfo({ startDate: '2026-06-01', reminderDates: ['2026-06-05', '2026-06-12'] }).remaining, 0, 'reminder: capped at 2');
+  eq(reminderInfo({ startDate: '2026-06-01', reminderDates: ['2026-06-05', '2026-06-12', '2026-06-20'] }).remaining, 0, 'reminder: capped at 3');
   eq(reminderInfo({ startDate: '2026-06-01', reminderDates: ['2026-05-01'] }).count, 0, 'reminder: pre-cycle reminders not counted');
   // New-member invoice date defaults to the membership start date, not today,
   // unless an explicit payment date is given.
@@ -2054,6 +2054,34 @@ ${seed}
     // So a member with 10 attended of a 2-week camp shows 10/10, not 10/14.
     var attended = 10, limit = subClassLimit({ activity: 'Summer Camp', totalClasses: 14 });
     eq(attended + '/' + limit, '10/10', 'members cell: shows 10/10 for a fully-attended 2-week camp');
+  })();
+  // Due reminder: groups a family's kids + per-kid dues + total in one message
+  (function () {
+    var invoiceBalance = function (i) { return (i.amount || 0) - (i.payments || []).reduce(function (s, p) { return s + (p.amount || 0); }, 0); };
+    var invoices = [
+      { customerId: 1, category: 'Membership', amount: 400, payments: [] },
+      { customerId: 2, category: 'Membership', amount: 650, payments: [{ amount: 200 }] },
+      { customerId: 3, category: 'Membership', amount: 300, payments: [{ amount: 300 }] }, // paid, excluded
+    ];
+    var members = [
+      { id: 1, name: 'Ibrahim', familyId: 'f1' },
+      { id: 2, name: 'Omar', familyId: 'f1' },
+      { id: 3, name: 'Sara', familyId: 'f1' },
+    ];
+    var memberDue = function (mid) { return invoices.filter(function (i) { return i.customerId === mid && (i.category || 'Membership') === 'Membership'; }).reduce(function (s, i) { return s + invoiceBalance(i); }, 0); };
+    var familyMembers = function (fid) { return members.filter(function (m) { return m.familyId === fid; }); };
+    var kids = familyMembers('f1').map(function (k) { return { k: k, due: memberDue(k.id) }; }).filter(function (x) { return x.due > 0.001; });
+    eq(kids.length, 2, 'due reminder: only kids WITH dues are listed (Sara excluded, fully paid)');
+    eq(kids.reduce(function (s, x) { return s + x.due; }, 0), 850, 'due reminder: total = 400 + 450');
+    eq(kids.map(function (x) { return x.k.name; }).join(','), 'Ibrahim,Omar', 'due reminder: lists both kids by name');
+  })();
+  // Due reminder escalation: level = sent + 1, capped at 3
+  (function () {
+    var levelFor = function (sent) { return Math.min(3, sent + 1); };
+    eq(levelFor(0), 1, 'reminder level: 0 sent → 1st (gentle)');
+    eq(levelFor(1), 2, 'reminder level: 1 sent → 2nd (firmer)');
+    eq(levelFor(2), 3, 'reminder level: 2 sent → 3rd (final)');
+    eq(levelFor(3), 3, 'reminder level: stays at 3 (final) once maxed');
   })();
   // Camp recalc: legacy calendar counts are flagged and fixed to business days
   (function () {

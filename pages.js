@@ -4962,7 +4962,7 @@ PAGES.renewaldetail = (main) => {
 // WhatsApp with a prefilled bilingual message, and reminded-tracking.
 // Members may be reminded up to TWICE per membership cycle; the 2nd time asks for
 // confirmation, and a 3rd is blocked (avoids pestering). Tracks count + dates.
-const MAX_REMINDERS = 2;
+const MAX_REMINDERS = 3;
 function reminderInfo(m) {
   const cycleStart = m?.startDate || m?.firstRegistration || '0000-00-00';
   // Back-compat: a legacy lastRemindedAt with no count = 1 reminder.
@@ -4979,7 +4979,9 @@ window.markReminded = function(id) {
     return;
   }
   if (info.count >= 1) {
-    if (!confirm(`${m.name} was already reminded${info.last ? ' on ' + fmtDate(info.last) : ''}.\n\nSend a second (final) reminder?`)) return;
+    const nextLevel = info.count + 1;
+    const label = nextLevel === 2 ? 'second (firmer)' : 'third (final)';
+    if (!confirm(`${m.name} was already reminded ${info.count} time(s)${info.last ? ', last on ' + fmtDate(info.last) : ''}.\n\nSend the ${label} reminder?`)) return;
   }
   if (!Array.isArray(m.reminderDates)) m.reminderDates = info.dates.slice();
   m.reminderDates.push(TODAY);
@@ -5308,13 +5310,113 @@ PAGES.duepayment = (main) => {
   const filtersOn = f.search || f.status !== 'all' || f.sport !== 'all' || f.range !== 'all';
   const editable = currentRole() === 'admin' || currentRole() === 'receptionist';
 
+  // Compute a member's outstanding membership balance (same basis as the rows above).
+  const memberDue = (mem) => (state.invoices || [])
+    .filter(i => !i.deleted && i.customerId === mem.id && (i.category || 'Membership') === 'Membership')
+    .reduce((s, i) => s + invoiceBalance(i), 0);
+
+  // Build the warm, academy-style reminder (Arabic first, then English). When the member
+  // belongs to a family, it lists ALL the family's kids that have dues, each with their
+  // pending amount, plus the combined total — in ONE message to the parent.
+  const buildDueReminderMsg = (m, level) => {
+    let kids;
+    if (m.familyId && typeof familyMembers === 'function') {
+      kids = familyMembers(m.familyId).map(k => ({ k, due: memberDue(k) })).filter(x => x.due > 0.001);
+      if (!kids.length) kids = [{ k: m, due: memberDue(m) }];
+    } else {
+      kids = [{ k: m, due: memberDue(m) }];
+    }
+    const total = kids.reduce((s, x) => s + x.due, 0);
+    const multi = kids.length > 1;
+    const arList = kids.map(x => `\u2022 ${x.k.nameArabic || x.k.name}: ${fmt(x.due)} \u0631.\u0642`).join('\n');
+    const enList = kids.map(x => `\u2022 ${x.k.name}: ${fmt(x.due)} QAR`).join('\n');
+    const lvl = Math.max(1, Math.min(3, parseInt(level) || 1));
+    const childAr = multi ? '\u0623\u0637\u0641\u0627\u0644\u0643\u0645' : '\u0637\u0641\u0644\u0643\u0645';
+    const childEn = multi ? 'children' : 'child';
+    const feesAr = multi ? '\u0623\u0642\u0633\u0627\u0637 \u0645\u0633\u062a\u062d\u0642\u0629' : '\u0642\u0633\u0637 \u0645\u0633\u062a\u062d\u0642';
+
+    let ar, en;
+    if (lvl === 1) {
+      // Level 1 — gentle, warm.
+      ar = `\ud83c\udf1f \u0648\u0644\u064a \u0627\u0644\u0623\u0645\u0631 \u0627\u0644\u0643\u0631\u064a\u0645\u060c
+\u0646\u062a\u0645\u0646\u0649 \u0623\u0646 \u062a\u0643\u0648\u0646\u0648\u0627 \u0628\u062e\u064a\u0631.
+\u0646\u0648\u062f \u062a\u0630\u0643\u064a\u0631\u0643\u0645 \u0628\u0644\u0637\u0641 \u0645\u0646 \u0623\u0643\u0627\u062f\u064a\u0645\u064a\u0629 \u0628\u0644\u0627\u0643 \u0633\u062a\u0627\u0631\u0632 \u0628\u0648\u062c\u0648\u062f ${feesAr} \u062e\u0627\u0635\u0629 \u0628\u0628\u0631\u0646\u0627\u0645\u062c ${childAr}:
+
+${arList}
+\u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0645\u0633\u062a\u062d\u0642: ${fmt(total)} \u0631.\u0642
+
+\u0646\u0631\u062c\u0648 \u0627\u0644\u062a\u0643\u0631\u0645 \u0628\u0625\u062a\u0645\u0627\u0645 \u0639\u0645\u0644\u064a\u0629 \u0627\u0644\u062f\u0641\u0639 \u0641\u064a \u0623\u0642\u0631\u0628 \u0648\u0642\u062a \u0645\u0645\u0643\u0646 \u0644\u0636\u0645\u0627\u0646 \u0627\u0633\u062a\u0645\u0631\u0627\u0631 ${childAr} \u0641\u064a \u0627\u0644\u062a\u062f\u0631\u064a\u0628 \u0648\u0627\u0644\u0623\u0646\u0634\u0637\u0629.
+\u0641\u064a \u062d\u0627\u0644 \u062a\u0645 \u0627\u0644\u062f\u0641\u0639 \u0645\u0633\u0628\u0642\u064b\u0627\u060c \u064a\u0631\u062c\u0649 \u062a\u062c\u0627\u0647\u0644 \u0647\u0630\u0647 \u0627\u0644\u0631\u0633\u0627\u0644\u0629.
+\u0634\u0643\u0631\u064b\u0627 \u0644\u062a\u0639\u0627\u0648\u0646\u0643\u0645 \u0648\u062b\u0642\u062a\u0643\u0645 \u0627\u0644\u0645\u0633\u062a\u0645\u0631\u0629 \u0628\u0623\u0643\u0627\u062f\u064a\u0645\u064a\u0629 \u0628\u0644\u0627\u0643 \u0633\u062a\u0627\u0631\u0632. \ud83c\udf1f
+\u0645\u0639 \u062e\u0627\u0644\u0635 \u0627\u0644\u062a\u062d\u064a\u0629\u060c
+\u0623\u0643\u0627\u062f\u064a\u0645\u064a\u0629 \u0628\u0644\u0627\u0643 \u0633\u062a\u0627\u0631\u0632`;
+      en = `\ud83c\udf1f Dear Parent,
+We hope you are well.
+This is a gentle reminder from Black Stars Academy of ${multi ? "outstanding fees for your children\u2019s" : "an outstanding fee for your child\u2019s"} program:
+
+${enList}
+Total due: ${fmt(total)} QAR
+
+Kindly complete the payment at your earliest convenience so your ${childEn} can continue training and activities.
+If you have already paid, please disregard this message.
+Thank you for your cooperation and continued trust in Black Stars Academy. \ud83c\udf1f
+Warm regards,
+Black Stars Academy`;
+    } else if (lvl === 2) {
+      // Level 2 — firmer, more direct (a second reminder).
+      ar = `\ud83d\udd14 \u0648\u0644\u064a \u0627\u0644\u0623\u0645\u0631 \u0627\u0644\u0643\u0631\u064a\u0645\u060c
+\u0647\u0630\u0627 \u062a\u0630\u0643\u064a\u0631 \u062b\u0627\u0646\u064d \u0645\u0646 \u0623\u0643\u0627\u062f\u064a\u0645\u064a\u0629 \u0628\u0644\u0627\u0643 \u0633\u062a\u0627\u0631\u0632 \u0628\u0634\u0623\u0646 ${feesAr} \u0645\u062a\u0623\u062e\u0631\u0629 \u062e\u0627\u0635\u0629 \u0628\u0628\u0631\u0646\u0627\u0645\u062c ${childAr}:
+
+${arList}
+\u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0645\u0633\u062a\u062d\u0642: ${fmt(total)} \u0631.\u0642
+
+\u0646\u0631\u062c\u0648 \u0633\u062f\u0627\u062f \u0627\u0644\u0645\u0628\u0644\u063a \u062e\u0644\u0627\u0644 \u0623\u0642\u0631\u0628 \u0648\u0642\u062a\u060c \u062d\u064a\u062b \u0623\u0635\u0628\u062d \u0627\u0644\u0642\u0633\u0637 \u0645\u062a\u0623\u062e\u0631\u064b\u0627. \u0646\u0642\u062f\u0651\u0631 \u062a\u0639\u0627\u0648\u0646\u0643\u0645 \u0627\u0644\u0633\u0631\u064a\u0639 \u0644\u0636\u0645\u0627\u0646 \u0627\u0633\u062a\u0645\u0631\u0627\u0631 ${childAr} \u062f\u0648\u0646 \u0627\u0646\u0642\u0637\u0627\u0639.
+\u0641\u064a \u062d\u0627\u0644 \u062a\u0645 \u0627\u0644\u062f\u0641\u0639\u060c \u064a\u0631\u062c\u0649 \u062a\u062c\u0627\u0647\u0644 \u0627\u0644\u0631\u0633\u0627\u0644\u0629 \u0645\u0639 \u0627\u0644\u0634\u0643\u0631.
+\u0623\u0643\u0627\u062f\u064a\u0645\u064a\u0629 \u0628\u0644\u0627\u0643 \u0633\u062a\u0627\u0631\u0632`;
+      en = `\ud83d\udd14 Dear Parent,
+This is a second reminder from Black Stars Academy regarding an overdue ${multi ? 'set of fees' : 'fee'} for your ${childEn}\u2019s program:
+
+${enList}
+Total due: ${fmt(total)} QAR
+
+The payment is now overdue \u2014 we kindly ask you to settle it as soon as possible so your ${childEn} can continue without interruption.
+If you have already paid, please disregard this message with our thanks.
+Black Stars Academy`;
+    } else {
+      // Level 3 — final notice, urgent tone (still respectful).
+      ar = `\u26a0\ufe0f \u0625\u0634\u0639\u0627\u0631 \u0623\u062e\u064a\u0631 \u2014 \u0648\u0644\u064a \u0627\u0644\u0623\u0645\u0631 \u0627\u0644\u0643\u0631\u064a\u0645\u060c
+\u0646\u0648\u062f \u0625\u0639\u0644\u0627\u0645\u0643\u0645 \u0628\u0623\u0646 ${feesAr} \u0627\u0644\u062a\u0627\u0644\u064a\u0629 \u0644\u0627 \u062a\u0632\u0627\u0644 \u063a\u064a\u0631 \u0645\u0633\u062f\u062f\u0629 \u0631\u063a\u0645 \u0627\u0644\u062a\u0630\u0643\u064a\u0631\u0627\u062a \u0627\u0644\u0633\u0627\u0628\u0642\u0629:
+
+${arList}
+\u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0645\u0633\u062a\u062d\u0642: ${fmt(total)} \u0631.\u0642
+
+\u0646\u0631\u062c\u0648 \u0633\u062f\u0627\u062f \u0627\u0644\u0645\u0628\u0644\u063a \u0641\u0648\u0631\u064b\u0627 \u0644\u062a\u062c\u0646\u0651\u0628 \u0625\u064a\u0642\u0627\u0641 \u0645\u0634\u0627\u0631\u0643\u0629 ${childAr} \u0641\u064a \u0627\u0644\u062a\u062f\u0631\u064a\u0628 \u0648\u0627\u0644\u0623\u0646\u0634\u0637\u0629. \u0644\u0644\u062a\u0648\u0627\u0635\u0644 \u0623\u0648 \u062a\u0631\u062a\u064a\u0628 \u0627\u0644\u062f\u0641\u0639 \u064a\u0631\u062c\u0649 \u0627\u0644\u0631\u062f \u0639\u0644\u0649 \u0647\u0630\u0647 \u0627\u0644\u0631\u0633\u0627\u0644\u0629.
+\u0634\u0643\u0631\u064b\u0627 \u0644\u062a\u0641\u0647\u0651\u0645\u0643\u0645.
+\u0623\u0643\u0627\u062f\u064a\u0645\u064a\u0629 \u0628\u0644\u0627\u0643 \u0633\u062a\u0627\u0631\u0632`;
+      en = `\u26a0\ufe0f Final Notice \u2014 Dear Parent,
+Despite our previous reminders, the following ${multi ? 'fees remain' : 'fee remains'} unpaid:
+
+${enList}
+Total due: ${fmt(total)} QAR
+
+We kindly ask you to settle the amount immediately to avoid pausing your ${childEn}\u2019s participation in training and activities. Please reply to this message to arrange payment or discuss the matter.
+Thank you for your understanding.
+Black Stars Academy`;
+    }
+
+    return ar + '\n\n\u2014\u2014\u2014\n\n' + en;
+  };
+
   const waLink = (m, amount) => {
     const phone = (typeof familyContactPhone === 'function' && m.familyId) ? (familyContactPhone(m.familyId) || m.phone) : m.phone;
     if (!phone) return null;
     let digits = String(phone).replace(/\D/g, '');
     if (digits.startsWith('00')) digits = digits.slice(2);
     if (digits.length === 8) digits = '974' + digits;
-    const msg = `مرحباً، نودّ تذكيركم بأن المبلغ المستحق لاشتراك ${m.nameArabic || m.name} هو ${fmt(amount)} ر.ق. نسعد بتسوية المبلغ في نادي بلاك ستارز 🖤⭐\n\nHello! A friendly reminder that ${m.name} has an outstanding balance of ${fmt(amount)} QAR at Black Stars Sports Club. Please drop by to settle it whenever convenient.`;
+    // Escalating tone: level = (reminders already sent) + 1, capped at 3.
+    const sent = (typeof reminderInfo === 'function') ? (reminderInfo(m).count || 0) : 0;
+    const level = Math.min(3, sent + 1);
+    const msg = buildDueReminderMsg(m, level);
     return `https://wa.me/${digits}?text=${encodeURIComponent(msg)}`;
   };
 
@@ -5328,10 +5430,22 @@ PAGES.duepayment = (main) => {
       <td>${r.expiry ? fmtDate(r.expiry) : '—'}</td>
       <td><div style="display:flex;flex-wrap:wrap;gap:4px">${sportChips}</div></td>
       <td class="text-right num" style="color:var(--red);font-weight:800;font-size:14px">${fmt(r.total)} <span class="text-mute" style="font-size:10px;font-weight:400">QAR</span></td>
-      <td style="font-size:11px">${r.remind.count ? `<span class="badge ${r.remind.count >= 2 ? '' : 'active'}" style="font-size:10px;${r.remind.count >= 2 ? 'background:rgba(120,120,140,.15);color:var(--text-mute)' : ''}">✓ ${r.remind.count}/2${r.remind.last === TODAY ? ' · ' + t('today', 'اليوم') : r.remind.last ? ' · ' + fmtDate(r.remind.last) : ''}</span>` : '<span class="text-mute">—</span>'}</td>
+      <td style="font-size:11px">${r.remind.count ? `<span class="badge ${r.remind.count >= 3 ? '' : 'active'}" style="font-size:10px;${r.remind.count >= 3 ? 'background:rgba(120,120,140,.15);color:var(--text-mute)' : ''}">✓ ${r.remind.count}/3${r.remind.last === TODAY ? ' · ' + t('today', 'اليوم') : r.remind.last ? ' · ' + fmtDate(r.remind.last) : ''}</span>` : '<span class="text-mute">—</span>'}</td>
       <td class="text-right" style="white-space:nowrap">
         ${editable ? `<button class="btn primary sm" onclick="editMemberPricing(${r.m.id})" title="${t('Record a payment / edit pricing', 'تسجيل دفعة / تعديل السعر')}">💰 ${t('Collect', 'تحصيل')}</button>` : ''}
-        ${wa ? `<a class="btn ghost sm" style="text-decoration:none" href="${wa}" target="_blank" rel="noopener" onclick="markReminded(${r.m.id})" title="${t('Send a bilingual WhatsApp reminder', 'إرسال تذكير عبر واتساب')}">💬</a>` : ''}
+        ${(() => {
+          if (!wa) return '';
+          const sent = r.remind.count || 0;
+          const level = Math.min(3, sent + 1);
+          // Button label shows which reminder tone will be sent next.
+          const lvlLabel = level === 1 ? t('1st reminder', 'تذكير أول') : level === 2 ? t('2nd reminder', 'تذكير ثانٍ') : t('Final notice', 'إشعار أخير');
+          const lvlIcon = level === 1 ? '💬' : level === 2 ? '🔔' : '⚠️';
+          const lvlColor = level === 1 ? '' : level === 2 ? 'color:var(--accent-2)' : 'color:var(--red)';
+          const disabled = sent >= 3;
+          return disabled
+            ? `<span class="btn ghost sm" style="opacity:.5;cursor:default" title="${t('All 3 reminders sent this cycle', 'تم إرسال 3 تذكيرات هذه الدورة')}">✓ ${t('Reminded', 'تم التذكير')}</span>`
+            : `<a class="btn ghost sm" style="text-decoration:none;${lvlColor}" href="${wa}" target="_blank" rel="noopener" onclick="markReminded(${r.m.id})" title="${t('Send', 'إرسال')}: ${lvlLabel}">${lvlIcon} ${lvlLabel}</a>`;
+        })()}
         <button class="btn ghost sm" onclick="viewMember(${r.m.id})" title="${t('Open profile', 'فتح الملف')}">👁</button>
       </td>
     </tr>`;

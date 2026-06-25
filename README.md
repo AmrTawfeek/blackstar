@@ -1,4 +1,32 @@
 # Black Stars CRM
+Version 6.180.0 - Due reminders now ESCALATE: gentle → firmer → final notice.
+
+## 6.180.0 note - escalating reminder levels
+The Due Payment reminder button is now level-aware. Each member tracks how many reminders
+have been sent this cycle, and the button sends the next tone:
+- 1st reminder (💬 "تذكير أول") — gentle, warm academy style.
+- 2nd reminder (🔔 "تذكير ثانٍ") — firmer; notes the payment is overdue.
+- Final notice (⚠️ "إشعار أخير") — urgent but respectful; warns participation may pause.
+The button label + icon + colour change with the level, the badge shows count/3, and after
+3 reminders the button becomes a disabled "Reminded" state. All levels keep the
+family-grouped kids list + per-kid amounts + total, Arabic first then English. Max reminders
+per cycle raised from 2 to 3. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.179.0 - Due reminder: warm academy style, kids' names + pending amounts, family-grouped, Arabic first.
+
+## 6.179.0 note - richer due-payment reminder
+The Due Payment WhatsApp reminder was rewritten:
+- Warm, academy-style wording ("ولي الأمر الكريم" / "Dear Parent"), matching the tone you use.
+- ARABIC FIRST, then a separator, then English.
+- Lists each child's NAME and their PENDING amount, plus the combined TOTAL due.
+- FAMILY-GROUPED: when the parent has several kids with dues (same family), all of them
+  appear in ONE message with per-kid amounts and the total — so the parent gets a single,
+  clear reminder. Children who are fully paid are not listed.
+Singular/plural wording adapts (one child vs children). The expiring/renewal reminder is
+unchanged. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.178.0 - FIX: members-list camp attendance shows class-days (10), not validity (14).
 
 ## 6.178.0 note - members list camp denominator
