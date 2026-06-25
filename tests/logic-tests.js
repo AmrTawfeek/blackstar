@@ -421,6 +421,17 @@ ${seed}
   ok(!rentGroups.some(g => g.rows.some(r => r.inv.id === 7801) && g.rows.some(r => r.inv.id === 7802)), 'dup finder: rentals on different days are NOT flagged');
   ok(rentGroups.some(g => g.rows.some(r => r.inv.id === 7802) && g.rows.some(r => r.inv.id === 7803)), 'dup finder: two rentals on the same day ARE flagged');
   state.invoices = state.invoices.filter(i => ![7801, 7802, 7803].includes(i.id));
+  // Summer Camp is repeatable too: a renewal on a DIFFERENT day in the same month is
+  // NOT a duplicate (real case — Hossam booked 14 Jun then renewed 21 Jun). Two camp
+  // invoices on the SAME day = a genuine double-entry, still flagged.
+  state.invoices.push(
+    { id: 7811, customerName: 'campguy', category: 'Membership', sport: 'Summer Camp', amount: 400, date: '2026-06-14', month: '2026-06', lineItems: [{ sport: 'Summer Camp', price: 400 }] },
+    { id: 7812, customerName: 'campguy', category: 'Membership', sport: 'Summer Camp', amount: 400, date: '2026-06-21', month: '2026-06', lineItems: [{ sport: 'Summer Camp', price: 400 }] },
+    { id: 7813, customerName: 'campguy', category: 'Membership', sport: 'Summer Camp', amount: 400, date: '2026-06-21', month: '2026-06', lineItems: [{ sport: 'Summer Camp', price: 400 }] });
+  var campGroups = detectDuplicateInvoices();
+  ok(!campGroups.some(g => g.rows.some(r => r.inv.id === 7811) && g.rows.some(r => r.inv.id === 7812)), 'dup finder: camp renewal on a different day is NOT flagged');
+  ok(campGroups.some(g => g.rows.some(r => r.inv.id === 7812) && g.rows.some(r => r.inv.id === 7813)), 'dup finder: two camp invoices on the same day ARE flagged');
+  state.invoices = state.invoices.filter(i => ![7811, 7812, 7813].includes(i.id));
   ok(findDuplicateInvoiceOf(80, 'Boxing', '2026-06', 450, null), 'pre-save guard: detects an existing matching invoice');
   ok(!findDuplicateInvoiceOf(80, 'Boxing', '2026-06', 999, null), 'pre-save guard: different amount is not a match');
   ok(!findDuplicateInvoiceOf(80, 'MMA', '2026-06', 450, null), 'pre-save guard: different sport is not a match');
@@ -831,9 +842,9 @@ ${seed}
   ] }), 'Active', 'status: member with in-progress current sub shows Active not Completed');
   // Member overall stays Active when the LATEST sport still runs even though
   // earlier sports' periods have ended (per-sport expiry differs from member).
-  eq(memberStatus({ startDate: '2026-04-12', expiryDate: '2026-06-24', subscriptions: [
+  eq(memberStatus({ startDate: '2026-04-12', expiryDate: '2099-07-24', subscriptions: [
     { activity: 'Karate', start: '2026-04-12', end: '2026-05-12', totalClasses: 12, attendedClasses: 1 },
-    { activity: 'KickBoxing', start: '2026-05-25', end: '2026-06-24', totalClasses: 12, attendedClasses: 4 },
+    { activity: 'KickBoxing', start: '2026-05-25', end: '2099-06-24', totalClasses: 12, attendedClasses: 4 },
   ] }), 'Active', 'status: member Active while latest sport runs, even if an earlier sport ended');
   // products: inventory sell value vs original/cost value
   (function(){
@@ -1727,10 +1738,10 @@ ${seed}
   (function () {
     eq(addBusinessDays('2026-06-14', 4), '2026-06-18', 'business days: Sun +4 biz = Thu (same week)');
     eq(addBusinessDays('2026-06-18', 1), '2026-06-21', 'business days: Thu +1 biz skips Fri/Sat to Sun');
-    eq(campEndDate('2026-06-14', 7), '2026-06-18', 'camp: 1 week from Sun ends Thu (5 business days)');
-    eq(campEndDate('2026-06-14', 14), '2026-06-25', 'camp: 2 weeks ends the following Thu');
-    eq(campEndDate('2026-06-14', 1), '2026-06-14', 'camp: 1 day ends same day');
-    eq(campEndDate('2026-06-14', 30), '2026-07-13', 'camp: 1 month uses calendar days');
+    eq(campEndDate('2026-06-14', 7), '2026-06-21', 'camp: 1 week validity = start + 7 calendar days');
+    eq(campEndDate('2026-06-14', 14), '2026-06-28', 'camp: 2 weeks validity = start + 14 calendar days');
+    eq(campEndDate('2026-06-14', 1), '2026-06-15', 'camp: 1 day validity = start + 1 calendar day');
+    eq(campEndDate('2026-06-14', 30), '2026-07-14', 'camp: 1 month validity = start + 30 calendar days');
   })();
   // Summer Camp class counts are business-day based
   (function () {
@@ -1748,9 +1759,9 @@ ${seed}
   (function () {
     var priceFor = function (cls) { return (DEFAULT_SUMMER_CAMP_PRICES || []).find(function (p) { return campClassCount(p.days) === cls; }); };
     var row1 = priceFor(5);
-    eq(campEndDate('2026-06-14', row1.days), '2026-06-18', 'camp renew: 1 week (5 classes) from Sun ends Thu');
+    eq(campEndDate('2026-06-14', row1.days), '2026-06-21', 'camp renew: 1 week validity = +7 calendar days');
     var row2 = priceFor(10);
-    eq(campEndDate('2026-06-14', row2.days), '2026-06-25', 'camp renew: 2 weeks (10 classes) ends next Thu');
+    eq(campEndDate('2026-06-14', row2.days), '2026-06-28', 'camp renew: 2 weeks validity = +14 calendar days');
   })();
   // Freeze allowance resets after a renewal (new cycle start)
   (function () {
@@ -1870,15 +1881,115 @@ ${seed}
       subscriptions: [{ activity: 'Summer Camp', totalClasses: 8, start: '2026-06-14', end: '2099-01-01', status: 'active' }],
       dailyAttendance: { '2026-06': { 'Summer Camp': { '14': 'Y', '15': 'Y', '16': 'Y', '17': 'Y', '18': 'Y', '21': 'Y', '22': 'Y', '23': 'Y' } } } };
     eq(memberStatus(early), 'Completed', 'camp: finished classes before window ends → Completed');
-    // Cap must count ALL present marks, not just those inside the date window —
-    // otherwise marks dated before the start bypass the limit (the 8-vs-25 bug).
+    // Camp attendance is WINDOWED to the subscription period: marks dated BEFORE the
+    // period start belong to an earlier period, not this one, so they don't push this
+    // period over its limit. Marks inside the window do.
     var spread = { enrollments: [{ sport: 'Summer Camp' }],
-      subscriptions: [{ activity: 'Summer Camp', totalClasses: 8, start: '2026-06-23', end: '2026-07-23', status: 'active' }],
+      subscriptions: [{ activity: 'Summer Camp', durationLabel: '2 weeks', totalClasses: 14, start: '2026-06-23', end: '2026-07-07', status: 'active' }],
       dailyAttendance: { '2026-06': { 'Summer Camp': {} } } };
-    for (var dd = 10; dd <= 20; dd++) spread.dailyAttendance['2026-06']['Summer Camp'][String(dd)] = 'Y'; // 11 marks, mostly before start
-    var allY = liveAttendanceCount(spread, 'Summer Camp', null, null).y;
-    eq(allY >= 8, true, 'cap: all marks counted (over the 8 limit) regardless of date window');
-    eq(campLimitReached(spread), true, 'cap: camp over its class limit via marks outside the window');
+    for (var dd = 10; dd <= 20; dd++) spread.dailyAttendance['2026-06']['Summer Camp'][String(dd)] = 'Y'; // 11 marks, all BEFORE start
+    eq(campLimitReached(spread), false, 'cap: marks before the period start do NOT count toward this period');
+    // Now add enough in-window marks to hit the 10-class limit for "2 weeks".
+    for (var d2 = 23; d2 <= 30; d2++) spread.dailyAttendance['2026-06']['Summer Camp'][String(d2)] = 'Y'; // 8 in-window
+    spread.dailyAttendance['2026-07'] = { 'Summer Camp': { '1': 'Y', '2': 'Y' } };                         // +2 in-window = 10
+    eq(campLimitReached(spread), true, 'cap: in-window marks reaching the class limit DO complete the period');
+  })();
+  // Real case (Tamim): two 1-week camps, 9 attended days → 5/5 then 4/5, not Completed
+  (function () {
+    var m = {
+      enrollments: [{ sport: 'Summer Camp' }],
+      dailyAttendance: { '2026-06': { 'Summer Camp': { '14': 'Y', '15': 'Y', '16': 'Y', '17': 'Y', '18': 'Y', '21': 'Y', '22': 'Y', '23': 'Y', '24': 'Y' } } },
+      subscriptions: [
+        { activity: 'Summer Camp', durationLabel: '1 week', totalClasses: 7, start: '2026-06-14', end: '2026-06-21', status: 'expired' },
+        { activity: 'Summer Camp', durationLabel: '1 week', totalClasses: 7, start: '2026-06-21', end: '2026-06-28', status: 'active' },
+      ],
+    };
+    // 1 week = 5 class-days, not 7 (validity).
+    eq(subClassLimit(m.subscriptions[0]), 5, 'tamim: 1 week limit = 5 class-days');
+    // Period 1 window excludes the boundary day 21 (belongs to period 2).
+    var w1 = subAttendanceWindow(m, m.subscriptions[0]);
+    eq(liveAttendanceCount(m, 'Summer Camp', w1.from, w1.to).y, 5, 'tamim: first week = 5 attended');
+    var w2 = subAttendanceWindow(m, m.subscriptions[1]);
+    eq(liveAttendanceCount(m, 'Summer Camp', w2.from, w2.to).y, 4, 'tamim: second week = 4 attended');
+    // Active period at 4/5 → not at limit → not Completed.
+    eq(campLimitReached(m), false, 'tamim: 4/5 in active period is NOT completed');
+  })();
+  // Transactions: filtering by coach shows only that coach's line-item amount
+  (function () {
+    var st = { coachId: '5' };
+    var inv = { id: 1, coachId: null, lineItems: [{ sport: 'Kick Boxing', coachId: 5, price: 425 }, { sport: 'Football', coachId: 6, price: 425 }] };
+    var allItems = inv.lineItems;
+    var items = allItems;
+    if (st.coachId !== 'all') {
+      var matching = allItems.filter(function (li) { return String(li.coachId || inv.coachId || '') === String(st.coachId); });
+      var anyLineHasCoach = allItems.some(function (li) { return li.coachId != null; });
+      if (matching.length) items = matching;
+      else if (anyLineHasCoach) items = [];
+    }
+    var amt = items.reduce(function (s, li) { return s + (Number(li.price) || 0); }, 0);
+    eq(amt, 425, 'txn coach filter: only the selected coach line counts (425, not 850)');
+    eq(items.map(function (li) { return li.sport; }).join(', '), 'Kick Boxing', 'txn coach filter: sport shows only coached line');
+    // Legacy invoice with coach only at invoice level (no per-line coach) → kept whole.
+    var inv2 = { id: 2, coachId: 5, lineItems: [{ sport: 'Karate', price: 300 }] };
+    var anyCoach2 = inv2.lineItems.some(function (li) { return li.coachId != null; });
+    eq(anyCoach2, false, 'txn coach filter: legacy invoice has no per-line coach → invoice-level match keeps it');
+  })();
+  // Transactions: Summer Camp activity filter is standalone (camp lines only, no coach)
+  (function () {
+    var SC = 'Summer Camp';
+    var isCampItem = function (li) { return (li.sport || '') === SC; };
+    var invoices = [
+      { id: 1, lineItems: [{ sport: SC, price: 400 }] },
+      { id: 2, lineItems: [{ sport: 'Kick Boxing', coachId: 5, price: 425 }] },
+      { id: 3, lineItems: [{ sport: SC, price: 650 }, { sport: 'Gymnastic', coachId: 7, price: 450 }] },
+    ];
+    var st = { activity: '__camp__' };
+    var total = 0, campRows = 0, allNoCoach = true;
+    invoices.forEach(function (inv) {
+      var allItems = inv.lineItems;
+      var kept = allItems.filter(function (li) { return st.activity === '__camp__' ? isCampItem(li) : (li.sport || '') === st.activity; });
+      if (!kept.length) return;
+      var amt = kept.reduce(function (s, li) { return s + li.price; }, 0);
+      var allCamp = kept.length && kept.every(isCampItem);
+      var coach = allCamp ? null : (inv.coachId || null);
+      if (coach != null) allNoCoach = false;
+      total += amt; campRows++;
+    });
+    eq(total, 1050, 'txn camp filter: camp lines only (400 + 650), excludes Gymnastic 450');
+    eq(campRows, 2, 'txn camp filter: two invoices have camp lines');
+    eq(allNoCoach, true, 'txn camp filter: Summer Camp rows carry no coach');
+  })();
+  // Transactions: Paid / Due per row (prorated for partial-invoice filters)
+  (function () {
+    var invoicePaid = function (i) { return (i.payments || []).reduce(function (s, p) { return s + (p.amount || 0); }, 0); };
+    var inv = { amount: 1100, payments: [{ amount: 650 }], lineItems: [{ sport: 'Summer Camp', price: 650 }, { sport: 'Gymnastic', price: 450 }] };
+    var allItems = inv.lineItems;
+    var fullInvAmount = allItems.reduce(function (s, li) { return s + li.price; }, 0);
+    var fullPaid = invoicePaid(inv);
+    // Full invoice row
+    var amt = fullInvAmount, share = amt / fullInvAmount, paid = Math.round(fullPaid * share), due = Math.max(0, amt - paid);
+    eq(paid, 650, 'txn paid: full invoice paid = 650');
+    eq(due, 450, 'txn due: full invoice due = 450');
+    // Filtered to the camp line (650) → prorated paid
+    var amt2 = 650, share2 = amt2 / fullInvAmount, paid2 = Math.round(fullPaid * share2);
+    eq(paid2, Math.round(650 * (650 / 1100)), 'txn paid: prorated to camp line share');
+  })();
+  // In-app Back stack: restores route + scroll, pops in order
+  (function () {
+    var stack = [];
+    var route = 'dashboard';
+    var curScroll = 0;
+    // Capture the CURRENT route's scroll when leaving it (as the real navigate does).
+    var go = function (r, scrollWhenLeaving) { if (route && route !== r) stack.push({ route: route, scroll: scrollWhenLeaving || 0 }); route = r; };
+    var back = function () { if (!stack.length) return null; var p = stack.pop(); route = p.route; return p; };
+    go('members', 0);          // leaving dashboard (scroll 0)
+    go('invoices', 50);        // leaving members (scroll 50)
+    go('transactions', 120);   // leaving invoices (scroll 120)
+    eq(stack.length, 3, 'nav: three entries pushed');
+    var b1 = back(); eq(route + ':' + b1.scroll, 'invoices:120', 'nav: back to invoices @120');
+    var b2 = back(); eq(route + ':' + b2.scroll, 'members:50', 'nav: back to members @50');
+    back(); eq(route, 'dashboard', 'nav: back to dashboard');
+    eq(stack.length, 0, 'nav: stack empty at root');
   })();
   // Camp recalc: legacy calendar counts are flagged and fixed to business days
   (function () {
@@ -1889,7 +2000,7 @@ ${seed}
         subscriptions: [{ activity: 'Summer Camp', durationLabel: '1 month', totalClasses: 30, start: '2026-06-14', end: '2026-07-14', attendedClasses: 7, status: 'Active' }] },
       { id: 9702, name: 'GoodCamp', sport: 'Summer Camp',
         enrollments: [{ sport: 'Summer Camp', classes: 5, durationLabel: '1 week', start: '2026-06-14' }],
-        subscriptions: [{ activity: 'Summer Camp', durationLabel: '1 week', totalClasses: 5, start: '2026-06-14', end: '2026-06-18', attendedClasses: 0, status: 'Active' }] },
+        subscriptions: [{ activity: 'Summer Camp', durationLabel: '1 week', totalClasses: 5, start: '2026-06-14', end: '2026-06-21', attendedClasses: 0, status: 'Active' }] },
     ];
     var flagged = findCampMembersToRecalc();
     eq(flagged.length, 1, 'camp recalc: only the legacy member is flagged');
@@ -1898,7 +2009,7 @@ ${seed}
     var beforeAtt = sub.attendedClasses;
     recalcCampMember(9701);
     eq(sub.totalClasses, 22, 'camp recalc: 1 month -> 22 classes');
-    eq(sub.end, '2026-07-13', 'camp recalc: end re-dated to business-day calendar');
+    eq(sub.end, '2026-07-14', 'camp recalc: end re-dated to calendar-day window');
     eq(sub.attendedClasses, beforeAtt, 'camp recalc: attendance unchanged');
     eq(findCampMembersToRecalc().length, 0, 'camp recalc: nothing flagged after fixing');
     // Legacy "1 month" stored as 30 days (no label) must resolve to 22, not 30 (6 weeks).
@@ -2571,6 +2682,15 @@ ${seed}
     eq(ps + '→' + pe, '2026-06-22→2026-07-22', 'attendance report: current period window');
     eq(inWindow('2026-05-15'), false, 'attendance report: excludes expired-period marks');
     eq(inWindow('2026-06-25'), true, 'attendance report: includes current-period marks');
+  })();
+  // Smart Arabic search: alef variants + spacing-insensitive (uses the app's normaliser)
+  (function () {
+    var norm = normalizeArabicForSearch;   // the real function under test
+    var match = function (q, name) { return norm(name).indexOf(norm(q)) >= 0; };
+    eq(norm('أنس'), norm('انس'), 'search: أنس normalises to انس (alef)');
+    eq(norm('عبد الرحمن'), norm('عبدالرحمن'), 'search: عبد الرحمن == عبدالرحمن (spacing ignored)');
+    eq(match('عبدالرحمن', 'عبد الرحمن مصطفى'), true, 'search: عبدالرحمن found in عبد الرحمن مصطفى');
+    eq(match('مصطفى', 'عبدالرحمن مصطفى'), true, 'search: partial name match');
   })();
   // Edit form loads camp validity from the stored subscription window (not class count)
   (function () {

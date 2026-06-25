@@ -901,11 +901,14 @@ PAGES.members = (main) => {
 
   function applyFilter(f = filter) {
     return state.members.filter(m => {
-      // Archived (soft-deleted) members show only when 'Archived' is selected.
+      // Archived (soft-deleted) members show when 'Archived' is selected OR when the
+      // user is actively SEARCHING (so a search finds everyone). They get a visual
+      // "📦 Archived" indicator in the row either way.
       const wantArchived = (f.statuses || []).includes('Archived');
       const statusSel = (f.statuses || []).filter(s => s !== 'Archived');
-      if (m.deleted && !wantArchived) return false;
-      if (!m.deleted && wantArchived && statusSel.length === 0) return false; // only Archived chosen
+      const isSearching = !!(f.search && f.search.trim());
+      if (m.deleted && !wantArchived && !isSearching) return false;
+      if (!m.deleted && wantArchived && statusSel.length === 0 && !isSearching) return false; // only Archived chosen
       // Similar-name filter: keep only members flagged as a likely duplicate.
       if (f.dupNames && dupNameInfo && !dupNameInfo.ids.has(m.id)) return false;
       if (f.search) {
@@ -1008,7 +1011,7 @@ PAGES.members = (main) => {
     }
     $('#members-tbody').innerHTML = rows.length ? rows.map(m => {
       return `
-      <tr style="cursor:pointer" data-id="${m.id}">
+      <tr class="${m.deleted ? 'member-archived' : ''}" style="cursor:pointer${m.deleted ? ';opacity:.55' : ''}" data-id="${m.id}" ${m.deleted ? 'title="Archived member"' : ''}>
         <td style="text-align:center" onclick="event.stopPropagation()"><input type="checkbox" class="member-cb" value="${m.id}" ${selected.has(m.id) ? 'checked' : ''} style="cursor:pointer"></td>
         ${cols.map(c => `<td>${c.cell(m)}</td>`).join('')}
         <td class="text-right" style="white-space:nowrap">
@@ -1643,11 +1646,12 @@ function viewMember(id) {
   ].sort((a, b) => (b.start || '').localeCompare(a.start || ''));
 
   const subs = allSubs.map(s => {
-    const total = s.totalClasses;
-    // Live count for THIS subscription period only — classes attended on/after
-    // this row's start date (and on/before its end), so a renewal doesn't carry
-    // the previous period's attendance forward. Falls back to the static field.
-    const liveForSport = liveAttendanceCount(m, s.activity, s.start || null, s.end || null);
+    const total = (typeof subClassLimit === 'function') ? subClassLimit(s) : s.totalClasses;
+    // Live count for THIS subscription period only — windowed so it doesn't overlap
+    // the NEXT period of the same activity (the boundary day belongs to the later
+    // period). Falls back to the static field.
+    const win = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, s) : { from: s.start || null, to: s.end || null };
+    const liveForSport = liveAttendanceCount(m, s.activity, win.from, win.to);
     const attended = liveForSport.total > 0 ? liveForSport.y : s.attendedClasses;
     const isLive = liveForSport.total > 0;
     const pct = total && attended != null ? Math.min(100, Math.round((attended / total) * 100)) : null;
@@ -1724,9 +1728,10 @@ function viewMember(id) {
     return !ended && !withdrawn;
   });
   const curSubs = activeSubs.length ? activeSubs : allSubs.slice(-1);   // fallback: latest period
-  const curTotalClasses = curSubs.reduce((s, x) => s + (x.totalClasses || 0), 0);
+  const curTotalClasses = curSubs.reduce((s, x) => s + (typeof subClassLimit === 'function' ? subClassLimit(x) : (x.totalClasses || 0)), 0);
   const curAttended = curSubs.reduce((acc, x) => {
-    const lw = liveAttendanceCount(m, x.activity, x.start || null, x.end || null);
+    const win = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, x) : { from: x.start || null, to: x.end || null };
+    const lw = liveAttendanceCount(m, x.activity, win.from, win.to);
     return acc + (lw.total > 0 ? lw.y : (x.attendedClasses || 0));
   }, 0);
   const paidSum = allSubs.reduce((s,x) => s + (x.amountPaid || 0), 0);
@@ -21598,7 +21603,7 @@ PAGES.transfers = (main) => {
 // ═══════════════════════════════════════════════════════════════════════════
 PAGES.transactions = (main) => {
   const isoOf = x => x.toISOString().slice(0, 10);
-  if (!window._txnState) window._txnState = { preset: 'this_month', from: '', to: '', category: 'all', method: 'all', coachId: 'all', search: '' };
+  if (!window._txnState) window._txnState = { preset: 'this_month', from: '', to: '', category: 'all', activity: 'all', method: 'all', coachId: 'all', hasDue: false, search: '' };
   const st = window._txnState;
   const pg = (window._txnPager = window._txnPager || makePager(25));
 
@@ -21631,38 +21636,90 @@ PAGES.transactions = (main) => {
     };
     const txns = [];
     const byCategory = {};
-    let grand = 0;
+    let grand = 0, grandPaid = 0, grandDue = 0;
     for (const inv of (state.invoices || [])) {
       if (inv.deleted) continue;
       if (!inRange(inv)) continue;
-      const items = (inv.lineItems && inv.lineItems.length) ? inv.lineItems : [{ sport: inv.sport || null, coachId: inv.coachId || null, price: inv.amount || 0 }];
-      const invAmount = items.reduce((s, li) => s + (Number(li.price) || 0), 0);
+      const allItems = (inv.lineItems && inv.lineItems.length) ? inv.lineItems : [{ sport: inv.sport || null, coachId: inv.coachId || null, price: inv.amount || 0 }];
       const cat = inv.category || 'Membership';
-      const coachId = inv.coachId || (items.find(li => li.coachId)?.coachId) || null;
+      // ── Activity / Sport filter ──
+      // Summer Camp is a STANDALONE activity (like court rental / products) and is NOT
+      // tied to any coach. When the user filters by Summer Camp, keep only the camp line
+      // items; when they pick a specific sport, keep only that sport's items.
+      const isCampItem = (li) => (li.sport || '') === SUMMER_CAMP;
+      if (st.activity && st.activity !== 'all') {
+        const allItems0 = (inv.lineItems && inv.lineItems.length) ? inv.lineItems : [{ sport: inv.sport || null, coachId: inv.coachId || null, price: inv.amount || 0 }];
+        const wantCamp = st.activity === '__camp__';
+        const kept = allItems0.filter(li => wantCamp ? isCampItem(li) : (li.sport || '') === st.activity);
+        if (!kept.length) continue;   // this invoice has nothing for the chosen activity
+      }
+      // When a COACH filter is active, narrow this invoice to ONLY that coach's line
+      // items, so a multi-sport invoice (e.g. Kick Boxing + Football) contributes only
+      // the portion coached by the selected coach — not the whole invoice total.
+      const coachFiltered = st.coachId !== 'all';
+      let items = allItems;
+      // Narrow to the chosen activity first (so amount/sport reflect just that activity).
+      if (st.activity && st.activity !== 'all') {
+        const wantCamp = st.activity === '__camp__';
+        items = allItems.filter(li => wantCamp ? isCampItem(li) : (li.sport || '') === st.activity);
+      }
+      if (coachFiltered) {
+        const base = items;
+        const matching = base.filter(li => String(li.coachId || inv.coachId || '') === String(st.coachId));
+        // If no line item carries a coach but the invoice's coach matches, keep all
+        // items (legacy single-coach invoices); otherwise restrict to the matches.
+        const anyLineHasCoach = base.some(li => li.coachId != null);
+        if (matching.length) items = matching;
+        else if (anyLineHasCoach) continue;   // this coach isn't on any line → skip invoice
+        // (else: no per-line coaches → fall through to invoice-level coach check below)
+      }
+      const invAmount = items.reduce((s, li) => s + (Number(li.price) || 0), 0);
+      // Summer Camp is standalone — never attribute it to a coach. For a camp-only
+      // invoice, the coach is blank; otherwise use the invoice/line coach as before.
+      const allCamp = items.length && items.every(isCampItem);
+      const coachId = allCamp ? null : (inv.coachId || (allItems.find(li => li.coachId)?.coachId) || null);
       const customer = inv.customerName || inv.customer || (() => { const mm = (state.members || []).find(x => x.id === inv.customerId); return mm ? (mm.name || mm.nameArabic || '') : ''; })() || '—';
       const sport = items.map(li => li.sport).filter(Boolean).join(', ') || (cat !== 'Membership' ? cat : '—');
       const ref = inv.ref || ('#' + inv.id);
       // Apply filters
       if (st.category !== 'all' && cat !== st.category) continue;
       if (st.method !== 'all' && (inv.method || '') !== st.method) continue;
-      if (st.coachId !== 'all' && String(coachId || '') !== String(st.coachId)) continue;
+      if (st.coachId !== 'all') {
+        // Match if the selected coach is on any line item OR is the invoice-level coach.
+        const onLine = allItems.some(li => String(li.coachId || '') === String(st.coachId));
+        const onInvoice = String(coachId || '') === String(st.coachId);
+        if (!onLine && !onInvoice) continue;
+      }
+      // Display coach: when filtered, show the selected coach (the one we costed).
+      const displayCoachId = coachFiltered ? st.coachId : coachId;
+      // Paid / Due for this row. invoicePaid() is the whole-invoice paid amount; when
+      // the row is narrowed (by coach/activity) to part of a multi-line invoice, prorate
+      // the paid amount by this row's share of the full invoice so Paid/Due stay coherent.
+      const fullInvAmount = allItems.reduce((s, li) => s + (Number(li.price) || 0), 0) || (Number(inv.amount) || 0);
+      const fullPaid = (typeof invoicePaid === 'function') ? invoicePaid(inv) : (Number(inv.amount) || 0);
+      const share = fullInvAmount > 0 ? (invAmount / fullInvAmount) : 1;
+      const paid = Math.round(fullPaid * share);
+      const due = Math.max(0, invAmount - paid);
+      // "Has due" filter — only transactions still owing money.
+      if (st.hasDue && due <= 0) continue;
       if (st.search) {
         const q = st.search.toLowerCase();
         const cust = customerInfo(inv);
         const phoneHit = phoneQueryMatches(cust.phone, st.search) || phoneQueryMatches(cust.phone2, st.search) || phoneQueryMatches(inv.customerPhone, st.search);
         if (!(customer.toLowerCase().includes(q) || ref.toLowerCase().includes(q) || sport.toLowerCase().includes(q) || phoneHit)) continue;
       }
-      txns.push({ id: inv.id, ref, date: (inv.date || '').slice(0, 10), category: cat, customer, sport, coach: coachName(coachId) || '—', amount: invAmount, method: inv.method || '' });
+      txns.push({ id: inv.id, ref, date: (inv.date || '').slice(0, 10), category: cat, customer, sport, coach: coachName(displayCoachId) || '—', amount: invAmount, paid, due, method: inv.method || '' });
       byCategory[cat] = byCategory[cat] || { total: 0, count: 0 };
       byCategory[cat].total += invAmount; byCategory[cat].count += 1;
       grand += invAmount;
+      grandPaid += paid; grandDue += due;
     }
     txns.sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id - a.id);
-    return { txns, byCategory, grand, range };
+    return { txns, byCategory, grand, grandPaid, grandDue, range };
   }
 
   function refresh() {
-    const { txns, byCategory, grand } = build();
+    const { txns, byCategory, grand, grandPaid, grandDue } = build();
     const rows = paginate(txns, pg);
     const catRows = Object.entries(byCategory).sort((a, b) => b[1].total - a[1].total);
 
@@ -21683,13 +21740,17 @@ PAGES.transactions = (main) => {
         <td>${tx.method ? `<span class="badge ${tx.method === 'card' ? 'blue' : tx.method === 'transfer' ? 'cyan' : ''}">${escapeHtml(tx.method)}</span>` : '—'}</td>
         <td class="text-mute font-mono" style="font-size:11px">${escapeHtml(tx.ref)}</td>
         <td class="text-right num font-bold">${fmt(tx.amount)}</td>
-      </tr>`).join('') : `<tr><td colspan="8" class="empty"><div class="empty-icon">🧾</div>${t('No transactions match', 'لا توجد عمليات مطابقة')}</td></tr>`;
+        <td class="text-right num" style="color:var(--green)">${fmt(tx.paid)}</td>
+        <td class="text-right num" style="color:${tx.due > 0 ? 'var(--red)' : 'var(--text-mute)'};font-weight:${tx.due > 0 ? '700' : '400'}">${tx.due > 0 ? fmt(tx.due) : '—'}</td>
+      </tr>`).join('') : `<tr><td colspan="10" class="empty"><div class="empty-icon">🧾</div>${t('No transactions match', 'لا توجد عمليات مطابقة')}</td></tr>`;
 
     $('#txn-tfoot').innerHTML = `<tr style="border-top:2px solid var(--border);font-weight:800">
       <td colspan="7">${t('Total', 'الإجمالي')} · ${txns.length} ${t('transactions', 'عملية')}</td>
-      <td class="text-right num" style="color:var(--green)">${fmt(grand)} QAR</td>
+      <td class="text-right num">${fmt(grand)}</td>
+      <td class="text-right num" style="color:var(--green)">${fmt(grandPaid)}</td>
+      <td class="text-right num" style="color:${grandDue > 0 ? 'var(--red)' : 'var(--text-mute)'}">${grandDue > 0 ? fmt(grandDue) : '—'}</td>
     </tr>`;
-    $('#txn-count').textContent = `${txns.length} ${t('transactions', 'عملية')} · ${fmt(grand)} QAR`;
+    $('#txn-count').textContent = `${txns.length} ${t('transactions', 'عملية')} · ${fmt(grand)} QAR${grandDue > 0 ? ` · ${t('due', 'متبقي')} ${fmt(grandDue)}` : ''}`;
     $('#txn-pagination').innerHTML = paginationBar(pg, txns.length, 'txn');
     bindPagination('txn', pg, txns.length, refresh);
     // custom range visibility
@@ -21698,11 +21759,11 @@ PAGES.transactions = (main) => {
   }
 
   window._txnExportCSV = () => {
-    const { txns, grand } = build();
-    const head = ['Date', 'Category', 'Customer', 'Sport', 'Coach', 'Method', 'Ref', 'Amount'];
+    const { txns, grand, grandPaid, grandDue } = build();
+    const head = ['Date', 'Category', 'Customer', 'Sport', 'Coach', 'Method', 'Ref', 'Amount', 'Paid', 'Due'];
     const lines = [head.join(',')];
-    for (const tx of txns) lines.push([tx.date, tx.category, tx.customer, tx.sport, tx.coach, tx.method, tx.ref, tx.amount].map(c => `"${String(c).replace(/"/g, '""')}"`).join(','));
-    lines.push(['', '', '', '', '', '', 'TOTAL', grand].map(c => `"${c}"`).join(','));
+    for (const tx of txns) lines.push([tx.date, tx.category, tx.customer, tx.sport, tx.coach, tx.method, tx.ref, tx.amount, tx.paid, tx.due].map(c => `"${String(c).replace(/"/g, '""')}"`).join(','));
+    lines.push(['', '', '', '', '', '', 'TOTAL', grand, grandPaid, grandDue].map(c => `"${c}"`).join(','));
     downloadFile(`transactions-${TODAY}.csv`, lines.join('\n'), 'text/csv');
     toast('Exported transactions.csv');
   };
@@ -21741,6 +21802,21 @@ PAGES.transactions = (main) => {
           <option value="all">${t('All categories', 'كل الفئات')}</option>
           ${[...new Set((state.invoices || []).map(i => i.category || 'Membership'))].sort().map(c => `<option value="${escapeHtml(c)}" ${st.category === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
         </select>
+        <select id="txn-activity" class="btn ghost" title="${t('Filter by activity / sport', 'تصفية حسب النشاط / الرياضة')}">
+          <option value="all">${t('All activities', 'كل الأنشطة')}</option>
+          <option value="__camp__" ${st.activity === '__camp__' ? 'selected' : ''}>🌞 ${t('Summer Camp', 'المعسكر الصيفي')}</option>
+          ${(() => {
+            // Distinct sports across all invoice line items, excluding Summer Camp (it
+            // has its own dedicated option above).
+            const sportSet = new Set();
+            for (const i of (state.invoices || [])) {
+              if (i.deleted) continue;
+              const items = (i.lineItems && i.lineItems.length) ? i.lineItems : [{ sport: i.sport }];
+              items.forEach(li => { if (li.sport && li.sport !== SUMMER_CAMP) sportSet.add(li.sport); });
+            }
+            return [...sportSet].sort().map(sp => `<option value="${escapeHtml(sp)}" ${st.activity === sp ? 'selected' : ''}>${escapeHtml(sp)}</option>`).join('');
+          })()}
+        </select>
         <select id="txn-method" class="btn ghost">
           <option value="all">${t('All methods', 'كل الطرق')}</option>
           <option value="cash" ${st.method === 'cash' ? 'selected' : ''}>${t('Cash', 'نقداً')}</option>
@@ -21751,12 +21827,16 @@ PAGES.transactions = (main) => {
           <option value="all">${t('All coaches', 'كل المدربين')}</option>
           ${coaches.map(c => `<option value="${c.id}" ${String(st.coachId) === String(c.id) ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
         </select>
+        <label class="btn ghost" style="display:flex;align-items:center;gap:6px;cursor:pointer" title="${t('Show only transactions with a due balance', 'إظهار العمليات التي عليها مبلغ متبقٍ فقط')}">
+          <input type="checkbox" id="txn-hasdue" ${st.hasDue ? 'checked' : ''} style="cursor:pointer" />
+          <span>${t('Has due', 'عليها متبقٍ')}</span>
+        </label>
         <div class="search"><input id="txn-search" type="text" placeholder="${t('Search customer / ref / sport…', 'بحث عميل / مرجع / رياضة…')}" value="${escapeHtml(st.search)}" /></div>
       </div>
       <div id="txn-summary" style="display:flex;flex-wrap:wrap;gap:6px;padding:0 2px 12px"></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>${t('Date', 'التاريخ')}</th><th>${t('Category', 'الفئة')}</th><th>${t('Customer', 'العميل')}</th><th>${t('Sport', 'الرياضة')}</th><th>${t('Coach', 'المدرب')}</th><th>${t('Method', 'الطريقة')}</th><th>${t('Ref', 'مرجع')}</th><th class="text-right">${t('Amount', 'المبلغ')}</th></tr></thead>
+          <thead><tr><th>${t('Date', 'التاريخ')}</th><th>${t('Category', 'الفئة')}</th><th>${t('Customer', 'العميل')}</th><th>${t('Sport', 'الرياضة')}</th><th>${t('Coach', 'المدرب')}</th><th>${t('Method', 'الطريقة')}</th><th>${t('Ref', 'مرجع')}</th><th class="text-right">${t('Amount', 'المبلغ')}</th><th class="text-right">${t('Paid', 'المدفوع')}</th><th class="text-right">${t('Due', 'المتبقي')}</th></tr></thead>
           <tbody id="txn-tbody"></tbody>
           <tfoot id="txn-tfoot"></tfoot>
         </table>
@@ -21768,6 +21848,8 @@ PAGES.transactions = (main) => {
   $('#txn-from')?.addEventListener('change', e => { st.from = e.target.value; pg.page = 1; refresh(); });
   $('#txn-to')?.addEventListener('change', e => { st.to = e.target.value; pg.page = 1; refresh(); });
   $('#txn-cat').addEventListener('change', e => { st.category = e.target.value; pg.page = 1; refresh(); });
+  $('#txn-activity')?.addEventListener('change', e => { st.activity = e.target.value; pg.page = 1; refresh(); });
+  $('#txn-hasdue')?.addEventListener('change', e => { st.hasDue = e.target.checked; pg.page = 1; refresh(); });
   $('#txn-method').addEventListener('change', e => { st.method = e.target.value; pg.page = 1; refresh(); });
   $('#txn-coach').addEventListener('change', e => { st.coachId = e.target.value; pg.page = 1; refresh(); });
   $('#txn-search').addEventListener('input', e => { st.search = e.target.value; pg.page = 1; refresh(); });

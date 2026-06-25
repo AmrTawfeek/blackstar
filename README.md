@@ -1,4 +1,110 @@
 # Black Stars CRM
+Version 6.173.0 - Transactions Paid/Due columns + 'Has due' filter; in-app Back button everywhere.
+
+## 6.173.0 note - paid/due + back navigation
+1. TRANSACTIONS: added Paid and Due columns next to Amount, with Paid/Due totals in the
+   footer and a running "due" figure in the header count. Added a "Has due" checkbox filter
+   that shows only transactions with an outstanding balance. When a row is narrowed by a
+   coach or activity filter, the Paid amount is prorated to that row's share of the invoice
+   so Paid/Due stay coherent. CSV export now includes Paid and Due columns.
+2. BACK BUTTON: every screen's top bar now shows a "←" Back button that returns to the
+   previous screen AND restores the exact scroll position (page filter state persists in
+   the app, so filters come back too). The browser/device Back button is wired to the same
+   history stack. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.172.0 - Transactions: Summer Camp activity filter (standalone, coach-less).
+
+## 6.172.0 note - Summer Camp filter on Transactions
+Added an "Activity" filter to the Transactions screen with a dedicated "🌞 Summer Camp"
+option (plus every other sport). Picking Summer Camp shows only the camp portion of each
+invoice — for a mixed invoice (e.g. Summer Camp + Gymnastic) only the camp line is counted
+in the amount, Sport column, and totals.
+Summer Camp is also treated as a STANDALONE activity like court rental and products: it is
+NOT attributed to any coach. Camp rows now show no coach, and filtering by a coach excludes
+Summer Camp. The CSV export follows the same filter. No schema change (SCHEMA_VERSION
+stays 9).
+
+# Black Stars CRM
+Version 6.171.0 - Transactions: coach filter shows only that coach's portion of multi-sport invoices.
+
+## 6.171.0 note - coach-filtered transaction amounts
+On the Transactions screen, filtering by a coach was showing the FULL amount of any
+multi-sport invoice that included that coach. Example: Ali's invoice = Kick Boxing (Aya) +
+Football (other coach) = 850; filtering by Aya showed 850, not the 425 Aya actually
+coaches. Now, when a coach filter is active, each invoice contributes ONLY the line items
+coached by the selected coach — so the amount, the Sport column, and the totals reflect
+just that coach's share (Aya → 425 for Kick Boxing). Legacy invoices that store the coach
+only at the invoice level (no per-line coach) are matched and shown whole, as before.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.170.0 - FIX: camp class-day count (5 not 7), per-period attendance windowing, Completed status.
+
+## 6.170.0 note - two camp bugs fixed
+Bug 1 — wrong class counts (showed 4/7 and 6/7 instead of 5/5 and 4/5):
+- A "1 week" camp is 5 CLASS-DAYS (Sun–Thu), not 7. The profile and subscription history
+  were showing the calendar-validity number (7) as the class total. Now the camp class
+  LIMIT is derived from the duration (campClassCount), so 1 week = 5, 2 weeks = 10, etc.,
+  regardless of what older rows stored.
+- Attendance per period is now WINDOWED so periods don't overlap: the boundary day (where
+  one week ends and the next begins) belongs only to the LATER period. So Tamim's 9 marked
+  days correctly split 5 (first week) + 4 (second week) → 5/5 and 4/5.
+Bug 2 — wrongly marked "Completed" at 9 of 10 days:
+- campLimitReached counted ALL camp attendance across every period against a single
+  period's limit (and against the wrong limit of 7). It now counts only the marks inside
+  the CURRENT period's window and compares to the correct class-day limit (5). So a member
+  at 4/5 is not Completed; they complete only when they reach their period's limit.
+New helpers: campDaysForLabel, subClassLimit, subAttendanceWindow. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.169.0 - FIX: Summer Camp renewals no longer flagged as duplicate invoices.
+
+## 6.169.0 note - camp renewals are not duplicates
+The Duplicate Invoices screen was wrongly flagging legitimate Summer Camp RENEWALS as
+"exact" duplicates. Example: a member paid for camp on 14 Jun, then renewed for another
+week on 21 Jun — two correct invoices, same month + same amount, were shown as duplicates.
+Fix: Summer Camp is now treated as REPEATABLE (like court rentals). A camp invoice is only
+a true duplicate when it falls on the exact SAME DATE (a genuine double-entry) — different
+dates within a month are valid renewals and are no longer flagged. Camp invoices are also
+excluded from the "possible duplicate within 7 days" tier. Regular memberships and products
+are unchanged (still keyed by month). No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.168.0 - Smarter member search + archived members shown in results.
+
+## 6.168.0 note - smarter search + archived in results
+1. ARCHIVED members now appear in search results (previously hidden unless the Archived
+   status was selected). When you're actively searching, archived members are included so
+   you can always find someone. They're visually marked: the row is dimmed with a striped
+   background and a grey left accent, plus the existing "📦 Archived" status badge.
+2. SMARTER ARABIC SEARCH. Name matching now ignores spacing and normalises letter
+   variants, so:
+   - أنس = انس (alef forms أ إ آ ٱ all match ا),
+   - عبدالرحمن = عبد الرحمن (spacing differences ignored),
+   - عبد الرحمن مصطفى = عبدالرحمن مصطفى (multi-word, mixed spacing),
+   plus ة/ه, ى/ي, ؤ/و, ئ/ي, hamza and diacritics/tatweel are normalised. English fuzzy
+   (typo-tolerant) matching is unchanged. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.167.0 - Summer Camp validity is CALENDAR days (not business days).
+
+## 6.167.0 note - camp validity = calendar days
+The Summer Camp validity window (the time a member has to use their camp days) is now
+always CALENDAR days, never business days. Camp expiry = start + N calendar days for the
+chosen validity. Examples:
+- Book with "1 month" validity → expiry = start + 30 calendar days (e.g. 24 Jun → 24 Jul),
+  so the member has 30 calendar days to use their camp days.
+- "1 week" → start + 7 days, "2 weeks" → +14, etc.
+Previously whole-week durations used business days (Sun–Thu), shrinking the window. That
+business-day logic was removed from campEndDate. The number of camp DAYS a member may
+attend (the attendance limit) is unchanged — only the time window is now calendar-based.
+Existing camp members whose stored end used the old business-day calendar are flagged by
+the camp-recalc tool so you can re-date them. Camp tests updated to the calendar-day
+expectations. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.166.0 - Member Attendance (EN/AR) buttons print CURRENT membership only.
 
 ## 6.166.0 note - attendance report = current membership period
