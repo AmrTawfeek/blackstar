@@ -2083,6 +2083,97 @@ ${seed}
     eq(levelFor(2), 3, 'reminder level: 2 sent → 3rd (final)');
     eq(levelFor(3), 3, 'reminder level: stays at 3 (final) once maxed');
   })();
+  // Monthly report: revenue is payment-dated within the month, split by method
+  (function () {
+    var invs = [
+      { id: 1, customerId: 1, sport: 'Karate', date: '2026-06-05', amount: 400, payments: [{ amount: 400, date: '2026-06-05', method: 'cash' }] },
+      { id: 2, customerId: 2, sport: 'Summer Camp', date: '2026-06-10', amount: 1300, payments: [{ amount: 800, date: '2026-06-10', method: 'card' }, { amount: 500, date: '2026-06-20', method: 'fawran' }] },
+      { id: 3, customerId: 1, sport: 'Football', date: '2026-05-15', amount: 300, payments: [{ amount: 300, date: '2026-05-15', method: 'cash' }] },
+    ];
+    var normMethod = function (mRaw) { var x = String(mRaw || '').toLowerCase(); if (x.indexOf('card') >= 0) return 'card'; if (x.indexOf('fawran') >= 0) return 'fawran'; if (x.indexOf('transfer') >= 0) return 'transfer'; return 'cash'; };
+    var ym = '2026-06', byMethod = { cash: 0, card: 0, transfer: 0, fawran: 0 }, revenue = 0, bySport = {};
+    invs.forEach(function (i) {
+      (i.payments || []).forEach(function (p) {
+        if (String(p.date).slice(0, 7) !== ym) return;
+        var k = normMethod(p.method); byMethod[k] += p.amount; revenue += p.amount;
+        bySport[i.sport] = (bySport[i.sport] || 0) + p.amount;
+      });
+    });
+    eq(revenue, 1700, 'monthly report: June revenue = 400+800+500 (May excluded)');
+    eq(byMethod.cash + ',' + byMethod.card + ',' + byMethod.fawran, '400,800,500', 'monthly report: method split correct');
+    eq(bySport['Summer Camp'], 1300, 'monthly report: revenue by sport (camp = 1300)');
+    eq(bySport['Football'] || 0, 0, 'monthly report: May Football excluded from June');
+  })();
+  // Owner dashboard: collection rate + cash-in-hand are all-time; revenue is this month
+  (function () {
+    var invs = [
+      { id: 1, customerId: 1, date: '2026-06-05', amount: 400, payments: [{ amount: 400, date: '2026-06-05', method: 'cash' }] },
+      { id: 2, customerId: 2, date: '2026-06-10', amount: 1300, payments: [{ amount: 800, date: '2026-06-10', method: 'card' }, { amount: 200, date: '2026-06-20', method: 'cash' }] },
+      { id: 3, customerId: 1, date: '2026-05-15', amount: 300, payments: [{ amount: 300, date: '2026-05-15', method: 'cash' }] },
+    ];
+    var paid = function (i) { return (i.payments || []).reduce(function (s, p) { return s + p.amount; }, 0); };
+    var norm = function (mRaw) { var x = String(mRaw || '').toLowerCase(); if (x.indexOf('card') >= 0) return 'card'; if (x.indexOf('fawran') >= 0) return 'fawran'; if (x.indexOf('transfer') >= 0) return 'transfer'; return 'cash'; };
+    // Revenue this month (June) = payments dated in June.
+    var revJune = 0;
+    invs.forEach(function (i) { (i.payments || []).forEach(function (p) { if (String(p.date).slice(0, 7) === '2026-06') revJune += p.amount; }); });
+    eq(revJune, 1400, 'dashboard: June revenue = 400+800+200');
+    // Collection rate all-time = collected / billed.
+    var billed = invs.reduce(function (s, i) { return s + i.amount; }, 0);
+    var collected = invs.reduce(function (s, i) { return s + paid(i); }, 0);
+    eq(Math.round(collected / billed * 100), 85, 'dashboard: collection rate = 1700/2000 = 85%');
+    // Cash in hand = all-time cash collected − cash expenses.
+    var cash = 0; invs.forEach(function (i) { (i.payments || []).forEach(function (p) { if (norm(p.method) === 'cash') cash += p.amount; }); });
+    eq(cash - 150, 750, 'dashboard: cash in hand = 900 cash − 150 expense');
+  })();
+  // Class Schedule day filter: empty = all days; selected stay in week order
+  (function () {
+    var DAYS = [{ key: 'sat' }, { key: 'sun' }, { key: 'mon' }, { key: 'tue' }, { key: 'wed' }, { key: 'thu' }, { key: 'fri' }];
+    var visibleDays = function (sel) { return sel.length ? DAYS.filter(function (d) { return sel.indexOf(d.key) >= 0; }) : DAYS; };
+    eq(visibleDays([]).length, 7, 'schedule day filter: empty = all 7 days');
+    // Selecting out of order then re-sorting to canonical week order.
+    var picked = ['mon', 'sat', 'wed'];
+    var sorted = DAYS.map(function (d) { return d.key; }).filter(function (k) { return picked.indexOf(k) >= 0; });
+    eq(sorted.join(','), 'sat,mon,wed', 'schedule day filter: re-sorted to week order');
+    eq(visibleDays(sorted).map(function (d) { return d.key; }).join(','), 'sat,mon,wed', 'schedule day filter: grid shows only selected days');
+  })();
+  // Session lock: a device must not lock itself out (same device name, old sessionId)
+  (function () {
+    var myLabel = 'Karim LapTop';
+    var sameDevice = function (lock) {
+      if (!lock || !lock.holderName) return false;
+      if (!myLabel) return false;
+      return String(lock.holderName).trim() === String(myLabel).trim();
+    };
+    eq(sameDevice({ sessionId: 's_OLD', holderName: 'Karim LapTop' }), true, 'lock: same device name → treat as ours (reclaim)');
+    eq(sameDevice({ sessionId: 's_X', holderName: 'Reception PC' }), false, 'lock: different device → stay read-only');
+    eq(sameDevice({ sessionId: 's_Y', holderName: '' }), false, 'lock: no holder name → not same device');
+    eq(sameDevice(null), false, 'lock: empty lock → not same device');
+  })();
+  // Coach offboarding: final commission is pro-rated by attendance
+  (function () {
+    // attended ÷ limit × price × rate%
+    var calc = function (attended, limit, price, rate) { return Math.round(price * Math.min(1, attended / limit) * (rate / 100) * 100) / 100; };
+    eq(calc(6, 12, 600, 30), 90, 'offboard: 6/12 × 600 × 30% = 90');
+    eq(calc(4, 8, 400, 30), 60, 'offboard: 4/8 × 400 × 30% = 60');
+    eq(calc(6, 12, 600, 30) + calc(4, 8, 400, 30), 150, 'offboard: total payout = 150');
+    // Full attendance = full commission; zero attendance = nothing.
+    eq(calc(12, 12, 600, 30), 180, 'offboard: full attendance = full commission (600×30%)');
+    eq(calc(0, 12, 600, 30), 0, 'offboard: no attendance = no commission');
+    // Over-attendance is capped at 100%.
+    eq(calc(15, 12, 600, 30), 180, 'offboard: attendance capped at 100%');
+  })();
+  // Freeze: a date-range freeze shifts expiry, sub ends, and enrolment validity
+  (function () {
+    var addDays = function (d, n) { var dt = new Date(d + 'T00:00:00'); dt.setDate(dt.getDate() + parseInt(n)); return dt.toISOString().slice(0, 10); };
+    var daysBetween = function (a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000); };
+    // 18 Jun → 1 Sep = 75 days.
+    var days = daysBetween('2026-06-18', '2026-09-01');
+    eq(days, 75, 'freeze: 18 Jun → 1 Sep = 75 days');
+    // Expiry 28 Jun shifts forward 75 → 11 Sep.
+    eq(addDays('2026-06-28', days), '2026-09-11', 'freeze: expiry 28 Jun + 75 = 11 Sep');
+    // Enrolment validity 30 → 105.
+    eq(30 + days, 105, 'freeze: validity 30 + 75 = 105');
+  })();
   // Camp recalc: legacy calendar counts are flagged and fixed to business days
   (function () {
     var savedM = state.members;

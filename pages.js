@@ -2053,6 +2053,22 @@ window.freezeMember = function(id) {
             <span class="text-mute" style="font-size:12px">days</span>
           </div>
         </div>
+        <div style="border-top:1px dashed var(--border);padding-top:12px">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;cursor:pointer">
+            <input type="checkbox" id="freeze-use-dates" /> ${t('Freeze a specific date range instead', 'تجميد فترة محددة بالتواريخ بدلاً من ذلك')}
+          </label>
+          <div id="freeze-date-row" style="display:none;gap:10px;margin-top:8px">
+            <div style="flex:1">
+              <label style="font-size:10px;color:var(--text-mute);display:block">From · من</label>
+              <input type="date" id="freeze-from" style="width:100%;padding:8px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)" />
+            </div>
+            <div style="flex:1">
+              <label style="font-size:10px;color:var(--text-mute);display:block">Until · حتى</label>
+              <input type="date" id="freeze-until" style="width:100%;padding:8px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)" />
+            </div>
+          </div>
+          <div id="freeze-date-days" class="text-mute" style="font-size:11px;margin-top:6px;display:none"></div>
+        </div>
         <div>
           <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px">Reason (optional)</label>
           <input type="text" id="freeze-reason" placeholder="e.g. travel, injury, vacation" style="width:100%;padding:10px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)" maxlength="80" />
@@ -2080,6 +2096,22 @@ window.freezeMember = function(id) {
     actions: [
       { label: 'Cancel', onclick: closeModal },
       { label: '❄️ Apply Freeze', primary: true, onclick: () => {
+        const useDates = document.getElementById('freeze-use-dates')?.checked;
+        if (useDates) {
+          const from = document.getElementById('freeze-from')?.value;
+          const until = document.getElementById('freeze-until')?.value;
+          if (!from || !until) { toast('Pick both a start and end date', 'error'); return; }
+          if (until <= from) { toast('The end date must be after the start date', 'error'); return; }
+          const days = daysBetween(from, until);
+          if (!isAdmin && days > allow.remainingDays) { toast(`Only ${allow.remainingDays} freeze day${allow.remainingDays === 1 ? '' : 's'} remaining for this membership cycle.`, 'error'); return; }
+          const reason = document.getElementById('freeze-reason').value.trim();
+          applyFreeze(m, days, reason, { start: from, end: until });
+          save();
+          closeModal();
+          toast(`${m.name} frozen ${fmtDate(from)} → ${fmtDate(until)} (${days} day${days === 1 ? '' : 's'}).`, 'success');
+          viewMember(m.id);
+          return;
+        }
         const days = parseInt(document.getElementById('freeze-days').value);
         if (!days || days < 1) { toast('Enter a duration of at least 1 day', 'error'); return; }
         if (!isAdmin && days > allow.remainingDays) { toast(`Only ${allow.remainingDays} freeze day${allow.remainingDays === 1 ? '' : 's'} remaining for this membership cycle.`, 'error'); return; }
@@ -2117,6 +2149,37 @@ window.freezeMember = function(id) {
         inp.focus();
       });
     });
+    // Date-range mode toggle + live day count.
+    const useDates = document.getElementById('freeze-use-dates');
+    const dateRow = document.getElementById('freeze-date-row');
+    const dateDays = document.getElementById('freeze-date-days');
+    const fromEl = document.getElementById('freeze-from');
+    const untilEl = document.getElementById('freeze-until');
+    function syncDateMode() {
+      const on = useDates && useDates.checked;
+      if (dateRow) dateRow.style.display = on ? 'flex' : 'none';
+      if (dateDays) dateDays.style.display = on ? 'block' : 'none';
+      if (inp) inp.disabled = on;
+      document.querySelectorAll('.freeze-preset').forEach(b => b.disabled = on);
+      if (on) updateDatePreview();
+    }
+    function updateDatePreview() {
+      const from = fromEl && fromEl.value, until = untilEl && untilEl.value;
+      const resume = document.getElementById('freeze-resume');
+      const newExp = document.getElementById('freeze-new-expiry');
+      const startsEl = document.querySelector('#freeze-preview .font-bold');
+      if (from && until && until > from) {
+        const d = daysBetween(from, until);
+        if (dateDays) dateDays.textContent = `= ${d} day${d === 1 ? '' : 's'} · resume ${fmtDate(until)}`;
+        if (resume) resume.textContent = fmtDate(until);
+        if (newExp) newExp.textContent = m.expiryDate ? fmtDate(addDays(m.expiryDate, d)) : '—';
+      } else {
+        if (dateDays) dateDays.textContent = (from || until) ? 'Pick a valid From → Until range' : '';
+      }
+    }
+    if (useDates) useDates.addEventListener('change', syncDateMode);
+    if (fromEl) fromEl.addEventListener('change', updateDatePreview);
+    if (untilEl) untilEl.addEventListener('change', updateDatePreview);
     updatePreview();   // initial highlight (7 is default)
   }, 50);
 };
@@ -3408,6 +3471,224 @@ function exportMembersCSV(list) {
 
 // ─── COACHES ──────────────────────────────────────────────────
 
+// ─── Session manager (admin) ─────────────────────────────────────────────
+// Always-reachable panel (🔓/🔒 button in the top bar) showing who holds the
+// editing session and letting an admin force-take it — putting the other device
+// into read-only (they stay logged in). Note: the lock tracks ONE active editor
+// at a time, so "connected devices" here means the current session holder plus
+// this device; a full multi-device roster would need a presence backend.
+window.openSessionManager = function () {
+  if (currentRole() !== 'admin') { toast(t('Only an admin can manage the editing session', 'المشرف فقط يمكنه إدارة جلسة التعديل')); return; }
+  const info = (typeof SessionLock !== 'undefined' && SessionLock.holderInfo) ? SessionLock.holderInfo() : null;
+  const myName = (typeof SessionLock !== 'undefined' && SessionLock.myDeviceName) ? SessionLock.myDeviceName() : 'This device';
+  const iHold = (typeof SessionLock !== 'undefined' && SessionLock.iHoldSession) ? SessionLock.iHoldSession() : true;
+  const ago = (ts) => {
+    if (!ts) return '';
+    const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    if (s < 60) return t('just now', 'الآن');
+    const m = Math.round(s / 60);
+    return m < 60 ? `${m} ${t('min ago', 'دقيقة')}` : `${Math.round(m / 60)} ${t('h ago', 'ساعة')}`;
+  };
+
+  // Build the device list. The holder is the device that can currently edit.
+  const rows = [];
+  // This device.
+  rows.push(`
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--border)">
+      <div style="font-size:18px">💻</div>
+      <div style="flex:1">
+        <div class="font-bold">${escapeHtml(myName)} <span class="badge active" style="font-size:9px">${t('this device', 'هذا الجهاز')}</span></div>
+        <div class="text-mute" style="font-size:11px">${iHold ? t('Editing (holds the session)', 'يحرّر (يملك الجلسة)') : t('Read-only', 'قراءة فقط')}</div>
+      </div>
+      ${iHold ? `<span class="badge active" style="font-size:10px">🔓 ${t('Editing', 'تحرير')}</span>` : `<span class="badge" style="font-size:10px">🔒 ${t('Read-only', 'قراءة فقط')}</span>`}
+    </div>`);
+  // The other holder (only if someone else currently holds it).
+  if (info && !info.isMe && !info.stale) {
+    rows.push(`
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--border)">
+        <div style="font-size:18px">🖥️</div>
+        <div style="flex:1">
+          <div class="font-bold">${escapeHtml(info.name)}</div>
+          <div class="text-mute" style="font-size:11px">${t('Holds the editing session', 'يملك جلسة التعديل')}${info.ts ? ' · ' + ago(info.ts) : ''}</div>
+        </div>
+        <span class="badge active" style="font-size:10px">🔓 ${t('Editing', 'تحرير')}</span>
+      </div>`);
+  }
+
+  const someoneElseHolds = info && !info.isMe && !info.stale;
+  const body = `
+    <div style="font-size:12.5px;color:var(--text-dim);line-height:1.5;margin-bottom:10px">
+      ${iHold
+        ? t('You currently hold the editing session — you can make changes.', 'أنت تملك جلسة التعديل حالياً — يمكنك إجراء التغييرات.')
+        : t('Another device holds the editing session. Take it over to edit; that device becomes read-only (it stays logged in).', 'جهاز آخر يملك جلسة التعديل. استلمها للتعديل؛ سيتحول ذلك الجهاز إلى وضع القراءة فقط (يبقى مسجّل الدخول).')}
+    </div>
+    <div style="border:1px solid var(--border);border-radius:8px;padding:2px 12px 8px">${rows.join('')}</div>
+    <div class="text-mute" style="font-size:11px;margin-top:10px">
+      ${t('Only one device can edit at a time. Taking over forces the other device into read-only; it is not logged out. Each device is identified by its name — use distinct names so they’re easy to tell apart.', 'جهاز واحد فقط يمكنه التعديل في كل مرة. الاستلام يحوّل الجهاز الآخر إلى قراءة فقط دون تسجيل خروجه. يُعرَّف كل جهاز باسمه — استخدم أسماء مختلفة لتمييزها بسهولة.')}
+    </div>`;
+
+  showModal({
+    title: `🔐 ${t('Editing session', 'جلسة التعديل')}`,
+    body,
+    actions: [
+      { label: t('Rename this device', 'إعادة تسمية الجهاز'), class: 'btn ghost', onclick: () => { if (SessionLock.setDeviceName) SessionLock.setDeviceName(); closeModal(); render(); } },
+      ...(someoneElseHolds || !iHold ? [{
+        label: `🔓 ${t('Take over & set others read-only', 'استلام وتحويل الآخرين لقراءة فقط')}`,
+        class: 'btn primary',
+        onclick: async () => { closeModal(); try { await SessionLock.takeOver(); } catch (_) {} render(); },
+      }] : [{
+        label: `✓ ${t('You hold the session', 'أنت تملك الجلسة')}`,
+        class: 'btn ghost',
+        onclick: () => closeModal(),
+      }]),
+      { label: t('Close', 'إغلاق'), class: 'btn ghost', onclick: () => closeModal() },
+    ],
+  });
+};
+
+// ─── Coach offboarding: reassign students + attendance-based final payout ────
+// When a coach leaves, this computes their FINAL commission pro-rated by the
+// attendance their students actually had (attended ÷ class-limit × price × rate%),
+// lets you reassign their students to other coaches PER SPORT, records/settles the
+// payout as a salary row, and marks the coach inactive.
+
+// Per-subscription pro-rated commission for a coach. Returns line rows + totals.
+function coachOffboardPayout(coachId) {
+  const c = (state.coaches || []).find(x => x.id === coachId);
+  const rate = c ? (Number(c.rate) || 0) : 0;
+  const lines = [];
+  const sportsSet = new Set();
+  for (const m of (state.members || [])) {
+    if (m.deleted) continue;
+    for (const s of (m.subscriptions || [])) {
+      if (s.coachId !== coachId) continue;
+      if ((s.activity || '') === SUMMER_CAMP) continue;   // camp has no coach commission
+      const sport = s.activity || m.sport || '';
+      sportsSet.add(sport);
+      // Class limit (handles camp/validity conversion; non-camp = totalClasses).
+      const limit = (typeof subClassLimit === 'function') ? subClassLimit(s) : (parseInt(s.totalClasses) || 0);
+      // Attended within this subscription's own (non-overlapping) window.
+      const win = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, s) : { from: s.start || null, to: s.end || null };
+      const live = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(m, sport, win.from, win.to) : { y: 0, total: 0 };
+      const attended = live.total > 0 ? live.y : (parseInt(s.attendedClasses) || 0);
+      const price = Number(s.amountPaid || s.price || 0) || 0;
+      const ratio = limit > 0 ? Math.min(1, attended / limit) : 0;
+      const earned = price * ratio * (rate / 100);
+      lines.push({
+        memberId: m.id, member: m.name, memberAr: m.nameArabic || '',
+        sport, attended, limit, price, ratio,
+        earned: Math.round(earned * 100) / 100,
+        sid: s._sid || null,
+      });
+    }
+  }
+  const total = lines.reduce((s, l) => s + l.earned, 0);
+  return { coach: c, rate, lines, total: Math.round(total * 100) / 100, sports: [...sportsSet].sort() };
+}
+
+window.offboardCoach = function (coachId) {
+  const c = (state.coaches || []).find(x => x.id === coachId);
+  if (!c) return;
+  if (currentRole() !== 'admin') { toast('Only an admin can offboard a coach.'); return; }
+  const P = coachOffboardPayout(coachId);
+  const others = (state.coaches || []).filter(x => x.id !== coachId && isCoachActive(x));
+  const money = (n) => fmt(Math.round(n * 100) / 100);
+
+  // Per-sport reassignment selectors (one dropdown per sport this coach teaches).
+  const reassignRows = P.sports.length ? P.sports.map((sp, i) => `
+    <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--border)">
+      <div style="flex:1;font-weight:600">${escapeHtml(sp)}</div>
+      <div style="font-size:11px;color:var(--text-mute)">→</div>
+      <select class="offboard-reassign" data-sport="${escapeHtml(sp)}" style="min-width:170px">
+        <option value="">— Leave unassigned —</option>
+        ${others.map(o => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('')}
+      </select>
+    </div>`).join('') : `<div class="text-mute" style="font-size:12px">This coach has no active students to reassign.</div>`;
+
+  const lineRows = P.lines.length ? P.lines.map(l => `
+    <tr>
+      <td>${escapeHtml(l.member)}${l.memberAr ? `<div class="text-mute" style="font-size:10px" dir="rtl">${escapeHtml(l.memberAr)}</div>` : ''}</td>
+      <td>${escapeHtml(l.sport)}</td>
+      <td class="text-right num">${l.attended}/${l.limit}</td>
+      <td class="text-right num">${money(l.price)}</td>
+      <td class="text-right num">${Math.round(l.ratio * 100)}%</td>
+      <td class="text-right num font-bold">${money(l.earned)}</td>
+    </tr>`).join('') : `<tr><td colspan="6" class="text-mute">No commissionable subscriptions.</td></tr>`;
+
+  showModal({
+    title: `👋 Offboard coach · ${escapeHtml(c.name)}`,
+    body: `
+      <div style="font-size:12.5px;color:var(--text-dim);margin-bottom:10px">
+        Final commission is pro-rated by attendance: <b>attended ÷ classes × price × ${P.rate}%</b>.
+        Reassign each sport's students to another coach, then settle the payout. The coach will be marked inactive.
+      </div>
+
+      <div style="font-weight:700;font-size:13px;margin:12px 0 4px">1 · Reassign students by sport</div>
+      <div style="border:1px solid var(--border);border-radius:8px;padding:4px 12px 10px">${reassignRows}</div>
+
+      <div style="font-weight:700;font-size:13px;margin:16px 0 4px">2 · Final commission (attendance-based)</div>
+      <div style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:8px">
+        <table style="width:100%;font-size:12px">
+          <thead><tr style="position:sticky;top:0;background:var(--surface)">
+            <th style="text-align:left">Student</th><th style="text-align:left">Sport</th>
+            <th class="text-right">Attended</th><th class="text-right">Price</th><th class="text-right">%</th><th class="text-right">Earned</th>
+          </tr></thead>
+          <tbody>${lineRows}</tbody>
+          <tfoot><tr style="border-top:2px solid var(--border);font-weight:800">
+            <td colspan="5">Total final payout</td><td class="text-right num">${money(P.total)} QAR</td>
+          </tr></tfoot>
+        </table>
+      </div>
+
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px">
+        <input type="checkbox" id="offboard-settle" checked />
+        Record this payout as settled (salary row, this month)
+      </label>
+    `,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: () => closeModal() },
+      { label: `✓ Reassign & settle ${money(P.total)} QAR`, class: 'btn primary', onclick: () => {
+        // 1) Reassign students per sport.
+        const map = {};
+        document.querySelectorAll('.offboard-reassign').forEach(sel => {
+          const sp = sel.dataset.sport; const to = sel.value ? parseInt(sel.value) : null;
+          if (to) map[sp] = to;
+        });
+        let moved = 0;
+        for (const m of (state.members || [])) {
+          if (m.deleted) continue;
+          for (const s of (m.subscriptions || [])) {
+            if (s.coachId !== coachId) continue;
+            const sp = s.activity || m.sport || '';
+            if (map[sp] != null) { s.coachId = map[sp]; const nc = state.coaches.find(x => x.id === map[sp]); s.coach = nc ? nc.name : s.coach; moved++; }
+          }
+          // Mirror to enrollments so future renewals carry the new coach.
+          for (const e of (m.enrollments || [])) {
+            const sp = e.sport || '';
+            if (e.coachId === coachId && map[sp] != null) e.coachId = map[sp];
+          }
+        }
+        // 2) Record the final payout (settled salary row) if chosen.
+        const settle = document.getElementById('offboard-settle')?.checked;
+        if (settle && P.total > 0) {
+          if (!Array.isArray(state.salaries)) state.salaries = [];
+          state.salaries.push({
+            id: nextId(state.salaries), coachId, month: (TODAY || '').slice(0, 7),
+            kind: 'final-payout', amount: P.total, paidDate: TODAY,
+            note: `Final attendance-based payout on offboarding (${P.lines.length} subs)`,
+          });
+        }
+        // 3) Mark the coach inactive.
+        c.active = 'N'; c.status = 'inactive'; c.leftDate = TODAY;
+        if (typeof audit === 'function') audit('coach.offboard', `coach:${coachId}`,
+          `Offboarded ${c.name}: reassigned ${moved} subs, settled ${money(P.total)} QAR`, { coachId, moved, payout: P.total });
+        save(); closeModal(); render();
+        toast(`Offboarded ${c.name} · ${moved} students reassigned · ${money(P.total)} QAR settled`);
+      } },
+    ],
+  });
+};
+
 // Coach profile modal — stats, sports, students, commission, status.
 window.viewCoach = function(id) {
   const c = state.coaches.find(x => x.id === id);
@@ -3519,6 +3800,7 @@ window.viewCoach = function(id) {
     actions: [
       ...(isViewerRole() ? [] : [
         { label: active ? '🚫 Deactivate' : '✅ Activate', class: 'btn ghost', onclick: () => { toggleCoachActive(id); closeModal(); viewCoach(id); } },
+        { label: '👋 Coach left (offboard)', class: 'btn ghost', onclick: () => { closeModal(); offboardCoach(id); } },
         { label: '🔁 Transfer students', class: 'btn ghost', onclick: () => { closeModal(); transferCoachStudents(id); } },
         { label: 'Edit', class: 'btn ghost', onclick: () => { closeModal(); editCoach(id); } },
         { label: '🗑 Delete', class: 'btn ghost', onclick: () => { closeModal(); deleteCoach(id); } },
@@ -6083,6 +6365,564 @@ PAGES.camproutes = (main) => {
 // One row per invoice: ref, value (paid), customer, activity, method. Top cards
 // reconcile revenue by method (cash + card + transfer = revenue) plus expenses
 // and cash-in-hand (cash collected − cash expenses). Filters + print report.
+// ─── Monthly Summary Report ──────────────────────────────────────────────
+// A one-click, bilingual (AR + EN) snapshot of a chosen month: revenue (with
+// method split), expenses + net, member movement (new/renewals/churn), dues,
+// revenue by sport, top payers, and an attendance summary. Printable as PDF.
+function computeMonthlyReport(ym) {
+  const inRangePay = (d) => d && String(d).slice(0, 7) === ym;
+  const monthStart = ym + '-01';
+  const monthEnd = ym + '-' + String(daysInMonth(ym)).padStart(2, '0');
+
+  // Method normaliser (mirrors Payments Analysis): cash | card | transfer | fawran.
+  const normMethod = (mRaw) => {
+    const x = String(mRaw || '').toLowerCase();
+    if (x.indexOf('card') >= 0 || x.indexOf('visa') >= 0 || x.indexOf('credit') >= 0) return 'card';
+    if (x.indexOf('fawran') >= 0 || x.indexOf('فوران') >= 0) return 'fawran';
+    if (x.indexOf('transfer') >= 0 || x.indexOf('bank') >= 0) return 'transfer';
+    if (x.indexOf('cash') >= 0) return 'cash';
+    return x ? 'cash' : 'cash';
+  };
+
+  // 1) Revenue collected this month = sum of PAYMENTS dated in the month, split by method.
+  //    (Falls back to invoice date+method for invoices with no per-payment records.)
+  const byMethod = { cash: 0, card: 0, transfer: 0, fawran: 0 };
+  let revenue = 0;
+  const bySport = {};         // section 5
+  const payerTotals = {};     // section 6 (by member id)
+  for (const i of (state.invoices || [])) {
+    if (i.deleted) continue;
+    const sport = i.sport || (Array.isArray(i.lineItems) && i.lineItems[0] && i.lineItems[0].sport) || i.activity || i.category || 'Other';
+    const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
+    if (pays) {
+      for (const p of pays) {
+        const d = p.date || i.date;
+        if (!inRangePay(d)) continue;
+        const amt = Number(p.amount) || 0;
+        if (amt === 0) continue;
+        const k = normMethod(p.method || i.method);
+        byMethod[k] = (byMethod[k] || 0) + amt;
+        revenue += amt;
+        bySport[sport] = (bySport[sport] || 0) + amt;
+        if (i.customerId != null) payerTotals[i.customerId] = (payerTotals[i.customerId] || 0) + amt;
+      }
+    } else {
+      // No payment records — use the invoice's own date + paid amount if in month.
+      if (!inRangePay(i.date)) continue;
+      const amt = (typeof invoicePaid === 'function') ? invoicePaid(i) : (Number(i.amount) || 0);
+      if (amt === 0) continue;
+      const k = normMethod(i.method);
+      byMethod[k] = (byMethod[k] || 0) + amt;
+      revenue += amt;
+      bySport[sport] = (bySport[sport] || 0) + amt;
+      if (i.customerId != null) payerTotals[i.customerId] = (payerTotals[i.customerId] || 0) + amt;
+    }
+  }
+
+  // 2) Expenses this month + net profit.
+  let expenses = 0;
+  for (const e of (state.expenses || [])) {
+    const d = e.date || (e.month ? e.month + '-01' : '');
+    const m = e.month || String(d).slice(0, 7);
+    if (m !== ym) continue;
+    expenses += Number(e.amount) || 0;
+  }
+  // Salaries paid for this month (if tracked) count as expenses too.
+  for (const slry of (state.salaries || [])) {
+    if ((slry.month || '') !== ym) continue;
+    expenses += Number(slry.amount || slry.paid || 0) || 0;
+  }
+  const net = revenue - expenses;
+
+  // 3) Member movement: new (first registration in month), renewals (a subscription
+  //    that started this month but the member registered earlier), churn (membership
+  //    expired during the month and not renewed afterwards).
+  let newMembers = 0, renewals = 0, churn = 0;
+  for (const m of (state.members || [])) {
+    if (m.deleted) continue;
+    const reg = String(m.firstRegistration || m.startDate || '').slice(0, 7);
+    if (reg === ym) newMembers++;
+    // Renewals: subscription starts within the month, beyond the first registration.
+    const subsThisMonth = (m.subscriptions || []).filter(s => String(s.start || '').slice(0, 7) === ym);
+    if (subsThisMonth.length && reg !== ym) renewals += subsThisMonth.length;
+    // Churn: an expiry date inside the month, with no later subscription start.
+    const exp = m.expiryDate || '';
+    if (exp >= monthStart && exp <= monthEnd) {
+      const renewedAfter = (m.subscriptions || []).some(s => (s.start || '') > exp);
+      if (!renewedAfter && (typeof memberStatus !== 'function' || memberStatus(m) !== 'Active')) churn++;
+    }
+  }
+
+  // 4) Outstanding dues — TOTAL across the club as of now (a running figure).
+  let duesTotal = 0, duesMembers = 0;
+  for (const m of (state.members || [])) {
+    if (m.deleted) continue;
+    const out = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0;
+    if (out > 0.001) { duesTotal += out; duesMembers++; }
+  }
+
+  // 6) Top payers (members) + top families this month.
+  const topMembers = Object.entries(payerTotals)
+    .map(([id, amt]) => { const m = (state.members || []).find(x => String(x.id) === String(id)); return { name: m ? m.name : 'Walk-in', nameAr: m ? (m.nameArabic || '') : '', familyId: m ? m.familyId : null, amt }; })
+    .sort((a, b) => b.amt - a.amt).slice(0, 8);
+  const famTotals = {};
+  Object.entries(payerTotals).forEach(([id, amt]) => {
+    const m = (state.members || []).find(x => String(x.id) === String(id));
+    const fid = (m && m.familyId) ? m.familyId : ('solo:' + id);
+    famTotals[fid] = famTotals[fid] || { amt: 0, name: m ? (m.name) : 'Walk-in' };
+    famTotals[fid].amt += amt;
+  });
+  const topFamilies = Object.values(famTotals).sort((a, b) => b.amt - a.amt).slice(0, 6);
+
+  // 7) Attendance summary for the month: present marks across all members.
+  let present = 0, absent = 0, activeAttendees = 0;
+  for (const m of (state.members || [])) {
+    if (m.deleted) continue;
+    const md = m.dailyAttendance && m.dailyAttendance[ym];
+    if (!md) continue;
+    let memberMarks = 0;
+    for (const sport of Object.keys(md)) {
+      for (const day of Object.keys(md[sport])) {
+        const v = md[sport][day];
+        if (v === 'Y' || v === true) { present++; memberMarks++; }
+        else if (v === 'N') absent++;
+      }
+    }
+    if (memberMarks > 0) activeAttendees++;
+  }
+  const attendanceRate = (present + absent) > 0 ? Math.round(present / (present + absent) * 100) : 0;
+
+  // Revenue-by-sport sorted desc.
+  const sportRows = Object.entries(bySport).map(([sport, amt]) => ({ sport, amt })).sort((a, b) => b.amt - a.amt);
+
+  return {
+    ym, monthStart, monthEnd,
+    revenue, byMethod, expenses, net,
+    newMembers, renewals, churn,
+    duesTotal, duesMembers,
+    sportRows, topMembers, topFamilies,
+    present, absent, attendanceRate, activeAttendees,
+  };
+}
+
+PAGES.monthlyreport = (main) => {
+  const months = (typeof availableMonths === 'function') ? availableMonths({ includeFuture: true }) : [];
+  if (!window._mrMonth || !months.includes(window._mrMonth)) {
+    window._mrMonth = months.length ? months[months.length - 1] : (TODAY || '').slice(0, 7);
+  }
+  const ym = window._mrMonth;
+  const R = computeMonthlyReport(ym);
+  const money = (n) => `${fmt(Math.round(n))}`;
+  const methodLabel = { cash: t('Cash', 'نقداً'), card: t('Card', 'بطاقة'), transfer: t('Bank transfer', 'تحويل بنكي'), fawran: t('Fawran', 'فوران') };
+
+  // KPI card helper.
+  const kpi = (labelEn, labelAr, value, color, sub) => `
+    <div class="card" style="padding:14px 16px">
+      <div class="text-mute" style="font-size:10px;text-transform:uppercase;letter-spacing:.04em">${labelEn} · <bdi>${labelAr}</bdi></div>
+      <div style="font-size:24px;font-weight:800;color:${color || 'var(--text)'};margin-top:4px">${value}</div>
+      ${sub ? `<div class="text-mute" style="font-size:11px;margin-top:2px">${sub}</div>` : ''}
+    </div>`;
+
+  const methodBars = ['cash', 'card', 'transfer', 'fawran'].map(k => {
+    const v = R.byMethod[k] || 0;
+    const pct = R.revenue > 0 ? Math.round(v / R.revenue * 100) : 0;
+    return `<div style="margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span>${methodLabel[k]}</span><span class="num font-bold">${money(v)} QAR · ${pct}%</span></div>
+      <div style="height:8px;background:var(--surface-2);border-radius:6px;overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--accent)"></div></div>
+    </div>`;
+  }).join('');
+
+  const sportRowsHtml = R.sportRows.length ? R.sportRows.map(r => {
+    const pct = R.revenue > 0 ? Math.round(r.amt / R.revenue * 100) : 0;
+    return `<tr><td>${escapeHtml(r.sport)}</td><td class="text-right num font-bold">${money(r.amt)}</td><td class="text-right text-mute">${pct}%</td></tr>`;
+  }).join('') : `<tr><td colspan="3" class="text-mute">${t('No revenue this month', 'لا يوجد دخل هذا الشهر')}</td></tr>`;
+
+  const topMembersHtml = R.topMembers.length ? R.topMembers.map((p, i) => `
+    <tr><td>${i + 1}</td><td><div class="font-bold">${escapeHtml(p.name)}</div>${p.nameAr ? `<div class="text-mute" style="font-size:11px" dir="rtl">${escapeHtml(p.nameAr)}</div>` : ''}</td><td class="text-right num font-bold">${money(p.amt)}</td></tr>`).join('')
+    : `<tr><td colspan="3" class="text-mute">—</td></tr>`;
+
+  const topFamiliesHtml = R.topFamilies.length ? R.topFamilies.map((p, i) => `
+    <tr><td>${i + 1}</td><td class="font-bold">${escapeHtml(p.name)}</td><td class="text-right num font-bold">${money(p.amt)}</td></tr>`).join('')
+    : `<tr><td colspan="3" class="text-mute">—</td></tr>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🗓 ${t('Monthly Report', 'التقرير الشهري')}</h1>
+        <div class="subtitle">${t('A bilingual snapshot of one month', 'لمحة ثنائية اللغة عن شهر واحد')} · ${fmtMonth(ym)}</div>
+      </div>
+      <div class="topbar-actions" style="display:flex;gap:8px;align-items:center">
+        <select id="mr-month" class="btn ghost">
+          ${months.slice().reverse().map(m => `<option value="${m}" ${m === ym ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
+        </select>
+        <button class="btn primary" id="mr-print">🖨 ${t('Print / PDF', 'طباعة / PDF')}</button>
+      </div>
+    </div>
+
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px">
+      ${kpi('Revenue collected', 'الدخل المحصّل', money(R.revenue) + ' QAR', 'var(--green)')}
+      ${kpi('Expenses', 'المصروفات', money(R.expenses) + ' QAR', 'var(--red)')}
+      ${kpi('Net profit', 'صافي الربح', money(R.net) + ' QAR', R.net >= 0 ? 'var(--green)' : 'var(--red)')}
+      ${kpi('Outstanding dues', 'مستحقات غير محصّلة', money(R.duesTotal) + ' QAR', 'var(--accent-2)', `${R.duesMembers} ${t('members', 'عضو')}`)}
+    </div>
+
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div class="card" style="padding:16px">
+        <div class="card-title" style="margin-bottom:12px">💳 ${t('Revenue by method', 'الدخل حسب الطريقة')}</div>
+        ${methodBars}
+      </div>
+
+      <div class="card" style="padding:16px">
+        <div class="card-title" style="margin-bottom:12px">👥 ${t('Member movement', 'حركة الأعضاء')}</div>
+        <div style="display:flex;justify-content:space-around;text-align:center">
+          <div><div style="font-size:22px;font-weight:800;color:var(--green)">${R.newMembers}</div><div class="text-mute" style="font-size:11px">${t('New', 'جديد')} · <bdi>جديد</bdi></div></div>
+          <div><div style="font-size:22px;font-weight:800;color:var(--accent)">${R.renewals}</div><div class="text-mute" style="font-size:11px">${t('Renewals', 'تجديد')}</div></div>
+          <div><div style="font-size:22px;font-weight:800;color:var(--red)">${R.churn}</div><div class="text-mute" style="font-size:11px">${t('Churn', 'انقطاع')}</div></div>
+        </div>
+      </div>
+
+      <div class="card" style="padding:16px">
+        <div class="card-title" style="margin-bottom:12px">📋 ${t('Attendance summary', 'ملخص الحضور')}</div>
+        <div style="display:flex;justify-content:space-around;text-align:center">
+          <div><div style="font-size:22px;font-weight:800;color:var(--green)">${R.present}</div><div class="text-mute" style="font-size:11px">${t('Present', 'حضور')}</div></div>
+          <div><div style="font-size:22px;font-weight:800;color:var(--red)">${R.absent}</div><div class="text-mute" style="font-size:11px">${t('Absent', 'غياب')}</div></div>
+          <div><div style="font-size:22px;font-weight:800">${R.attendanceRate}%</div><div class="text-mute" style="font-size:11px">${t('Rate', 'النسبة')}</div></div>
+        </div>
+        <div class="text-mute" style="font-size:11px;text-align:center;margin-top:8px">${R.activeAttendees} ${t('members attended', 'عضو حضروا')}</div>
+      </div>
+    </div>
+
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:16px">
+      <div class="card" style="padding:16px">
+        <div class="card-title" style="margin-bottom:8px">🥋 ${t('Revenue by sport', 'الدخل حسب الرياضة')}</div>
+        <table style="width:100%;font-size:13px"><tbody>${sportRowsHtml}</tbody></table>
+      </div>
+      <div class="card" style="padding:16px">
+        <div class="card-title" style="margin-bottom:8px">⭐ ${t('Top members', 'أعلى الأعضاء دفعاً')}</div>
+        <table style="width:100%;font-size:13px"><tbody>${topMembersHtml}</tbody></table>
+      </div>
+      <div class="card" style="padding:16px">
+        <div class="card-title" style="margin-bottom:8px">👨‍👩‍👧 ${t('Top families', 'أعلى العائلات دفعاً')}</div>
+        <table style="width:100%;font-size:13px"><tbody>${topFamiliesHtml}</tbody></table>
+      </div>
+    </div>`;
+
+  const sel = document.getElementById('mr-month');
+  if (sel) sel.addEventListener('change', e => { window._mrMonth = e.target.value; render(); });
+  const pr = document.getElementById('mr-print');
+  if (pr) pr.addEventListener('click', () => printMonthlyReport(ym));
+};
+
+// Branded, bilingual print/PDF of the month.
+function printMonthlyReport(ym) {
+  const R = computeMonthlyReport(ym);
+  const money = (n) => Number(Math.round(n)).toLocaleString('en-US');
+  const ML = { cash: 'Cash · نقداً', card: 'Card · بطاقة', transfer: 'Bank transfer · تحويل', fawran: 'Fawran · فوران' };
+  const methodRows = ['cash', 'card', 'transfer', 'fawran'].map(k => {
+    const v = R.byMethod[k] || 0; const pct = R.revenue > 0 ? Math.round(v / R.revenue * 100) : 0;
+    return `<tr><td>${ML[k]}</td><td class="r">${money(v)} QAR</td><td class="r muted">${pct}%</td></tr>`;
+  }).join('');
+  const sportRows = R.sportRows.length ? R.sportRows.map(r => `<tr><td>${esc(r.sport)}</td><td class="r">${money(r.amt)} QAR</td></tr>`).join('') : `<tr><td colspan="2" class="muted">—</td></tr>`;
+  const memRows = R.topMembers.length ? R.topMembers.map((p, i) => `<tr><td>${i + 1}</td><td>${esc(p.name)}${p.nameAr ? ` <span class="ar muted">${esc(p.nameAr)}</span>` : ''}</td><td class="r">${money(p.amt)} QAR</td></tr>`).join('') : `<tr><td colspan="3" class="muted">—</td></tr>`;
+  const famRows = R.topFamilies.length ? R.topFamilies.map((p, i) => `<tr><td>${i + 1}</td><td>${esc(p.name)}</td><td class="r">${money(p.amt)} QAR</td></tr>`).join('') : `<tr><td colspan="3" class="muted">—</td></tr>`;
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+  const monthLabel = (typeof fmtMonth === 'function') ? fmtMonth(ym) : ym;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+  <title>Monthly Report — ${monthLabel}</title>
+  <style>
+    @page { size: A4; margin: 14mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; color: #1a1a1a; margin: 0; }
+    .head { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:3px solid #8A1538; padding-bottom:12px; margin-bottom:18px; }
+    .brand { font-size:22px; font-weight:800; color:#8A1538; }
+    .brand .ar { display:block; font-size:15px; color:#444; font-weight:600; }
+    .sub { color:#666; font-size:13px; }
+    .period { text-align:right; }
+    .period .m { font-size:20px; font-weight:800; }
+    .kpis { display:flex; gap:10px; margin-bottom:18px; }
+    .kpi { flex:1; border:1px solid #e3e3e8; border-radius:10px; padding:12px; }
+    .kpi .l { font-size:10px; text-transform:uppercase; color:#888; letter-spacing:.04em; }
+    .kpi .v { font-size:20px; font-weight:800; margin-top:4px; }
+    .green { color:#1a8f4c; } .red { color:#c62828; } .amber { color:#b8860b; }
+    h2 { font-size:14px; color:#8A1538; border-bottom:1px solid #eee; padding-bottom:5px; margin:18px 0 8px; }
+    .grid2 { display:flex; gap:18px; }
+    .grid2 > div { flex:1; }
+    table { width:100%; border-collapse:collapse; font-size:12.5px; }
+    th, td { text-align:left; padding:5px 6px; border-bottom:1px solid #eee; }
+    th { color:#888; font-size:10px; text-transform:uppercase; }
+    td.r, th.r { text-align:right; }
+    .muted { color:#999; }
+    .ar { font-size:11px; }
+    .movement { display:flex; gap:14px; }
+    .movement .box { flex:1; text-align:center; border:1px solid #e3e3e8; border-radius:10px; padding:10px; }
+    .movement .n { font-size:22px; font-weight:800; }
+    .foot { margin-top:22px; padding-top:10px; border-top:1px solid #eee; color:#999; font-size:10.5px; display:flex; justify-content:space-between; }
+  </style></head>
+  <body onload="window.print()">
+    <div class="head">
+      <div>
+        <div class="brand">★ Black Stars Sports Club <span class="ar">نادي بلاك ستارز الرياضي</span></div>
+        <div class="sub">Monthly Summary Report · التقرير الشهري</div>
+      </div>
+      <div class="period"><div class="m">${monthLabel}</div><div class="sub">Generated ${(typeof fmtDate === 'function') ? fmtDate(TODAY) : TODAY}</div></div>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi"><div class="l">Revenue · الدخل</div><div class="v green">${money(R.revenue)} QAR</div></div>
+      <div class="kpi"><div class="l">Expenses · المصروفات</div><div class="v red">${money(R.expenses)} QAR</div></div>
+      <div class="kpi"><div class="l">Net · الصافي</div><div class="v ${R.net >= 0 ? 'green' : 'red'}">${money(R.net)} QAR</div></div>
+      <div class="kpi"><div class="l">Outstanding · المستحقات</div><div class="v amber">${money(R.duesTotal)} QAR</div><div class="muted" style="font-size:10px">${R.duesMembers} members · عضو</div></div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <h2>Revenue by method · الدخل حسب الطريقة</h2>
+        <table><tbody>${methodRows}</tbody></table>
+        <h2>Revenue by sport · الدخل حسب الرياضة</h2>
+        <table><tbody>${sportRows}</tbody></table>
+      </div>
+      <div>
+        <h2>Member movement · حركة الأعضاء</h2>
+        <div class="movement">
+          <div class="box"><div class="n green">${R.newMembers}</div><div class="muted">New · جديد</div></div>
+          <div class="box"><div class="n">${R.renewals}</div><div class="muted">Renewals · تجديد</div></div>
+          <div class="box"><div class="n red">${R.churn}</div><div class="muted">Churn · انقطاع</div></div>
+        </div>
+        <h2>Attendance · الحضور</h2>
+        <div class="movement">
+          <div class="box"><div class="n green">${R.present}</div><div class="muted">Present · حضور</div></div>
+          <div class="box"><div class="n red">${R.absent}</div><div class="muted">Absent · غياب</div></div>
+          <div class="box"><div class="n">${R.attendanceRate}%</div><div class="muted">Rate · النسبة</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <h2>Top members · أعلى الأعضاء دفعاً</h2>
+        <table><tbody>${memRows}</tbody></table>
+      </div>
+      <div>
+        <h2>Top families · أعلى العائلات دفعاً</h2>
+        <table><tbody>${famRows}</tbody></table>
+      </div>
+    </div>
+
+    <div class="foot"><span>★ Black Stars Sports Club · Waab, Doha, Qatar</span><span>blackstarssportsclub@gmail.com · +974 3040 0103</span></div>
+  </body></html>`;
+
+  const w = window.open('', '_blank');
+  if (!w) { toast('Allow pop-ups to print the report'); return; }
+  w.document.write(html);
+  w.document.close();
+}
+
+// ─── Owner Dashboard ─────────────────────────────────────────────────────
+// A daily, at-a-glance KPI screen (English) pulling together the numbers an
+// owner checks most: revenue + 6-month trend, membership health, collection
+// rate, dues, today's attendance, new members, top sports, and cash in hand.
+function computeDashboard() {
+  const ym = (TODAY || '').slice(0, 7);
+  const today = TODAY;
+  const normMethod = (mRaw) => {
+    const x = String(mRaw || '').toLowerCase();
+    if (x.indexOf('card') >= 0 || x.indexOf('visa') >= 0 || x.indexOf('credit') >= 0) return 'card';
+    if (x.indexOf('fawran') >= 0 || x.indexOf('فوران') >= 0) return 'fawran';
+    if (x.indexOf('transfer') >= 0 || x.indexOf('bank') >= 0) return 'transfer';
+    return 'cash';
+  };
+  // Sum of payments dated in a given YYYY-MM (falls back to invoice date/paid).
+  const revenueForMonth = (mym) => {
+    let total = 0;
+    for (const i of (state.invoices || [])) {
+      if (i.deleted) continue;
+      const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
+      if (pays) {
+        for (const p of pays) { if (String(p.date || i.date).slice(0, 7) === mym) total += Number(p.amount) || 0; }
+      } else if (String(i.date).slice(0, 7) === mym) {
+        total += (typeof invoicePaid === 'function') ? invoicePaid(i) : (Number(i.amount) || 0);
+      }
+    }
+    return total;
+  };
+
+  // 6-month trend (oldest → newest), ending this month.
+  const trend = [];
+  const base = new Date((ym || '2026-01') + '-01T00:00:00');
+  for (let k = 5; k >= 0; k--) {
+    const d = new Date(base.getFullYear(), base.getMonth() - k, 1);
+    const mym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    trend.push({ ym: mym, label: (typeof fmtMonth === 'function') ? fmtMonth(mym) : mym, value: revenueForMonth(mym) });
+  }
+  const revenueThisMonth = trend[trend.length - 1].value;
+  const revenuePrevMonth = trend[trend.length - 2] ? trend[trend.length - 2].value : 0;
+
+  // Membership health.
+  let active = 0, expired = 0, expiringSoon = 0;
+  for (const m of (state.members || [])) {
+    if (m.deleted) continue;
+    const st = (typeof memberStatus === 'function') ? memberStatus(m) : '';
+    if (st === 'Expired') expired++;
+    else { active++; // Active or Completed both count as current
+      const exp = m.expiryDate || '';
+      if (exp && exp >= today) {
+        const days = (typeof daysBetween === 'function') ? daysBetween(today, exp) : 999;
+        if (days <= 7) expiringSoon++;
+      }
+    }
+  }
+
+  // Collection rate = collected ÷ billed (all-time, membership invoices).
+  let billed = 0, collected = 0;
+  for (const i of (state.invoices || [])) {
+    if (i.deleted) continue;
+    billed += Number(i.amount) || 0;
+    collected += (typeof invoicePaid === 'function') ? invoicePaid(i) : 0;
+  }
+  const collectionRate = billed > 0 ? Math.round(collected / billed * 100) : 0;
+
+  // Outstanding dues (club-wide).
+  let duesTotal = 0, duesMembers = 0;
+  for (const m of (state.members || [])) {
+    if (m.deleted) continue;
+    const out = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0;
+    if (out > 0.001) { duesTotal += out; duesMembers++; }
+  }
+
+  // Today's attendance (present marks dated today across all members).
+  const dayNum = String(parseInt((today || '').slice(8, 10), 10));
+  let presentToday = 0; const attendeesToday = new Set();
+  for (const m of (state.members || [])) {
+    if (m.deleted) continue;
+    const md = m.dailyAttendance && m.dailyAttendance[ym];
+    if (!md) continue;
+    for (const sport of Object.keys(md)) {
+      if (md[sport][dayNum] === 'Y') { presentToday++; attendeesToday.add(m.id); }
+    }
+  }
+
+  // New members this month.
+  let newThisMonth = 0;
+  for (const m of (state.members || [])) {
+    if (m.deleted) continue;
+    const reg = String(m.firstRegistration || m.startDate || '').slice(0, 7);
+    if (reg === ym) newThisMonth++;
+  }
+
+  // Top sports by revenue THIS month.
+  const bySport = {};
+  for (const i of (state.invoices || [])) {
+    if (i.deleted) continue;
+    const sport = i.sport || (Array.isArray(i.lineItems) && i.lineItems[0] && i.lineItems[0].sport) || i.activity || i.category || 'Other';
+    const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
+    if (pays) { for (const p of pays) { if (String(p.date || i.date).slice(0, 7) === ym) bySport[sport] = (bySport[sport] || 0) + (Number(p.amount) || 0); } }
+    else if (String(i.date).slice(0, 7) === ym) bySport[sport] = (bySport[sport] || 0) + ((typeof invoicePaid === 'function') ? invoicePaid(i) : 0);
+  }
+  const topSports = Object.entries(bySport).map(([sport, amt]) => ({ sport, amt })).sort((a, b) => b.amt - a.amt).slice(0, 6);
+
+  // Cash in hand (all-time cash collected − all-time cash expenses).
+  let cashCollected = 0;
+  for (const i of (state.invoices || [])) {
+    if (i.deleted) continue;
+    const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
+    if (pays) { for (const p of pays) { if (normMethod(p.method) === 'cash') cashCollected += Number(p.amount) || 0; } }
+    else if (normMethod(i.method) === 'cash') cashCollected += (typeof invoicePaid === 'function') ? invoicePaid(i) : 0;
+  }
+  let cashExpenses = 0;
+  for (const e of (state.expenses || [])) { if (e.deleted) continue; if (normMethod(e.method || 'cash') === 'cash') cashExpenses += Number(e.amount) || 0; }
+  const cashInHand = cashCollected - cashExpenses;
+
+  return {
+    ym, today, trend, revenueThisMonth, revenuePrevMonth,
+    active, expired, expiringSoon,
+    collectionRate, collected, billed,
+    duesTotal, duesMembers,
+    presentToday, attendeesToday: attendeesToday.size,
+    newThisMonth, topSports, cashInHand,
+  };
+}
+
+PAGES.dashboardkpi = (main) => {
+  const D = computeDashboard();
+  const money = (n) => fmt(Math.round(n));
+  const delta = D.revenueThisMonth - D.revenuePrevMonth;
+  const deltaPct = D.revenuePrevMonth > 0 ? Math.round(delta / D.revenuePrevMonth * 100) : null;
+  const deltaStr = deltaPct == null ? '' : `${delta >= 0 ? '▲' : '▼'} ${Math.abs(deltaPct)}% vs last month`;
+
+  // Sparkline for the 6-month trend.
+  const max = Math.max(1, ...D.trend.map(t => t.value));
+  const W = 320, H = 70, pad = 4;
+  const step = (W - pad * 2) / Math.max(1, D.trend.length - 1);
+  const pts = D.trend.map((t, i) => {
+    const x = pad + i * step;
+    const y = H - pad - (t.value / max) * (H - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const bars = D.trend.map((t, i) => {
+    const x = pad + i * step;
+    const y = H - pad - (t.value / max) * (H - pad * 2);
+    return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="var(--accent)"></circle>`;
+  }).join('');
+  const trendLabels = D.trend.map(t => `<span style="flex:1;text-align:center">${t.label}</span>`).join('');
+
+  const kpi = (label, value, color, sub, onclick) => `
+    <div class="card" style="padding:16px;${onclick ? 'cursor:pointer' : ''}" ${onclick ? `onclick="${onclick}"` : ''}>
+      <div class="text-mute" style="font-size:10px;text-transform:uppercase;letter-spacing:.04em">${label}</div>
+      <div style="font-size:26px;font-weight:800;color:${color || 'var(--text)'};margin-top:4px">${value}</div>
+      ${sub ? `<div class="text-mute" style="font-size:11px;margin-top:2px">${sub}</div>` : ''}
+    </div>`;
+
+  const topSportsHtml = D.topSports.length ? D.topSports.map(s => {
+    const pct = D.revenueThisMonth > 0 ? Math.round(s.amt / D.revenueThisMonth * 100) : 0;
+    return `<div style="margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span>${escapeHtml(s.sport)}</span><span class="num font-bold">${money(s.amt)} · ${pct}%</span></div>
+      <div style="height:7px;background:var(--surface-2);border-radius:5px;overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--accent)"></div></div>
+    </div>`;
+  }).join('') : `<div class="text-mute" style="font-size:12px">No revenue yet this month</div>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>📊 Owner Dashboard</h1>
+        <div class="subtitle">Daily snapshot · ${(typeof fmtDate === 'function') ? fmtDate(D.today) : D.today}</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="navigate('monthlyreport')">🗓 Monthly Report</button>
+      </div>
+    </div>
+
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:16px">
+      ${kpi('Revenue this month', money(D.revenueThisMonth) + ' QAR', 'var(--green)', deltaStr)}
+      ${kpi('Cash in hand', money(D.cashInHand) + ' QAR', D.cashInHand >= 0 ? 'var(--green)' : 'var(--red)', 'cash collected − cash expenses', "navigate('cashinhand')")}
+      ${kpi('Collection rate', D.collectionRate + '%', D.collectionRate >= 80 ? 'var(--green)' : D.collectionRate >= 50 ? 'var(--accent-2)' : 'var(--red)', money(D.collected) + ' / ' + money(D.billed) + ' QAR')}
+      ${kpi('Outstanding dues', money(D.duesTotal) + ' QAR', 'var(--accent-2)', D.duesMembers + ' members owe', "navigate('duepayment')")}
+    </div>
+
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:16px">
+      ${kpi('Active members', String(D.active), 'var(--green)', D.expired + ' expired', "navigate('members')")}
+      ${kpi('Expiring within 7 days', String(D.expiringSoon), D.expiringSoon ? 'var(--accent-2)' : 'var(--text-mute)', 'need a renewal nudge', "navigate('renewals')")}
+      ${kpi('New members this month', String(D.newThisMonth), 'var(--accent)', '', "navigate('members')")}
+      ${kpi('Present today', String(D.presentToday), 'var(--text)', D.attendeesToday + ' members in', "navigate('attendance')")}
+    </div>
+
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div class="card" style="padding:16px">
+        <div class="card-title" style="margin-bottom:10px">📈 Revenue trend · last 6 months</div>
+        <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:90px">
+          <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2"></polyline>
+          ${bars}
+        </svg>
+        <div style="display:flex;font-size:10px;color:var(--text-mute);margin-top:4px">${trendLabels}</div>
+      </div>
+      <div class="card" style="padding:16px">
+        <div class="card-title" style="margin-bottom:10px">🥋 Top sports this month</div>
+        ${topSportsHtml}
+      </div>
+    </div>`;
+};
+
 PAGES.payanalysis = (main) => {
   // Normalise a payment-method string to one of: cash | card | transfer.
   const normMethod = (mRaw) => {
@@ -6716,7 +7556,9 @@ PAGES.schedule = (main) => {
   // For coaches: empty means all; otherwise only listed coach ids match.
   // For sports: empty means all; otherwise only listed sport names match.
   // A signed-in coach is pre-locked to themselves (and the picker is hidden).
-  let filter = { coaches: myCoachId != null ? [myCoachId] : [], sports: [] };
+  let filter = { coaches: myCoachId != null ? [myCoachId] : [], sports: [], days: [] };
+  // Days actually shown in the grid: all of DAYS, narrowed to filter.days when set.
+  const visibleDays = () => (filter.days.length ? DAYS.filter(d => filter.days.includes(d.key)) : DAYS);
 
   // Find classes for a given day + slot
   function classesAt(day, hour) {
@@ -6770,18 +7612,22 @@ PAGES.schedule = (main) => {
 
   function refresh() {
     // Build the grid
+    const days = visibleDays();
+    // Keep the grid column count in sync with how many days are visible.
+    const gridEl0 = $('#sch-grid');
+    if (gridEl0 && gridEl0.style && typeof gridEl0.style.setProperty === 'function') gridEl0.style.setProperty('--sch-cols', days.length);
     let grid = '';
     // Header row
     grid += `<div class="sch-row sch-header">
       <div class="sch-time-h">TIME</div>
-      ${DAYS.map(d => `<div class="sch-day-h">${d.label}</div>`).join('')}
+      ${days.map(d => `<div class="sch-day-h">${d.label}</div>`).join('')}
     </div>`;
 
     // Time-slot rows
     for (const slot of SLOTS) {
       grid += `<div class="sch-row">`;
       grid += `<div class="sch-time-cell">${slot.label}</div>`;
-      for (const day of DAYS) {
+      for (const day of days) {
         const cls = classesAt(day.key, slot.hour);
         const dropZone = `data-day="${day.key}" data-slot="${slot.hour}"`;
         const items = cls.filter(c => myCoachId == null || isFiltered(c)).map(c => {
@@ -6972,6 +7818,8 @@ PAGES.schedule = (main) => {
   // a pure-JS approach: serialize to SVG → render to canvas → toBlob → download.
   function exportPng(lang) {
     const ar = lang === 'ar';
+    // Honor the day filter in the export too (the hint says it does).
+    const DAYS = visibleDays();
     // Render the schedule into an SVG-style canvas drawing
     const cellW = 180, cellH = 90, timeW = 110, headerH = 60, brandH = 100;
     const BLOCK_H = 40, GAP = 4;
@@ -7148,7 +7996,7 @@ PAGES.schedule = (main) => {
 
   main.innerHTML = `
     <style>
-      .sch-row { display: grid; grid-template-columns: 110px repeat(${DAYS.length}, 1fr); }
+      .sch-row { display: grid; grid-template-columns: 110px repeat(var(--sch-cols, ${DAYS.length}), 1fr); }
       .sch-time-h, .sch-day-h, .sch-time-cell {
         background: var(--surface-2);
         color: var(--text);
@@ -7232,12 +8080,22 @@ PAGES.schedule = (main) => {
             <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:flex-end"><button type="button" class="btn ghost sm" id="sch-filter-sport-clear">Clear</button></div>
           </div>
         </div>
-        ${(filter.coaches.length || filter.sports.length) ? `<button type="button" class="btn ghost sm" id="sch-filter-reset">✕ ${t('Clear filters', 'مسح الفلاتر')}</button>` : ''}
+        <div style="position:relative">
+          <button type="button" id="sch-filter-day-btn" class="btn ghost" style="min-width:140px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more days">
+            <span id="sch-filter-day-label">${filter.days.length ? (filter.days.length === 1 ? (DAYS.find(d => d.key === filter.days[0]) || {}).label : filter.days.length + ' days') : 'All days'}</span>
+            <span style="opacity:.6;font-size:10px">▾</span>
+          </button>
+          <div id="sch-filter-day-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:170px;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            ${DAYS.map(d => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="sch-day-cb" value="${d.key}" ${filter.days.includes(d.key) ? 'checked' : ''} /> ${d.label.charAt(0) + d.label.slice(1).toLowerCase()}</label>`).join('')}
+            <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:flex-end"><button type="button" class="btn ghost sm" id="sch-filter-day-clear">Clear</button></div>
+          </div>
+        </div>
+        ${(filter.coaches.length || filter.sports.length || filter.days.length) ? `<button type="button" class="btn ghost sm" id="sch-filter-reset">✕ ${t('Clear filters', 'مسح الفلاتر')}</button>` : ''}
         <div style="font-size:11px;color:var(--text-mute);margin-left:auto">Filters dim non-matching classes; export honors the filter</div>
       </div>
     </div>
 
-    <div id="sch-grid" style="background:var(--surface);border-radius:10px;overflow:hidden"></div>
+    <div id="sch-grid" style="background:var(--surface);border-radius:10px;overflow:hidden;--sch-cols:${visibleDays().length}"></div>
 
     <div style="margin-top:12px;padding:10px 14px;background:rgba(91,141,239,.08);border:1px solid rgba(91,141,239,.25);border-radius:8px;font-size:12px;color:var(--text-dim)">
       💡 <strong style="color:var(--blue)">How to use:</strong> Drag a sport tile from the top onto any cell to add a class (you'll pick the coach). Click an existing class to change the coach. Drag a class between cells to move it. The × button removes a class. Friday is the off day so it's not shown.
@@ -7270,10 +8128,11 @@ PAGES.schedule = (main) => {
   }
   toggleMenu('sch-filter-coach-btn', 'sch-filter-coach-menu');
   toggleMenu('sch-filter-sport-btn', 'sch-filter-sport-menu');
-  // Click outside closes both menus
+  toggleMenu('sch-filter-day-btn', 'sch-filter-day-menu');
+  // Click outside closes the menus
   document.addEventListener('click', e => {
-    if (!e.target.closest('#sch-filter-coach-menu, #sch-filter-coach-btn, #sch-filter-sport-menu, #sch-filter-sport-btn')) {
-      $$('#sch-filter-coach-menu, #sch-filter-sport-menu').forEach(m => { if (m) m.style.display = 'none'; });
+    if (!e.target.closest('#sch-filter-coach-menu, #sch-filter-coach-btn, #sch-filter-sport-menu, #sch-filter-sport-btn, #sch-filter-day-menu, #sch-filter-day-btn')) {
+      $$('#sch-filter-coach-menu, #sch-filter-sport-menu, #sch-filter-day-menu').forEach(m => { if (m) m.style.display = 'none'; });
     }
   }, { once: true });
   function updateFilterLabels() {
@@ -7281,6 +8140,8 @@ PAGES.schedule = (main) => {
     if (cL) cL.textContent = filter.coaches.length ? (filter.coaches.length === 1 ? (coachName(filter.coaches[0]) || 'Coach') : filter.coaches.length + ' coaches') : 'All coaches';
     const sL = $('#sch-filter-sport-label');
     if (sL) sL.textContent = filter.sports.length ? (filter.sports.length === 1 ? filter.sports[0] : filter.sports.length + ' sports') : 'All sports';
+    const dL = $('#sch-filter-day-label');
+    if (dL) dL.textContent = filter.days.length ? (filter.days.length === 1 ? (DAYS.find(d => d.key === filter.days[0]) || {}).label : filter.days.length + ' days') : 'All days';
   }
   // Coach checkboxes
   $$('.sch-coach-cb').forEach(cb => cb.addEventListener('change', e => {
@@ -7298,8 +8159,18 @@ PAGES.schedule = (main) => {
     updateFilterLabels(); refresh();
   }));
   $('#sch-filter-sport-clear')?.addEventListener('click', () => { filter.sports = []; $$('.sch-sport-cb').forEach(cb => cb.checked = false); updateFilterLabels(); refresh(); });
+  // Day checkboxes — keep them in DAYS order so the grid columns stay in week order.
+  $$('.sch-day-cb').forEach(cb => cb.addEventListener('change', e => {
+    const key = e.target.value;
+    if (e.target.checked) { if (!filter.days.includes(key)) filter.days.push(key); }
+    else { filter.days = filter.days.filter(x => x !== key); }
+    // Re-sort to canonical week order so columns never appear out of sequence.
+    filter.days = DAYS.map(d => d.key).filter(k => filter.days.includes(k));
+    updateFilterLabels(); refresh();
+  }));
+  $('#sch-filter-day-clear')?.addEventListener('click', () => { filter.days = []; $$('.sch-day-cb').forEach(cb => cb.checked = false); updateFilterLabels(); refresh(); });
   // Reset all
-  $('#sch-filter-reset')?.addEventListener('click', () => { filter.coaches = []; filter.sports = []; $$('.sch-coach-cb, .sch-sport-cb').forEach(cb => cb.checked = false); updateFilterLabels(); refresh(); });
+  $('#sch-filter-reset')?.addEventListener('click', () => { filter.coaches = []; filter.sports = []; filter.days = []; $$('.sch-coach-cb, .sch-sport-cb, .sch-day-cb').forEach(cb => cb.checked = false); updateFilterLabels(); refresh(); });
 
   // Export PNG
   $('#sch-png').addEventListener('click', () => exportPng('en'));
@@ -10779,6 +11650,7 @@ PAGES.salaries = (main) => {
     const totalGross = people.reduce((s,p) => s + p.gross, 0);
     const totalAdv = people.reduce((s,p) => s + p.advance, 0);
     const totalNet = people.reduce((s,p) => s + p.net, 0);
+    const totalPending = people.reduce((s,p) => s + ((p.basis === 'attendance' ? p.commissionPending : 0) || 0), 0);
     const paidCount = people.filter(p => p.paidStatus === 'paid').length;
 
     $('#sal-tbody').innerHTML = people.length ? people.map(p => {
@@ -10804,6 +11676,7 @@ PAGES.salaries = (main) => {
           </td>
           <td class="text-mute" style="font-size:11px">${breakdownStr}${pendingNote}</td>
           <td class="text-right num font-bold" style="color:${grossColor}">${fmt(p.gross)}</td>
+          <td class="text-right num" style="color:${(p.basis === 'attendance' && p.commissionPending > 0) ? 'var(--accent-2)' : 'var(--text-mute)'}" title="${(p.basis === 'attendance' && p.commissionPending > 0) ? 'Remainder on active memberships — paid as attended or trued-up at expiry' : 'No pending commission'}">${(p.basis === 'attendance' && p.commissionPending > 0) ? '⏳ ' + fmt(p.commissionPending) : '—'}</td>
           <td class="text-right">
             <button class="btn ghost sm" onclick="recordAdvance(${p.coachId}, '${p.month}')" title="Record an advance">
               ${p.advance > 0 ? `<span style="color:var(--accent-2)">${fmt(p.advance)}</span>` : '+ Add'}
@@ -10825,7 +11698,7 @@ PAGES.salaries = (main) => {
           </td>
         </tr>
       `;
-    }).join('') : `<tr><td colspan="7" class="empty">No active coaches/staff. Add them on the Team page.</td></tr>`;
+    }).join('') : `<tr><td colspan="8" class="empty">No active coaches/staff. Add them on the Team page.</td></tr>`;
 
     const foot = $('#sal-tfoot');
     if (foot) {
@@ -10834,6 +11707,7 @@ PAGES.salaries = (main) => {
           <td>TOTAL · ${people.length} ${people.length === 1 ? 'person' : 'people'}</td>
           <td></td>
           <td class="text-right num">${fmt(totalGross)}</td>
+          <td class="text-right num" style="color:var(--accent-2)">${totalPending > 0 ? '⏳ ' + fmt(totalPending) : '—'}</td>
           <td class="text-right num text-dim">${totalAdv > 0 ? fmt(totalAdv) : '—'}</td>
           <td class="text-right num" style="color:var(--green);font-size:15px">${fmt(totalNet)}</td>
           <td colspan="2" class="text-mute" style="font-size:11px">${paidCount} of ${people.length} paid</td>
@@ -10862,14 +11736,19 @@ PAGES.salaries = (main) => {
     <div style="background:rgba(91,141,239,.06);border:1px solid rgba(91,141,239,.2);border-radius:8px;padding:12px;margin-bottom:14px;display:flex;gap:10px;align-items:flex-start">
       <div style="font-size:20px">💡</div>
       <div style="font-size:12px;color:var(--text-dim);line-height:1.5">
-        Salaries are computed automatically: <b>Fixed monthly</b> (set per person on the Team page) + <b>Commission %</b> × eligible membership revenue.
-        Use this page to record advances and mark people as paid. The Team page is where you set each person's pay configuration.
+        Salaries = <b>Fixed monthly</b> (set per person on the Team page) + <b>Commission</b>.
+        Commission is calculated <b>by attendance</b>: a coach earns <b>fee ÷ total classes × rate%</b> for <b>each class a student attends</b>, counted in the month it was attended.
+        The unattended remainder stays <span style="color:var(--accent-2)">⏳ Pending</span> while the membership is active, and is <b>paid in full ("trued-up") in the month the membership expires</b> — the coach is eligible for it even if those last classes weren't attended.
+        Frozen memberships don't true-up until they end. Summer Camp earns no commission.
       </div>
+    </div>
     </div>
     <div class="card">
       <div class="filter-bar" style="flex-wrap:wrap;align-items:center;gap:10px">
         <span style="font-size:12px;color:var(--text-mute)">Commission basis:</span>
-        <select id="sal-basis" class="btn ghost" title="How commission is calculated. 'By attendance' pays per class the member attends; the rest is pending.">
+        <span class="badge active" style="font-size:11px" title="Commission is calculated per class attended, with the remainder trued-up at expiry. This is locked to prevent accidental changes.">🔒 By attendance (per class attended)</span>
+        <button id="sal-basis-change" class="btn ghost sm" style="font-size:10px;opacity:.6" title="Admin: switch how commission is calculated (not recommended)">change…</button>
+        <select id="sal-basis" class="btn ghost" style="display:none">
           <option value="payment" ${(state.settings?.commissionBasis || 'payment') === 'payment' ? 'selected' : ''}>By payment (full fee in payment month)</option>
           <option value="attendance" ${state.settings?.commissionBasis === 'attendance' ? 'selected' : ''}>By attendance (per class attended)</option>
         </select>
@@ -10887,6 +11766,7 @@ PAGES.salaries = (main) => {
             <th>Name</th>
             <th>Breakdown</th>
             <th class="text-right">Gross (QAR)</th>
+            <th class="text-right" title="Commission not yet earned: the remainder on still-active memberships. It's paid as those classes are attended, or trued-up when the membership expires.">Pending</th>
             <th class="text-right">Advance</th>
             <th class="text-right">Net Pay</th>
             <th>Status</th>
@@ -10899,10 +11779,25 @@ PAGES.salaries = (main) => {
     </div>
   `;
   $('#sal-month').addEventListener('change', e => { filter.month = e.target.value; refresh(); });
+  const salBasisChange = $('#sal-basis-change');
+  if (salBasisChange) salBasisChange.addEventListener('click', () => {
+    if (currentRole() !== 'admin') { toast('Only an admin can change the commission basis.'); return; }
+    const sel = $('#sal-basis');
+    if (sel) { sel.style.display = ''; sel.focus(); }
+    salBasisChange.style.display = 'none';
+  });
   const salBasis = $('#sal-basis');
   if (salBasis) salBasis.addEventListener('change', e => {
     if (!state.settings) state.settings = {};
-    state.settings.commissionBasis = e.target.value === 'attendance' ? 'attendance' : 'payment';
+    const next = e.target.value === 'attendance' ? 'attendance' : 'payment';
+    // Switching away from attendance changes how every coach is paid — confirm.
+    if (next === 'payment') {
+      if (!confirm('Switch to "By payment"? This pays each coach the FULL fee in the month a member paid, ignoring attendance and the expiry true-up. This is not the academy\'s usual rule.\n\nAre you sure?')) {
+        e.target.value = 'attendance';   // revert the select
+        return;
+      }
+    }
+    state.settings.commissionBasis = next;
     save();
     refresh();
     toast('Commission basis: ' + (state.settings.commissionBasis === 'attendance' ? 'by attendance ✅' : 'by payment'));

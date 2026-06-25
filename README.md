@@ -1,4 +1,132 @@
 # Black Stars CRM
+Version 6.188.0 - Freeze: pick a date range + freeze now updates validity too.
+
+## 6.188.0 note - freeze date range + validity sync
+Two fixes to membership freezing:
+1. DATE RANGE: the freeze dialog now has a "Freeze a specific date range instead" option with
+   From / Until date pickers. Pick e.g. 18 Jun → 1 Sep and it computes the days (75) and shifts
+   the expiry by exactly that. Previously a freeze always assumed it started TODAY and only took
+   a day count, which made a future-dated freeze (like 18 Jun → 1 Sep) hard to enter correctly.
+2. VALIDITY SYNC: applying a freeze now also extends each enrolment's stored VALIDITY by the
+   freeze days (it already shifted expiryDate and each subscription's end). So the validity
+   period, expiry, and per-sport end all move together and stay consistent.
+Example: enrolled 29 May (expiry 28 Jun), freeze 18 Jun → 1 Sep (75 days) → expiry becomes
+11 Sep, sub end 11 Sep, validity 30 → 105. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.187.0 - NEW: always-visible session control button (take over / force read-only).
+
+## 6.187.0 note - editing session manager
+Added a 🔓/🔒 button in the top bar (admin only, on every screen) that opens an Editing
+Session panel. It shows who currently holds the editing session — this device plus the other
+device that's editing — and lets an admin TAKE OVER, which forces the other device into
+READ-ONLY (it stays logged in, not logged out). The button icon reflects state: 🔓 when this
+device can edit, 🔒 when it's read-only. The panel also has a "Rename this device" shortcut.
+Honest limitation: the lock tracks ONE active editor at a time, so the panel lists the
+current session holder rather than a full roster of every connected browser — a complete
+device list would need a presence/heartbeat backend (a good candidate for the future per-record
+migration). Bilingual throughout. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.186.0 - Salaries report: pending commission column, clearer legend, locked attendance basis.
+
+## 6.186.0 note - salaries safeguards
+The salary commission was already correct (attendance-based: fee ÷ classes × rate% per class
+attended, with the unattended remainder trued-up in the month the membership expires). Added
+three safeguards so it stays clear and can't be changed by mistake:
+1. PENDING column — shows each coach's commission not yet earned (remainder on still-active
+   memberships), with a column total. It releases as classes are attended or trues-up at
+   expiry.
+2. LEGEND — the info box now spells out the rule: per class attended, counted in the month
+   attended, remainder pending while active, paid in full when the membership expires (coach
+   is eligible even if those last classes weren't attended); frozen memberships don't true-up
+   until they end; Summer Camp earns nothing.
+3. LOCKED BASIS — the commission basis now shows a locked "🔒 By attendance" badge instead of
+   a free dropdown. An admin can still switch it via a small "change…" link, but switching to
+   "by payment" now requires an explicit confirmation. No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
+Version 6.185.0 - NEW: Coach offboarding — reassign students per sport + attendance-based final payout.
+
+## 6.185.0 note - coach left the club
+New "👋 Coach left (offboard)" action on the coach profile (admin). When a coach leaves it:
+- Computes their FINAL commission PRO-RATED BY ATTENDANCE — for each student/subscription:
+  attended ÷ class-days × subscription price × the coach's rate%. So a coach is paid only
+  for the classes their students actually attended, not the full subscription value.
+  (Summer Camp is excluded — it carries no coach commission.)
+- Lets you REASSIGN students PER SPORT: one dropdown per sport the coach teaches, so each
+  sport's students can go to a different coach. The new coach is written to both the active
+  subscriptions and the enrolments (so future renewals carry the right coach).
+- RECORDS/SETTLES the payout as a salary row (kind 'final-payout', dated today) when the
+  "record as settled" box is ticked.
+- Marks the coach inactive (active='N', leftDate=today) so they drop off payroll and new
+  registrations, while all history is preserved.
+The existing one-coach "Transfer students" button is kept for simple moves. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.184.0 - FIX: a device no longer locks itself out of the editing session.
+
+## 6.184.0 note - session-lock self-lockout fix
+Bug: the editing-session lock is keyed by a random per-page-load session ID, but the
+"holder" shown to the user is the device NAME. So when the same device already held the
+lock under a different page-load (another tab, a refresh, or a stale hold from a previous
+session), the new load saw a lock with ITS OWN device name and went read-only — telling the
+user "held by Karim LapTop" while also showing "This device: Karim LapTop". A device was
+locking itself out.
+Fix: added a sameDevice() check. When the current lock's holder name matches THIS device's
+saved name, the session re-claims the lock (it's the same physical device) instead of going
+read-only. A genuinely different device (different name) still gets the read-only protection
+exactly as before. Note: two devices must use DISTINCT names for the lock to tell them apart
+— the rename link in the banner is there for that. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.183.0 - Class Schedule: filter by day(s).
+
+## 6.183.0 note - schedule day filter
+Added a "Days" multi-select filter to the Class Schedule, alongside the existing Coach and
+Sport filters. Pick one or more days (e.g. just Saturday + Monday) and the grid shows only
+those day columns; an empty selection shows the full week as before. Selected days always
+render in week order (Sat → Thu) regardless of the order you tick them. The PNG export
+honors the day filter too, so you can export a single day's or a few days' schedule. "Clear
+filters" also clears the day selection. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.182.0 - NEW: Owner Dashboard (daily KPIs).
+
+## 6.182.0 note - Owner Dashboard
+New "📊 Owner Dashboard" screen under Insights (admin) — an at-a-glance daily snapshot (English):
+- Revenue this month + ▲/▼ vs last month, and a 6-month revenue trend sparkline.
+- Cash in hand (all-time cash collected − cash expenses).
+- Collection rate (collected ÷ billed) with the underlying figures.
+- Outstanding dues total + how many members owe (taps through to Due Payment).
+- Active members + expired count; members expiring within 7 days (taps to Renewals).
+- New members this month.
+- Present today (today's attendance marks) + members in.
+- Top sports by revenue this month.
+Most cards are tap-throughs to the relevant screen. Revenue uses payment dates (matches cash
+actually collected); collection rate and cash-in-hand are all-time, consistent with the
+existing Cash in Hand page. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.181.0 - NEW: Monthly Summary Report (bilingual, one-click PDF).
+
+## 6.181.0 note - Monthly Report
+New "🗓 Monthly Report" screen under Insights (admin). Pick any month from a dropdown and
+see a bilingual (Arabic + English) snapshot, with a one-click branded Print / PDF. Sections:
+- Revenue collected + split by method (cash / card / bank transfer / Fawran).
+- Expenses (incl. salaries for the month) + net profit.
+- Member movement: new members, renewals, churn for the month.
+- Outstanding dues total (club-wide running figure) + how many members owe.
+- Revenue by sport / activity.
+- Top members and top families by amount paid that month.
+- Attendance summary: present / absent marks + attendance rate + how many attended.
+Revenue is counted from PAYMENTS dated within the month (falling back to invoice date for
+invoices without per-payment records), so it matches the cash actually collected. The print
+view is A4, branded with the club header and Qatar-maroon accents. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.180.0 - Due reminders now ESCALATE: gentle → firmer → final notice.
 
 ## 6.180.0 note - escalating reminder levels
