@@ -1823,3 +1823,8 @@ tr.member-archived:hover { opacity: 0.85 !important; }
   font-weight: 700;
 }
 .topbar .back-btn:hover { background: var(--surface-2); }
+
+/* Multi-select filter dropdown (Transactions). */
+.msel-panel { animation: mselIn .12s ease; }
+@keyframes mselIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+.msel-panel label:hover { background: var(--surface-2); }

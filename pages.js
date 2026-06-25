@@ -744,23 +744,30 @@ PAGES.members = (main) => {
   function attPctVal(m) {
     const mr = (m.subscriptions || []).filter(s => s.totalClasses).slice(-1)[0];
     if (!mr) return -1;
-    const live = liveAttendanceCount(m, mr.activity, mr.start || null, mr.end || null);
+    const win = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, mr) : { from: mr.start || null, to: mr.end || null };
+    const live = liveAttendanceCount(m, mr.activity, win.from, win.to);
     const att = live.total > 0 ? live.y : (mr.attendedClasses || 0);
-    return mr.totalClasses ? Math.min(1, att / mr.totalClasses) : -1;
+    const limit = (typeof subClassLimit === 'function') ? subClassLimit(mr) : mr.totalClasses;
+    return limit ? Math.min(1, att / limit) : -1;
   }
   function attCellHtml(m) {
     const mr = (m.subscriptions || []).filter(s => s.totalClasses).slice(-1)[0];
     if (!mr) return dash;
-    const live = liveAttendanceCount(m, mr.activity, mr.start || null, mr.end || null);
+    const win = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, mr) : { from: mr.start || null, to: mr.end || null };
+    const live = liveAttendanceCount(m, mr.activity, win.from, win.to);
     const att = live.total > 0 ? live.y : (mr.attendedClasses || 0);
-    const pct = mr.totalClasses ? Math.min(100, Math.round(att / mr.totalClasses * 100)) : null;
+    // Denominator = the attendable class-day LIMIT (e.g. "2 weeks" camp = 10 business
+    // days), NOT the calendar validity (14). subClassLimit() converts a stored validity
+    // number back to the class-day count for camp; other sports use totalClasses as-is.
+    const limit = (typeof subClassLimit === 'function') ? subClassLimit(mr) : mr.totalClasses;
+    const pct = limit ? Math.min(100, Math.round(att / limit * 100)) : null;
     const color = pct == null ? 'var(--text-mute)' : pct >= 75 ? 'var(--green)' : pct >= 40 ? 'var(--accent-2)' : 'var(--red)';
     // If the member has several sports, say WHICH sport this count belongs to —
     // the number is for the most recent subscription, which may not be the
     // sport shown first in the Sport column.
     const sportsCount = new Set([m.sport, ...(m.enrollments || []).map(e => e.sport)].filter(Boolean)).size;
     const tag = (sportsCount > 1 && mr.activity) ? `<div class="text-mute" style="font-size:9px;line-height:1.1">${escapeHtml(mr.activity)}</div>` : '';
-    return `<span class="num" style="color:${color};font-weight:600">${att}/${mr.totalClasses}</span>${tag}`;
+    return `<span class="num" style="color:${color};font-weight:600">${att}/${limit}</span>${tag}`;
   }
   function expiryCellHtml(m) {
     if (!m.expiryDate) return dash;
@@ -2335,12 +2342,18 @@ function enrollRowHtml(row, idx) {
 function autoExpiryFromRows() {
   const ends = (window._enrollRows || []).map(r => {
     // Camp expiry = start + VALIDITY window (calendar days), independent of the
-    // class-day count. Other sports = start + validity. (Camp duration/class count
-    // is the attendance limit, NOT the time window — see v6.115.)
+    // class-day count. The window comes from the duration LABEL (e.g. "2 months" = 60
+    // calendar days), NOT the number of class days a member may attend (e.g. 44).
     const isCamp = r.sport === SUMMER_CAMP;
-    const days = isCamp
-      ? (parseInt(r.validity) || parseInt(r.classes) || 0)   // window; fall back to class count only if no validity
-      : (parseInt(r.validity) || 0);
+    let days;
+    if (isCamp) {
+      // Prefer the duration label's calendar-days; then an explicit validity; only
+      // fall back to the class count if neither is available.
+      const labelDays = (typeof campDaysForLabel === 'function' && r.durationLabel) ? campDaysForLabel(r.durationLabel) : 0;
+      days = labelDays || parseInt(r.validity) || parseInt(r.campDays) || parseInt(r.classes) || 0;
+    } else {
+      days = parseInt(r.validity) || 0;
+    }
     if (!(r.start && days > 0)) return null;
     return addDays(r.start, days);
   }).filter(Boolean).sort();
@@ -9693,7 +9706,16 @@ window.printInvoicePDF = function(id) {
             ((s.invoiceNumber && (s.invoiceNumber === inv.ref || s.invoiceNumber === inv.invoiceNumber)) || false));
           const subAny = sub || matchedMember.subscriptions.filter(s => (s.activity || '') === li.sport).slice(-1)[0];
           if (subAny) {
-            period = { start: subAny.start, end: subAny.end };
+            // For Summer Camp, the VALIDITY window is start + calendar-days of the
+            // duration (e.g. "2 months" = 60 days), independent of the class-day count.
+            // Recompute it here so the printed "Valid" date is correct even if an older
+            // stored end used the class count by mistake.
+            let endDate = subAny.end;
+            if (isCamp && subAny.start) {
+              const labelDays = (typeof campDaysForLabel === 'function' && subAny.durationLabel) ? campDaysForLabel(subAny.durationLabel) : 0;
+              if (labelDays > 0 && typeof addDays === 'function') endDate = addDays(subAny.start, labelDays);
+            }
+            period = { start: subAny.start, end: endDate };
             count = parseInt(subAny.totalClasses) || parseInt(li.classes) || null;
           }
         }
@@ -9701,17 +9723,27 @@ window.printInvoicePDF = function(id) {
         // Camp counts DAYS; everything else counts CLASSES.
         const unitEn = isCamp ? (count === 1 ? 'day' : 'days') : (count === 1 ? 'class' : 'classes');
         const unitAr = isCamp ? 'يوم' : 'حصة';
-        const countLine = `${count} ${unitEn} · <bdi>${count} ${unitAr}</bdi>`;
-        const validityLine = period && period.start
-          ? `Valid · <bdi>صالح</bdi>: ${fmtDate(period.start)} → ${period.end ? fmtDate(period.end) : '—'}`
-          : '';
+        // English block (LTR) and Arabic block (RTL) kept on SEPARATE lines so parents
+        // can read each language clearly without mixed-direction clutter.
+        const startEn = period && period.start ? fmtDate(period.start) : '';
+        const endEn = period && period.end ? fmtDate(period.end) : '—';
+        const enLines = [
+          `${count} ${unitEn}`,
+          period && period.start ? `Valid: ${startEn} → ${endEn}` : '',
+          `Coach: ${escapeHtml(li.coach || '—')} · Issued ${issueDate}`,
+        ].filter(Boolean).map(x => `<div class="item-sub" dir="ltr">${x}</div>`).join('');
+        const arLines = [
+          `${count} ${unitAr}`,
+          period && period.start ? `صالح: ${startEn} ← ${endEn}` : '',
+          `المدرب: ${escapeHtml(li.coach || '—')} · صدرت ${issueDate}`,
+        ].filter(Boolean).map(x => `<div class="item-sub" dir="rtl" style="color:var(--muted,#888)">${x}</div>`).join('');
         return `
       <tr>
         <td>
           <div class="item-desc">${escapeHtml(li.sport)}${isCamp ? '' : ' subscription'}</div>
-          <div class="item-sub" dir="ltr">${countLine}</div>
-          ${validityLine ? `<div class="item-sub" dir="ltr">${validityLine}</div>` : ''}
-          <div class="item-sub" dir="ltr">Coach · <bdi>المدرب</bdi>: ${escapeHtml(li.coach || '—')} · Issued on ${issueDate}</div>
+          ${enLines}
+          <div style="height:3px"></div>
+          ${arLines}
         </td>
         <td class="right">${count}</td>
         <td class="right">${Number(li.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
@@ -21601,9 +21633,71 @@ PAGES.transfers = (main) => {
 // by-category summary, a paginated table, a grand-total footer, and CSV export.
 // Same numbers that feed Club Revenue Summary (one row per non-deleted invoice).
 // ═══════════════════════════════════════════════════════════════════════════
+// Reusable checkbox dropdown for multi-select filters. Renders a button showing the
+// label + selected count, and a popover panel of checkboxes. `selected` is an array of
+// values; onChange receives the new array. Options: [{value,label}]. id must be unique.
+function multiSelectHtml(id, label, options, selected) {
+  const sel = Array.isArray(selected) ? selected.map(String) : [];
+  const count = sel.length;
+  const summary = count === 0 ? label : `${label} (${count})`;
+  return `
+    <div class="msel" id="${id}-wrap" style="position:relative;display:inline-block">
+      <button type="button" class="btn ghost" id="${id}-btn" style="display:flex;align-items:center;gap:6px;white-space:nowrap">
+        <span>${escapeHtml(summary)}</span><span style="font-size:10px;opacity:.7">▾</span>
+      </button>
+      <div id="${id}-panel" class="msel-panel" style="display:none;position:absolute;top:calc(100% + 4px);inset-inline-start:0;z-index:200;min-width:200px;max-height:300px;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.18);padding:6px">
+        <div style="display:flex;justify-content:space-between;padding:4px 8px 6px;border-bottom:1px solid var(--border);margin-bottom:4px">
+          <button type="button" class="msel-all" data-id="${id}" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">${t('All', 'الكل')}</button>
+          <button type="button" class="msel-none" data-id="${id}" style="background:none;border:none;color:var(--text-mute);font-size:12px;cursor:pointer">${t('Clear', 'مسح')}</button>
+        </div>
+        ${options.map(o => `
+          <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:13px" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background=''">
+            <input type="checkbox" class="msel-cb" data-id="${id}" value="${escapeHtml(String(o.value))}" ${sel.includes(String(o.value)) ? 'checked' : ''} style="cursor:pointer" />
+            <span>${escapeHtml(o.label)}</span>
+          </label>`).join('')}
+      </div>
+    </div>`;
+}
+
+// Wire a multi-select dropdown built by multiSelectHtml. onChange(newSelectedArray).
+function bindMultiSelect(id, onChange) {
+  const btn = document.getElementById(`${id}-btn`);
+  const panel = document.getElementById(`${id}-panel`);
+  if (!btn || !panel) return;
+  const close = () => { panel.style.display = 'none'; };
+  const open = () => { panel.style.display = 'block'; };
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isOpen = panel.style.display === 'block';
+    // Close any other open msel panels first.
+    document.querySelectorAll('.msel-panel').forEach(p => { if (p !== panel) p.style.display = 'none'; });
+    isOpen ? close() : open();
+  });
+  panel.addEventListener('click', (e) => e.stopPropagation());
+  const current = () => Array.from(panel.querySelectorAll('.msel-cb')).filter(cb => cb.checked).map(cb => cb.value);
+  panel.querySelectorAll('.msel-cb').forEach(cb => cb.addEventListener('change', () => onChange(current())));
+  const allBtn = panel.querySelector('.msel-all');
+  const noneBtn = panel.querySelector('.msel-none');
+  if (allBtn) allBtn.addEventListener('click', () => { panel.querySelectorAll('.msel-cb').forEach(cb => cb.checked = true); onChange(current()); });
+  if (noneBtn) noneBtn.addEventListener('click', () => { panel.querySelectorAll('.msel-cb').forEach(cb => cb.checked = false); onChange(current()); });
+  // Close on outside click (registered once per page render).
+  if (!window._mselOutsideBound) {
+    window._mselOutsideBound = true;
+    document.addEventListener('click', () => { document.querySelectorAll('.msel-panel').forEach(p => p.style.display = 'none'); });
+  }
+}
+
 PAGES.transactions = (main) => {
   const isoOf = x => x.toISOString().slice(0, 10);
-  if (!window._txnState) window._txnState = { preset: 'this_month', from: '', to: '', category: 'all', activity: 'all', method: 'all', coachId: 'all', hasDue: false, search: '' };
+  if (!window._txnState) window._txnState = { preset: 'this_month', from: '', to: '', categories: [], activities: [], methods: [], coachIds: [], hasDue: false, search: '' };
+  // Migrate older single-value state shape → arrays (so a returning session doesn't break).
+  (() => {
+    const s = window._txnState;
+    if (!Array.isArray(s.categories)) s.categories = (s.category && s.category !== 'all') ? [s.category] : [];
+    if (!Array.isArray(s.activities)) s.activities = (s.activity && s.activity !== 'all') ? [s.activity] : [];
+    if (!Array.isArray(s.methods)) s.methods = (s.method && s.method !== 'all') ? [s.method] : [];
+    if (!Array.isArray(s.coachIds)) s.coachIds = (s.coachId && s.coachId !== 'all') ? [String(s.coachId)] : [];
+  })();
   const st = window._txnState;
   const pg = (window._txnPager = window._txnPager || makePager(25));
 
@@ -21642,56 +21736,52 @@ PAGES.transactions = (main) => {
       if (!inRange(inv)) continue;
       const allItems = (inv.lineItems && inv.lineItems.length) ? inv.lineItems : [{ sport: inv.sport || null, coachId: inv.coachId || null, price: inv.amount || 0 }];
       const cat = inv.category || 'Membership';
-      // ── Activity / Sport filter ──
-      // Summer Camp is a STANDALONE activity (like court rental / products) and is NOT
-      // tied to any coach. When the user filters by Summer Camp, keep only the camp line
-      // items; when they pick a specific sport, keep only that sport's items.
       const isCampItem = (li) => (li.sport || '') === SUMMER_CAMP;
-      if (st.activity && st.activity !== 'all') {
-        const allItems0 = (inv.lineItems && inv.lineItems.length) ? inv.lineItems : [{ sport: inv.sport || null, coachId: inv.coachId || null, price: inv.amount || 0 }];
-        const wantCamp = st.activity === '__camp__';
-        const kept = allItems0.filter(li => wantCamp ? isCampItem(li) : (li.sport || '') === st.activity);
-        if (!kept.length) continue;   // this invoice has nothing for the chosen activity
+      // Normalised filter arrays (empty = no filter / show all).
+      const catSel = st.categories || [];
+      const actSel = st.activities || [];
+      const methSel = st.methods || [];
+      const coachSel = (st.coachIds || []).map(String);
+      // ── Category filter (multi) ──
+      if (catSel.length && !catSel.includes(cat)) continue;
+      // ── Method filter (multi) ──
+      if (methSel.length && !methSel.includes(inv.method || '')) continue;
+      // ── Activity / Sport filter (multi) ── Summer Camp is standalone (no coach).
+      // Keep only line items whose sport matches ANY selected activity ('__camp__' = camp).
+      const matchesActivity = (li) => actSel.some(a => a === '__camp__' ? isCampItem(li) : (li.sport || '') === a);
+      if (actSel.length) {
+        const kept = allItems.filter(matchesActivity);
+        if (!kept.length) continue;   // nothing for the chosen activities → skip invoice
       }
-      // When a COACH filter is active, narrow this invoice to ONLY that coach's line
-      // items, so a multi-sport invoice (e.g. Kick Boxing + Football) contributes only
-      // the portion coached by the selected coach — not the whole invoice total.
-      const coachFiltered = st.coachId !== 'all';
+      // ── Coach filter (multi) ── narrow to lines coached by ANY selected coach.
+      const coachFiltered = coachSel.length > 0;
       let items = allItems;
-      // Narrow to the chosen activity first (so amount/sport reflect just that activity).
-      if (st.activity && st.activity !== 'all') {
-        const wantCamp = st.activity === '__camp__';
-        items = allItems.filter(li => wantCamp ? isCampItem(li) : (li.sport || '') === st.activity);
-      }
+      // Narrow to chosen activities first (so amount/sport reflect just those activities).
+      if (actSel.length) items = allItems.filter(matchesActivity);
       if (coachFiltered) {
         const base = items;
-        const matching = base.filter(li => String(li.coachId || inv.coachId || '') === String(st.coachId));
-        // If no line item carries a coach but the invoice's coach matches, keep all
-        // items (legacy single-coach invoices); otherwise restrict to the matches.
+        const matching = base.filter(li => coachSel.includes(String(li.coachId || inv.coachId || '')));
         const anyLineHasCoach = base.some(li => li.coachId != null);
         if (matching.length) items = matching;
-        else if (anyLineHasCoach) continue;   // this coach isn't on any line → skip invoice
+        else if (anyLineHasCoach) continue;   // none of these coaches on any line → skip
         // (else: no per-line coaches → fall through to invoice-level coach check below)
       }
       const invAmount = items.reduce((s, li) => s + (Number(li.price) || 0), 0);
-      // Summer Camp is standalone — never attribute it to a coach. For a camp-only
-      // invoice, the coach is blank; otherwise use the invoice/line coach as before.
+      // Summer Camp is standalone — never attribute it to a coach.
       const allCamp = items.length && items.every(isCampItem);
       const coachId = allCamp ? null : (inv.coachId || (allItems.find(li => li.coachId)?.coachId) || null);
+      // If a coach filter is active and this invoice's coach (line or invoice-level) is
+      // not among the selected coaches, skip it.
+      if (coachFiltered) {
+        const onLine = allItems.some(li => coachSel.includes(String(li.coachId || '')));
+        const onInvoice = coachSel.includes(String(coachId || ''));
+        if (!onLine && !onInvoice) continue;
+      }
       const customer = inv.customerName || inv.customer || (() => { const mm = (state.members || []).find(x => x.id === inv.customerId); return mm ? (mm.name || mm.nameArabic || '') : ''; })() || '—';
       const sport = items.map(li => li.sport).filter(Boolean).join(', ') || (cat !== 'Membership' ? cat : '—');
       const ref = inv.ref || ('#' + inv.id);
-      // Apply filters
-      if (st.category !== 'all' && cat !== st.category) continue;
-      if (st.method !== 'all' && (inv.method || '') !== st.method) continue;
-      if (st.coachId !== 'all') {
-        // Match if the selected coach is on any line item OR is the invoice-level coach.
-        const onLine = allItems.some(li => String(li.coachId || '') === String(st.coachId));
-        const onInvoice = String(coachId || '') === String(st.coachId);
-        if (!onLine && !onInvoice) continue;
-      }
-      // Display coach: when filtered, show the selected coach (the one we costed).
-      const displayCoachId = coachFiltered ? st.coachId : coachId;
+      // Display coach: when a single coach is selected, show that coach; else the invoice's.
+      const displayCoachId = (coachFiltered && coachSel.length === 1) ? coachSel[0] : coachId;
       // Paid / Due for this row. invoicePaid() is the whole-invoice paid amount; when
       // the row is narrowed (by coach/activity) to part of a multi-line invoice, prorate
       // the paid amount by this row's share of the full invoice so Paid/Due stay coherent.
@@ -21798,35 +21888,28 @@ PAGES.transactions = (main) => {
           <span class="text-mute">→</span>
           <input id="txn-to" type="date" class="btn ghost" value="${st.to}" />
         </div>
-        <select id="txn-cat" class="btn ghost">
-          <option value="all">${t('All categories', 'كل الفئات')}</option>
-          ${[...new Set((state.invoices || []).map(i => i.category || 'Membership'))].sort().map(c => `<option value="${escapeHtml(c)}" ${st.category === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
-        </select>
-        <select id="txn-activity" class="btn ghost" title="${t('Filter by activity / sport', 'تصفية حسب النشاط / الرياضة')}">
-          <option value="all">${t('All activities', 'كل الأنشطة')}</option>
-          <option value="__camp__" ${st.activity === '__camp__' ? 'selected' : ''}>🌞 ${t('Summer Camp', 'المعسكر الصيفي')}</option>
-          ${(() => {
-            // Distinct sports across all invoice line items, excluding Summer Camp (it
-            // has its own dedicated option above).
+        ${multiSelectHtml('txn-cat', t('Category', 'الفئة'),
+          [...new Set((state.invoices || []).filter(i => !i.deleted).map(i => i.category || 'Membership'))].sort().map(c => ({ value: c, label: c })),
+          st.categories)}
+        ${multiSelectHtml('txn-activity', t('Activity', 'النشاط'),
+          (() => {
+            const opts = [{ value: '__camp__', label: '🌞 ' + t('Summer Camp', 'المعسكر الصيفي') }];
             const sportSet = new Set();
             for (const i of (state.invoices || [])) {
               if (i.deleted) continue;
               const items = (i.lineItems && i.lineItems.length) ? i.lineItems : [{ sport: i.sport }];
               items.forEach(li => { if (li.sport && li.sport !== SUMMER_CAMP) sportSet.add(li.sport); });
             }
-            return [...sportSet].sort().map(sp => `<option value="${escapeHtml(sp)}" ${st.activity === sp ? 'selected' : ''}>${escapeHtml(sp)}</option>`).join('');
-          })()}
-        </select>
-        <select id="txn-method" class="btn ghost">
-          <option value="all">${t('All methods', 'كل الطرق')}</option>
-          <option value="cash" ${st.method === 'cash' ? 'selected' : ''}>${t('Cash', 'نقداً')}</option>
-          <option value="card" ${st.method === 'card' ? 'selected' : ''}>${t('Card', 'بطاقة')}</option><option value="fawran" ${st.method === 'fawran' ? 'selected' : ''}>${t('Fawran', 'فوران')}</option>
-          <option value="transfer" ${st.method === 'transfer' ? 'selected' : ''}>${t('Transfer', 'تحويل')}</option>
-        </select>
-        <select id="txn-coach" class="btn ghost">
-          <option value="all">${t('All coaches', 'كل المدربين')}</option>
-          ${coaches.map(c => `<option value="${c.id}" ${String(st.coachId) === String(c.id) ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
-        </select>
+            [...sportSet].sort().forEach(sp => opts.push({ value: sp, label: sp }));
+            return opts;
+          })(),
+          st.activities)}
+        ${multiSelectHtml('txn-method', t('Method', 'الطريقة'),
+          [{ value: 'cash', label: t('Cash', 'نقداً') }, { value: 'card', label: t('Card', 'بطاقة') }, { value: 'fawran', label: t('Fawran', 'فوران') }, { value: 'transfer', label: t('Transfer', 'تحويل') }],
+          st.methods)}
+        ${multiSelectHtml('txn-coach', t('Coach', 'المدرب'),
+          coaches.map(c => ({ value: String(c.id), label: c.name })),
+          st.coachIds)}
         <label class="btn ghost" style="display:flex;align-items:center;gap:6px;cursor:pointer" title="${t('Show only transactions with a due balance', 'إظهار العمليات التي عليها مبلغ متبقٍ فقط')}">
           <input type="checkbox" id="txn-hasdue" ${st.hasDue ? 'checked' : ''} style="cursor:pointer" />
           <span>${t('Has due', 'عليها متبقٍ')}</span>
@@ -21847,11 +21930,11 @@ PAGES.transactions = (main) => {
   $('#txn-preset').addEventListener('change', e => { st.preset = e.target.value; pg.page = 1; refresh(); });
   $('#txn-from')?.addEventListener('change', e => { st.from = e.target.value; pg.page = 1; refresh(); });
   $('#txn-to')?.addEventListener('change', e => { st.to = e.target.value; pg.page = 1; refresh(); });
-  $('#txn-cat').addEventListener('change', e => { st.category = e.target.value; pg.page = 1; refresh(); });
-  $('#txn-activity')?.addEventListener('change', e => { st.activity = e.target.value; pg.page = 1; refresh(); });
+  bindMultiSelect('txn-cat', (vals) => { st.categories = vals; pg.page = 1; refresh(); });
+  bindMultiSelect('txn-activity', (vals) => { st.activities = vals; pg.page = 1; refresh(); });
   $('#txn-hasdue')?.addEventListener('change', e => { st.hasDue = e.target.checked; pg.page = 1; refresh(); });
-  $('#txn-method').addEventListener('change', e => { st.method = e.target.value; pg.page = 1; refresh(); });
-  $('#txn-coach').addEventListener('change', e => { st.coachId = e.target.value; pg.page = 1; refresh(); });
+  bindMultiSelect('txn-method', (vals) => { st.methods = vals; pg.page = 1; refresh(); });
+  bindMultiSelect('txn-coach', (vals) => { st.coachIds = vals; pg.page = 1; refresh(); });
   $('#txn-search').addEventListener('input', e => { st.search = e.target.value; pg.page = 1; refresh(); });
   refresh();
 };

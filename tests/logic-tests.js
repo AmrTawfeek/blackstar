@@ -1991,6 +1991,70 @@ ${seed}
     back(); eq(route, 'dashboard', 'nav: back to dashboard');
     eq(stack.length, 0, 'nav: stack empty at root');
   })();
+  // Transactions multi-select filters: empty = all, arrays match ANY selected
+  (function () {
+    var SC = 'Summer Camp';
+    var isCampItem = function (li) { return (li.sport || '') === SC; };
+    var invoices = [
+      { id: 1, category: 'Membership', method: 'cash', lineItems: [{ sport: 'Karate', coachId: 5, price: 300 }] },
+      { id: 2, category: 'Membership', method: 'card', lineItems: [{ sport: 'Football', coachId: 6, price: 400 }] },
+      { id: 3, category: 'Court Rental', method: 'transfer', lineItems: [{ sport: 'Court', price: 200 }] },
+      { id: 4, category: 'Membership', method: 'fawran', lineItems: [{ sport: SC, price: 650 }] },
+    ];
+    var run = function (st) {
+      var ids = [];
+      invoices.forEach(function (inv) {
+        var allItems = inv.lineItems, cat = inv.category;
+        var catSel = st.categories || [], actSel = st.activities || [], methSel = st.methods || [], coachSel = (st.coachIds || []).map(String);
+        if (catSel.length && catSel.indexOf(cat) < 0) return;
+        if (methSel.length && methSel.indexOf(inv.method || '') < 0) return;
+        var matchesActivity = function (li) { return actSel.some(function (a) { return a === '__camp__' ? isCampItem(li) : (li.sport || '') === a; }); };
+        if (actSel.length && !allItems.filter(matchesActivity).length) return;
+        var items = actSel.length ? allItems.filter(matchesActivity) : allItems;
+        if (coachSel.length) {
+          var matching = items.filter(function (li) { return coachSel.indexOf(String(li.coachId || inv.coachId || '')) >= 0; });
+          var any = items.some(function (li) { return li.coachId != null; });
+          if (matching.length) items = matching; else if (any) return;
+          var allCamp = items.length && items.every(isCampItem);
+          var coachId = allCamp ? null : (inv.coachId || (allItems.find(function (li) { return li.coachId; }) || {}).coachId || null);
+          var onLine = allItems.some(function (li) { return coachSel.indexOf(String(li.coachId || '')) >= 0; });
+          var onInvoice = coachSel.indexOf(String(coachId || '')) >= 0;
+          if (!onLine && !onInvoice) return;
+        }
+        ids.push(inv.id);
+      });
+      return ids.join(',');
+    };
+    eq(run({}), '1,2,3,4', 'msel: empty filters = all');
+    eq(run({ methods: ['cash', 'card'] }), '1,2', 'msel: methods match ANY of [cash,card]');
+    eq(run({ categories: ['Court Rental'] }), '3', 'msel: single category');
+    eq(run({ coachIds: ['5', '6'] }), '1,2', 'msel: coaches match ANY; no-coach invoices excluded');
+    eq(run({ activities: ['__camp__'] }), '4', 'msel: Summer Camp activity only');
+  })();
+  // Camp invoice validity = start + calendar-days of the duration, not the class count
+  (function () {
+    var PRICES = [{ label: '2 months', days: 60, price: 3000 }, { label: '1 month', days: 30, price: 1750 }, { label: '1 week', days: 7, price: 650 }];
+    var campDaysForLabel = function (label) { var r = PRICES.find(function (p) { return p.label === label; }); return r ? r.days : 0; };
+    var addDays = function (d, n) { var dt = new Date(d + 'T00:00:00'); dt.setDate(dt.getDate() + n); return dt.toISOString().slice(0, 10); };
+    // "2 months" = 60 calendar days. 23 Jun → 22 Aug. Class-day count (44) is separate.
+    eq(addDays('2026-06-23', campDaysForLabel('2 months')), '2026-08-22', 'camp invoice: 2 months validity = 23 Jun → 22 Aug');
+    eq(addDays('2026-06-23', campDaysForLabel('1 month')), '2026-07-23', 'camp invoice: 1 month validity = +30 days');
+    // The recompute path: even if a stored end is wrong, label-days wins.
+    var sub = { durationLabel: '2 months', start: '2026-06-23', totalClasses: 44, end: '2026-08-05' };
+    var labelDays = campDaysForLabel(sub.durationLabel);
+    var endDate = labelDays > 0 ? addDays(sub.start, labelDays) : sub.end;
+    eq(endDate, '2026-08-22', 'camp invoice: recomputed end overrides wrong stored end');
+  })();
+  // Members list attendance cell uses the class-day LIMIT (10), not validity (14)
+  (function () {
+    // subClassLimit converts a stored validity number back to the camp class-day count.
+    eq(subClassLimit({ activity: 'Summer Camp', totalClasses: 14 }), 10, 'members cell: 2-week camp denominator = 10 (not 14)');
+    eq(subClassLimit({ activity: 'Summer Camp', durationLabel: '2 weeks', totalClasses: 14 }), 10, 'members cell: camp w/ label = 10');
+    eq(subClassLimit({ activity: 'Karate', totalClasses: 12 }), 12, 'members cell: non-camp unchanged (12)');
+    // So a member with 10 attended of a 2-week camp shows 10/10, not 10/14.
+    var attended = 10, limit = subClassLimit({ activity: 'Summer Camp', totalClasses: 14 });
+    eq(attended + '/' + limit, '10/10', 'members cell: shows 10/10 for a fully-attended 2-week camp');
+  })();
   // Camp recalc: legacy calendar counts are flagged and fixed to business days
   (function () {
     var savedM = state.members;

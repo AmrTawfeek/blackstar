@@ -1,4 +1,50 @@
 # Black Stars CRM
+Version 6.178.0 - FIX: members-list camp attendance shows class-days (10), not validity (14).
+
+## 6.178.0 note - members list camp denominator
+The Members list ATTENDANCE column showed a camp member's count over the calendar VALIDITY
+(e.g. 9/14, 10/14) instead of over the attendable class-day count (9/10, 10/10). A "2 weeks"
+camp = 14 calendar days of validity but 10 attendable class-days (Sun–Thu, 5/week).
+Fixed both the cell and the sort to use subClassLimit() (which converts a stored validity
+number back to the class-day count for Summer Camp; other sports use totalClasses as-is)
+and to window attendance to the period. This complements v6.170 (profile/history) and
+v6.177 (invoice validity date) — the members list was the remaining display spot. Rule,
+restated: ATTENDABLE days = business/class days (Sun–Thu); VALIDITY window = calendar days.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.177.0 - FIX: camp invoice validity = calendar days (60), not class count; bilingual line split.
+
+## 6.177.0 note
+Bug: a Summer Camp invoice's "Valid" window was driven by the class-day COUNT instead of
+the calendar VALIDITY. Example: a "2 months" camp starting 23 Jun showed expiry 05 Aug
+(~44 days = the attendance count) instead of 22 Aug (60 calendar days). Fixes:
+- autoExpiryFromRows now derives the camp window from the duration LABEL's calendar-days
+  (campDaysForLabel), e.g. "2 months" = 60, falling back to class count only as a last
+  resort. So new camp enrollments expire correctly (23 Jun → 22 Aug, 44 attendable days).
+- The printed invoice RECOMPUTES the camp "Valid" end from the duration label, so even
+  existing camp invoices with a wrong stored end now print the correct date.
+Also: the invoice line-item detail now SPLITS English and Arabic onto separate lines
+(count, validity, coach/issued) — English block (LTR) then Arabic block (RTL) — so parents
+can read each language cleanly instead of one mixed-direction line. No schema change
+(SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.176.0 - Transactions filters are now MULTI-SELECT (Category, Activity, Method, Coach).
+
+## 6.176.0 note - multi-select transaction filters
+The Category, Activity, Method, and Coach filters on the Transactions screen are now
+multi-select checkbox dropdowns. Each shows a button with the label + count (e.g.
+"Method (2)") that opens a checklist with All / Clear shortcuts; pick any combination and
+the table + totals update to match ANY of the selected values. An empty selection means
+"all" (no filter). The date preset stays single-select. Coach filtering still excludes
+standalone Summer Camp / rentals (no coach), and a single selected coach still shows that
+coach's prorated share of multi-sport invoices. CSV export and the "Has due" toggle are
+unaffected. Older saved filter state is migrated to the new array shape automatically.
+New reusable helpers: multiSelectHtml + bindMultiSelect. No schema change (SCHEMA_VERSION
+stays 9).
+
+# Black Stars CRM
 Version 6.175.0 - FIX: Back-button scroll restore targets the real scrolling element.
 
 ## 6.175.0 note - bug sweep
