@@ -1,4 +1,34 @@
 # Black Stars CRM
+Version 6.175.0 - FIX: Back-button scroll restore targets the real scrolling element.
+
+## 6.175.0 note - bug sweep
+Reviewed the recent changes (camp limits, paid/due, transactions filters, back button,
+blocked-save popup). Found and fixed one real bug:
+- BACK BUTTON scroll restore was reading/writing scrollTop on the <main> element, but most
+  pages scroll the document/window — so the saved position was often 0 and Back didn't
+  return to the same spot. Now it captures and restores the actual scroller (window scroll,
+  or the .main wrapper when that's what scrolls), using a double rAF so the page has laid
+  out before scrolling. Filters were already preserved; only the scroll position was off.
+Everything else checked out: paid/due proration is NaN-safe (zero-amount, no-line-items,
+overpaid all handled); coach filter correctly excludes Summer Camp and keeps legacy
+invoice-level coaches; camp class-limit windowing is per-activity; carry-forward and the
+new camp limit logic coexist; the blocked-save popup resolves all its helpers. No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.174.0 - Blocked-write POPUP when another session holds the lock.
+
+## 6.174.0 note - blocked-save popup
+When this device is read-only (another device holds the editing session) and the user
+tries to do a write action, the app now shows a clear POPUP instead of a small toast:
+"Sorry, you can't do this action right now because the editing session is held by [name]."
+- Admins get a "Take over session" button (switches the other device to read-only) plus OK.
+- Non-admin staff get OK only, with guidance to wait or ask an admin.
+The popup is bilingual, shows only one at a time, and is throttled so a burst of blocked
+saves doesn't stack popups. The red read-only top bar still shows as before. No schema
+change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.173.0 - Transactions Paid/Due columns + 'Has due' filter; in-app Back button everywhere.
 
 ## 6.173.0 note - paid/due + back navigation
