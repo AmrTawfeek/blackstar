@@ -2174,6 +2174,77 @@ ${seed}
     // Enrolment validity 30 → 105.
     eq(30 + days, 105, 'freeze: validity 30 + 75 = 105');
   })();
+  // Expense categories: retire Coach Pool/Commission, add Maintenance (idempotent)
+  (function () {
+    var cleanup = function (cats) {
+      var drop = ['coach pool', 'coach commission'];
+      cats = cats.filter(function (c) { return drop.indexOf(String(c).toLowerCase()) < 0; });
+      if (!cats.some(function (c) { return String(c).toLowerCase() === 'maintenance'; })) {
+        var idx = cats.findIndex(function (c) { return String(c).toLowerCase() === 'rent'; });
+        if (idx >= 0) cats.splice(idx + 1, 0, 'Maintenance'); else cats.unshift('Maintenance');
+      }
+      return cats;
+    };
+    var out = cleanup(['Equipment', 'Rent', 'Coach Pool', 'Coach Commission', 'Salary', 'Others']);
+    eq(out.indexOf('Coach Pool'), -1, 'expense cats: Coach Pool removed');
+    eq(out.indexOf('Coach Commission'), -1, 'expense cats: Coach Commission removed');
+    eq(out.indexOf('Maintenance') >= 0, true, 'expense cats: Maintenance added');
+    eq(out[out.indexOf('Rent') + 1], 'Maintenance', 'expense cats: Maintenance placed after Rent');
+    eq(cleanup(cleanup(['Rent', 'Coach Pool'])).filter(function (c) { return c === 'Maintenance'; }).length, 1, 'expense cats: idempotent (no duplicate Maintenance)');
+  })();
+  // Invoice export: Total / Paid / Due columns + totals row
+  (function () {
+    var invoicePaid = function (i) { return (i.payments || []).reduce(function (s, p) { return s + (p.amount || 0); }, 0); };
+    var invoiceBalance = function (i) { return Math.max(0, (i.amount || 0) - invoicePaid(i)); };
+    var invs = [
+      { ref: 'INV1', amount: 400, payments: [{ amount: 400 }] },
+      { ref: 'INV2', amount: 650, payments: [{ amount: 200 }] },
+      { ref: 'INV3', amount: 300, payments: [] },
+    ];
+    var st = 0, sp = 0, sd = 0;
+    invs.forEach(function (i) { st += i.amount; sp += invoicePaid(i); sd += invoiceBalance(i); });
+    eq(st, 1350, 'invoice export: total = 1350');
+    eq(sp, 600, 'invoice export: paid = 600');
+    eq(sd, 750, 'invoice export: due = 750');
+    eq(invoiceBalance(invs[0]), 0, 'invoice export: fully paid invoice has 0 due');
+  })();
+  // Commission start-date cutoff: subs/invoices before the cutoff earn nothing
+  (function () {
+    var commStart = '2026-06-01';
+    var counts = function (anchor) { return !(commStart && anchor && String(anchor).slice(0, 10) < commStart); };
+    eq(counts('2026-05-20'), false, 'comm cutoff: May sub excluded');
+    eq(counts('2026-06-01'), true, 'comm cutoff: 1 Jun sub included');
+    eq(counts('2026-06-15'), true, 'comm cutoff: mid-Jun sub included');
+    eq(counts('2026-05-31'), false, 'comm cutoff: 31 May excluded (day before)');
+    // Empty cutoff = everything counts.
+    var commStart2 = '';
+    eq(!(commStart2 && '2026-01-01' < commStart2), true, 'comm cutoff: empty cutoff counts all dates');
+  })();
+  // memberOutstanding must skip DELETED invoices (so Due Payment matches Transactions)
+  (function () {
+    var invoicePaid = function (i) { return i.amountPaid != null ? i.amountPaid : (i.amount || 0); };
+    var invoiceBalance = function (i) { return Math.max(0, (i.amount || 0) - invoicePaid(i)); };
+    var invoices = [
+      { customerId: 1, category: 'Membership', amount: 1000, amountPaid: 300 },           // due 700
+      { customerId: 1, category: 'Membership', amount: 500, amountPaid: 0, deleted: true }, // due 500 but deleted
+    ];
+    var outstanding = invoices.filter(function (i) { return !i.deleted && i.customerId === 1 && (i.category || 'Membership') === 'Membership'; }).reduce(function (s, i) { return s + invoiceBalance(i); }, 0);
+    eq(outstanding, 700, 'memberOutstanding: skips deleted invoice (700, not 1200)');
+  })();
+  // Due Payment must count ALL categories (not just Membership) so it reconciles with Transactions
+  (function () {
+    var invoicePaid = function (i) { return (i.payments || []).reduce(function (s, p) { return s + (p.amount || 0); }, 0); };
+    var invoiceBalance = function (i) { return Math.max(0, (i.amount || 0) - invoicePaid(i)); };
+    var invoices = [
+      { customerId: 1, category: 'Summer Camp', amount: 1100, payments: [{ amount: 650 }] }, // due 450, non-Membership
+      { customerId: 2, category: 'Membership', amount: 2400, payments: [{ amount: 500 }] },   // due 1900
+      { customerId: 3, category: 'Summer Camp', switchCredit: true, amount: 200, payments: [] }, // excluded by switchCredit
+    ];
+    var membershipOnly = invoices.filter(function (i) { return (i.category || 'Membership') === 'Membership' && !i.switchCredit; }).reduce(function (s, i) { return s + invoiceBalance(i); }, 0);
+    var allDue = invoices.filter(function (i) { return !i.switchCredit; }).reduce(function (s, i) { return s + invoiceBalance(i); }, 0);
+    eq(membershipOnly, 1900, 'due recon: old Membership-only basis = 1900 (under-counts)');
+    eq(allDue, 2350, 'due recon: all-category basis = 2350 (includes the camp 450)');
+  })();
   // Camp recalc: legacy calendar counts are flagged and fixed to business days
   (function () {
     var savedM = state.members;

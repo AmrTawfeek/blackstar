@@ -1,4 +1,97 @@
 # Black Stars CRM
+Version 6.195.0 - Salary commission: configurable start-date cutoff (default 1 Jun 2026).
+
+## 6.195.0 note - commission start date
+Added a configurable "Commission from" date on the Salaries screen. Commission is now only
+earned on memberships dated ON OR AFTER this date — invoices/subscriptions before it earn no
+commission. The anchor is the subscription start date (else the invoice date). Default is
+1 June 2026; an admin can change it (or clear it for no cutoff) from the Salaries toolbar.
+Only COMMISSION is affected — fixed monthly salary applies normally regardless of the cutoff.
+Applies to both attendance and payment commission bases. No schema change (SCHEMA_VERSION 9).
+
+### How salaries are calculated (for reference)
+Salary = Fixed monthly (per coach, from Team page) + Commission.
+Commission (attendance basis): per membership line for the coach, perClass = fee ÷ total
+classes; the coach earns perClass × classes attended that month; the unattended remainder is
+pending while active and trued-up in full in the month the membership expires. Summer Camp
+earns no commission; frozen memberships don't true-up until they end; switch-credits and
+no-class-count memberships pay the full fee in their month. The new cutoff filters which
+memberships are eligible by date before any of this runs.
+
+# Black Stars CRM
+Version 6.194.0 - FIX: deleted invoices no longer inflate a member's outstanding balance.
+
+## 6.194.0 note - Due Payment vs Transactions mismatch
+memberOutstanding() (used by the Due Payment screen, member profiles and the dashboard) was
+NOT excluding DELETED invoices, while the Transactions screen does. So a cancelled/refunded
+invoice that still had an unpaid balance was wrongly counted toward a member's due — making
+the Due Payment total disagree with Transactions. Fixed: memberOutstanding now skips deleted
+invoices, so both screens use the same basis.
+Note on remaining differences: the two screens still scope differently by design — Due Payment
+shows ALL-TIME outstanding per member, while Transactions shows due for the CURRENT filter
+(e.g. "This month"). With the same filters they now reconcile. No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
+Version 6.193.0 - FIX: Due Payment total now matches the Transactions due (counts all categories).
+
+## 6.193.0 note - due-amount reconciliation
+The Due Payment screen and the Transactions screen disagreed on total due. Cause: Due Payment
+only counted invoices in the 'Membership' category, while Transactions counts every category.
+So members who owed money on a NON-Membership invoice (e.g. a camp/other invoice, or one with
+a different/blank category) were missing from Due Payment and its total — under-counting the
+real outstanding balance.
+Fix: Due Payment now counts ALL outstanding invoice balances per member (any category),
+excluding only switch-credit adjustments, exactly like the Transactions due total. The
+reminder amounts use the same basis. The two screens now reconcile (allowing for the
+Transactions date filter — Due Payment is all-time, Transactions can be filtered to a month).
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.192.0 - Invoice export: Total, Paid, and Due columns.
+
+## 6.192.0 note - invoice export amounts
+The invoice CSV export now shows three amount columns instead of a single "Amount":
+- Total (the invoice amount)
+- Paid (sum of recorded payments)
+- Due (remaining balance, never negative)
+A TOTAL row is appended at the bottom summing Total / Paid / Due across the exported set.
+The export still respects the current invoice filters. No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
+Version 6.191.0 - Expense categories: drop Coach Pool / Coach Commission, add Maintenance.
+
+## 6.191.0 note - expense category update
+Removed "Coach Pool" and "Coach Commission" from the expense categories (coach payouts are
+handled on the Salaries screen, not as manual expenses) and added "Maintenance" (placed after
+Rent). The default list is updated, and a one-time, non-destructive cleanup also fixes any
+existing saved category list on load — it removes the two coach categories and adds
+Maintenance if missing. EXISTING expenses already tagged with the old categories keep their
+saved label; only the selectable dropdown changes, so no historical data is lost. Idempotent.
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.190.0 - All / Clear shortcuts on every multi-select filter dropdown.
+
+## 6.190.0 note - consistent All / Clear
+Added "All" and "Clear" shortcut buttons inside every multi-select filter menu so they're
+consistent across the app:
+- Members list: Status, Sport, Coach, Nationality menus now have an All / Clear header.
+- Class Schedule: Coach, Sport and Day menus now have an "All" button (Clear was already there).
+- Transactions: Category, Activity, Method, Coach already had All / Clear (unchanged).
+"All" ticks every option; "Clear" unticks all (which means "no filter" = show everything).
+No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
+Version 6.189.0 - Freeze a member straight from the Members list (admin).
+
+## 6.189.0 note - freeze from members list
+Added an admin-only "❄️ Freeze" button to the Members list selection bar, next to "Add to
+family". Select exactly one member and the Freeze button appears; clicking it opens the full
+freeze dialog (with the date-range option added in v6.188), so you can freeze without opening
+the member's profile first. The button shows only for a single selection (freeze is a per-member
+action) and only for admins. No schema change (SCHEMA_VERSION stays 9).
+
+# Black Stars CRM
 Version 6.188.0 - Freeze: pick a date range + freeze now updates validity too.
 
 ## 6.188.0 note - freeze date range + validity sync

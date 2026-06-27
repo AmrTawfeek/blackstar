@@ -1055,6 +1055,9 @@ PAGES.members = (main) => {
       // "Add to family" only makes sense for 2+ members — hide it for a single selection.
       const famBtn = $('#members-bulk-family');
       if (famBtn) famBtn.style.display = selected.size >= 2 ? '' : 'none';
+      // "Freeze" is a single-member action — show it only when exactly one is selected.
+      const frzBtn = $('#members-bulk-freeze');
+      if (frzBtn) frzBtn.style.display = selected.size === 1 ? '' : 'none';
       const pageIds = rows.map(m => m.id);
       const sa = $('#members-select-all');
       if (sa) {
@@ -1149,6 +1152,7 @@ PAGES.members = (main) => {
         <span style="font-size:16px">☑️</span>
         <div style="flex:1;font-size:13px;font-weight:600"><span id="members-bulk-count">0</span> selected</div>
         ${isViewerRole() ? '' : `<button class="btn ghost sm" id="members-bulk-family" title="Group the selected members under one family/household">👨‍👩‍👧 Add to family</button>
+        ${currentRole() === 'admin' ? `<button class="btn ghost sm" id="members-bulk-freeze" title="Freeze the selected member (pause membership and shift expiry)">❄️ Freeze</button>` : ''}
         <button class="btn ghost sm" id="members-bulk-export" title="Export the selected members to CSV">📥 Export selected</button>
         <button class="btn ghost sm" id="members-bulk-archive" title="Archive (soft-delete) the selected members" style="color:var(--red)">🗑 Archive selected</button>`}
         <button class="btn ghost sm" id="members-bulk-clear">Clear</button>
@@ -1161,6 +1165,7 @@ PAGES.members = (main) => {
             <span style="opacity:.6">▾</span>
           </button>
           <div id="filter-status-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:170px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            <div style="display:flex;justify-content:space-between;padding:2px 6px 6px;border-bottom:1px solid var(--border);margin-bottom:4px"><button type="button" class="mfilter-all" data-cb="filter-status-cb" data-group="statuses" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">All</button><button type="button" class="mfilter-none" data-cb="filter-status-cb" data-group="statuses" style="background:none;border:none;color:var(--text-mute);font-size:12px;cursor:pointer">Clear</button></div>
             ${['Active', 'Completed', 'Frozen', 'Expired', 'Withdrawn', 'Archived'].map(st => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-status-cb" value="${st}" ${(filter.statuses||[]).includes(st) ? 'checked' : ''} /> ${({ Frozen: '❄️ Frozen', Withdrawn: '↩ Withdrawn', Archived: '📦 Archived' }[st] || st)}</label>`).join('')}
           </div>
         </div>
@@ -1170,6 +1175,7 @@ PAGES.members = (main) => {
             <span style="opacity:.6">▾</span>
           </button>
           <div id="filter-sport-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            <div style="display:flex;justify-content:space-between;padding:2px 6px 6px;border-bottom:1px solid var(--border);margin-bottom:4px"><button type="button" class="mfilter-all" data-cb="filter-sport-cb" data-group="sports" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">All</button><button type="button" class="mfilter-none" data-cb="filter-sport-cb" data-group="sports" style="background:none;border:none;color:var(--text-mute);font-size:12px;cursor:pointer">Clear</button></div>
             ${SPORTS.map(s => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-sport-cb" value="${escapeHtml(s)}" ${(filter.sports||[]).includes(s) ? 'checked' : ''} /> ${escapeHtml(s)}</label>`).join('')}
           </div>
         </div>
@@ -1179,6 +1185,7 @@ PAGES.members = (main) => {
             <span style="opacity:.6">▾</span>
           </button>
           <div id="filter-coach-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            <div style="display:flex;justify-content:space-between;padding:2px 6px 6px;border-bottom:1px solid var(--border);margin-bottom:4px"><button type="button" class="mfilter-all" data-cb="filter-coach-cb" data-group="coaches" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">All</button><button type="button" class="mfilter-none" data-cb="filter-coach-cb" data-group="coaches" style="background:none;border:none;color:var(--text-mute);font-size:12px;cursor:pointer">Clear</button></div>
             ${(() => {
               const cbHtml = (c, faded) => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px${faded ? ';opacity:.72' : ''}"><input type="checkbox" class="filter-coach-cb" value="${c.id}" ${(filter.coaches || []).map(String).includes(String(c.id)) ? 'checked' : ''} /> ${escapeHtml(c.name)}${faded ? ' <span class="text-mute" style="font-size:10px">(former)</span>' : ''}</label>`;
               const act = state.coaches.filter(c => isCoachActive(c));
@@ -1195,6 +1202,7 @@ PAGES.members = (main) => {
             <span style="opacity:.6">▾</span>
           </button>
           <div id="filter-nat-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            <div style="display:flex;justify-content:space-between;padding:2px 6px 6px;border-bottom:1px solid var(--border);margin-bottom:4px"><button type="button" class="mfilter-all" data-cb="filter-nat-cb" data-group="nationalities" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">All</button><button type="button" class="mfilter-none" data-cb="filter-nat-cb" data-group="nationalities" style="background:none;border:none;color:var(--text-mute);font-size:12px;cursor:pointer">Clear</button></div>
             ${[...new Set(state.members.map(m => m.nationality).filter(Boolean))].sort().map(n => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-nat-cb" value="${escapeHtml(n)}" ${(filter.nationalities||[]).includes(n) ? 'checked' : ''} /> ${escapeHtml(n)}</label>`).join('') || '<div class="text-mute" style="font-size:12px;padding:4px">No nationalities recorded</div>'}
           </div>
         </div>
@@ -1250,13 +1258,19 @@ PAGES.members = (main) => {
     if (!btn || !menu) return;
     btn.addEventListener('click', e => { e.stopPropagation(); menu.style.display = menu.style.display === 'none' ? 'block' : 'none'; });
     document.addEventListener('click', e => { if (!btn.contains(e.target) && !menu.contains(e.target)) menu.style.display = 'none'; });
-    $$('.' + cbClass).forEach(cb => cb.addEventListener('change', () => {
+    const apply = () => {
       filter[key] = $$('.' + cbClass).filter(x => x.checked).map(x => x.value);
       const n = filter[key].length;
       const lab = $('#' + labelId);
       if (lab) lab.textContent = (labelId === 'filter-nat-label' ? '🌍 ' : '') + (n === 0 ? allText : (n === 1 ? oneFmt(filter[key][0]) : n + ' ' + (key === 'statuses' ? 'statuses' : key === 'coaches' ? 'coaches' : key === 'nationalities' ? 'nationalities' : 'selected')));
       pg.page = 1; refreshAndSave();
-    }));
+    };
+    $$('.' + cbClass).forEach(cb => cb.addEventListener('change', apply));
+    // All / Clear shortcuts inside this menu.
+    const allBtn = menu.querySelector('.mfilter-all');
+    const noneBtn = menu.querySelector('.mfilter-none');
+    if (allBtn) allBtn.addEventListener('click', e => { e.stopPropagation(); $$('.' + cbClass).forEach(cb => cb.checked = true); apply(); });
+    if (noneBtn) noneBtn.addEventListener('click', e => { e.stopPropagation(); $$('.' + cbClass).forEach(cb => cb.checked = false); apply(); });
   }
   wireMultiFilter('statuses', 'filter-status-cb', 'filter-status-btn', 'filter-status-menu', 'filter-status-label', 'All status', v => v);
   wireMultiFilter('sports', 'filter-sport-cb', 'filter-sport-btn', 'filter-sport-menu', 'filter-sport-label', 'All sports', v => v);
@@ -1289,6 +1303,12 @@ PAGES.members = (main) => {
     const ids = state.members.filter(m => selected.has(m.id) && !m.deleted).map(m => m.id);
     if (!ids.length) { toast('No active members selected', 'error'); return; }
     assignFamilyBulk(ids);
+  });
+  $('#members-bulk-freeze')?.addEventListener('click', () => {
+    if (currentRole() !== 'admin') { toast('Only an admin can freeze a membership', 'error'); return; }
+    const list = state.members.filter(m => selected.has(m.id) && !m.deleted);
+    if (list.length !== 1) { toast('Select exactly one member to freeze', 'error'); return; }
+    freezeMember(list[0].id);   // opens the freeze dialog (date-range supported)
   });
   $('#members-bulk-archive')?.addEventListener('click', () => {
     const list = state.members.filter(m => selected.has(m.id) && !m.deleted);
@@ -5552,16 +5572,21 @@ PAGES.duepayment = (main) => {
   const all = [];
   for (const m of state.members) {
     if (m.deleted) continue;
-    const invs = (state.invoices || []).filter(i => !i.deleted && i.customerId === m.id && (i.category || 'Membership') === 'Membership');
+    // Count ANY outstanding invoice balance — not just 'Membership'. Restricting to
+    // Membership made this screen under-count vs the Transactions screen (which counts
+    // every category), so members who owed on a non-Membership invoice were missing.
+    // Exclude switch-credit adjustments (not real money owed).
+    const invs = (state.invoices || []).filter(i => !i.deleted && i.customerId === m.id && !i.switchCredit);
     if (!invs.length) continue;
     const total = invs.reduce((s, i) => s + invoiceBalance(i), 0);
     if (total <= 0.001) continue;
-    // Per-sport split (use the invoice's sport, or its line item's sport).
+    // Per-sport / per-category split (use the invoice's sport, else its line item's
+    // sport, else the category label).
     const bySport = {};
     for (const inv of invs) {
       const bal = invoiceBalance(inv);
       if (bal <= 0.001) continue;
-      const sp = inv.sport || (Array.isArray(inv.lineItems) && inv.lineItems[0] && inv.lineItems[0].sport) || (inv.description || 'Other');
+      const sp = inv.sport || (Array.isArray(inv.lineItems) && inv.lineItems[0] && inv.lineItems[0].sport) || inv.category || (inv.description || 'Other');
       bySport[sp] = (bySport[sp] || 0) + bal;
     }
     all.push({ m, total, bySport, st: memberStatus(m), expiry: m.expiryDate, lastReminded: m.lastRemindedAt || null, remind: reminderInfo(m) });
@@ -5594,7 +5619,7 @@ PAGES.duepayment = (main) => {
 
   // Compute a member's outstanding membership balance (same basis as the rows above).
   const memberDue = (mem) => (state.invoices || [])
-    .filter(i => !i.deleted && i.customerId === mem.id && (i.category || 'Membership') === 'Membership')
+    .filter(i => !i.deleted && i.customerId === mem.id && !i.switchCredit)
     .reduce((s, i) => s + invoiceBalance(i), 0);
 
   // Build the warm, academy-style reminder (Arabic first, then English). When the member
@@ -8067,7 +8092,7 @@ PAGES.schedule = (main) => {
               const row = (c, faded) => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px${faded ? ';opacity:.72' : ''}"><input type="checkbox" class="sch-coach-cb" value="${c.id}" ${filter.coaches.includes(c.id) ? 'checked' : ''} /> ${escapeHtml(c.name)}${faded ? ' <span class="text-mute" style="font-size:10px">(inactive)</span>' : ''}</label>`;
               return active.map(c => row(c, false)).join('') + (inactive.length ? '<div style="height:1px;background:var(--border);margin:6px 0"></div>' + inactive.map(c => row(c, true)).join('') : '');
             })()}
-            <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:flex-end"><button type="button" class="btn ghost sm" id="sch-filter-coach-clear">Clear</button></div>
+            <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:space-between"><button type="button" class="btn ghost sm" id="sch-filter-coach-all">All</button><button type="button" class="btn ghost sm" id="sch-filter-coach-clear">Clear</button></div>
           </div>
         </div>`}
         <div style="position:relative">
@@ -8077,7 +8102,7 @@ PAGES.schedule = (main) => {
           </button>
           <div id="sch-filter-sport-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
             ${scheduleSports.map(s => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="sch-sport-cb" value="${escapeHtml(s)}" ${filter.sports.includes(s) ? 'checked' : ''} /> ${sportEmoji(s)} ${escapeHtml(s)}</label>`).join('')}
-            <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:flex-end"><button type="button" class="btn ghost sm" id="sch-filter-sport-clear">Clear</button></div>
+            <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:space-between"><button type="button" class="btn ghost sm" id="sch-filter-sport-all">All</button><button type="button" class="btn ghost sm" id="sch-filter-sport-clear">Clear</button></div>
           </div>
         </div>
         <div style="position:relative">
@@ -8087,7 +8112,7 @@ PAGES.schedule = (main) => {
           </button>
           <div id="sch-filter-day-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:170px;box-shadow:0 8px 24px rgba(0,0,0,.4)">
             ${DAYS.map(d => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="sch-day-cb" value="${d.key}" ${filter.days.includes(d.key) ? 'checked' : ''} /> ${d.label.charAt(0) + d.label.slice(1).toLowerCase()}</label>`).join('')}
-            <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:flex-end"><button type="button" class="btn ghost sm" id="sch-filter-day-clear">Clear</button></div>
+            <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:space-between"><button type="button" class="btn ghost sm" id="sch-filter-day-all">All</button><button type="button" class="btn ghost sm" id="sch-filter-day-clear">Clear</button></div>
           </div>
         </div>
         ${(filter.coaches.length || filter.sports.length || filter.days.length) ? `<button type="button" class="btn ghost sm" id="sch-filter-reset">✕ ${t('Clear filters', 'مسح الفلاتر')}</button>` : ''}
@@ -8169,6 +8194,10 @@ PAGES.schedule = (main) => {
     updateFilterLabels(); refresh();
   }));
   $('#sch-filter-day-clear')?.addEventListener('click', () => { filter.days = []; $$('.sch-day-cb').forEach(cb => cb.checked = false); updateFilterLabels(); refresh(); });
+  // "All" shortcuts for the schedule filters.
+  $('#sch-filter-coach-all')?.addEventListener('click', () => { filter.coaches = $$('.sch-coach-cb').map(cb => parseInt(cb.value)); $$('.sch-coach-cb').forEach(cb => cb.checked = true); updateFilterLabels(); refresh(); });
+  $('#sch-filter-sport-all')?.addEventListener('click', () => { filter.sports = $$('.sch-sport-cb').map(cb => cb.value); $$('.sch-sport-cb').forEach(cb => cb.checked = true); updateFilterLabels(); refresh(); });
+  $('#sch-filter-day-all')?.addEventListener('click', () => { $$('.sch-day-cb').forEach(cb => cb.checked = true); filter.days = DAYS.map(d => d.key); updateFilterLabels(); refresh(); });
   // Reset all
   $('#sch-filter-reset')?.addEventListener('click', () => { filter.coaches = []; filter.sports = []; filter.days = []; $$('.sch-coach-cb, .sch-sport-cb, .sch-day-cb').forEach(cb => cb.checked = false); updateFilterLabels(); refresh(); });
 
@@ -8831,9 +8860,14 @@ PAGES.invoices = (main) => {
     // Export the CURRENT filtered set (was: all invoices regardless of filter)
     const all = applyFilter().sort((a,b) => b.date.localeCompare(a.date));
     if (!all.length) { toast('No invoices to export', 'error'); return; }
-    const rows = [['Ref','Date','Month','Category','Customer','Mobile','QID','Activity','Coach','Description','Method','Amount']];
+    const rows = [['Ref','Date','Month','Category','Customer','Mobile','QID','Activity','Coach','Description','Method','Total','Paid','Due']];
+    let sumTotal = 0, sumPaid = 0, sumDue = 0;
     for (const i of all) {
       const cust = customerInfo(i);
+      const total = Number(i.amount) || 0;
+      const paid = (typeof invoicePaid === 'function') ? invoicePaid(i) : 0;
+      const due = (typeof invoiceBalance === 'function') ? invoiceBalance(i) : Math.max(0, total - paid);
+      sumTotal += total; sumPaid += paid; sumDue += Math.max(0, due);
       rows.push([
         i.ref || `#${i.id}`,
         i.date || '',
@@ -8846,9 +8880,13 @@ PAGES.invoices = (main) => {
         i.coach || '',
         i.description || '',
         i.method || '',
-        i.amount || 0,
+        total,
+        paid,
+        Math.max(0, due),
       ]);
     }
+    // Totals row at the bottom.
+    rows.push(['', '', '', '', '', '', '', '', '', '', 'TOTAL', sumTotal, sumPaid, sumDue]);
     downloadFile(`invoices-${TODAY}.csv`, rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n'), 'text/csv');
     toast(`Exported ${all.length} invoice${all.length === 1 ? '' : 's'}`);
   });
@@ -11756,6 +11794,10 @@ PAGES.salaries = (main) => {
         <select id="sal-month" class="btn ghost" ${filter.settleDate ? 'disabled style="opacity:.5"' : ''}>
           ${months.map(m => `<option value="${m}" ${filter.month === m ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
         </select>
+        <span style="opacity:.35">|</span>
+        <span style="font-size:12px;color:var(--text-mute)" title="Commission only counts memberships dated on or after this date. Fixed salary is not affected.">Commission from:</span>
+        <input type="date" id="sal-comm-start" value="${(state.settings && state.settings.commissionStartDate) || ''}" class="btn ghost" style="font-size:12px" title="Only memberships starting on or after this date earn commission. Leave empty for no cutoff. Fixed salary is unaffected." />
+        <span style="opacity:.35">|</span>
         <span style="font-size:12px;color:var(--text-mute)">or settle up to:</span>
         <input type="date" id="sal-date" class="btn ghost" value="${filter.settleDate || ''}" title="Calculate pay up to this date — e.g. a coach's last working day. Clear it to go back to the whole month." />
         <span id="sal-mode-note" style="font-size:11px;color:var(--accent-2);font-weight:600">${filter.settleDate ? '📅 Settlement — month up to ' + fmtDate(filter.settleDate) + ' only' : ''}</span>
@@ -11801,6 +11843,15 @@ PAGES.salaries = (main) => {
     save();
     refresh();
     toast('Commission basis: ' + (state.settings.commissionBasis === 'attendance' ? 'by attendance ✅' : 'by payment'));
+  });
+  const salCommStart = $('#sal-comm-start');
+  if (salCommStart) salCommStart.addEventListener('change', e => {
+    if (currentRole() !== 'admin') { toast('Only an admin can change the commission start date', 'error'); e.target.value = (state.settings && state.settings.commissionStartDate) || ''; return; }
+    if (!state.settings) state.settings = {};
+    state.settings.commissionStartDate = e.target.value || '';
+    save();
+    refresh();
+    toast(e.target.value ? `Commission counts from ${fmtDate(e.target.value)}` : 'Commission cutoff cleared (all dates count)');
   });
   const salDate = $('#sal-date');
   if (salDate) salDate.addEventListener('change', e => {
