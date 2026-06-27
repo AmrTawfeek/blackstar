@@ -1,4 +1,20 @@
 # Black Stars CRM
+Version 6.196.0 - Transactions: amount filters + net/gross due; Invoice: clearer validity, no camp coach.
+
+## 6.196.0 note - batch (items 1, 2, 4, 5 of 6)
+1. AMOUNT FILTERS on Transactions: pick a field (Due / Paid / Total), a preset (Any / >0 / =0),
+   and a min/max numeric range. Filters the list and totals live.
+2. NET vs GROSS DUE: a "Gross due / Net due" selector. Gross due = full unpaid balance; Net due
+   = balance minus the member's carry-forward credits/advances for that activity. The footer,
+   count line, and per-row due cell all reflect the chosen mode (gross shown on hover when net).
+4. INVOICE VALIDITY now prints BOLD and prominent (📅 Valid: …) in both English and Arabic, so
+   it doesn't get confused with other dates on the invoice.
+5. SUMMER CAMP INVOICES no longer print a coach line (camp has no coach).
+
+Items 3 (installment payment history on the invoice) and 6 (one-row-per-activity grouping on
+Transactions) are larger and will follow as separate builds. No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
 Version 6.195.0 - Salary commission: configurable start-date cutoff (default 1 Jun 2026).
 
 ## 6.195.0 note - commission start date

@@ -10750,22 +10750,26 @@ window.printInvoicePDF = function(id) {
         // can read each language clearly without mixed-direction clutter.
         const startEn = period && period.start ? fmtDate(period.start) : '';
         const endEn = period && period.end ? fmtDate(period.end) : '—';
+        // Validity is shown bold/prominent so it doesn't get confused with other dates.
+        const validEn = period && period.start ? `<div class="item-valid" dir="ltr" style="font-weight:700;color:#111">📅 Valid: ${startEn} → ${endEn}</div>` : '';
+        const validAr = period && period.start ? `<div class="item-valid" dir="rtl" style="font-weight:700;color:#111">📅 صالح: ${startEn} ← ${endEn}</div>` : '';
         const enLines = [
           `${count} ${unitEn}`,
-          period && period.start ? `Valid: ${startEn} → ${endEn}` : '',
-          `Coach: ${escapeHtml(li.coach || '—')} · Issued ${issueDate}`,
+          // Summer Camp has no coach → don't print a coach line for it.
+          isCamp ? `Issued ${issueDate}` : `Coach: ${escapeHtml(li.coach || '—')} · Issued ${issueDate}`,
         ].filter(Boolean).map(x => `<div class="item-sub" dir="ltr">${x}</div>`).join('');
         const arLines = [
           `${count} ${unitAr}`,
-          period && period.start ? `صالح: ${startEn} ← ${endEn}` : '',
-          `المدرب: ${escapeHtml(li.coach || '—')} · صدرت ${issueDate}`,
+          isCamp ? `صدرت ${issueDate}` : `المدرب: ${escapeHtml(li.coach || '—')} · صدرت ${issueDate}`,
         ].filter(Boolean).map(x => `<div class="item-sub" dir="rtl" style="color:var(--muted,#888)">${x}</div>`).join('');
         return `
       <tr>
         <td>
           <div class="item-desc">${escapeHtml(li.sport)}${isCamp ? '' : ' subscription'}</div>
+          ${validEn}
           ${enLines}
           <div style="height:3px"></div>
+          ${validAr}
           ${arLines}
         </td>
         <td class="right">${count}</td>
@@ -10787,7 +10791,7 @@ window.printInvoicePDF = function(id) {
             const unitEn = isCamp ? (count === 1 ? 'day' : 'days') : (count === 1 ? 'class' : 'classes');
             const unitAr = isCamp ? 'يوم' : 'حصة';
             const countLine = count ? `<div class="item-sub" dir="ltr">${count} ${unitEn} · <bdi>${count} ${unitAr}</bdi></div>` : '';
-            const validityLine = sub.start ? `<div class="item-sub" dir="ltr">Valid · <bdi>صالح</bdi>: ${fmtDate(sub.start)} → ${sub.end ? fmtDate(sub.end) : '—'}</div>` : '';
+            const validityLine = sub.start ? `<div class="item-valid" dir="ltr" style="font-weight:700;color:#111">📅 Valid · <bdi>صالح</bdi>: ${fmtDate(sub.start)} → ${sub.end ? fmtDate(sub.end) : '—'}</div>` : '';
             return countLine + validityLine;
           })()}
           <div class="item-sub">Issued on ${issueDate}</div>
@@ -22749,7 +22753,7 @@ function bindMultiSelect(id, onChange) {
 
 PAGES.transactions = (main) => {
   const isoOf = x => x.toISOString().slice(0, 10);
-  if (!window._txnState) window._txnState = { preset: 'this_month', from: '', to: '', categories: [], activities: [], methods: [], coachIds: [], hasDue: false, search: '' };
+  if (!window._txnState) window._txnState = { preset: 'this_month', from: '', to: '', categories: [], activities: [], methods: [], coachIds: [], hasDue: false, dueMode: 'gross', amountField: 'due', amountPreset: 'any', amountMin: '', amountMax: '', search: '' };
   // Migrate older single-value state shape → arrays (so a returning session doesn't break).
   (() => {
     const s = window._txnState;
@@ -22790,7 +22794,7 @@ PAGES.transactions = (main) => {
     };
     const txns = [];
     const byCategory = {};
-    let grand = 0, grandPaid = 0, grandDue = 0;
+    let grand = 0, grandPaid = 0, grandDue = 0, grandNetDue = 0;
     for (const inv of (state.invoices || [])) {
       if (inv.deleted) continue;
       if (!inRange(inv)) continue;
@@ -22849,23 +22853,44 @@ PAGES.transactions = (main) => {
       const fullPaid = (typeof invoicePaid === 'function') ? invoicePaid(inv) : (Number(inv.amount) || 0);
       const share = fullInvAmount > 0 ? (invAmount / fullInvAmount) : 1;
       const paid = Math.round(fullPaid * share);
-      const due = Math.max(0, invAmount - paid);
-      // "Has due" filter — only transactions still owing money.
-      if (st.hasDue && due <= 0) continue;
+      const due = Math.max(0, invAmount - paid);   // gross due = full unpaid balance
+      // Net due = gross due minus any carry-forward credit/advance the member holds
+      // for this activity (credits reduce what's really owed).
+      let netDue = due;
+      if (due > 0 && inv.customerId) {
+        const mm = (state.members || []).find(x => x.id === inv.customerId);
+        if (mm) {
+          let credit = 0;
+          const sportsHere = items.map(li => li.sport).filter(Boolean);
+          for (const sp of (sportsHere.length ? sportsHere : [inv.sport])) {
+            if (sp && typeof carryForwardCredit === 'function') credit += Math.max(0, carryForwardCredit(mm, sp) || 0);
+          }
+          netDue = Math.max(0, due - credit);
+        }
+      }
+      // "Has due" filter — only transactions still owing money (respects net/gross mode).
+      const dueForFilter = st.dueMode === 'net' ? netDue : due;
+      if (st.hasDue && dueForFilter <= 0) continue;
+      // Amount range/preset filter on the chosen field (total / paid / due).
+      const fieldVal = st.amountField === 'total' ? invAmount : st.amountField === 'paid' ? paid : dueForFilter;
+      if (st.amountPreset === 'has' && fieldVal <= 0) continue;
+      if (st.amountPreset === 'zero' && fieldVal > 0) continue;
+      if (st.amountMin !== '' && fieldVal < Number(st.amountMin)) continue;
+      if (st.amountMax !== '' && fieldVal > Number(st.amountMax)) continue;
       if (st.search) {
         const q = st.search.toLowerCase();
         const cust = customerInfo(inv);
         const phoneHit = phoneQueryMatches(cust.phone, st.search) || phoneQueryMatches(cust.phone2, st.search) || phoneQueryMatches(inv.customerPhone, st.search);
         if (!(customer.toLowerCase().includes(q) || ref.toLowerCase().includes(q) || sport.toLowerCase().includes(q) || phoneHit)) continue;
       }
-      txns.push({ id: inv.id, ref, date: (inv.date || '').slice(0, 10), category: cat, customer, sport, coach: coachName(displayCoachId) || '—', amount: invAmount, paid, due, method: inv.method || '' });
+      txns.push({ id: inv.id, ref, date: (inv.date || '').slice(0, 10), category: cat, customer, sport, coach: coachName(displayCoachId) || '—', amount: invAmount, paid, due, netDue, method: inv.method || '' });
       byCategory[cat] = byCategory[cat] || { total: 0, count: 0 };
       byCategory[cat].total += invAmount; byCategory[cat].count += 1;
       grand += invAmount;
-      grandPaid += paid; grandDue += due;
+      grandPaid += paid; grandDue += due; grandNetDue += netDue;
     }
     txns.sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id - a.id);
-    return { txns, byCategory, grand, grandPaid, grandDue, range };
+    return { txns, byCategory, grand, grandPaid, grandDue, grandNetDue, range };
   }
 
   function refresh() {
@@ -22891,16 +22916,18 @@ PAGES.transactions = (main) => {
         <td class="text-mute font-mono" style="font-size:11px">${escapeHtml(tx.ref)}</td>
         <td class="text-right num font-bold">${fmt(tx.amount)}</td>
         <td class="text-right num" style="color:var(--green)">${fmt(tx.paid)}</td>
-        <td class="text-right num" style="color:${tx.due > 0 ? 'var(--red)' : 'var(--text-mute)'};font-weight:${tx.due > 0 ? '700' : '400'}">${tx.due > 0 ? fmt(tx.due) : '—'}</td>
+        <td class="text-right num" style="color:${(st.dueMode === 'net' ? tx.netDue : tx.due) > 0 ? 'var(--red)' : 'var(--text-mute)'};font-weight:${(st.dueMode === 'net' ? tx.netDue : tx.due) > 0 ? '700' : '400'}" title="${(st.dueMode === 'net' && tx.netDue !== tx.due) ? t('Gross', 'إجمالي') + ': ' + fmt(tx.due) : ''}">${(st.dueMode === 'net' ? tx.netDue : tx.due) > 0 ? fmt(st.dueMode === 'net' ? tx.netDue : tx.due) : '—'}</td>
       </tr>`).join('') : `<tr><td colspan="10" class="empty"><div class="empty-icon">🧾</div>${t('No transactions match', 'لا توجد عمليات مطابقة')}</td></tr>`;
 
+    const dueShown = st.dueMode === 'net' ? grandNetDue : grandDue;
+    const dueLabel = st.dueMode === 'net' ? t('net due', 'صافي المتبقي') : t('due', 'متبقي');
     $('#txn-tfoot').innerHTML = `<tr style="border-top:2px solid var(--border);font-weight:800">
       <td colspan="7">${t('Total', 'الإجمالي')} · ${txns.length} ${t('transactions', 'عملية')}</td>
       <td class="text-right num">${fmt(grand)}</td>
       <td class="text-right num" style="color:var(--green)">${fmt(grandPaid)}</td>
-      <td class="text-right num" style="color:${grandDue > 0 ? 'var(--red)' : 'var(--text-mute)'}">${grandDue > 0 ? fmt(grandDue) : '—'}</td>
+      <td class="text-right num" style="color:${dueShown > 0 ? 'var(--red)' : 'var(--text-mute)'}" title="${st.dueMode === 'net' ? t('Gross due', 'إجمالي المتبقي') + ': ' + fmt(grandDue) : ''}">${dueShown > 0 ? fmt(dueShown) : '—'}</td>
     </tr>`;
-    $('#txn-count').textContent = `${txns.length} ${t('transactions', 'عملية')} · ${fmt(grand)} QAR${grandDue > 0 ? ` · ${t('due', 'متبقي')} ${fmt(grandDue)}` : ''}`;
+    $('#txn-count').textContent = `${txns.length} ${t('transactions', 'عملية')} · ${fmt(grand)} QAR${dueShown > 0 ? ` · ${dueLabel} ${fmt(dueShown)}` : ''}${(st.dueMode === 'net' && grandDue !== grandNetDue) ? ` (${t('gross', 'إجمالي')} ${fmt(grandDue)})` : ''}`;
     $('#txn-pagination').innerHTML = paginationBar(pg, txns.length, 'txn');
     bindPagination('txn', pg, txns.length, refresh);
     // custom range visibility
@@ -22974,6 +23001,24 @@ PAGES.transactions = (main) => {
           <input type="checkbox" id="txn-hasdue" ${st.hasDue ? 'checked' : ''} style="cursor:pointer" />
           <span>${t('Has due', 'عليها متبقٍ')}</span>
         </label>
+        <select id="txn-duemode" class="btn ghost" title="${t('Gross due = full unpaid balance. Net due = balance minus member credits/advances.', 'إجمالي المتبقي = كامل الرصيد غير المدفوع. صافي المتبقي = الرصيد مطروحاً منه أرصدة العميل.')}">
+          <option value="gross" ${st.dueMode === 'gross' ? 'selected' : ''}>${t('Gross due', 'إجمالي المتبقي')}</option>
+          <option value="net" ${st.dueMode === 'net' ? 'selected' : ''}>${t('Net due', 'صافي المتبقي')}</option>
+        </select>
+        <div style="display:flex;align-items:center;gap:4px" title="${t('Filter by amount range', 'تصفية حسب المبلغ')}">
+          <select id="txn-amtfield" class="btn ghost">
+            <option value="due" ${st.amountField === 'due' ? 'selected' : ''}>${t('Due', 'المتبقي')}</option>
+            <option value="paid" ${st.amountField === 'paid' ? 'selected' : ''}>${t('Paid', 'المدفوع')}</option>
+            <option value="total" ${st.amountField === 'total' ? 'selected' : ''}>${t('Total', 'الإجمالي')}</option>
+          </select>
+          <select id="txn-amtpreset" class="btn ghost">
+            <option value="any" ${st.amountPreset === 'any' ? 'selected' : ''}>${t('Any', 'الكل')}</option>
+            <option value="has" ${st.amountPreset === 'has' ? 'selected' : ''}>${t('> 0', '> 0')}</option>
+            <option value="zero" ${st.amountPreset === 'zero' ? 'selected' : ''}>${t('= 0', '= 0')}</option>
+          </select>
+          <input id="txn-amtmin" type="number" inputmode="numeric" placeholder="${t('min', 'الأدنى')}" value="${st.amountMin}" style="width:70px;padding:6px 8px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)" />
+          <input id="txn-amtmax" type="number" inputmode="numeric" placeholder="${t('max', 'الأقصى')}" value="${st.amountMax}" style="width:70px;padding:6px 8px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text)" />
+        </div>
         <div class="search"><input id="txn-search" type="text" placeholder="${t('Search customer / ref / sport…', 'بحث عميل / مرجع / رياضة…')}" value="${escapeHtml(st.search)}" /></div>
       </div>
       <div id="txn-summary" style="display:flex;flex-wrap:wrap;gap:6px;padding:0 2px 12px"></div>
@@ -22993,6 +23038,11 @@ PAGES.transactions = (main) => {
   bindMultiSelect('txn-cat', (vals) => { st.categories = vals; pg.page = 1; refresh(); });
   bindMultiSelect('txn-activity', (vals) => { st.activities = vals; pg.page = 1; refresh(); });
   $('#txn-hasdue')?.addEventListener('change', e => { st.hasDue = e.target.checked; pg.page = 1; refresh(); });
+  $('#txn-duemode')?.addEventListener('change', e => { st.dueMode = e.target.value; pg.page = 1; refresh(); });
+  $('#txn-amtfield')?.addEventListener('change', e => { st.amountField = e.target.value; pg.page = 1; refresh(); });
+  $('#txn-amtpreset')?.addEventListener('change', e => { st.amountPreset = e.target.value; pg.page = 1; refresh(); });
+  $('#txn-amtmin')?.addEventListener('input', e => { st.amountMin = e.target.value; pg.page = 1; refresh(); });
+  $('#txn-amtmax')?.addEventListener('input', e => { st.amountMax = e.target.value; pg.page = 1; refresh(); });
   bindMultiSelect('txn-method', (vals) => { st.methods = vals; pg.page = 1; refresh(); });
   bindMultiSelect('txn-coach', (vals) => { st.coachIds = vals; pg.page = 1; refresh(); });
   $('#txn-search').addEventListener('input', e => { st.search = e.target.value; pg.page = 1; refresh(); });

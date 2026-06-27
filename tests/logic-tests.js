@@ -2220,6 +2220,19 @@ ${seed}
     var commStart2 = '';
     eq(!(commStart2 && '2026-01-01' < commStart2), true, 'comm cutoff: empty cutoff counts all dates');
   })();
+  // Transactions: net due = gross due − credits; amount range filter
+  (function () {
+    var netDue = function (amount, paid, credit) { var due = Math.max(0, amount - paid); return Math.max(0, due - credit); };
+    eq(netDue(1850, 650, 0), 1200, 'txn: gross due = 1200 (no credit)');
+    eq(netDue(1850, 650, 200), 1000, 'txn: net due = 1000 (200 credit)');
+    eq(netDue(400, 400, 0), 0, 'txn: fully paid → 0 due');
+    eq(netDue(1000, 0, 1200), 0, 'txn: credit larger than due → net 0 (never negative)');
+    // Amount range filter on a field value.
+    var inRange = function (v, min, max) { return (min === '' || v >= min) && (max === '' || v <= max); };
+    eq(inRange(1200, 500, 1500), true, 'txn amount filter: 1200 in [500,1500]');
+    eq(inRange(1900, 500, 1500), false, 'txn amount filter: 1900 outside [500,1500]');
+    eq(inRange(650, 500, ''), true, 'txn amount filter: min only');
+  })();
   // memberOutstanding must skip DELETED invoices (so Due Payment matches Transactions)
   (function () {
     var invoicePaid = function (i) { return i.amountPaid != null ? i.amountPaid : (i.amount || 0); };
