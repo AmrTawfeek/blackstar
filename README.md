@@ -1,4 +1,138 @@
 # Black Stars CRM
+Version 6.207.0 - Invoice PDF: added a prominent bilingual "Finish your classes by this date" validity banner under the line items, listing each sport's start → end with the end date in bold red, plus an explicit forfeiture note (unused classes after expiry are forfeited, not carried over or refunded). Makes the validity window impossible to miss so members can't claim they didn't know.
+Version 6.206.0 - (1) Summer Camp hard-guarded to earn NO coach commission anywhere. (2) Expired members with ZERO attendance excluded from the coach report entirely. (3) NEW admin screen "Member Commission" (Insights): every member, per sport — coach, start, expiry, paid, attendance, commission — with month/all filter, totals, CSV export.
+Version 6.205.0 - Coach commission rule refined: ACTIVE members are now pro-rated by attendance too (attended ÷ total × fee). Completed = 100%; Expired with ≥1 attended class = 100%; everyone else (Active, Frozen, Expired-with-no-class) = pro-rated; zero attendance pays nothing. Lines with no class total to divide against fall back to full. Commission now depends on attendance for active members, so roll-call must stay current.
+Version 6.204.0 - Coach commission: frozen pro-rated by attendance, expired needs ≥1 class.
+
+## 6.204.0 note - attendance-aware coach commission
+Fixes coaches being paid the FULL fee for frozen members and for members who never attended.
+One shared rule (app.js `lineCommissionEligibility`) now governs commission everywhere — the
+Salaries payslip, the Revenue Detail report, `computeMonthlyPay`, and `coachEarnings`:
+- FROZEN member → commission is pro-rated by attendance: attended ÷ total × price × rate. A
+  frozen member with zero attendance earns the coach nothing (no classes delivered).
+- EXPIRED member → the coach gets the FULL fee only if the member attended at least one class;
+  an expired member who paid but never showed up is excluded (kills the "wrong member added then
+  deleted" phantom rows).
+- ACTIVE / COMPLETED members → full fee as before (their attendance grid may not be fully marked
+  yet, so they are not gated).
+The payslip now shows the pro-rated base with "of <full fee> · <attended>/<total> attended" on
+frozen rows so the reduction is auditable. Attendance basis (the alternative commission mode) is
+unchanged — it already pays per attended class.
+NOTE: this changes real payroll numbers for frozen/expired members. Verify against your live data.
+
+## 6.203.0 note - consistent revenue, cash labels, missing invoices
+Fixes the screens disagreeing on "revenue" and two misleading cash labels, and adds a Missing
+Invoices screen plus month filters.
+- ONE canonical month-revenue definition (app.js): monthInvoices / billedInMonth / collectedInMonth
+  / dueInMonth, scoped by the invoice BILLING MONTH (i.month) and valued at i.amount, excluding
+  soft-deleted. invoiceLineShares() attributes i.amount across line items proportionally so per-sport
+  / per-coach breakdowns always re-sum to the headline. Owner Dashboard, Club Revenue Summary,
+  Transactions and the Invoices screen now all use this — they read the same number (e.g. 91,530),
+  no more 92,480 vs 91,530 drift. Cause was: Transactions/Club Revenue scoped by invoice DATE and
+  summed LINE ITEMS, while Invoices/Dashboard scoped by i.month and summed i.amount; the Invoices
+  filter also wasn't excluding deleted.
+- Owner Dashboard: "Revenue this month" is now BILLED with "collected X · due Y" beneath it (was
+  showing collected only). "Cash in hand" now shows the REAL counted drawer (latest cash count) with
+  the computed net cash flow as sub-text — it no longer mislabels a computed figure as the drawer.
+  Added a month selector so revenue/dues/top-sports/new-members can be viewed for any month.
+- Cash Collection: "Total collected" relabelled "Total withdrawn" so it stops colliding with invoice
+  "collected".
+- Fixed 7 strings that rendered a literal \u2019 instead of an apostrophe.
+- NEW Missing Invoices screen (Insights): lists members who renewed/started this month (or whose
+  membership lapsed into it) with no membership invoice, plus members whose invoiced amount differs
+  from their expected renewal value. One-click "Generate latest invoice" per row, with a month filter.
+
+## 6.202.0 note - stale-version guard
+To stop an employee's STALE browser (running old cached code) from overwriting newer data, each
+save now stamps the running app version into the shared document. On load and on every remote
+update, the app compares: if the cloud carries a NEWER version than this browser is running, the
+browser is flagged STALE — saving is BLOCKED and a red "please refresh" banner appears with a
+Refresh button. A current/newer browser is unaffected.
+IMPORTANT: this is purely defensive — it only reads a version string and, at worst, blocks a save
+and shows a banner. It never reads, writes, or modifies any of your records, so existing data is
+untouched. It cannot remotely clear a browser cache (no web app can); it makes a stale tab harmless
+by refusing its writes until the user refreshes. No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
+Version 6.201.0 - FIX: deleted invoices could be resurrected by a stale device (soft-delete).
+
+## 6.201.0 note - invoice deletion is now sync-safe (soft-delete / tombstone)
+Bug: invoices were HARD-deleted (removed from the array). With the single shared document and
+the merge sync, a device that still had a STALE copy of the data (loaded before the deletions)
+could merge its old copy back into the cloud and RESURRECT the deleted invoices — because a
+removed record leaves no trace for the merge to honor.
+Fix: invoices are now SOFT-deleted — marked `deleted:true` with a `deletedAt` timestamp instead
+of being removed. The whole app already hides `deleted` invoices everywhere, so the user-visible
+behaviour is identical (the invoice disappears). But because the deletion is now a tracked change,
+the merge always lets the tombstone WIN over a stale "alive" copy — so a deleted invoice can no
+longer come back. Applies to single delete, bulk delete, and the originals consumed by an invoice
+merge. (Synthetic/temporary invoices used during creation are still hard-removed; they are never
+synced.) No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
+Version 6.200.0 - Due Payment: month filter (compare with Transactions); review notes.
+
+## 6.200.0 note - due payment month filter + reconciliation review
+Added a "Month" filter to the Due Payment screen (by invoice month, same basis as the
+Transactions/Invoices screens), so the due total can be compared with the Transactions screen
+at the SAME scope. Default is All months (unchanged behaviour).
+
+Code review of why Due Payment vs Transactions due can differ — THREE causes, not just scope:
+1. SCOPE: Transactions is usually filtered to a month; Due Payment was all-time. (Now fixable
+   with the new month filter.)
+2. SWITCH-CREDIT: Due Payment EXCLUDES switch-credit invoices (!i.switchCredit); the Transactions
+   screen does not exclude them by default — so a member with a switch-credit line can differ.
+3. PRORATION ROUNDING: Transactions prorates paid amounts with Math.round() per row when a
+   coach/activity filter narrows a multi-line invoice, which can shift due by a riyal or two.
+Per-member (Due Payment) vs per-invoice (Transactions) counting also makes the ROW COUNTS differ
+even when totals match. No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
+Version 6.199.0 - Dashboard revenue aligned to invoice-month basis (matches Invoices screen).
+
+## 6.199.0 note - revenue basis alignment
+The Dashboard "Revenue this month" (and 6-month trend, and Top sports) now count by INVOICE
+MONTH — the collected amount on invoices BILLED in that month — exactly matching the Invoices
+screen, which is the source of truth. Previously the Dashboard counted by PAYMENT DATE, so an
+installment paid in a later month, or a prior-month invoice paid this month, made the two
+screens disagree. Now they match.
+Labels added so the basis is explicit: the Dashboard revenue card notes "collected on invoices
+billed this month"; the Monthly Report's "Revenue by method" is labelled "collected this month"
+(it intentionally stays on PAYMENT-DATE basis, which is correct for cash-flow reconciliation
+against cash/bank — the Reconciliation screen uses the same basis). No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
+Version 6.198.0 - NEW: Bank Account screen + Reconciliation screen (leakage detection).
+
+## 6.198.0 note - bank account + reconciliation
+Two new admin screens under Finance:
+1. BANK ACCOUNT (🏦): "bank account credit" = all non-cash payments collected (card + transfer +
+   Fawran), auto-summed per month, with a per-payment ledger and a card/transfer/Fawran split.
+2. RECONCILIATION (⚖️): proves, per month, the identity
+     Revenue = cash taken by owner + cash in hand + expenses + non-cash collected
+   and flags LEAKAGE (any revenue that does not trace to a bucket). Two checks shown separately:
+   Check 1 — revenue reconciliation (the identity above; should be balanced / leakage ~0).
+   Check 2 — cash & bank position (expected cash in hand = cash collected − cash expenses − cash
+   taken; plus bank credit and still-due for context).
+   A non-zero leakage usually means a payment was logged with the wrong method, an expense is
+   missing, or cash was taken without recording it on Cash Collection.
+Month selector on both. No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
+Version 6.197.0 - Expenses: auto Bank Commission row (card payments × 2.25%), pinned to top.
+
+## 6.197.0 note - bank commission
+Card payments incur a 2.25% bank commission. The Expenses screen now keeps ONE "Bank Commission"
+expense per month, pinned to the TOP, auto-computed as that month's card-paid total × 2.25%
+(card method only — cash/transfer/fawran excluded). It's a REAL saved expense, so it counts in
+the monthly total and exports. Behaviour:
+- Auto-recomputes on every Expenses page load as new card payments come in.
+- EDITABLE: edit the amount to override; once edited it's locked (won't be recomputed) and shows
+  an "✏️ overridden" badge. A ↻ reset button returns it to the auto value.
+- Shows the card base it's calculated from (e.g. "1,100 card × 2.25%").
+"Bank Commission" added to the expense categories (pinned first). No schema change (SCHEMA_VERSION 9).
+
+# Black Stars CRM
 Version 6.196.0 - Transactions: amount filters + net/gross due; Invoice: clearer validity, no camp coach.
 
 ## 6.196.0 note - batch (items 1, 2, 4, 5 of 6)

@@ -5328,8 +5328,14 @@ PAGES.clubrevenue = (main) => {
     return { from: '', to: '' };  // all-time
   }
   const range = resolveRange(p.preset, p.from, p.to);
+  // For whole-month presets, scope by the invoice BILLING MONTH (i.month) so the
+  // total matches the Invoices / Dashboard screens exactly. Other presets stay
+  // date-based (this screen also doubles as a date-range explorer).
+  const monthScope = p.preset === 'this_month' ? TODAY.slice(0, 7)
+    : p.preset === 'last_month' ? String(range.from || '').slice(0, 7) : null;
 
   const inRange = inv => {
+    if (monthScope) return invoiceBillMonth(inv) === monthScope;
     if (!range.from && !range.to) return true;
     const d = (inv.date || '').slice(0, 10);
     if (!d) return false;
@@ -5351,8 +5357,12 @@ PAGES.clubrevenue = (main) => {
     invoiceCount++;
     const items = (inv.lineItems && inv.lineItems.length) ? inv.lineItems
       : [{ sport: inv.sport || null, coachId: inv.coachId || null, price: inv.amount || 0 }];
-    // One transaction row per invoice for the pop-up: amount = sum of its line items.
-    const invAmount = items.reduce((s, li) => s + (Number(li.price) || 0), 0);
+    // Per-invoice value = the invoice's own charged amount (canonical), NOT a
+    // re-sum of line items. Line items are scaled proportionally below so the
+    // per-sport / per-coach breakdown always re-sums to this exact amount.
+    const liSum = items.reduce((s, li) => s + (Number(li.price) || 0), 0);
+    const invAmount = Number(inv.amount) || 0;
+    const lineFactor = liSum > 0 ? invAmount / liSum : (items.length ? invAmount / items.length : 0);
     const invCategory = inv.category || 'Membership';
     txns.push({
       id: inv.id,
@@ -5368,7 +5378,7 @@ PAGES.clubrevenue = (main) => {
     byCategory[invCategory].total += invAmount;
     byCategory[invCategory].count += 1;
     for (const li of items) {
-      const amt = Number(li.price) || 0;
+      const amt = liSum > 0 ? (Number(li.price) || 0) * lineFactor : lineFactor;
       grandRevenue += amt;
       const sp = li.sport || (inv.category && inv.category !== 'Membership' ? inv.category : '—');
       if (!bySport[sp]) bySport[sp] = { revenue: 0, members: new Set(), invoices: 0 };
@@ -5564,8 +5574,14 @@ PAGES.clubrevenue = (main) => {
 // removes the row instantly. Admins AND receptionists use this — collecting
 // dues is the front-desk job.
 PAGES.duepayment = (main) => {
-  if (window._dueFilter == null) window._dueFilter = { search: '', status: 'all', sport: 'all', range: 'all' };
+  if (window._dueFilter == null) window._dueFilter = { search: '', status: 'all', sport: 'all', range: 'all', month: 'all' };
   const f = window._dueFilter;
+
+  // Available invoice months (for the month filter), newest first.
+  const dueMonths = [...new Set((state.invoices || [])
+    .filter(i => !i.deleted && !i.switchCredit)
+    .map(i => i.month || String(i.date || '').slice(0, 7))
+    .filter(Boolean))].sort().reverse();
 
   // Build one row per member who has any outstanding balance, with a per-sport
   // breakdown so the receptionist can see *which sport* is unpaid.
@@ -5576,7 +5592,10 @@ PAGES.duepayment = (main) => {
     // Membership made this screen under-count vs the Transactions screen (which counts
     // every category), so members who owed on a non-Membership invoice were missing.
     // Exclude switch-credit adjustments (not real money owed).
-    const invs = (state.invoices || []).filter(i => !i.deleted && i.customerId === m.id && !i.switchCredit);
+    let invs = (state.invoices || []).filter(i => !i.deleted && i.customerId === m.id && !i.switchCredit);
+    // Month filter: restrict to invoices billed in the chosen month (by invoice month,
+    // same basis as the Transactions/Invoices screens) so the two can be compared.
+    if (f.month !== 'all') invs = invs.filter(i => (i.month || String(i.date || '').slice(0, 7)) === f.month);
     if (!invs.length) continue;
     const total = invs.reduce((s, i) => s + invoiceBalance(i), 0);
     if (total <= 0.001) continue;
@@ -5614,7 +5633,7 @@ PAGES.duepayment = (main) => {
   const overallTotal = all.reduce((s, r) => s + r.total, 0);
   const sportSet = [...new Set(all.flatMap(r => Object.keys(r.bySport)))].sort();
   const statusSet = [...new Set(all.map(r => r.st))].sort();
-  const filtersOn = f.search || f.status !== 'all' || f.sport !== 'all' || f.range !== 'all';
+  const filtersOn = f.search || f.status !== 'all' || f.sport !== 'all' || f.range !== 'all' || f.month !== 'all';
   const editable = currentRole() === 'admin' || currentRole() === 'receptionist';
 
   // Compute a member's outstanding membership balance (same basis as the rows above).
@@ -5773,6 +5792,10 @@ Black Stars Academy`;
     <div class="card">
       <div class="filter-bar" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">
         <input id="dp-search" class="btn ghost" type="text" placeholder="${t('Search name or phone…', 'ابحث بالاسم أو الهاتف…')}" value="${escapeHtml(f.search)}" style="flex:1;min-width:180px" />
+        <select id="dp-month" class="btn ghost" title="${t('Filter by invoice month (to compare with the Transactions screen)', 'تصفية حسب شهر الفاتورة (للمقارنة مع شاشة العمليات)')}">
+          <option value="all">${t('All months', 'كل الأشهر')}</option>
+          ${dueMonths.map(mo => `<option value="${mo}" ${f.month === mo ? 'selected' : ''}>${fmtMonth(mo)}</option>`).join('')}
+        </select>
         <select id="dp-status" class="btn ghost">
           <option value="all">${t('All statuses', 'كل الحالات')}</option>
           ${statusSet.map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s}</option>`).join('')}
@@ -5816,6 +5839,7 @@ Black Stars Academy`;
   const debounce = (fn, ms) => { let to; return (...a) => { clearTimeout(to); to = setTimeout(() => fn(...a), ms); }; };
   $('#dp-search')?.addEventListener('input', debounce(e => { f.search = e.target.value; render(); }, 200));
   $('#dp-status')?.addEventListener('change', e => { f.status = e.target.value; render(); });
+  $('#dp-month')?.addEventListener('change', e => { f.month = e.target.value; render(); });
   $('#dp-sport')?.addEventListener('change', e => { f.sport = e.target.value; render(); });
   $('#dp-range')?.addEventListener('change', e => { f.range = e.target.value; render(); });
   $('#dp-clear')?.addEventListener('click', () => { window._dueFilter = null; render(); });
@@ -5966,7 +5990,7 @@ window.campRemindAll = function() {
     const done = list.filter(m => m.lastRemindedAt === TODAY).length;
     const body = $('#camp-remind-body');
     if (body) body.innerHTML = `
-      <div style="font-size:13px;margin-bottom:10px">${t('WhatsApp opens one chat at a time, so tap each parent below. We tick them off and won\\u2019t lose your place.', 'واتساب يفتح محادثة واحدة في كل مرة، لذا اضغط على كل ولي أمر بالأسفل. نقوم بتعليمهم حتى لا تفقد مكانك.')}</div>
+      <div style="font-size:13px;margin-bottom:10px">${t('WhatsApp opens one chat at a time, so tap each parent below. We tick them off and won\u2019t lose your place.', 'واتساب يفتح محادثة واحدة في كل مرة، لذا اضغط على كل ولي أمر بالأسفل. نقوم بتعليمهم حتى لا تفقد مكانك.')}</div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
         <div style="flex:1;height:8px;background:var(--surface-2);border-radius:5px;overflow:hidden"><div style="height:100%;width:${Math.round(done / list.length * 100)}%;background:var(--green);transition:width .2s"></div></div>
         <span class="text-mute" style="font-size:12px;white-space:nowrap">${done} / ${list.length} ${t('messaged', 'تم')}</span>
@@ -6593,7 +6617,7 @@ PAGES.monthlyreport = (main) => {
 
     <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
       <div class="card" style="padding:16px">
-        <div class="card-title" style="margin-bottom:12px">💳 ${t('Revenue by method', 'الدخل حسب الطريقة')}</div>
+        <div class="card-title" style="margin-bottom:12px">💳 ${t('Revenue by method', 'الدخل حسب الطريقة')} <span class="text-mute" style="font-size:10px;font-weight:400" title="${t('Counts payments actually received this month (payment date), for cash-flow reconciliation. The Dashboard counts revenue by the invoice billing month.', 'يحسب المدفوعات المستلمة فعلياً هذا الشهر (تاريخ الدفع) لتسوية التدفق النقدي. لوحة المعلومات تحسب الإيراد حسب شهر الفاتورة.')}">· ${t('collected this month', 'المُحصّل هذا الشهر')}</span></div>
         ${methodBars}
       </div>
 
@@ -6748,9 +6772,9 @@ function printMonthlyReport(ym) {
 // A daily, at-a-glance KPI screen (English) pulling together the numbers an
 // owner checks most: revenue + 6-month trend, membership health, collection
 // rate, dues, today's attendance, new members, top sports, and cash in hand.
-function computeDashboard() {
-  const ym = (TODAY || '').slice(0, 7);
+function computeDashboard(ymSel) {
   const today = TODAY;
+  const ym = ymSel || (today || '').slice(0, 7);
   const normMethod = (mRaw) => {
     const x = String(mRaw || '').toLowerCase();
     if (x.indexOf('card') >= 0 || x.indexOf('visa') >= 0 || x.indexOf('credit') >= 0) return 'card';
@@ -6758,20 +6782,10 @@ function computeDashboard() {
     if (x.indexOf('transfer') >= 0 || x.indexOf('bank') >= 0) return 'transfer';
     return 'cash';
   };
-  // Sum of payments dated in a given YYYY-MM (falls back to invoice date/paid).
-  const revenueForMonth = (mym) => {
-    let total = 0;
-    for (const i of (state.invoices || [])) {
-      if (i.deleted) continue;
-      const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
-      if (pays) {
-        for (const p of pays) { if (String(p.date || i.date).slice(0, 7) === mym) total += Number(p.amount) || 0; }
-      } else if (String(i.date).slice(0, 7) === mym) {
-        total += (typeof invoicePaid === 'function') ? invoicePaid(i) : (Number(i.amount) || 0);
-      }
-    }
-    return total;
-  };
+  // Revenue = BILLED in the invoice's billing month — the canonical definition
+  // shared with the Invoices / Transactions / Club Revenue screens so all four
+  // agree. (Collected and Due are shown alongside it as the reconciliation.)
+  const revenueForMonth = (mym) => billedInMonth(mym);
 
   // 6-month trend (oldest → newest), ending this month.
   const trend = [];
@@ -6836,14 +6850,14 @@ function computeDashboard() {
     if (reg === ym) newThisMonth++;
   }
 
-  // Top sports by revenue THIS month.
+  // Top sports by revenue THIS month — BILLED basis via proportional line
+  // shares, so the sport rows always re-sum to revenueThisMonth.
   const bySport = {};
-  for (const i of (state.invoices || [])) {
-    if (i.deleted) continue;
-    const sport = i.sport || (Array.isArray(i.lineItems) && i.lineItems[0] && i.lineItems[0].sport) || i.activity || i.category || 'Other';
-    const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
-    if (pays) { for (const p of pays) { if (String(p.date || i.date).slice(0, 7) === ym) bySport[sport] = (bySport[sport] || 0) + (Number(p.amount) || 0); } }
-    else if (String(i.date).slice(0, 7) === ym) bySport[sport] = (bySport[sport] || 0) + ((typeof invoicePaid === 'function') ? invoicePaid(i) : 0);
+  for (const i of monthInvoices(ym)) {
+    for (const sh of invoiceLineShares(i)) {
+      const sport = sh.sport || i.activity || i.category || 'Other';
+      bySport[sport] = (bySport[sport] || 0) + sh.value;
+    }
   }
   const topSports = Object.entries(bySport).map(([sport, amt]) => ({ sport, amt })).sort((a, b) => b.amt - a.amt).slice(0, 6);
 
@@ -6858,6 +6872,11 @@ function computeDashboard() {
   let cashExpenses = 0;
   for (const e of (state.expenses || [])) { if (e.deleted) continue; if (normMethod(e.method || 'cash') === 'cash') cashExpenses += Number(e.amount) || 0; }
   const cashInHand = cashCollected - cashExpenses;
+  // The ACTUAL physically-counted drawer (latest cash count) — this is the real
+  // "cash in hand". The figure above is a computed net cash flow, not the drawer.
+  const _counts = (state.cashCounts || []).slice()
+    .sort((a, b) => String(b.createdAt || b.date || '').localeCompare(String(a.createdAt || a.date || '')));
+  const countedCash = _counts.length ? (Number(_counts[0].amount) || 0) : null;
 
   return {
     ym, today, trend, revenueThisMonth, revenuePrevMonth,
@@ -6865,12 +6884,18 @@ function computeDashboard() {
     collectionRate, collected, billed,
     duesTotal, duesMembers,
     presentToday, attendeesToday: attendeesToday.size,
-    newThisMonth, topSports, cashInHand,
+    newThisMonth, topSports, cashInHand, countedCash,
+    collectedThisMonth: collectedInMonth(ym), dueThisMonth: dueInMonth(ym),
   };
 }
 
 PAGES.dashboardkpi = (main) => {
-  const D = computeDashboard();
+  if (!window._dashKpiMonth) window._dashKpiMonth = (TODAY || '').slice(0, 7);
+  const D = computeDashboard(window._dashKpiMonth);
+  // Month list = current month + every billing month present in invoices.
+  const _mset = new Set([(TODAY || '').slice(0, 7)]);
+  for (const i of (state.invoices || [])) { if (!i.deleted) { const mm = invoiceBillMonth(i); if (mm) _mset.add(mm); } }
+  const _months = [..._mset].sort().reverse();
   const money = (n) => fmt(Math.round(n));
   const delta = D.revenueThisMonth - D.revenuePrevMonth;
   const deltaPct = D.revenuePrevMonth > 0 ? Math.round(delta / D.revenuePrevMonth * 100) : null;
@@ -6911,16 +6936,19 @@ PAGES.dashboardkpi = (main) => {
     <div class="topbar">
       <div>
         <h1>📊 Owner Dashboard</h1>
-        <div class="subtitle">Daily snapshot · ${(typeof fmtDate === 'function') ? fmtDate(D.today) : D.today}</div>
+        <div class="subtitle">${window._dashKpiMonth === (TODAY||'').slice(0,7) ? ('Daily snapshot · ' + ((typeof fmtDate === 'function') ? fmtDate(D.today) : D.today)) : ('Snapshot · ' + fmtMonth(window._dashKpiMonth))}</div>
       </div>
       <div class="topbar-actions">
+        <select id="dashkpi-month" class="btn ghost" title="Revenue, dues, top sports and new members reflect this month">
+          ${_months.map(mm => `<option value="${mm}" ${mm === window._dashKpiMonth ? 'selected' : ''}>${fmtMonth(mm)}</option>`).join('')}
+        </select>
         <button class="btn ghost" onclick="navigate('monthlyreport')">🗓 Monthly Report</button>
       </div>
     </div>
 
     <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:16px">
-      ${kpi('Revenue this month', money(D.revenueThisMonth) + ' QAR', 'var(--green)', deltaStr)}
-      ${kpi('Cash in hand', money(D.cashInHand) + ' QAR', D.cashInHand >= 0 ? 'var(--green)' : 'var(--red)', 'cash collected − cash expenses', "navigate('cashinhand')")}
+      ${kpi('Revenue this month', money(D.revenueThisMonth) + ' QAR', 'var(--green)', (deltaStr ? deltaStr + ' · ' : '') + 'billed · collected ' + money(D.collectedThisMonth) + ' · due ' + money(D.dueThisMonth))}
+      ${kpi('Cash in hand', (D.countedCash != null ? money(D.countedCash) : '—') + ' QAR', (D.countedCash || 0) >= 0 ? 'var(--green)' : 'var(--red)', (D.countedCash != null ? 'counted in drawer' : 'no count yet') + ' · net flow ' + money(D.cashInHand), "navigate('cashinhand')")}
       ${kpi('Collection rate', D.collectionRate + '%', D.collectionRate >= 80 ? 'var(--green)' : D.collectionRate >= 50 ? 'var(--accent-2)' : 'var(--red)', money(D.collected) + ' / ' + money(D.billed) + ' QAR')}
       ${kpi('Outstanding dues', money(D.duesTotal) + ' QAR', 'var(--accent-2)', D.duesMembers + ' members owe', "navigate('duepayment')")}
     </div>
@@ -6946,6 +6974,9 @@ PAGES.dashboardkpi = (main) => {
         ${topSportsHtml}
       </div>
     </div>`;
+
+  const _dm = main.querySelector('#dashkpi-month');
+  if (_dm) _dm.addEventListener('change', () => { window._dashKpiMonth = _dm.value; PAGES.dashboardkpi(main); });
 };
 
 PAGES.payanalysis = (main) => {
@@ -8510,6 +8541,7 @@ PAGES.invoices = (main) => {
 
   function applyFilter() {
     return state.invoices.filter(i => {
+      if (i.deleted) return false;   // soft-deleted invoices never count anywhere
       if (filter.search) {
         const q = filter.search.toLowerCase();
         const cust = customerInfo(i);   // live name + phone if linked
@@ -8528,7 +8560,7 @@ PAGES.invoices = (main) => {
           || phoneQueryMatches(i.customerPhone, filter.search) || phoneQueryMatches(mem && mem.phone, filter.search) || phoneQueryMatches(mem && mem.phone2, filter.search);
         if (!hit) return false;
       }
-      if (filter.month !== 'all' && i.month !== filter.month) return false;
+      if (filter.month !== 'all' && invoiceBillMonth(i) !== filter.month) return false;
       if (filter.day && i.date !== filter.day) return false;
       if (filter.method !== 'all' && i.method !== filter.method) return false;
       if (filter.sport !== 'all') {
@@ -8762,7 +8794,9 @@ PAGES.invoices = (main) => {
     const ids = new Set(invs.map(i => i.id));
     // Break any sale → invoice links cleanly so sale rows don't show a dangling ref.
     for (const sale of (state.sales || [])) { if (sale.invoiceId != null && ids.has(sale.invoiceId)) delete sale.invoiceId; }
-    state.invoices = state.invoices.filter(i => !ids.has(i.id));
+    // Soft-delete (tombstone) so a stale device can't resurrect them on merge.
+    const _now = new Date().toISOString();
+    for (const i of state.invoices) { if (ids.has(i.id)) { i.deleted = true; i.deletedAt = _now; } }
     if (typeof audit === 'function') audit('invoice.delete_bulk', 'invoices', `Bulk-deleted ${invs.length} invoices — ${fmt(totalAmt)} QAR (${fmt(paidAmt)} paid)`);
     selected.clear();
     save();
@@ -8841,7 +8875,8 @@ PAGES.invoices = (main) => {
             lineItems,
             mergedFrom: refs,
           };
-          state.invoices = state.invoices.filter(i => !selected.has(i.id));
+          const _mnow = new Date().toISOString();
+          for (const i of state.invoices) { if (selected.has(i.id)) { i.deleted = true; i.deletedAt = _mnow; i.mergedInto = merged.id; } }
           state.invoices.push(merged);
           audit('invoice.merge', `invoice:${merged.id}`, `Merged ${invs.length} invoices (${refs.join(', ')}) into ${merged.ref} · ${fmt(totalAmt)} QAR`, { customerId: custId, refs, total: totalAmt });
           selected.clear();
@@ -9177,6 +9212,302 @@ window.showInvoiceHistory = function(customerId) {
 };
 
 // Pick a member then auto-create an invoice from their latest enrollment
+// Build + save a fresh membership invoice for ONE member from their latest
+// enrollments, with no picker UI. Returns { created, invoice, existing, message }.
+// Used by the Missing Invoices screen's one-click row action. (The interactive
+// "Generate latest invoice" modal below keeps its own copy for the picker flow.)
+function generateInvoiceForMember(memberId, dateOverride) {
+  const m = (state.members || []).find(x => x.id === memberId);
+  if (!m) return { created: false, message: 'Member not found' };
+  let enrollments = (m.enrollments || []).filter(e => e.sport && e.coachId);
+  if (!enrollments.length) {
+    const bySport = new Map();
+    for (const s of (m.subscriptions || [])) if (s.activity) bySport.set(s.activity, s);
+    enrollments = [...bySport.values()].map(s => ({ sport: s.activity, coachId: s.coachId, classes: s.totalClasses, price: s.amountPaid }));
+  }
+  if (!enrollments.length) return { created: false, message: 'No enrollments found for this member' };
+  const date = dateOverride || (() => {
+    const starts = enrollments.map(e => (typeof enrollmentStartDate === 'function' ? enrollmentStartDate(e, m) : (e.start || m.startDate || TODAY))).filter(Boolean).sort();
+    return starts[0] || m.startDate || TODAY;
+  })();
+  const method = (() => {
+    const prior = (state.invoices || []).filter(inv => inv.customerId === m.id && !inv.deleted && (inv.category || 'Membership') === 'Membership').sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    for (const inv of prior) {
+      const pm = Array.isArray(inv.payments) && inv.payments.length ? inv.payments[inv.payments.length - 1].method : null;
+      if (pm) return pm; if (inv.method) return inv.method;
+    }
+    return 'cash';
+  })();
+  const totalAmt = enrollments.reduce((s, e) => s + (e.price || 0), 0);
+  if (totalAmt <= 0) return { created: false, message: 'Enrollment prices are 0 — nothing to invoice' };
+  const desc = enrollments.map(e => `${e.sport}${e.classes ? ' ' + e.classes + 'cls' : ''}`).join(' · ');
+  const primary = enrollments[0];
+  const coach = (state.coaches || []).find(c => c.id === primary.coachId);
+  const mth = date.slice(0, 7);
+  const existing = (state.invoices || []).filter(inv => inv.customerId === m.id && inv.month === mth && (inv.category || 'Membership') === 'Membership' && !inv.deleted);
+  if (existing.length) {
+    const latest = existing.sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.id - a.id))[0];
+    return { created: false, existing: latest, message: `${m.name} already has an invoice for ${fmtMonth(mth)}` };
+  }
+  const newInv = {
+    id: nextId(state.invoices), date, description: desc + (m.name ? ` — ${m.name}` : ''),
+    amount: totalAmt, method, month: mth, ref: nextInvoiceRef(), category: 'Membership',
+    activityType: 'subscription', sport: primary.sport, coach: coach ? coach.name : null,
+    coachId: primary.coachId, customerId: m.id, customerName: m.name,
+    lineItems: enrollments.map(e => ({ sport: e.sport, coach: coachName(e.coachId) || ((state.coaches || []).find(c => c.id === e.coachId) || {}).name || '', coachId: e.coachId, classes: e.classes, price: e.price || 0 })),
+  };
+  state.invoices.push(newInv); save();
+  return { created: true, invoice: newInv, message: `Invoice ${newInv.ref} created — ${fmt(totalAmt)} QAR` };
+}
+
+// ── Missing / inaccurate invoices ────────────────────────────────────────────
+// For a billing month YM, find members who SHOULD have an accurate membership
+// invoice but don't. Two cases:
+//   • missing  — member started/renewed in YM (or their membership has lapsed
+//                into YM) yet has no membership invoice billed for YM.
+//   • mismatch — member HAS a YM invoice, but the billed total ≠ the expected
+//                renewal value (memberRenewalValue) by more than 1 QAR.
+// NOTE: the exact "should be invoiced this month" rule is a first pass — tune the
+// renewedThisMonth / dueThisMonth conditions to match how the club actually bills.
+function computeMissingInvoices(ym) {
+  const out = [];
+  for (const m of (state.members || [])) {
+    if (m.deleted) continue;
+    const status = (typeof memberStatus === 'function') ? memberStatus(m) : '';
+    if (status === 'Withdrawn') continue;
+    const expected = (typeof memberRenewalValue === 'function') ? memberRenewalValue(m) : 0;
+    if (!(expected > 0)) continue;
+    const ymInvs = (state.invoices || []).filter(i => !i.deleted && i.customerId === m.id
+      && (i.category || 'Membership') === 'Membership' && !i.switchCredit
+      && invoiceBillMonth(i) === ym);
+    const billed = ymInvs.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+    const startM = String(m.startDate || m.firstRegistration || '').slice(0, 7);
+    const expM = String(m.expiryDate || '').slice(0, 7);
+    const renewedThisMonth = startM === ym;
+    const dueThisMonth = !!expM && expM <= ym && status !== 'Frozen';
+    if (!ymInvs.length) {
+      if (renewedThisMonth || dueThisMonth) {
+        out.push({ m, kind: 'missing', expected, billed: 0, invId: null,
+          reason: renewedThisMonth ? t('started / renewed this month', 'بدأ / جدّد هذا الشهر')
+                                   : t('renewal due — no invoice', 'تجديد مستحق — لا فاتورة') });
+      }
+    } else if (Math.abs(billed - expected) > 1) {
+      const latest = ymInvs.sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.id - a.id))[0];
+      out.push({ m, kind: 'mismatch', expected, billed, invId: latest.id,
+        reason: t(`billed ${fmt(billed)} vs expected ${fmt(expected)}`, `مفوتر ${fmt(billed)} مقابل المتوقع ${fmt(expected)}`) });
+    }
+  }
+  // missing first, then by member name
+  return out.sort((a, b) => (a.kind === b.kind ? String(a.m.name || '').localeCompare(String(b.m.name || '')) : (a.kind === 'missing' ? -1 : 1)));
+}
+
+window._miGen = (id) => {
+  const r = generateInvoiceForMember(id);
+  if (r.created) { toast(r.message, 'success'); if (typeof printInvoicePDF === 'function') printInvoicePDF(r.invoice.id); }
+  else if (r.existing) { toast(r.message + ' — ' + t('opening it', 'يتم فتحها'), 'info'); if (typeof printInvoicePDF === 'function') printInvoicePDF(r.existing.id); }
+  else { toast(r.message, 'error'); }
+  if (typeof render === 'function') render();
+};
+window._miOpen = (invId) => { if (typeof printInvoicePDF === 'function') printInvoicePDF(invId); };
+
+PAGES.missinginvoices = (main) => {
+  if (!window._miMonth) window._miMonth = (TODAY || '').slice(0, 7);
+  // Month list = every billing month present in invoices, plus the current month.
+  const monthSet = new Set([(TODAY || '').slice(0, 7)]);
+  for (const i of (state.invoices || [])) { if (!i.deleted) { const mm = invoiceBillMonth(i); if (mm) monthSet.add(mm); } }
+  const months = [...monthSet].sort().reverse();
+  const ym = window._miMonth;
+  const rows = computeMissingInvoices(ym);
+  const missingCount = rows.filter(r => r.kind === 'missing').length;
+  const mismatchCount = rows.filter(r => r.kind === 'mismatch').length;
+  const missingValue = rows.filter(r => r.kind === 'missing').reduce((s, r) => s + r.expected, 0);
+
+  const rowHtml = rows.length ? rows.map(r => {
+    const m = r.m;
+    const badge = r.kind === 'missing'
+      ? `<span class="pill" style="background:rgba(239,68,68,.12);color:var(--red);font-weight:700">${t('No invoice', 'لا فاتورة')}</span>`
+      : `<span class="pill" style="background:rgba(245,158,11,.14);color:var(--accent-2);font-weight:700">${t('Amount mismatch', 'مبلغ غير مطابق')}</span>`;
+    const action = r.kind === 'missing'
+      ? `<button class="btn primary sm" onclick="_miGen(${m.id})">⚡ ${t('Generate latest invoice', 'إنشاء أحدث فاتورة')}</button>`
+      : `<button class="btn ghost sm" onclick="_miOpen(${r.invId})">📄 ${t('Open invoice', 'فتح الفاتورة')}</button>`;
+    return `<tr>
+      <td><div class="font-bold">${escapeHtml(m.name || '—')}</div><div class="text-mute" style="font-size:11px">${escapeHtml(m.nameArabic || '')}</div></td>
+      <td>${badge}</td>
+      <td class="text-mute" style="font-size:12px">${r.reason}</td>
+      <td class="text-right num">${fmt(r.expected)}</td>
+      <td class="text-right num">${r.billed ? fmt(r.billed) : '—'}</td>
+      <td class="text-right">${action}</td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="6" class="text-mute" style="text-align:center;padding:18px">✅ ${t('Every active member has an accurate invoice for this month', 'كل عضو نشط لديه فاتورة دقيقة لهذا الشهر')}</td></tr>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🧩 ${t('Missing Invoices', 'الفواتير الناقصة')}</h1>
+        <div class="subtitle">${t('Members who renewed or updated this month with no invoice — or whose invoice amount looks wrong', 'الأعضاء الذين جدّدوا أو حدّثوا هذا الشهر بدون فاتورة — أو فاتورتهم بمبلغ غير صحيح')}</div>
+      </div>
+      <div class="topbar-actions">
+        <select id="mi-month" class="btn ghost">
+          ${months.map(mm => `<option value="${mm}" ${mm === ym ? 'selected' : ''}>${fmtMonth(mm)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi" style="border-color:var(--red);background:rgba(239,68,68,.06)">
+        <div class="kpi-label" style="color:var(--red)">${t('No invoice', 'لا فاتورة')}</div>
+        <div class="kpi-value num" style="color:var(--red)">${missingCount}</div>
+        <div class="kpi-sub">${fmt(missingValue)} QAR ${t('uninvoiced', 'غير مفوتر')}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label" style="color:var(--accent-2)">${t('Amount mismatch', 'مبلغ غير مطابق')}</div>
+        <div class="kpi-value num" style="color:var(--accent-2)">${mismatchCount}</div>
+        <div class="kpi-sub">${t('billed ≠ expected', 'المفوتر ≠ المتوقع')}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">📅 ${fmtMonth(ym)}</div>
+        <div class="kpi-value num">${rows.length}</div>
+        <div class="kpi-sub">${t('members to review', 'عضو للمراجعة')}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>${t('Member', 'العضو')}</th>
+            <th>${t('Issue', 'المشكلة')}</th>
+            <th>${t('Reason', 'السبب')}</th>
+            <th class="text-right">${t('Expected', 'المتوقع')}</th>
+            <th class="text-right">${t('Billed', 'المفوتر')}</th>
+            <th class="text-right">${t('Action', 'الإجراء')}</th>
+          </tr></thead>
+          <tbody>${rowHtml}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  const sel = main.querySelector('#mi-month');
+  if (sel) sel.addEventListener('change', () => { window._miMonth = sel.value; PAGES.missinginvoices(main); });
+};
+
+// ── Member Commission report (admin): per member, per sport ───────────────────
+window._mcExport = function () {
+  const ym = window._mcMonth || 'all';
+  const rows = computeMemberCommissions(ym);
+  const head = ['Member', 'Sport', 'Coach', 'Start', 'Expiry', 'Paid', 'Attended', 'Total', 'Status', 'Rate%', 'Commission'];
+  const body = rows.map(r => [
+    r.memberName, r.sport, r.coachName, fmtDate(r.start), r.expiry ? fmtDate(r.expiry) : '',
+    r.paid, r.attended, r.total, r.status, r.rate, Math.round(r.commission)
+  ].map(v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`).join(','));
+  const csv = [head.join(','), ...body].join('\n');
+  downloadFile(`blackstars-member-commission-${ym}.csv`, csv, 'text/csv');
+  toast(t('Exported member-commission.csv', 'تم تصدير ملف العمولة'));
+};
+
+PAGES.membercommission = (main) => {
+  if (!window._mcMonth) window._mcMonth = (TODAY || '').slice(0, 7);
+  const monthSet = new Set([(TODAY || '').slice(0, 7)]);
+  for (const i of (state.invoices || [])) { if (!i.deleted) { const mm = invoiceBillMonth(i); if (mm) monthSet.add(mm); } }
+  const months = [...monthSet].sort().reverse();
+  const ym = window._mcMonth;
+  const rows = computeMemberCommissions(ym);
+
+  const memberIds = new Set(rows.map(r => r.memberId));
+  const totalCommission = rows.reduce((s, r) => s + r.commission, 0);
+  const totalPaid = rows.reduce((s, r) => s + r.paid, 0);
+
+  const statusBadge = (r) => {
+    let bg = 'rgba(34,197,94,.14)', col = 'var(--green)', txt = r.status;
+    if (r.mode === 'prorated' && r.commission > 0) { bg = 'rgba(245,158,11,.16)'; col = 'var(--accent-2)'; txt = r.status + ' · ' + Math.round(r.ratio * 100) + '%'; }
+    else if (r.commission <= 0) { bg = 'rgba(239,68,68,.12)'; col = 'var(--red)'; txt = r.status + ' · 0'; }
+    return `<span class="pill" style="background:${bg};color:${col};font-weight:700;font-size:11px">${escapeHtml(txt)}</span>`;
+  };
+
+  // Group consecutive rows by member (rows are already sorted by member, sport).
+  let lastMember = null, memberRowsLeft = 0;
+  const counts = {};
+  rows.forEach(r => { counts[r.memberId] = (counts[r.memberId] || 0) + 1; });
+
+  const rowHtml = rows.length ? rows.map(r => {
+    const firstOfMember = r.memberId !== lastMember;
+    if (firstOfMember) { lastMember = r.memberId; memberRowsLeft = counts[r.memberId]; }
+    const nameCell = firstOfMember
+      ? `<td rowspan="${counts[r.memberId]}" style="vertical-align:top">
+           <div class="font-bold">${escapeHtml(r.memberName || '—')}</div>
+           <div class="text-mute" style="font-size:11px">${escapeHtml(r.nameArabic || '')}</div>
+           ${counts[r.memberId] > 1 ? `<div class="text-mute" style="font-size:11px;margin-top:3px">${counts[r.memberId]} ${t('sports', 'رياضات')}</div>` : ''}
+         </td>`
+      : '';
+    return `<tr>
+      ${nameCell}
+      <td><div class="font-bold">${escapeHtml(r.sport)}</div></td>
+      <td>${escapeHtml(r.coachName)}</td>
+      <td class="text-mute" style="font-size:12px">${fmtDate(r.start)}</td>
+      <td class="text-mute" style="font-size:12px">${r.expiry ? fmtDate(r.expiry) : '—'}</td>
+      <td class="text-right num">${fmt(r.paid)}</td>
+      <td class="text-center num">${r.attended}/${r.total || '—'}</td>
+      <td class="text-center">${statusBadge(r)}</td>
+      <td class="text-right num font-bold">${fmt(Math.round(r.commission))}<div class="text-mute" style="font-size:11px;font-weight:400">${r.rate}%</div></td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="9" class="text-mute" style="text-align:center;padding:18px">${t('No commission-bearing memberships for this period', 'لا توجد اشتراكات تحمل عمولة لهذه الفترة')}</td></tr>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🧾 ${t('Member Commission', 'عمولة الأعضاء')}</h1>
+        <div class="subtitle">${t('Coach commission per member, broken down by sport. Summer Camp earns no commission; expired members with no attendance are excluded.', 'عمولة المدرب لكل عضو، مفصّلة حسب الرياضة. المعسكر الصيفي بلا عمولة؛ والأعضاء المنتهون بلا حضور مستبعدون.')}</div>
+      </div>
+      <div class="topbar-actions">
+        <select id="mc-month" class="btn ghost">
+          <option value="all" ${ym === 'all' ? 'selected' : ''}>${t('All months', 'كل الشهور')}</option>
+          ${months.map(mm => `<option value="${mm}" ${mm === ym ? 'selected' : ''}>${fmtMonth(mm)}</option>`).join('')}
+        </select>
+        <button class="btn ghost" onclick="_mcExport()">⬇️ ${t('Export CSV', 'تصدير CSV')}</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi">
+        <div class="kpi-label">👥 ${t('Members', 'الأعضاء')}</div>
+        <div class="kpi-value num">${memberIds.size}</div>
+        <div class="kpi-sub">${rows.length} ${t('sport lines', 'سطر رياضة')}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">💰 ${t('Membership paid', 'المدفوع للاشتراك')}</div>
+        <div class="kpi-value num">${fmt(totalPaid)}</div>
+        <div class="kpi-sub">QAR</div>
+      </div>
+      <div class="kpi" style="border-color:var(--green);background:rgba(34,197,94,.06)">
+        <div class="kpi-label" style="color:var(--green)">🧮 ${t('Total commission', 'إجمالي العمولة')}</div>
+        <div class="kpi-value num" style="color:var(--green)">${fmt(Math.round(totalCommission))}</div>
+        <div class="kpi-sub">${ym === 'all' ? t('all months', 'كل الشهور') : fmtMonth(ym)}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>${t('Member', 'العضو')}</th>
+            <th>${t('Sport', 'الرياضة')}</th>
+            <th>${t('Coach', 'المدرب')}</th>
+            <th>${t('Start', 'البداية')}</th>
+            <th>${t('Expiry', 'الانتهاء')}</th>
+            <th class="text-right">${t('Paid', 'المدفوع')}</th>
+            <th class="text-center">${t('Attended', 'الحضور')}</th>
+            <th class="text-center">${t('Status', 'الحالة')}</th>
+            <th class="text-right">${t('Commission', 'العمولة')}</th>
+          </tr></thead>
+          <tbody>${rowHtml}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  const sel = main.querySelector('#mc-month');
+  if (sel) sel.addEventListener('change', () => { window._mcMonth = sel.value; PAGES.membercommission(main); });
+};
+
 function generateLatestInvoice(onDone) {
   showModal({
     title: '⚡ Generate latest invoice',
@@ -9893,7 +10224,12 @@ window.deleteInvoice = function(id) {
       { label: '🗑 Delete permanently', class: 'btn primary', style: 'background:var(--red);border-color:var(--red);color:#fff', onclick: () => {
         // Break any sale → invoice link cleanly so the sale row doesn't display a dangling ref.
         if (linkedSale) delete linkedSale.invoiceId;
-        state.invoices = state.invoices.filter(i => i.id !== id);
+        // SOFT-DELETE (tombstone): mark deleted instead of removing from the array.
+        // A removed record leaves no trace, so a stale device merging its old copy
+        // back in would RESURRECT it. A tombstone always wins the merge over a stale
+        // "alive" copy, so deletions can't come back. Every list filters out `deleted`.
+        const _inv = state.invoices.find(i => i.id === id);
+        if (_inv) { _inv.deleted = true; _inv.deletedAt = new Date().toISOString(); }
         if (typeof audit === 'function') audit('invoice.delete', 'invoice:' + id, `Deleted ${inv.ref || '#' + id} for ${cust.name || 'customer'} — ${fmt(inv.amount || 0)} QAR, ${fmt(paid)} paid`);
         save(); closeModal();
         // Refresh the invoices table in place if we're on that screen (keeps the
@@ -10334,6 +10670,48 @@ window.printInvoicePDF = function(id) {
     // No member match — keep as-is but title-case
     itemLabel = itemLabel.split(' ').filter(w => w).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
   }
+
+  // ── Prominent membership-validity banner — makes the "finish by" end date
+  //    impossible to miss, so members can't claim they didn't know classes expire.
+  const validityRows = [];
+  if (matchedMember && Array.isArray(matchedMember.subscriptions)) {
+    const sports = (Array.isArray(inv.lineItems) && inv.lineItems.length)
+      ? inv.lineItems.map(li => li.sport)
+      : (inv.sport ? [inv.sport] : []);
+    const seen = new Set();
+    for (const sp of sports) {
+      const sub = matchedMember.subscriptions.find(s => (s.activity || '') === sp && s.invoiceNumber && (s.invoiceNumber === inv.ref || s.invoiceNumber === inv.invoiceNumber))
+               || matchedMember.subscriptions.filter(s => (s.activity || '') === sp).slice(-1)[0];
+      if (!sub || !sub.start) continue;
+      let endDate = sub.end;
+      if (sp === SUMMER_CAMP && sub.start) {
+        const labelDays = (typeof campDaysForLabel === 'function' && sub.durationLabel) ? campDaysForLabel(sub.durationLabel) : 0;
+        if (labelDays > 0 && typeof addDays === 'function') endDate = addDays(sub.start, labelDays);
+      }
+      const key = sp + '|' + sub.start + '|' + (endDate || '');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      validityRows.push({ sport: sp, start: sub.start, end: endDate });
+    }
+  }
+  const validityBanner = validityRows.length ? `
+  <div style="margin:0 0 24px;border:2px solid #f26060;border-radius:10px;overflow:hidden">
+    <div style="background:#f26060;color:#fff;padding:9px 16px;font-size:11.5px;font-weight:800;letter-spacing:.3px;display:flex;justify-content:space-between;gap:12px">
+      <span dir="ltr">⏳ FINISH YOUR CLASSES BY THIS DATE</span>
+      <span dir="rtl">يجب إنهاء الحصص قبل هذا التاريخ</span>
+    </div>
+    <div style="padding:10px 16px">
+      ${validityRows.map(r => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px dashed #eee">
+          <span style="font-weight:700;font-size:14px;color:#1a1a1a">${escapeHtml(r.sport)}</span>
+          <span dir="ltr" style="font-size:13px;color:#555">${fmtDate(r.start)} <span style="color:#999">→</span> <strong style="color:#b91c1c;font-size:15px">${r.end ? fmtDate(r.end) : '—'}</strong></span>
+        </div>`).join('')}
+      <div style="margin-top:9px;font-size:11px;line-height:1.6;color:#7a1f1f">
+        <div dir="ltr">⚠️ All classes must be attended <strong>on or before the end date above</strong>. Unused classes after this date are <strong>forfeited</strong> — they cannot be carried over or refunded.</div>
+        <div dir="rtl" style="margin-top:3px">⚠️ يجب حضور جميع الحصص <strong>في موعد أقصاه تاريخ الانتهاء أعلاه</strong>، وتسقط الحصص غير المستخدمة بعد هذا التاريخ ولا يمكن ترحيلها أو استردادها.</div>
+      </div>
+    </div>
+  </div>` : '';
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -10802,6 +11180,8 @@ window.printInvoicePDF = function(id) {
     </tbody>
   </table>
 
+  ${validityBanner}
+
   <div class="totals">
     <div class="totals-table">
       <div class="totals-row">
@@ -11122,10 +11502,10 @@ PAGES.cashinhand = (main) => {
       ${latest ? `<div class="text-mute" style="font-size:12px">${t('Last counted', 'آخر جرد')}: <b>${fmtDate(latest.date)}</b>${latest.by ? ' · ' + escapeHtml(latest.by) : ''}${latest.note ? ' · ' + escapeHtml(latest.note) : ''}</div>` : `<div class="text-mute" style="font-size:13px">${t('No cash count recorded yet. Click “Record cash count” to enter your first one.', 'لا يوجد جرد مسجّل بعد. اضغط «تسجيل جرد النقد» لإدخال أول جرد.')}</div>`}
       ${delta != null ? `<div style="font-size:12px;margin-top:6px;color:${delta >= 0 ? 'var(--green)' : 'var(--red)'}">${delta >= 0 ? '▲' : '▼'} ${fmtMoney(Math.abs(delta))} ${t('vs previous count', 'مقارنة بالجرد السابق')}</div>` : ''}
       <div style="display:flex;gap:8px;justify-content:center;align-items:center;margin-top:16px;flex-wrap:wrap">
-        <input id="cih-quick" type="number" inputmode="decimal" min="0" step="0.01" placeholder="${t('Enter today\\u2019s count…', 'أدخل جرد اليوم…')}" style="max-width:180px;text-align:center;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:15px" />
+        <input id="cih-quick" type="number" inputmode="decimal" min="0" step="0.01" placeholder="${t('Enter today\u2019s count…', 'أدخل جرد اليوم…')}" style="max-width:180px;text-align:center;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:15px" />
         <button class="btn primary" id="cih-quick-save">✓ ${t('Update', 'تحديث')}</button>
       </div>
-      <div class="text-mute" style="font-size:11px;margin-top:6px">${t('Quick-record today\\u2019s drawer count, or use the button above for date/notes.', 'سجّل جرد اليوم بسرعة، أو استخدم الزر بالأعلى للتاريخ والملاحظات.')}</div>
+      <div class="text-mute" style="font-size:11px;margin-top:6px">${t('Quick-record today\u2019s drawer count, or use the button above for date/notes.', 'سجّل جرد اليوم بسرعة، أو استخدم الزر بالأعلى للتاريخ والملاحظات.')}</div>
     </div>
 
     <div class="card">
@@ -11213,6 +11593,216 @@ window.deleteCashCount = function(id) {
   toast('Cash count deleted');
 };
 
+// ─── Bank account + Reconciliation ───────────────────────────────────────
+// "Bank account credit" = all non-cash (card/transfer/fawran) payments collected.
+// Reconciliation proves, per month:
+//   Revenue = cash taken by owner + cash in hand + expenses + non-cash collected
+// and flags any leakage (gap that does not add up).
+
+function _normMethodRec(mRaw) {
+  const x = String(mRaw || '').toLowerCase();
+  if (x.indexOf('card') >= 0 || x.indexOf('visa') >= 0 || x.indexOf('credit') >= 0) return 'card';
+  if (x.indexOf('fawran') >= 0 || x.indexOf('فوران') >= 0) return 'fawran';
+  if (x.indexOf('transfer') >= 0 || x.indexOf('bank') >= 0) return 'transfer';
+  return 'cash';
+}
+
+// Compute every reconciliation bucket for a month ('all' = whole dataset).
+function computeReconciliation(ym) {
+  const inMonth = (d) => ym === 'all' ? true : String(d || '').slice(0, 7) === ym;
+
+  const byMethod = { cash: 0, card: 0, transfer: 0, fawran: 0 };
+  let revenue = 0;
+  for (const i of (state.invoices || [])) {
+    if (i.deleted) continue;
+    const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
+    if (pays) {
+      for (const p of pays) {
+        if (!inMonth(p.date || i.date)) continue;
+        const amt = Number(p.amount) || 0; if (!amt) continue;
+        byMethod[_normMethodRec(p.method || i.method)] += amt;
+        revenue += amt;
+      }
+    } else {
+      if (!inMonth(i.date)) continue;
+      const amt = (typeof invoicePaid === 'function') ? invoicePaid(i) : (Number(i.amount) || 0);
+      if (!amt) continue;
+      byMethod[_normMethodRec(i.method)] += amt;
+      revenue += amt;
+    }
+  }
+  const nonCash = byMethod.card + byMethod.transfer + byMethod.fawran;
+  const cashCollectedTotal = byMethod.cash;
+
+  let expenses = 0, cashExpenses = 0, ownerCashTaken = 0;
+  for (const e of (state.expenses || [])) {
+    if (e.deleted) continue;
+    if (!inMonth(e.date || (e.month ? e.month + '-01' : ''))) continue;
+    const amt = Number(e.amount) || 0;
+    if ((e.category || '') === CASH_COLLECTION_CATEGORY) { ownerCashTaken += amt; continue; }
+    expenses += amt;
+    if (_normMethodRec(e.method || 'cash') === 'cash') cashExpenses += amt;
+  }
+
+  const cashInHand = cashCollectedTotal - cashExpenses - ownerCashTaken;
+  const accountedFor = ownerCashTaken + cashInHand + expenses + nonCash;
+  const leakage = revenue - accountedFor;
+
+  let due = 0;
+  for (const m of (state.members || [])) {
+    if (m.deleted) continue;
+    const out = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0;
+    if (out > 0) due += out;
+  }
+
+  return { ym, revenue, byMethod, nonCash, cashCollectedTotal, expenses, cashExpenses, ownerCashTaken, cashInHand, accountedFor, leakage, due };
+}
+
+function _recMonths() {
+  return [...new Set((state.invoices || []).flatMap(i => {
+    const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : [{ date: i.date }];
+    return pays.map(p => String(p.date || i.date).slice(0, 7));
+  }).filter(Boolean))].sort().reverse();
+}
+
+PAGES.bankaccount = (main) => {
+  const months = _recMonths();
+  if (window._bankMonth == null) window._bankMonth = months[0] || 'all';
+  const ym = window._bankMonth;
+  const R = computeReconciliation(ym);
+  const money = (n) => fmt(Math.round(n));
+
+  const ledger = [];
+  for (const i of (state.invoices || [])) {
+    if (i.deleted) continue;
+    const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : [{ method: i.method, date: i.date, amount: (typeof invoicePaid === 'function') ? invoicePaid(i) : i.amount }];
+    for (const p of pays) {
+      const mth = _normMethodRec(p.method || i.method);
+      if (mth === 'cash') continue;
+      const d = String(p.date || i.date).slice(0, 10);
+      if (ym !== 'all' && d.slice(0, 7) !== ym) continue;
+      const amt = Number(p.amount) || 0; if (!amt) continue;
+      const mm = (state.members || []).find(x => x.id === i.customerId);
+      ledger.push({ date: d, ref: i.ref || ('#' + i.id), customer: mm ? mm.name : (i.customerName || '—'), method: mth, amount: amt });
+    }
+  }
+  ledger.sort((a, b) => b.date.localeCompare(a.date));
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🏦 ${t('Bank Account', 'الحساب البنكي')}</h1>
+        <div class="subtitle">${t('Non-cash collected (card / transfer / Fawran)', 'المُحصّل غير النقدي (بطاقة / تحويل / فوران)')}</div>
+      </div>
+      <div class="topbar-actions">
+        <select id="bank-month" class="btn ghost">
+          <option value="all" ${ym === 'all' ? 'selected' : ''}>${t('All months', 'كل الأشهر')}</option>
+          ${months.map(m => `<option value="${m}" ${ym === m ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
+        </select>
+        <button class="btn ghost" onclick="navigate('reconciliation')">⚖️ ${t('Reconciliation', 'التسوية')}</button>
+      </div>
+    </div>
+
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px">
+      <div class="card" style="padding:16px"><div class="text-mute" style="font-size:11px;text-transform:uppercase">${t('Bank credit (non-cash)', 'الرصيد البنكي')}</div><div style="font-size:24px;font-weight:800;color:var(--accent)">${money(R.nonCash)} <span style="font-size:13px">QAR</span></div></div>
+      <div class="card" style="padding:16px"><div class="text-mute" style="font-size:11px;text-transform:uppercase">${t('Card', 'بطاقة')}</div><div style="font-size:20px;font-weight:700">${money(R.byMethod.card)}</div></div>
+      <div class="card" style="padding:16px"><div class="text-mute" style="font-size:11px;text-transform:uppercase">${t('Transfer', 'تحويل')}</div><div style="font-size:20px;font-weight:700">${money(R.byMethod.transfer)}</div></div>
+      <div class="card" style="padding:16px"><div class="text-mute" style="font-size:11px;text-transform:uppercase">Fawran</div><div style="font-size:20px;font-weight:700">${money(R.byMethod.fawran)}</div></div>
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>${t('Date', 'التاريخ')}</th><th>${t('Ref', 'مرجع')}</th><th>${t('Customer', 'العميل')}</th><th>${t('Method', 'الطريقة')}</th><th class="text-right">${t('Amount', 'المبلغ')}</th></tr></thead>
+          <tbody>${ledger.length ? ledger.map(r => `
+            <tr><td class="text-dim">${fmtDate(r.date)}</td><td>${escapeHtml(r.ref)}</td><td>${escapeHtml(r.customer)}</td>
+            <td><span class="badge ${r.method === 'card' ? 'blue' : 'cyan'}">${r.method}</span></td>
+            <td class="text-right num font-bold">${money(r.amount)}</td></tr>`).join('') : `<tr><td colspan="5" class="empty">${t('No non-cash payments', 'لا توجد مدفوعات غير نقدية')}</td></tr>`}</tbody>
+          <tfoot><tr style="border-top:2px solid var(--border);font-weight:800"><td colspan="4">${t('Total', 'الإجمالي')}</td><td class="text-right num">${money(R.nonCash)}</td></tr></tfoot>
+        </table>
+      </div>
+    </div>`;
+
+  $('#bank-month')?.addEventListener('change', e => { window._bankMonth = e.target.value; render(); });
+};
+
+PAGES.reconciliation = (main) => {
+  const months = _recMonths();
+  if (window._recMonth == null) window._recMonth = months[0] || 'all';
+  const ym = window._recMonth;
+  const R = computeReconciliation(ym);
+  const money = (n) => fmt(Math.round(n));
+  const leak = Math.round(R.leakage);
+  const ok = Math.abs(leak) < 1;
+
+  const bucket = (label, val, color, note) => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-top:1px solid var(--border)">
+      <div><div style="font-weight:600">${label}</div>${note ? `<div class="text-mute" style="font-size:11px">${note}</div>` : ''}</div>
+      <div class="num font-bold" style="font-size:15px;color:${color || 'var(--text)'}">${money(val)}</div>
+    </div>`;
+
+  const leakNote = t('Leakage is revenue that cannot be traced to cash, bank, or expenses. A non-zero figure usually means a payment was recorded with the wrong method, an expense is missing, or cash was taken without logging it on the Cash Collection screen.', 'الفرق هو إيراد لا يمكن تتبعه إلى النقد أو البنك أو المصروفات. وجود رقم غير صفري يعني غالباً أن دفعة سُجّلت بطريقة خاطئة، أو مصروف ناقص، أو نقد سُحب دون تسجيله.');
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>⚖️ ${t('Reconciliation', 'التسوية المالية')}</h1>
+        <div class="subtitle">${t('Does every riyal of revenue add up?', 'هل تتطابق كل ريال من الإيرادات؟')}</div>
+      </div>
+      <div class="topbar-actions">
+        <select id="rec-month" class="btn ghost">
+          <option value="all" ${ym === 'all' ? 'selected' : ''}>${t('All months', 'كل الأشهر')}</option>
+          ${months.map(m => `<option value="${m}" ${ym === m ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
+        </select>
+        <button class="btn ghost" onclick="navigate('bankaccount')">🏦 ${t('Bank Account', 'الحساب البنكي')}</button>
+      </div>
+    </div>
+
+    <div class="card" style="padding:18px;margin-bottom:16px;border:2px solid ${ok ? 'var(--green)' : 'var(--red)'}">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-size:13px;color:var(--text-mute);text-transform:uppercase">${t('Check 1 · Revenue reconciliation', 'الفحص ١ · تسوية الإيرادات')}</div>
+          <div style="font-size:13px;margin-top:4px">${t('Revenue', 'الإيراد')} = ${t('cash taken', 'نقد مسحوب')} + ${t('cash in hand', 'نقد بالصندوق')} + ${t('expenses', 'مصروفات')} + ${t('non-cash', 'غير نقدي')}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:26px;font-weight:800;color:${ok ? 'var(--green)' : 'var(--red)'}">${ok ? '✓ ' + t('Balanced', 'متطابق') : (leak > 0 ? '▲ ' : '▼ ') + money(Math.abs(leak))}</div>
+          <div class="text-mute" style="font-size:11px">${ok ? t('No leakage', 'لا يوجد فرق') : t('leakage (unaccounted)', 'فرق غير مُفسّر')}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="card" style="padding:16px">
+        <div class="card-title" style="margin-bottom:6px">${t('Where the revenue went', 'أين ذهبت الإيرادات')}</div>
+        ${bucket('💵 ' + t('Cash taken by owner', 'نقد سحبه المالك'), R.ownerCashTaken, 'var(--text)')}
+        ${bucket('🧮 ' + t('Cash in hand', 'النقد بالصندوق'), R.cashInHand, R.cashInHand >= 0 ? 'var(--text)' : 'var(--red)', t('cash collected − cash expenses − cash taken', 'النقد المُحصّل − مصروفات نقدية − نقد مسحوب'))}
+        ${bucket('💸 ' + t('Expenses', 'المصروفات'), R.expenses, 'var(--text)')}
+        ${bucket('🏦 ' + t('Non-cash collected (bank)', 'غير نقدي (البنك)'), R.nonCash, 'var(--accent)', t('card + transfer + Fawran', 'بطاقة + تحويل + فوران'))}
+        <div style="display:flex;justify-content:space-between;padding:11px 0;border-top:2px solid var(--border);font-weight:800">
+          <div>${t('Accounted for', 'المُفسّر')}</div><div class="num">${money(R.accountedFor)}</div>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;font-weight:800;color:${ok ? 'var(--green)' : 'var(--red)'}">
+          <div>${t('Revenue (target)', 'الإيراد (الهدف)')}</div><div class="num">${money(R.revenue)}</div>
+        </div>
+      </div>
+
+      <div class="card" style="padding:16px">
+        <div class="card-title" style="margin-bottom:6px">${t('Check 2 · Cash & bank position', 'الفحص ٢ · وضع النقد والبنك')}</div>
+        ${bucket(t('Cash collected (all)', 'النقد المُحصّل (الكل)'), R.cashCollectedTotal, 'var(--text)')}
+        ${bucket('− ' + t('Cash expenses', 'مصروفات نقدية'), R.cashExpenses, 'var(--text)')}
+        ${bucket('− ' + t('Cash taken by owner', 'نقد سحبه المالك'), R.ownerCashTaken, 'var(--text)')}
+        ${bucket('= ' + t('Expected cash in hand', 'النقد المتوقع'), R.cashInHand, R.cashInHand >= 0 ? 'var(--green)' : 'var(--red)')}
+        <div style="height:10px"></div>
+        ${bucket('🏦 ' + t('Bank credit (non-cash)', 'الرصيد البنكي'), R.nonCash, 'var(--accent)')}
+        ${bucket('📋 ' + t('Still due (outstanding)', 'المتبقي المستحق'), R.due, 'var(--accent-2)', t('not yet collected', 'لم يُحصّل بعد'))}
+      </div>
+    </div>
+
+    <div class="text-mute" style="font-size:11px;margin-top:14px;line-height:1.5">${leakNote}</div>`;
+
+  $('#rec-month')?.addEventListener('change', e => { window._recMonth = e.target.value; render(); });
+};
+
 PAGES.cashcollection = (main) => {
   if (window._ccFilter == null) window._ccFilter = { month: 'all', search: '' };
   const f = window._ccFilter;
@@ -11266,12 +11856,12 @@ PAGES.cashcollection = (main) => {
 
     <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
       <div class="kpi" style="border-color:var(--red);background:rgba(239,68,68,.06)">
-        <div class="kpi-label" style="color:var(--red)">💵 ${t('Total collected (shown)', 'إجمالي المحصَّل (المعروض)')}</div>
+        <div class="kpi-label" style="color:var(--red)">💵 ${t('Total withdrawn (shown)', 'إجمالي المسحوب (المعروض)')}</div>
         <div class="kpi-value num" style="color:var(--red)">${fmt(totalShown)}</div>
         <div class="kpi-sub">QAR · ${list.length} ${t('records', 'سجل')}</div>
       </div>
       <div class="kpi">
-        <div class="kpi-label">${t('Total collected (all time)', 'إجمالي المحصَّل (كل الوقت)')}</div>
+        <div class="kpi-label">${t('Total withdrawn (all time)', 'إجمالي المسحوب (كل الوقت)')}</div>
         <div class="kpi-value num">${fmt(totalAll)}</div>
         <div class="kpi-sub">QAR · ${all.length} ${t('records', 'سجل')}</div>
       </div>
@@ -11448,12 +12038,95 @@ window.exportExpensesPDF = function(rows, meta) {
   w.document.close();
 };
 
+// ─── Bank commission (auto) ──────────────────────────────────────────────
+// Card payments incur a bank commission of 2.25%. We keep ONE expense row per
+// month (category "Bank Commission", method "card"), auto-computed from that
+// month's card-paid total. The admin can edit the amount; once edited, we mark
+// it `edited:true` and stop auto-overwriting it. Recomputes on every Expenses
+// page load so new card payments are reflected until the admin overrides.
+const BANK_COMMISSION_RATE = 2.25;            // percent
+const BANK_COMMISSION_CATEGORY = 'Bank Commission';
+
+// Sum of CARD payments dated in a given YYYY-MM (uses payment date, else invoice date).
+function cardPaidForMonth(ym) {
+  const isCard = (mRaw) => {
+    const x = String(mRaw || '').toLowerCase();
+    return x.indexOf('card') >= 0 || x.indexOf('visa') >= 0 || x.indexOf('credit') >= 0;
+  };
+  let total = 0;
+  for (const i of (state.invoices || [])) {
+    if (i.deleted) continue;
+    const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
+    if (pays) {
+      for (const p of pays) {
+        if (isCard(p.method || i.method) && String(p.date || i.date).slice(0, 7) === ym) total += Number(p.amount) || 0;
+      }
+    } else if (isCard(i.method) && String(i.date).slice(0, 7) === ym) {
+      total += (typeof invoicePaid === 'function') ? invoicePaid(i) : (Number(i.amount) || 0);
+    }
+  }
+  return total;
+}
+
+// Ensure each month that has card payments has a (non-edited) Bank Commission
+// expense equal to cardPaid × 2.25%. Returns true if anything changed (so the
+// caller can save). Never touches rows the admin has edited.
+function syncBankCommission() {
+  if (!Array.isArray(state.expenses)) state.expenses = [];
+  // Months that have any card payment.
+  const months = new Set();
+  for (const i of (state.invoices || [])) {
+    if (i.deleted) continue;
+    const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : [{ method: i.method, date: i.date, amount: (typeof invoicePaid === 'function') ? invoicePaid(i) : i.amount }];
+    for (const p of pays) {
+      const x = String(p.method || i.method || '').toLowerCase();
+      if ((x.indexOf('card') >= 0 || x.indexOf('visa') >= 0 || x.indexOf('credit') >= 0)) months.add(String(p.date || i.date).slice(0, 7));
+    }
+  }
+  let changed = false;
+  for (const ym of months) {
+    if (!ym || ym.length !== 7) continue;
+    const cardPaid = cardPaidForMonth(ym);
+    const auto = Math.round(cardPaid * BANK_COMMISSION_RATE) / 100;   // ×2.25/100, 2dp
+    let row = state.expenses.find(e => e.autoBankCommission && e.month === ym);
+    if (auto <= 0 && !row) continue;            // nothing to add
+    if (!row) {
+      // Create a fresh auto row dated the 1st of that month.
+      row = {
+        id: nextId(state.expenses),
+        autoBankCommission: true,
+        edited: false,
+        date: ym + '-01',
+        month: ym,
+        description: `Bank commission (${BANK_COMMISSION_RATE}% of card payments)`,
+        category: BANK_COMMISSION_CATEGORY,
+        method: 'card',
+        amount: auto,
+        cardBase: cardPaid,
+      };
+      state.expenses.push(row);
+      changed = true;
+    } else if (!row.edited) {
+      // Refresh the computed amount unless the admin has overridden it.
+      if (Math.abs((row.amount || 0) - auto) > 0.001 || (row.cardBase || 0) !== cardPaid) {
+        row.amount = auto;
+        row.cardBase = cardPaid;
+        row.description = `Bank commission (${BANK_COMMISSION_RATE}% of card payments)`;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
 PAGES.expenses = (main) => {
   let filter = { search: '', month: 'all', categories: [], methods: [] };
   const pg = makePager(10);
   let _exportRows = [], _exportMeta = {};
 
   function refresh() {
+    // Keep the auto Bank Commission rows up to date (card payments × 2.25%).
+    if (syncBankCommission()) save();
     // Cash collections (owner taking cash out) are tracked on their own Cash
     // Collection screen — they are NOT real expenses, so keep them off this page.
     const realExpenses = state.expenses.filter(e => (e.category || '') !== CASH_COLLECTION_CATEGORY);
@@ -11463,7 +12136,11 @@ PAGES.expenses = (main) => {
       if (filter.categories.length && !filter.categories.includes(e.category || 'Others')) return false;
       if (filter.methods.length && !filter.methods.includes(e.method || '')) return false;
       return true;
-    }).sort((a,b) => b.date.localeCompare(a.date));
+    }).sort((a,b) => {
+      // Pin Bank Commission rows to the very top, then newest-first by date.
+      if (!!a.autoBankCommission !== !!b.autoBankCommission) return a.autoBankCommission ? -1 : 1;
+      return b.date.localeCompare(a.date);
+    });
     const rows = paginate(allRows, pg);
 
     const total = allRows.reduce((s,r) => s + (r.amount || 0), 0);          // filtered total
@@ -11483,13 +12160,13 @@ PAGES.expenses = (main) => {
     _exportMeta = { total, grandTotal, anyFilter, byCat, filter: { ...filter } };
 
     $('#exp-tbody').innerHTML = rows.length ? rows.map(e => `
-      <tr>
+      <tr ${e.autoBankCommission ? 'style="background:rgba(91,141,239,.05)"' : ''}>
         <td class="text-dim" style="white-space:nowrap">${fmtDate(e.date)}</td>
-        <td>${escapeHtml(e.description)}</td>
+        <td>${escapeHtml(e.description)}${e.autoBankCommission ? ` <span class="badge blue" style="font-size:9px" title="Auto-calculated from card payments × ${BANK_COMMISSION_RATE}%. Edit to override.">${e.edited ? '✏️ overridden' : '⚙️ auto'}</span>${e.cardBase ? `<div class="text-mute" style="font-size:10px">${fmt(e.cardBase)} card × ${BANK_COMMISSION_RATE}%</div>` : ''}` : ''}</td>
         <td><span class="badge">${escapeHtml(e.category || 'Others')}</span></td>
         <td><span class="badge ${e.method === 'card' ? 'blue' : e.method === 'transfer' ? 'cyan' : ''}">${escapeHtml(e.method || '—')}</span></td>
         <td class="text-right num font-bold">${fmt(e.amount)}</td>
-        <td class="text-right" style="white-space:nowrap"><button class="btn ghost sm" onclick="editExpense(${e.id})" title="Edit">✏️</button> <button class="btn ghost sm" onclick="deleteExpense(${e.id})" title="Delete">🗑</button></td>
+        <td class="text-right" style="white-space:nowrap"><button class="btn ghost sm" onclick="editExpense(${e.id})" title="Edit">✏️</button> ${e.autoBankCommission ? `<button class="btn ghost sm" onclick="resetBankCommission(${e.id})" title="Reset to auto-calculated value">↻</button>` : `<button class="btn ghost sm" onclick="deleteExpense(${e.id})" title="Delete">🗑</button>`}</td>
       </tr>
     `).join('') : `<tr><td colspan="6" class="empty"><div class="empty-icon">💸</div>No expenses match</td></tr>`;
     const footEl = $('#exp-tfoot');
@@ -11641,6 +12318,9 @@ function showExpenseForm(id) {
         } else {
           // Preserve any legacy fields like `classification` from older data
           Object.assign(e, data);
+          // If the admin edited the auto Bank Commission row, lock it as overridden so
+          // it won't be recomputed from card payments on the next refresh.
+          if (e.autoBankCommission) e.edited = true;
           toast('Expense updated');
         }
         save();
@@ -11651,6 +12331,16 @@ function showExpenseForm(id) {
   });
 }
 
+window.resetBankCommission = function(id) {
+  const e = state.expenses.find(x => x.id === id);
+  if (!e || !e.autoBankCommission) return;
+  // Clear the override so syncBankCommission() recomputes it from card payments.
+  e.edited = false;
+  if (syncBankCommission()) {} // recompute immediately
+  save();
+  if (typeof render === 'function') render();
+  toast('Bank commission reset to auto-calculated value');
+};
 window.deleteExpense = function(id) {
   if (!confirm('Delete this expense?')) return;
   state.expenses = state.expenses.filter(e => e.id !== id);
@@ -12217,11 +12907,13 @@ window.showRevenueDetail = function(coachId, monthKey) {
       if (li.coachId !== coachId) continue;
       // Summer Camp doesn't generate coach commission — skip it
       if (li.sport === SUMMER_CAMP) continue;
+      const elig = lineCommissionEligibility(mem, inv, li, null);
+      if (!elig.eligible) continue;   // no attended class → not commissionable
       lines.push({
         memberName: mem ? mem.name : (inv.customerName || '— deleted member —'),
         memberId: mem ? mem.id : null,
         sport: li.sport,
-        price: parseFloat(li.price) || 0,
+        price: elig.base,
         isSwitch: !!inv.switchCredit,
         invoiceRef: inv.ref || `INV${inv.id}`,
         invoiceDate: inv.date,
@@ -12334,18 +13026,22 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
         sub = (mem.subscriptions || []).find(s => s.invoiceNumber === inv.ref && s.activity === li.sport)
            || (mem.subscriptions || []).find(s => s.activity === li.sport && s.coachId === li.coachId);
       }
+      const elig = lineCommissionEligibility(mem, inv, li, null);
+      if (!elig.eligible) continue;   // never attended → not on the commission report
       lines.push({
         memberName: mem ? mem.name : (inv.customerName || '— deleted member —'),
         sport: li.sport,
-        price: parseFloat(li.price) || 0,
+        price: elig.base,                          // commission base (prorated if frozen)
+        fee: parseFloat(li.price) || 0,            // the full fee, for reference
         isSwitch: !!inv.switchCredit,
         invoiceRef: inv.ref || `INV${inv.id}`,
         invoiceDate: inv.date,
         start: sub?.start || null,
         end: sub?.end || null,
-        attended: mem ? attendedClassesFor(mem, li.sport) : (sub?.attendedClasses || 0),
-        total: sub?.totalClasses || null,
-        status: mem ? memberStatus(mem) : '—',
+        attended: elig.attended,
+        total: elig.total || (sub?.totalClasses || null),
+        status: elig.status,
+        prorated: elig.status === 'Frozen' && elig.ratio < 1,
       });
     }
   }
@@ -12445,7 +13141,7 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
               <td style="font-size:11px">${l.end ? fmtDate(l.end) : '—'}</td>
               <td style="font-size:11px">${l.attended != null ? l.attended : 0}${l.total ? ' / ' + l.total : ''}</td>
               <td style="font-size:11px">${escapeHtml(l.status || '—')}</td>
-              <td class="num ${l.price < 0 ? 'neg' : ''}">${fmt(l.price)}</td>
+              <td class="num ${l.price < 0 ? 'neg' : ''}">${fmt(l.price)}${l.prorated ? `<div style="color:#999;font-size:9px">of ${fmt(l.fee)} · ${l.attended}/${l.total} attended</div>` : ''}</td>
               <td class="num ${l.price < 0 ? 'neg' : ''}" style="font-weight:700">${fmt(l.price * pay.commissionRate / 100)}</td>
             </tr>
           `).join('')}
@@ -14297,6 +14993,19 @@ PAGES.databackup = (main) => PAGES.settings(main, 'data');
 PAGES.danger = (main) => PAGES.settings(main, 'danger');
 
 // ─── Modal helpers ──────────────────────────────────────────
+// Shows a fixed banner when this browser is running an old cached version while
+// the cloud has a newer one. Prompts a hard refresh. Saving is already blocked.
+window.showStaleVersionBanner = function (newVer) {
+  if (document.getElementById('stale-version-banner')) return;   // only once
+  const bar = document.createElement('div');
+  bar.id = 'stale-version-banner';
+  bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b3261e;color:#fff;padding:10px 16px;display:flex;align-items:center;justify-content:center;gap:14px;font-size:14px;box-shadow:0 2px 10px rgba(0,0,0,.3)';
+  bar.innerHTML = `
+    <span>⚠️ <b>${t('A newer version is available', 'يتوفر إصدار أحدث')}.</b> ${t('This tab is running old code — saving is paused to protect your data. Please refresh.', 'هذا التبويب يعمل بإصدار قديم — تم إيقاف الحفظ لحماية بياناتك. يرجى التحديث.')}</span>
+    <button onclick="location.reload(true)" style="background:#fff;color:#b3261e;border:none;border-radius:6px;padding:6px 14px;font-weight:700;cursor:pointer">🔄 ${t('Refresh now', 'تحديث الآن')}</button>`;
+  document.body.appendChild(bar);
+  document.body.style.paddingTop = '44px';
+};
 function showModal({ title, body, actions = [] }) {
   closeModal();
   const backdrop = el('div', { className: 'modal-backdrop', id: 'modal-backdrop' });
@@ -18499,7 +19208,7 @@ PAGES.coachhome = (main) => {
     });
   const todayCard = `
     <div class="card" style="margin-bottom:16px">
-      <div class="card-header"><div><div class="card-title">📅 ${t('Today\\u2019s classes', 'حصص اليوم')} (${todayClasses.length})</div><div class="card-subtitle">${DAY_LABEL[todayKey]} · ${t('who\\u2019s expected to attend', 'من المتوقع حضوره')}</div></div></div>
+      <div class="card-header"><div><div class="card-title">📅 ${t('Today\u2019s classes', 'حصص اليوم')} (${todayClasses.length})</div><div class="card-subtitle">${DAY_LABEL[todayKey]} · ${t('who\u2019s expected to attend', 'من المتوقع حضوره')}</div></div></div>
       ${todayClasses.length ? todayClasses.map(({ c, expected }) => `
         <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
@@ -22786,7 +23495,12 @@ PAGES.transactions = (main) => {
 
   function build() {
     const range = resolveRange(st.preset, st.from, st.to);
+    // Whole-month presets scope by the invoice BILLING MONTH so the total matches
+    // the Invoices / Dashboard / Club Revenue screens. Other presets stay by date.
+    const monthScope = st.preset === 'this_month' ? TODAY.slice(0, 7)
+      : st.preset === 'last_month' ? String(range.from || '').slice(0, 7) : null;
     const inRange = inv => {
+      if (monthScope) return invoiceBillMonth(inv) === monthScope;
       const d = (inv.date || '').slice(0, 10);
       if (range.from && d < range.from) return false;
       if (range.to && d > range.to) return false;
@@ -22830,7 +23544,16 @@ PAGES.transactions = (main) => {
         else if (anyLineHasCoach) continue;   // none of these coaches on any line → skip
         // (else: no per-line coaches → fall through to invoice-level coach check below)
       }
-      const invAmount = items.reduce((s, li) => s + (Number(li.price) || 0), 0);
+      // Canonical per-invoice value = i.amount. When the row is narrowed by a
+      // coach / activity filter, take that line subset's PROPORTIONAL slice of
+      // i.amount (not a raw line-item sum, which can drift from the amount and
+      // is what made the Transactions total disagree with the Invoices screen).
+      const _liAll = allItems.reduce((s, li) => s + (Number(li.price) || 0), 0);
+      const _liKept = items.reduce((s, li) => s + (Number(li.price) || 0), 0);
+      const _invValue = Number(inv.amount) || _liAll;
+      const _narrowed = (actSel.length > 0) || coachFiltered;
+      const invAmount = !_narrowed ? _invValue
+        : (_liAll > 0 ? (_liKept / _liAll) * _invValue : _invValue);
       // Summer Camp is standalone — never attribute it to a coach.
       const allCamp = items.length && items.every(isCampItem);
       const coachId = allCamp ? null : (inv.coachId || (allItems.find(li => li.coachId)?.coachId) || null);
@@ -22849,7 +23572,7 @@ PAGES.transactions = (main) => {
       // Paid / Due for this row. invoicePaid() is the whole-invoice paid amount; when
       // the row is narrowed (by coach/activity) to part of a multi-line invoice, prorate
       // the paid amount by this row's share of the full invoice so Paid/Due stay coherent.
-      const fullInvAmount = allItems.reduce((s, li) => s + (Number(li.price) || 0), 0) || (Number(inv.amount) || 0);
+      const fullInvAmount = _invValue;
       const fullPaid = (typeof invoicePaid === 'function') ? invoicePaid(inv) : (Number(inv.amount) || 0);
       const share = fullInvAmount > 0 ? (invAmount / fullInvAmount) : 1;
       const paid = Math.round(fullPaid * share);
@@ -23422,7 +24145,7 @@ PAGES.cleanup = (main) => {
         ${t('Enrollments', 'التسجيلات')}: <b style="color:var(--red)">${d.enrollmentSports.length ? d.enrollmentSports.map(escapeHtml).join(', ') : '—'}</b><br>
         ${t('Should be (from subscriptions)', 'يجب أن تكون (من الاشتراكات)')}: <b style="color:var(--green)">${d.subscriptionSports.length ? d.subscriptionSports.map(escapeHtml).join(', ') : '—'}</b>
       </div>
-    </div>`).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('All members\\u2019 enrollments match their subscriptions', 'تسجيلات جميع الأعضاء تطابق اشتراكاتهم')}</div>`;
+    </div>`).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('All members\u2019 enrollments match their subscriptions', 'تسجيلات جميع الأعضاء تطابق اشتراكاتهم')}</div>`;
 
   main.innerHTML = `
     <div class="topbar">
@@ -23454,7 +24177,7 @@ PAGES.cleanup = (main) => {
 
     <div class="card" style="margin-top:14px">
       <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
-        <div><div class="card-title">📅 ${t('Fix invoice dates', 'تصحيح تواريخ الفواتير')}</div><div class="card-subtitle">${t('Membership invoices dated after the member\\u2019s start date (e.g. old members added later). Fixing re-dates the invoice and its payments to the start date, so revenue lands in the right month. Amounts are unchanged.', 'فواتير اشتراك مؤرخة بعد تاريخ بداية العضو (مثل الأعضاء القدامى المضافين لاحقاً). التصحيح يعيد تأريخ الفاتورة ومدفوعاتها لتاريخ البداية. المبالغ لا تتغير.')}</div></div>
+        <div><div class="card-title">📅 ${t('Fix invoice dates', 'تصحيح تواريخ الفواتير')}</div><div class="card-subtitle">${t('Membership invoices dated after the member\u2019s start date (e.g. old members added later). Fixing re-dates the invoice and its payments to the start date, so revenue lands in the right month. Amounts are unchanged.', 'فواتير اشتراك مؤرخة بعد تاريخ بداية العضو (مثل الأعضاء القدامى المضافين لاحقاً). التصحيح يعيد تأريخ الفاتورة ومدفوعاتها لتاريخ البداية. المبالغ لا تتغير.')}</div></div>
         ${misdated.length ? `<button class="btn ghost sm" style="color:var(--blue);white-space:nowrap" onclick="fixAllInvoiceDatesUI()">📅 ${t('Fix all', 'تصحيح الكل')} (${misdated.length})</button>` : ''}
       </div>
       <div style="padding:12px">${misdatedSection}</div>
@@ -23475,7 +24198,7 @@ PAGES.cleanup = (main) => {
 
     <div class="card" style="margin-top:14px">
       <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
-        <div><div class="card-title">🔧 ${t('Re-sync enrollments', 'إعادة مزامنة التسجيلات')}</div><div class="card-subtitle">${t('Finds members whose sport rows (enrollments) don\\u2019t match their actual subscriptions — a sport duplicated, missing, or pointing at the wrong coach. Re-syncing rebuilds the rows from the active subscriptions (correct sports + coaches), keeping classes/price/dates. Attendance and subscriptions are never changed.', 'يبحث عن الأعضاء الذين لا تتطابق صفوف رياضاتهم مع اشتراكاتهم الفعلية — رياضة مكررة أو مفقودة أو بمدرب خاطئ. تعيد المزامنة بناء الصفوف من الاشتراكات النشطة. لا يتغير الحضور أو الاشتراكات.')}</div></div>
+        <div><div class="card-title">🔧 ${t('Re-sync enrollments', 'إعادة مزامنة التسجيلات')}</div><div class="card-subtitle">${t('Finds members whose sport rows (enrollments) don\u2019t match their actual subscriptions — a sport duplicated, missing, or pointing at the wrong coach. Re-syncing rebuilds the rows from the active subscriptions (correct sports + coaches), keeping classes/price/dates. Attendance and subscriptions are never changed.', 'يبحث عن الأعضاء الذين لا تتطابق صفوف رياضاتهم مع اشتراكاتهم الفعلية — رياضة مكررة أو مفقودة أو بمدرب خاطئ. تعيد المزامنة بناء الصفوف من الاشتراكات النشطة. لا يتغير الحضور أو الاشتراكات.')}</div></div>
         ${enrDrift.length ? `<button class="btn ghost sm" style="color:var(--blue);white-space:nowrap" onclick="resyncAllEnrollmentsUI()">🔧 ${t('Re-sync all', 'مزامنة الكل')} (${enrDrift.length})</button>` : ''}
       </div>
       <div style="padding:12px">${enrDriftSection}</div>

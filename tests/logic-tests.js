@@ -174,15 +174,34 @@ ${seed}
 
   // --- COMMISSION (real payroll fn), incl. Summer Camp exclusion ---
   const payBefore = computeMonthlyPay(2, '2026-06');
-  eq(payBefore.commissionBase, 350, 'commission base = MMA 350 (Summer Camp excluded)');
-  eq(Math.round(payBefore.commissionAmount), 105, 'commission 30% of 350 = 105');
+  eq(Math.round(payBefore.commissionBase), 146, 'commission base = MMA prorated by attendance 5/12 x 350 (Summer Camp excluded)');
+  eq(Math.round(payBefore.commissionAmount), 44, 'commission 30% of prorated base = 44');
 
   // --- MERGE preserves commission (replace inv 1+2 with one lineItem invoice) ---
   state.invoices = state.invoices.filter(i => i.id!==1 && i.id!==2);
   state.invoices.push({ id: 99, ref:'INV0001', date:'2026-06-03', month:'2026-06', amount:525, method:'cash', category:'Membership', sport:null, coachId:null, customerId:10,
     lineItems:[{sport:'MMA',coachId:2,price:350},{sport:'Summer Camp',coachId:null,price:175}] });
   const payAfter = computeMonthlyPay(2, '2026-06');
-  eq(payAfter.commissionBase, 350, 'commission base STILL 350 after merge (lineItems honored)');
+  eq(Math.round(payAfter.commissionBase), 146, 'commission base STILL prorated 146 after merge (lineItems honored)');
+
+  // --- Member Commission report: camp & expired-zero excluded, sports split ---
+  state.members.push({ id: 920, name: 'CampOnly', expiryDate: '2099-12-31', subscriptions: [{ activity: 'Summer Camp', totalClasses: 5, attendedClasses: 3, start: '2026-06-01' }] });
+  state.invoices.push({ id: 9920, ref: 'INVMC1', date: '2026-06-05', month: '2026-06', amount: 600, category: 'Membership', customerId: 920, lineItems: [{ sport: 'Summer Camp', coachId: null, price: 600 }] });
+  state.members.push({ id: 921, name: 'NoShowExp', expiryDate: '2026-01-01', subscriptions: [{ activity: 'Boxing', coachId: 2, totalClasses: 8, attendedClasses: 0, start: '2025-12-01', end: '2026-01-01' }], dailyAttendance: {} });
+  state.invoices.push({ id: 9921, ref: 'INVMC2', date: '2026-06-06', month: '2026-06', amount: 800, category: 'Membership', coachId: 2, sport: 'Boxing', customerId: 921, lineItems: [{ sport: 'Boxing', coachId: 2, price: 800 }] });
+  state.members.push({ id: 922, name: 'TwoSports', expiryDate: '2099-12-31', status: 'Active',
+    subscriptions: [{ activity: 'MMA', coachId: 2, totalClasses: 8, attendedClasses: 8, start: '2026-06-01', end: '2026-12-31', invoiceNumber: 'INVMC3' },
+                    { activity: 'Karate', coachId: 3, totalClasses: 8, attendedClasses: 8, start: '2026-06-01', end: '2026-12-31', invoiceNumber: 'INVMC3' }] });
+  state.invoices.push({ id: 9922, ref: 'INVMC3', date: '2026-06-07', month: '2026-06', amount: 900, category: 'Membership', customerId: 922, lineItems: [{ sport: 'MMA', coachId: 2, price: 500 }, { sport: 'Karate', coachId: 3, price: 400 }] });
+  const mc = computeMemberCommissions('2026-06');
+  ok(!mc.some(r => r.memberName === 'CampOnly'), 'member-commission: Summer Camp member excluded (no coach commission)');
+  ok(!mc.some(r => r.memberName === 'NoShowExp'), 'member-commission: expired-with-zero-attendance excluded from report');
+  const tsRows = mc.filter(r => r.memberName === 'TwoSports');
+  eq(tsRows.length, 2, 'member-commission: member in two sports → two separate rows');
+  ok(tsRows.some(r => r.sport === 'MMA' && r.paid === 500) && tsRows.some(r => r.sport === 'Karate' && r.paid === 400), 'member-commission: each sport row carries its own paid amount');
+  ok(tsRows.every(r => r.coachName && r.start && r.expiry), 'member-commission: rows carry coach, start, expiry');
+  state.members = state.members.filter(m => ![920, 921, 922].includes(m.id));
+  state.invoices = state.invoices.filter(i => ![9920, 9921, 9922].includes(i.id));
 
   // --- pagination ---
   const pager = makePager(2); pager.page = 2;
@@ -353,7 +372,7 @@ ${seed}
   // deleted/archived member must NOT count toward commission
   state.coaches.push({ id:15, name:'CoachDel', rate:100, fixedSalary:0, active:'Y' });
   state.members.push({ id:78, name:'DeletedMem', deleted:true, coachId:15, subscriptions:[{activity:'Boxing',coachId:15,totalClasses:6,amountPaid:500,start:'2026-06-01',end:'2026-07-01',invoiceNumber:'INVDEL'}], dailyAttendance:{} });
-  state.members.push({ id:79, name:'LiveMem', coachId:15, subscriptions:[{activity:'Boxing',coachId:15,totalClasses:6,amountPaid:500,start:'2026-06-01',end:'2026-07-01',invoiceNumber:'INVLIVE'}], dailyAttendance:{} });
+  state.members.push({ id:79, name:'LiveMem', coachId:15, subscriptions:[{activity:'Boxing',coachId:15,totalClasses:6,amountPaid:500,start:'2026-06-01',end:'2026-07-01',invoiceNumber:'INVLIVE'}], dailyAttendance:{'2026-06':{'Boxing':{'1':'Y','2':'Y','3':'Y'}}} });
   state.invoices.push({ id:710, ref:'INVDEL',  date:'2026-06-01', month:'2026-06', amount:500, category:'Membership', sport:'Boxing', coachId:15, customerId:78, lineItems:[{sport:'Boxing',coachId:15,price:500}] });
   state.invoices.push({ id:711, ref:'INVLIVE', date:'2026-06-01', month:'2026-06', amount:500, category:'Membership', sport:'Boxing', coachId:15, customerId:79, lineItems:[{sport:'Boxing',coachId:15,price:500}] });
   // two identical invoices for the same member = a duplicate the finder must catch
@@ -404,9 +423,9 @@ ${seed}
   eq(ex.commissionPendingBase, 0, 'expired: nothing pending after the true-up');
   // restore default so we don't affect any later logic
   state.settings.commissionBasis = 'payment';
-  eq(Math.round(computeMonthlyPay(15, '2026-06').commissionBase), 500, 'deleted/archived member excluded from commission (payment): only the live member counts');
+  eq(Math.round(computeMonthlyPay(15, '2026-06').commissionBase), 250, 'deleted/archived member excluded (payment): only live member counts, prorated 3/6 x 500');
   state.settings.commissionBasis = 'attendance';
-  eq(Math.round(computeMonthlyPay(15, '2026-06').commissionPendingBase), 500, 'deleted/archived member excluded (attendance): only live member contributes pending');
+  eq(Math.round(computeMonthlyPay(15, '2026-06').commissionPendingBase), 250, 'deleted/archived member excluded (attendance): only live member contributes pending (3 remaining x 500/6)');
   state.settings.commissionBasis = 'payment';
   const dupGroups = detectDuplicateInvoices();
   ok(dupGroups.some(g => g.rows.length === 2 && g.rows.every(r => r.inv.customerId === 80)), 'dup finder: flags the two identical invoices for member 80');
@@ -2232,6 +2251,80 @@ ${seed}
     eq(inRange(1200, 500, 1500), true, 'txn amount filter: 1200 in [500,1500]');
     eq(inRange(1900, 500, 1500), false, 'txn amount filter: 1900 outside [500,1500]');
     eq(inRange(650, 500, ''), true, 'txn amount filter: min only');
+  })();
+  // Bank commission: card payments × 2.25%, card-only, override sticks
+  (function () {
+    var RATE = 2.25;
+    var cardPaid = 1000 + 100;   // two card payments; a cash 750 is excluded
+    var auto = Math.round(cardPaid * RATE) / 100;
+    eq(auto, 24.75, 'bank commission: 1100 card × 2.25% = 24.75');
+    eq(Math.round(2000 * RATE) / 100, 45, 'bank commission: 2000 × 2.25% = 45');
+    eq(Math.round(0 * RATE) / 100, 0, 'bank commission: no card payments = 0');
+    // Override semantics: an edited row keeps its value (simulated).
+    var row = { amount: 24.75, edited: false };
+    row.amount = 30; row.edited = true;
+    var recompute = function (r, a) { if (!r.edited) r.amount = a; return r.amount; };
+    eq(recompute(row, 24.75), 30, 'bank commission: override not recomputed');
+    row.edited = false;
+    eq(recompute(row, 24.75), 24.75, 'bank commission: reset recomputes');
+  })();
+  // Reconciliation: Revenue = cash taken + cash in hand + expenses + non-cash (leakage 0)
+  (function () {
+    var revenue = 1800;          // 1000 cash + 500 card + 300 fawran
+    var cashCollected = 1000, nonCash = 800;
+    var expenses = 200, cashExpenses = 200, ownerCashTaken = 400;
+    var cashInHand = cashCollected - cashExpenses - ownerCashTaken;  // 400
+    eq(cashInHand, 400, 'recon: cash in hand = 1000 − 200 − 400 = 400');
+    var accountedFor = ownerCashTaken + cashInHand + expenses + nonCash;
+    eq(accountedFor, 1800, 'recon: accounted = 400+400+200+800 = 1800');
+    eq(revenue - accountedFor, 0, 'recon: leakage = 0 (balanced)');
+    // A misclassified payment creates leakage: move 100 cash off the books.
+    var leaked = revenue - (ownerCashTaken + (cashInHand - 100) + expenses + nonCash);
+    eq(leaked, 100, 'recon: 100 missing cash shows as 100 leakage');
+  })();
+  // Dashboard revenue now uses invoice-month basis (matches Invoices screen)
+  (function () {
+    var paid = function (i) { return (i.payments || []).reduce(function (s, p) { return s + p.amount; }, 0); };
+    var invs = [
+      { month: '2026-06', date: '2026-06-05', payments: [{ amount: 600, date: '2026-06-05' }, { amount: 400, date: '2026-07-10' }] },
+      { month: '2026-05', date: '2026-05-20', payments: [{ amount: 500, date: '2026-06-15' }] },
+    ];
+    // Invoice-month basis: June = the June-billed invoice's full collected (1000).
+    var dash = invs.filter(function (i) { return (i.month || i.date.slice(0, 7)) === '2026-06'; }).reduce(function (s, i) { return s + paid(i); }, 0);
+    var invScreen = invs.filter(function (i) { return i.month === '2026-06'; }).reduce(function (s, i) { return s + paid(i); }, 0);
+    eq(dash, 1000, 'dashboard revenue: June = 1000 (invoice-month basis)');
+    eq(dash, invScreen, 'dashboard revenue: matches Invoices screen');
+  })();
+  // Soft-delete tombstone wins the merge over a stale "alive" copy (no resurrection)
+  (function () {
+    var stable = function (o) { return JSON.stringify(o); };
+    // Replicates the both-present branch of _mergeCollection.
+    var mergeOne = function (base, local, remote) {
+      var inB = !!base;
+      var lChanged = !inB || stable(local) !== stable(base);
+      var rChanged = !inB || stable(remote) !== stable(base);
+      if (lChanged && rChanged && stable(local) !== stable(remote)) return local; // conflict → local
+      if (rChanged && !lChanged) return remote;
+      return local;
+    };
+    var base = { id: 5, amount: 1000 };
+    // Admin deleted locally; stale device still alive remotely → deletion must win.
+    eq(!!mergeOne(base, { id: 5, amount: 1000, deleted: true }, { id: 5, amount: 1000 }).deleted, true, 'soft-delete: tombstone beats stale alive copy');
+    // Employee untouched locally; admin deleted remotely → accepts the delete.
+    eq(!!mergeOne(base, { id: 5, amount: 1000 }, { id: 5, amount: 1000, deleted: true }).deleted, true, 'soft-delete: untouched device accepts remote delete');
+  })();
+  // Stale-version guard: a browser running an older version is flagged stale
+  (function () {
+    var cmp = function (a, b) {
+      var pa = String(a || '0').split('.').map(function (n) { return parseInt(n) || 0; });
+      var pb = String(b || '0').split('.').map(function (n) { return parseInt(n) || 0; });
+      for (var i = 0; i < Math.max(pa.length, pb.length); i++) { var x = pa[i] || 0, y = pb[i] || 0; if (x < y) return -1; if (x > y) return 1; }
+      return 0;
+    };
+    eq(cmp('6.201.0', '6.202.0'), -1, 'version guard: older browser is stale (blocked)');
+    eq(cmp('6.202.0', '6.202.0'), 0, 'version guard: same version is fine');
+    eq(cmp('6.202.0', '6.201.0'), 1, 'version guard: newer browser is fine');
+    eq(cmp('6.99.0', '6.201.0'), -1, 'version guard: numeric compare (6.99 < 6.201)');
   })();
   // memberOutstanding must skip DELETED invoices (so Due Payment matches Transactions)
   (function () {
