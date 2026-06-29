@@ -4830,11 +4830,29 @@ window.editMemberPricing = function(memberId) {
   const rows = sports.map((sp, idx) => {
     const enr = (m.enrollments || []).find(e => e.sport === sp);
     const inv = invForSport(sp);
-    const price = inv ? (inv.amount || 0) : ((enr && enr.price) || (m.price || 0) || 0);
-    const disc  = inv ? (inv.discount || 0) : 0;
-    const paid  = inv ? invoicePaid(inv) : 0;
-    const due   = Math.max(0, price - disc - paid);
-    return { idx, sport: sp, enr, inv, price, disc, paid, due };
+    const multi = !!(inv && Array.isArray(inv.lineItems) && inv.lineItems.length > 1);
+    let price, disc, paid;
+    if (multi) {
+      // Multi-sport invoice (one invoice, several line items): show THIS sport's
+      // own line price, and apportion the invoice's discount + paid by line share.
+      const li = inv.lineItems.find(x => x.sport === sp);
+      const lineSum = inv.lineItems.reduce((s, x) => s + (Number(x.price) || 0), 0) || 1;
+      const linePrice = li ? (Number(li.price) || 0) : 0;
+      const share = linePrice / lineSum;
+      price = linePrice;
+      disc  = Math.round((Number(inv.discount) || 0) * share);
+      paid  = Math.round(invoicePaid(inv) * share);
+    } else if (inv) {
+      price = inv.amount || 0;
+      disc  = inv.discount || 0;
+      paid  = invoicePaid(inv);
+    } else {
+      price = (enr && enr.price) || (m.price || 0) || 0;
+      disc  = 0;
+      paid  = 0;
+    }
+    const due = Math.max(0, price - disc - paid);
+    return { idx, sport: sp, enr, inv, price, disc, paid, due, multi };
   });
 
   const rowHtml = rows.map(r => `
@@ -4876,6 +4894,7 @@ window.editMemberPricing = function(memberId) {
         for (const u of updates) {
           if (u.paid > Math.max(0, u.price - u.disc)) { toast(`${u.r.sport}: paid cannot exceed price minus discount`, 'error'); return; }
         }
+        const rollups = new Map();   // shared multi-sport invoice → summed {disc, paid}
         for (const u of updates) {
           const { r, price, disc, paid } = u;
           const net = Math.max(0, price - disc);
@@ -4932,6 +4951,19 @@ window.editMemberPricing = function(memberId) {
               };
               state.invoices.push(inv);
             }
+          } else if (r.multi) {
+            // Multi-sport invoice shared by several sports: set THIS sport's line
+            // price and defer the invoice-level rollup until all its rows are in,
+            // so we never clobber the other sports' prices or paid amounts.
+            if (!Array.isArray(inv.lineItems)) {
+              inv.lineItems = [{ sport: inv.sport, coachId: inv.coachId, classes: inv.classes, price: inv.amount || 0 }];
+            }
+            const li = inv.lineItems.find(x => x.sport === r.sport);
+            if (li) li.price = net;
+            else inv.lineItems.push({ sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net });
+            const acc = rollups.get(inv) || { disc: 0, paid: 0 };
+            acc.disc += disc; acc.paid += paid;
+            rollups.set(inv, acc);
           } else {
             inv.amount = net;
             inv.discount = disc;
@@ -4947,6 +4979,18 @@ window.editMemberPricing = function(memberId) {
           }
           // Also reflect on the enrollment so member view + reports show the new price.
           if (r.enr) r.enr.price = net;
+        }
+        // Roll up each multi-sport invoice once: amount = Σ line prices, while the
+        // discount + paid are the SUM across its sports (never one sport's value).
+        for (const [inv, acc] of rollups) {
+          inv.amount = inv.lineItems.reduce((s, x) => s + (Number(x.price) || 0), 0);
+          inv.discount = acc.disc;
+          if (!Array.isArray(inv.payments)) inv.payments = [];
+          const currentLogged = inv.payments.reduce((s, p) => s + (p.amount || 0), 0);
+          const delta = acc.paid - currentLogged;
+          if (Math.abs(delta) > 0.001) inv.payments.push({ amount: delta, date: payDate, month: payMonth, method: 'Cash', note: 'Adjusted via Edit pricing' });
+          inv.amountPaid = inv.payments.reduce((s, p) => s + (p.amount || 0), 0);
+          if (typeof sportListWithDuration === 'function') inv.sport = sportListWithDuration(inv.lineItems) || inv.lineItems.map(x => x.sport).join(', ');
         }
         if (typeof audit === 'function') audit('member.update', 'member:' + m.id, 'edit pricing & payment');
         save(); closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
@@ -6469,18 +6513,20 @@ function computeMonthlyReport(ym) {
   }
 
   // 2) Expenses this month + net profit.
-  let expenses = 0;
+  let expenseEntries = 0;
   for (const e of (state.expenses || [])) {
     const d = e.date || (e.month ? e.month + '-01' : '');
     const m = e.month || String(d).slice(0, 7);
     if (m !== ym) continue;
-    expenses += Number(e.amount) || 0;
+    expenseEntries += Number(e.amount) || 0;
   }
   // Salaries paid for this month (if tracked) count as expenses too.
+  let salariesTotal = 0;
   for (const slry of (state.salaries || [])) {
     if ((slry.month || '') !== ym) continue;
-    expenses += Number(slry.amount || slry.paid || 0) || 0;
+    salariesTotal += Number(slry.amount || slry.paid || 0) || 0;
   }
+  const expenses = expenseEntries + salariesTotal;
   const net = revenue - expenses;
 
   // 3) Member movement: new (first registration in month), renewals (a subscription
@@ -6546,7 +6592,7 @@ function computeMonthlyReport(ym) {
 
   return {
     ym, monthStart, monthEnd,
-    revenue, byMethod, expenses, net,
+    revenue, byMethod, expenses, expenseEntries, salariesTotal, net,
     newMembers, renewals, churn,
     duesTotal, duesMembers,
     sportRows, topMembers, topFamilies,
@@ -6610,7 +6656,7 @@ PAGES.monthlyreport = (main) => {
 
     <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px">
       ${kpi('Revenue collected', 'الدخل المحصّل', money(R.revenue) + ' QAR', 'var(--green)')}
-      ${kpi('Expenses', 'المصروفات', money(R.expenses) + ' QAR', 'var(--red)')}
+      ${kpi('Expenses', 'المصروفات', money(R.expenses) + ' QAR', 'var(--red)', R.salariesTotal > 0 ? `${money(R.expenseEntries)} ${t('expenses', 'مصروفات')} + ${money(R.salariesTotal)} ${t('salaries', 'رواتب')}` : '')}
       ${kpi('Net profit', 'صافي الربح', money(R.net) + ' QAR', R.net >= 0 ? 'var(--green)' : 'var(--red)')}
       ${kpi('Outstanding dues', 'مستحقات غير محصّلة', money(R.duesTotal) + ' QAR', 'var(--accent-2)', `${R.duesMembers} ${t('members', 'عضو')}`)}
     </div>
@@ -8535,7 +8581,7 @@ window.toggleCoachActive = function(coachId) {
 PAGES.invoices = (main) => {
   // Treat every "Summer Camp · <duration>" variant as Summer Camp for filtering.
   const _isCampActivity = s => typeof s === 'string' && (s === SUMMER_CAMP || s.indexOf(SUMMER_CAMP) === 0);
-  let filter = { search: '', month: 'all', day: '', method: 'all', sport: 'all', coach: 'all', category: 'all' };
+  let filter = loadFilter('invoices', { search: '', month: (TODAY || '').slice(0, 7) || 'all', day: '', method: 'all', sport: 'all', coach: 'all', category: 'all' });
   const pg = makePager(10);
   const selected = new Set();   // invoice ids ticked for merging
 
@@ -8576,6 +8622,7 @@ PAGES.invoices = (main) => {
   }
 
   function refresh() {
+    saveFilter('invoices', filter);
     const allRows = applyFilter().sort((a,b) => b.date.localeCompare(a.date));
     const total = allRows.reduce((s,r) => s+r.amount, 0);
     const rows = paginate(allRows, pg);
@@ -8704,10 +8751,10 @@ PAGES.invoices = (main) => {
     </div>
     <div class="card">
       <div class="filter-bar">
-        <div class="search"><input id="inv-search" type="text" placeholder="${t('Search name (EN/AR), mobile, QID, coach, sport...', 'ابحث بالاسم أو الجوال أو الهوية أو المدرب أو الرياضة...')}" /></div>
+        <div class="search"><input id="inv-search" type="text" value="${escapeHtml(filter.search || '')}" placeholder="${t('Search name (EN/AR), mobile, QID, coach, sport...', 'ابحث بالاسم أو الجوال أو الهوية أو المدرب أو الرياضة...')}" /></div>
         <select id="inv-month" class="btn ghost">
-          <option value="all">All months</option>
-          ${[...new Set(state.invoices.map(i => i.month).filter(Boolean))].sort().reverse().map(m => `<option value="${m}">${fmtMonth(m)}</option>`).join('')}
+          <option value="all" ${filter.month === 'all' ? 'selected' : ''}>All months</option>
+          ${[...new Set([(TODAY || '').slice(0, 7), ...state.invoices.map(i => i.month).filter(Boolean)])].filter(Boolean).sort().reverse().map(m => `<option value="${m}" ${m === filter.month ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
         </select>
         <div style="display:flex;align-items:center;gap:4px">
           <input id="inv-day" type="date" class="btn ghost" style="padding:6px 10px" title="${t('Filter by a specific day', 'تصفية بيوم محدد')}" />
@@ -12120,11 +12167,12 @@ function syncBankCommission() {
 }
 
 PAGES.expenses = (main) => {
-  let filter = { search: '', month: 'all', categories: [], methods: [] };
+  let filter = loadFilter('expenses', { search: '', month: (TODAY || '').slice(0, 7) || 'all', categories: [], methods: [] });
   const pg = makePager(10);
   let _exportRows = [], _exportMeta = {};
 
   function refresh() {
+    saveFilter('expenses', filter);
     // Keep the auto Bank Commission rows up to date (card payments × 2.25%).
     if (syncBankCommission()) save();
     // Cash collections (owner taking cash out) are tracked on their own Cash
@@ -12199,10 +12247,10 @@ PAGES.expenses = (main) => {
     </div>
     <div class="card">
       <div class="filter-bar">
-        <div class="search"><input id="exp-search" type="text" placeholder="${t('Search description...', 'ابحث في الوصف...')}" /></div>
+        <div class="search"><input id="exp-search" type="text" value="${escapeHtml(filter.search || '')}" placeholder="${t('Search description...', 'ابحث في الوصف...')}" /></div>
         <select id="exp-month" class="btn ghost">
-          <option value="all">All months</option>
-          ${[...new Set(state.expenses.map(e => e.month).filter(Boolean))].sort().reverse().map(m => `<option value="${m}">${fmtMonth(m)}</option>`).join('')}
+          <option value="all" ${filter.month === 'all' ? 'selected' : ''}>All months</option>
+          ${[...new Set([(TODAY || '').slice(0, 7), ...state.expenses.map(e => e.month).filter(Boolean)])].filter(Boolean).sort().reverse().map(m => `<option value="${m}" ${m === filter.month ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
         </select>
         <div style="position:relative">
           <button type="button" id="exp-cat-btn" class="btn ghost" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px">
@@ -13041,7 +13089,7 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
         attended: elig.attended,
         total: elig.total || (sub?.totalClasses || null),
         status: elig.status,
-        prorated: elig.status === 'Frozen' && elig.ratio < 1,
+        prorated: elig.mode === 'prorated' && elig.ratio < 1,
       });
     }
   }
@@ -23607,8 +23655,9 @@ PAGES.transactions = (main) => {
         if (!(customer.toLowerCase().includes(q) || ref.toLowerCase().includes(q) || sport.toLowerCase().includes(q) || phoneHit)) continue;
       }
       txns.push({ id: inv.id, ref, date: (inv.date || '').slice(0, 10), category: cat, customer, sport, coach: coachName(displayCoachId) || '—', amount: invAmount, paid, due, netDue, method: inv.method || '' });
-      byCategory[cat] = byCategory[cat] || { total: 0, count: 0 };
+      byCategory[cat] = byCategory[cat] || { total: 0, count: 0, due: 0, netDue: 0 };
       byCategory[cat].total += invAmount; byCategory[cat].count += 1;
+      byCategory[cat].due += due; byCategory[cat].netDue += netDue;
       grand += invAmount;
       grandPaid += paid; grandDue += due; grandNetDue += netDue;
     }
@@ -23617,15 +23666,28 @@ PAGES.transactions = (main) => {
   }
 
   function refresh() {
-    const { txns, byCategory, grand, grandPaid, grandDue } = build();
+    const { txns, byCategory, grand, grandPaid, grandDue, grandNetDue } = build();
     const rows = paginate(txns, pg);
-    const catRows = Object.entries(byCategory).sort((a, b) => b[1].total - a[1].total);
+    const catRows = Object.entries(byCategory).sort((a, b) =>
+      st.hasDue ? (b[1].netDue - a[1].netDue) : (b[1].total - a[1].total));
+
+    // When "Has due" is on, the chip headline number is the OUTSTANDING due
+    // (net due bold, gross beside it when they differ); otherwise it's billed.
+    const chipValue = (v) => {
+      if (!st.hasDue) return `<span class="num font-bold" style="margin-left:auto">${fmt(v.total)}</span>`;
+      const sameGN = Math.abs(v.due - v.netDue) < 0.001;
+      return `<span style="margin-left:auto;text-align:right;line-height:1.25" title="${t('Billed', 'مفوتر')}: ${fmt(v.total)}">
+          <span class="num font-bold" style="color:var(--red)">${fmt(v.netDue)}</span>
+          ${sameGN ? `<span class="text-mute" style="font-size:9px;display:block">${t('due', 'متبقٍ')}</span>`
+                   : `<span class="text-mute" style="font-size:9px;display:block">${t('net', 'صافي')} · ${t('gross', 'إجمالي')} ${fmt(v.due)}</span>`}
+        </span>`;
+    };
 
     $('#txn-summary').innerHTML = catRows.length ? catRows.map(([c, v]) => `
       <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">
         <span class="badge" style="font-size:10px">${escapeHtml(c)}</span>
         <span class="text-mute" style="font-size:11px">${v.count}</span>
-        <span class="num font-bold" style="margin-left:auto">${fmt(v.total)}</span>
+        ${chipValue(v)}
       </div>`).join('') : `<span class="text-mute" style="font-size:12px">${t('No transactions', 'لا توجد عمليات')}</span>`;
 
     $('#txn-tbody').innerHTML = rows.length ? rows.map(tx => `
@@ -23650,7 +23712,21 @@ PAGES.transactions = (main) => {
       <td class="text-right num" style="color:var(--green)">${fmt(grandPaid)}</td>
       <td class="text-right num" style="color:${dueShown > 0 ? 'var(--red)' : 'var(--text-mute)'}" title="${st.dueMode === 'net' ? t('Gross due', 'إجمالي المتبقي') + ': ' + fmt(grandDue) : ''}">${dueShown > 0 ? fmt(dueShown) : '—'}</td>
     </tr>`;
-    $('#txn-count').textContent = `${txns.length} ${t('transactions', 'عملية')} · ${fmt(grand)} QAR${dueShown > 0 ? ` · ${dueLabel} ${fmt(dueShown)}` : ''}${(st.dueMode === 'net' && grandDue !== grandNetDue) ? ` (${t('gross', 'إجمالي')} ${fmt(grandDue)})` : ''}`;
+    let countText;
+    if (st.hasDue) {
+      const parts = [`${txns.length} ${t('transactions', 'عملية')}`];
+      if (Math.abs(grandNetDue - grandDue) > 0.001) {
+        parts.push(`${t('net due', 'صافي المتبقي')} ${fmt(grandNetDue)}`);
+        parts.push(`${t('gross due', 'إجمالي المتبقي')} ${fmt(grandDue)}`);
+      } else {
+        parts.push(`${t('due', 'متبقي')} ${fmt(grandDue)}`);
+      }
+      parts.push(`${t('billed', 'مفوتر')} ${fmt(grand)} QAR`);
+      countText = parts.join(' · ');
+    } else {
+      countText = `${txns.length} ${t('transactions', 'عملية')} · ${fmt(grand)} QAR${dueShown > 0 ? ` · ${dueLabel} ${fmt(dueShown)}` : ''}${(st.dueMode === 'net' && grandDue !== grandNetDue) ? ` (${t('gross', 'إجمالي')} ${fmt(grandDue)})` : ''}`;
+    }
+    $('#txn-count').textContent = countText;
     $('#txn-pagination').innerHTML = paginationBar(pg, txns.length, 'txn');
     bindPagination('txn', pg, txns.length, refresh);
     // custom range visibility

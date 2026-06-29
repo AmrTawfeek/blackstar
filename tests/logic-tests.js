@@ -203,6 +203,15 @@ ${seed}
   state.members = state.members.filter(m => ![920, 921, 922].includes(m.id));
   state.invoices = state.invoices.filter(i => ![9920, 9921, 9922].includes(i.id));
 
+  // --- Frozen / non-completed member on a sport-less invoice line still pro-rates ---
+  state.members.push({ id: 930, name: 'FrozenNoSport', status: 'Frozen', expiryDate: '2026-08-11',
+    subscriptions: [{ activity: 'Karate', coachId: 2, totalClasses: 8, attendedClasses: 3, start: '2026-06-01', end: '2026-08-11' }],
+    dailyAttendance: { '2026-06': { 'Karate': { '1': 'Y', '2': 'Y', '3': 'Y' } } } });
+  const fzNoSport = lineCommissionEligibility(state.members.find(m => m.id === 930), { ref: 'INVFZ', month: '2026-06', coachId: 2 }, { coachId: 2, price: 1125 }, null);
+  ok(fzNoSport.total === 8 && fzNoSport.attended === 3, 'frozen no-sport line: derives 3/8 from member subscription');
+  ok(fzNoSport.mode === "prorated" && Math.round(fzNoSport.base) === 422, 'frozen no-sport line: pro-rates 3/8 x 1125 = 422 (NOT full 1125)');
+  state.members = state.members.filter(m => m.id !== 930);
+
   // --- pagination ---
   const pager = makePager(2); pager.page = 2;
   eq(paginate([1,2,3,4,5], pager), [3,4], 'paginate page 2 size 2');
