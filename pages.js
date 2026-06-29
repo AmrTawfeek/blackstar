@@ -292,7 +292,7 @@ PAGES.dashboard = (main) => {
     ${(birthdayList.length || renewingThisWeek.length || topSport) ? `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:16px">
       ${birthdayList.length ? `
-        <div class="card" style="padding:12px 14px;border:1px solid rgba(245,158,11,.25);background:rgba(245,158,11,.05);cursor:pointer" onclick="navigate('members')" title="Open Members page">
+        <div class="card" style="padding:12px 14px;border:1px solid rgba(245,158,11,.25);background:rgba(245,158,11,.05);cursor:pointer" onclick="navigate('birthdays')" title="Open Birthdays — send celebration messages">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
             <span style="font-size:18px">🎂</span>
             <div style="font-weight:600;font-size:13px">${birthdayList.length} ${t('birthday(s) this month','عيد ميلاد هذا الشهر')}</div>
@@ -773,6 +773,10 @@ PAGES.members = (main) => {
     if (!m.expiryDate) return dash;
     const d = daysUntil(m.expiryDate);
     const soon = state.settings?.expiringSoonDays || 3;
+    if (memberStatus(m) === 'Frozen') {
+      // Frozen memberships are paused — don't show an expiry countdown / warning.
+      return `<span>${fmtDate(m.expiryDate)}</span> <span style="font-size:10px;color:var(--blue)">⏸ ${t('frozen', 'مجمّد')}</span>`;
+    }
     const color = d == null ? 'inherit' : d < 0 ? 'var(--red)' : d <= soon ? 'var(--accent-2)' : 'inherit';
     const suffix = d == null ? '' : d < 0 ? ` <span style="font-size:10px;color:var(--red)">(${Math.abs(d)}d ago)</span>`
       : d <= soon ? ` <span style="font-size:10px;color:var(--accent-2);font-weight:600">⚠ ${d}d</span>` : '';
@@ -6521,11 +6525,10 @@ function computeMonthlyReport(ym) {
     expenseEntries += Number(e.amount) || 0;
   }
   // Salaries paid for this month (if tracked) count as expenses too.
-  let salariesTotal = 0;
-  for (const slry of (state.salaries || [])) {
-    if ((slry.month || '') !== ym) continue;
-    salariesTotal += Number(slry.amount || slry.paid || 0) || 0;
-  }
+  // Uses the canonical helper so net pay (snapshotNet) isn't missed.
+  const salariesTotal = (typeof salariesPaidInMonth === 'function')
+    ? salariesPaidInMonth(ym)
+    : (state.salaries || []).reduce((s, slry) => s + ((slry.month || '') === ym ? (Number(slry.amount || slry.paid || 0) || 0) : 0), 0);
   const expenses = expenseEntries + salariesTotal;
   const net = revenue - expenses;
 
@@ -9555,6 +9558,97 @@ PAGES.membercommission = (main) => {
   if (sel) sel.addEventListener('change', () => { window._mcMonth = sel.value; PAGES.membercommission(main); });
 };
 
+// ── Birthdays: members with upcoming birthdays + one-tap WhatsApp wishes ──────
+PAGES.birthdays = (main) => {
+  if (!window._bdayRange) window._bdayRange = 'month';
+  const range = window._bdayRange;
+  const todayMonth = (TODAY || '').slice(5, 7);
+  const todayDay = parseInt((TODAY || '').slice(8, 10), 10) || 0;
+
+  let list = state.members
+    .filter(m => !m.deleted && m.birthdate)
+    .map(m => {
+      const days = daysUntilBirthday(m.birthdate);
+      const age = memberAge(m.birthdate);
+      const turning = age != null ? age + (days > 0 ? 1 : 0) : null;
+      const bMonth = String(m.birthdate).slice(5, 7);
+      const bDay = parseInt(String(m.birthdate).slice(8, 10), 10) || 0;
+      const thisMonth = bMonth === todayMonth;
+      const passed = thisMonth && bDay < todayDay;
+      return { m, days, age, turning, bDay, thisMonth, passed };
+    });
+
+  if (range === 'today') list = list.filter(x => x.days === 0);
+  else if (range === 'week') list = list.filter(x => x.days >= 0 && x.days <= 7);
+  else if (range === 'month') list = list.filter(x => x.thisMonth);
+  else list = list.filter(x => x.days >= 0 && x.days <= 90);
+
+  if (range === 'month') list.sort((a, b) => a.bDay - b.bDay);
+  else list.sort((a, b) => a.days - b.days);
+
+  const todays = list.filter(x => x.days === 0).length;
+
+  const tabs = [
+    ['today', '🎉 ' + t('Today', 'اليوم')],
+    ['week', t('Next 7 days', '٧ أيام')],
+    ['month', t('This month', 'هذا الشهر')],
+    ['upcoming', t('Next 90 days', '٩٠ يوماً')],
+  ];
+
+  const whenLabel = (x) => {
+    if (x.days === 0) return `<span class="pill" style="background:rgba(245,158,11,.18);color:var(--accent-2);font-weight:800">🎉 ${t('Today', 'اليوم')}</span>`;
+    if (x.passed) return `<span class="text-mute" style="font-size:12px">${t('Earlier this month', 'مرّ هذا الشهر')}</span>`;
+    if (x.days === 1) return `<span style="color:var(--accent-2);font-weight:700;font-size:12px">${t('Tomorrow', 'غداً')}</span>`;
+    return `<span style="font-size:12px">${t('in', 'بعد')} ${x.days} ${t('days', 'يوماً')}</span>`;
+  };
+
+  const rowHtml = list.length ? list.map(x => {
+    const m = x.m;
+    const link = waLink(m.phone, birthdayWaMessage(m));
+    const sendBtn = link
+      ? `<a class="btn primary sm" href="${link}" target="_blank" rel="noopener" title="${t('Open WhatsApp with the birthday message ready to send', 'فتح واتساب مع رسالة التهنئة جاهزة')}">🎂 ${t('Send wishes', 'إرسال تهنئة')}</a>`
+      : `<span class="text-mute" style="font-size:11px">${t('No WhatsApp number', 'لا يوجد رقم واتساب')}</span>`;
+    return `<tr>
+      <td>
+        <div class="font-bold">${escapeHtml(m.name || '—')}${x.turning != null ? ` <span class="text-mute" style="font-weight:400">· ${t('turning', 'يكمل')} ${x.turning}</span>` : ''}</div>
+        ${m.nameArabic ? `<div class="text-mute" style="font-size:11px" dir="rtl">${escapeHtml(m.nameArabic)}</div>` : ''}
+      </td>
+      <td class="text-mute" style="font-size:12px">${fmtDate(m.birthdate)}</td>
+      <td>${whenLabel(x)}</td>
+      <td style="font-size:12px">${isRealPhone(m.phone) ? phoneCell(m.phone) : '<span class="text-mute">—</span>'}</td>
+      <td class="text-right">${sendBtn}</td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="5" class="text-mute" style="text-align:center;padding:20px">🎂 ${t('No birthdays in this range', 'لا توجد أعياد ميلاد في هذه الفترة')}</td></tr>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🎂 ${t('Birthdays', 'أعياد الميلاد')}</h1>
+        <div class="subtitle">${t('Send a birthday celebration message on WhatsApp', 'أرسل رسالة تهنئة بعيد الميلاد عبر واتساب')}${todays ? ` · <b style="color:var(--accent-2)">${todays} ${t('today', 'اليوم')} 🎉</b>` : ''}</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+      ${tabs.map(([k, lbl]) => `<button class="btn ${k === range ? 'primary' : 'ghost'} sm" onclick="window._bdayRange='${k}';PAGES.birthdays(document.querySelector('#main')||document.querySelector('main'))">${lbl}</button>`).join('')}
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>${t('Member', 'العضو')}</th>
+            <th>${t('Birthdate', 'تاريخ الميلاد')}</th>
+            <th>${t('When', 'متى')}</th>
+            <th>${t('Phone', 'الهاتف')}</th>
+            <th class="text-right">${t('Action', 'الإجراء')}</th>
+          </tr></thead>
+          <tbody>${rowHtml}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="text-mute" style="font-size:11px;margin-top:8px">${t('Tapping “Send wishes” opens WhatsApp with the message pre-filled — you just press send. The member needs a valid WhatsApp number on file.', 'بالضغط على «إرسال تهنئة» يفتح واتساب مع الرسالة جاهزة — تضغط إرسال فقط. يلزم وجود رقم واتساب صحيح للعضو.')}</div>`;
+};
+
 function generateLatestInvoice(onDone) {
   showModal({
     title: '⚡ Generate latest invoice',
@@ -10680,6 +10774,7 @@ window.printInvoicePDF = function(id) {
 
   const ref = inv.ref || `INV-${String(inv.id).padStart(5,'0')}`;
   const issueDate = fmtDate(inv.date);
+  const issueDateAr = fmtDateAr(inv.date);
   const amountStr = Number(inv.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   // TRUE invoice total: when the invoice has multiple line items (e.g. Summer Camp +
   // Gymnastic paid together), sum the line prices so the Subtotal/Total reflect ALL
@@ -10753,9 +10848,9 @@ window.printInvoicePDF = function(id) {
           <span style="font-weight:700;font-size:14px;color:#1a1a1a">${escapeHtml(r.sport)}</span>
           <span dir="ltr" style="font-size:13px;color:#555">${fmtDate(r.start)} <span style="color:#999">→</span> <strong style="color:#b91c1c;font-size:15px">${r.end ? fmtDate(r.end) : '—'}</strong></span>
         </div>`).join('')}
-      <div style="margin-top:9px;font-size:11px;line-height:1.6;color:#7a1f1f">
+      <div style="margin-top:10px;font-size:12.5px;line-height:1.7;color:#7a1f1f">
         <div dir="ltr">⚠️ All classes must be attended <strong>on or before the end date above</strong>. Unused classes after this date are <strong>forfeited</strong> — they cannot be carried over or refunded.</div>
-        <div dir="rtl" style="margin-top:3px">⚠️ يجب حضور جميع الحصص <strong>في موعد أقصاه تاريخ الانتهاء أعلاه</strong>، وتسقط الحصص غير المستخدمة بعد هذا التاريخ ولا يمكن ترحيلها أو استردادها.</div>
+        <div dir="rtl" style="margin-top:4px">⚠️ يجب حضور جميع الحصص <strong>في موعد أقصاه تاريخ الانتهاء أعلاه</strong>، وتسقط الحصص غير المستخدمة بعد هذا التاريخ ولا يمكن ترحيلها أو استردادها.</div>
       </div>
     </div>
   </div>` : '';
@@ -10765,11 +10860,14 @@ window.printInvoicePDF = function(id) {
 <head>
 <meta charset="UTF-8">
 <title>${escapeHtml(fileName)}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   @page { size: A4; margin: 15mm; }
   body {
-    font-family: -apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    font-family: 'Inter', 'Tajawal', -apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
     color: #1a1a1a;
     background: #fff;
     line-height: 1.5;
@@ -10777,6 +10875,8 @@ window.printInvoicePDF = function(id) {
     max-width: 800px;
     margin: 0 auto;
   }
+  /* Arabic text gets a proper Arabic typeface, right-aligned where block-level. */
+  [dir="rtl"], bdi, .ar, .terms-col.ar { font-family: 'Tajawal', 'Segoe UI', Tahoma, sans-serif; }
 
   /* Header */
   .header {
@@ -11087,6 +11187,7 @@ window.printInvoicePDF = function(id) {
       <div class="logo">★</div>
       <div class="brand-info">
         <h1>Black Stars Sports Club</h1>
+        <div dir="rtl" style="font-size:15px;font-weight:700;color:#1a1a1a;margin-top:1px">نادي بلاك ستارز الرياضي</div>
         <div class="tagline">Waab · Village Resort · Doha · Qatar</div>
       </div>
     </div>
@@ -11129,7 +11230,7 @@ window.printInvoicePDF = function(id) {
     </div>
     <div style="margin-left:auto">
       <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Period · <bdi>الفترة</bdi></div>
-      <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escapeHtml(fmtMonth(inv.month))}</div>
+      <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escapeHtml(fmtMonth(inv.month))} · <bdi>${escapeHtml(fmtMonthAr(inv.month))}</bdi></div>
     </div>
   </div>
   ` : ''}
@@ -11137,7 +11238,7 @@ window.printInvoicePDF = function(id) {
   <table class="items-table">
     <thead>
       <tr>
-        <th>Description</th>
+        <th>Description · <bdi>الوصف</bdi></th>
         <th class="right" style="width:90px">Qty · <bdi>الكمية</bdi></th>
         <th class="right" style="width:130px">Amount · <bdi>المبلغ</bdi> (QAR)</th>
       </tr>
@@ -11175,9 +11276,11 @@ window.printInvoicePDF = function(id) {
         // can read each language clearly without mixed-direction clutter.
         const startEn = period && period.start ? fmtDate(period.start) : '';
         const endEn = period && period.end ? fmtDate(period.end) : '—';
+        const startAr = period && period.start ? fmtDateAr(period.start) : '';
+        const endAr = period && period.end ? fmtDateAr(period.end) : '—';
         // Validity is shown bold/prominent so it doesn't get confused with other dates.
         const validEn = period && period.start ? `<div class="item-valid" dir="ltr" style="font-weight:700;color:#111">📅 Valid: ${startEn} → ${endEn}</div>` : '';
-        const validAr = period && period.start ? `<div class="item-valid" dir="rtl" style="font-weight:700;color:#111">📅 صالح: ${startEn} ← ${endEn}</div>` : '';
+        const validAr = period && period.start ? `<div class="item-valid" dir="rtl" style="font-weight:700;color:#111">📅 صالح: ${startAr} ← ${endAr}</div>` : '';
         const enLines = [
           `${count} ${unitEn}`,
           // Summer Camp has no coach → don't print a coach line for it.
@@ -11185,7 +11288,7 @@ window.printInvoicePDF = function(id) {
         ].filter(Boolean).map(x => `<div class="item-sub" dir="ltr">${x}</div>`).join('');
         const arLines = [
           `${count} ${unitAr}`,
-          isCamp ? `صدرت ${issueDate}` : `المدرب: ${escapeHtml(li.coach || '—')} · صدرت ${issueDate}`,
+          isCamp ? `صدرت ${issueDateAr}` : `المدرب: ${escapeHtml(li.coach || '—')} · صدرت ${issueDateAr}`,
         ].filter(Boolean).map(x => `<div class="item-sub" dir="rtl" style="color:var(--muted,#888)">${x}</div>`).join('');
         return `
       <tr>
@@ -11216,7 +11319,7 @@ window.printInvoicePDF = function(id) {
             const unitEn = isCamp ? (count === 1 ? 'day' : 'days') : (count === 1 ? 'class' : 'classes');
             const unitAr = isCamp ? 'يوم' : 'حصة';
             const countLine = count ? `<div class="item-sub" dir="ltr">${count} ${unitEn} · <bdi>${count} ${unitAr}</bdi></div>` : '';
-            const validityLine = sub.start ? `<div class="item-valid" dir="ltr" style="font-weight:700;color:#111">📅 Valid · <bdi>صالح</bdi>: ${fmtDate(sub.start)} → ${sub.end ? fmtDate(sub.end) : '—'}</div>` : '';
+            const validityLine = sub.start ? `<div class="item-valid" dir="ltr" style="font-weight:700;color:#111">📅 Valid: ${fmtDate(sub.start)} → ${sub.end ? fmtDate(sub.end) : '—'}</div><div class="item-valid" dir="rtl" style="font-weight:700;color:#111">📅 صالح: ${fmtDateAr(sub.start)} ← ${sub.end ? fmtDateAr(sub.end) : '—'}</div>` : '';
             return countLine + validityLine;
           })()}
           <div class="item-sub">Issued on ${issueDate}</div>
@@ -11263,9 +11366,10 @@ window.printInvoicePDF = function(id) {
     <div>
       ${(() => {
         const st = invoiceStatus(inv);
-        if (st === 'Paid') return `<span class="payment-status">✓ Paid</span>`;
-        if (st === 'Unpaid') return `<span class="payment-status" style="background:#fee2e2;color:#991b1b">● Unpaid — ${Number(invoiceBalance(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR due</span>`;
-        return `<span class="payment-status" style="background:#fef3c7;color:#92400e">◐ Partially paid — ${Number(invoiceBalance(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR due</span>`;
+        const dueStr = Number(invoiceBalance(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        if (st === 'Paid') return `<span class="payment-status">✓ Paid · <bdi>مدفوعة</bdi></span>`;
+        if (st === 'Unpaid') return `<span class="payment-status" style="background:#fee2e2;color:#991b1b">● Unpaid · <bdi>غير مدفوعة</bdi> — ${dueStr} QAR ${t('due', 'مستحقة')}</span>`;
+        return `<span class="payment-status" style="background:#fef3c7;color:#92400e">◐ Partially paid · <bdi>مدفوعة جزئياً</bdi> — ${dueStr} QAR ${t('due', 'مستحقة')}</span>`;
       })()}
     </div>
     <div class="payment-method">
@@ -11308,7 +11412,8 @@ window.printInvoicePDF = function(id) {
 
   <div class="footer">
     <div class="thanks">Thank you for choosing Black Stars Sports Club!</div>
-    <div>For any questions about this invoice, contact us at blackstarssportsclub@gmail.com · +974 3040 0103</div>
+    <div dir="rtl" class="thanks" style="margin-top:2px">شكراً لاختياركم نادي بلاك ستارز الرياضي!</div>
+    <div style="margin-top:8px">For any questions about this invoice, contact us · <bdi>لأي استفسار عن هذه الفاتورة تواصلوا معنا</bdi>: blackstarssportsclub@gmail.com · +974 3040 0103</div>
     <div style="margin-top:10px;font-size:10px">This invoice was generated on ${new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })}</div>
   </div>
 
@@ -11695,6 +11800,9 @@ function computeReconciliation(ym) {
   const accountedFor = ownerCashTaken + cashInHand + expenses + nonCash;
   const leakage = revenue - accountedFor;
 
+  // Salaries paid out this month — tracked separately from expenses by design.
+  const salaries = (typeof salariesPaidInMonth === 'function') ? salariesPaidInMonth(ym) : 0;
+
   let due = 0;
   for (const m of (state.members || [])) {
     if (m.deleted) continue;
@@ -11702,7 +11810,7 @@ function computeReconciliation(ym) {
     if (out > 0) due += out;
   }
 
-  return { ym, revenue, byMethod, nonCash, cashCollectedTotal, expenses, cashExpenses, ownerCashTaken, cashInHand, accountedFor, leakage, due };
+  return { ym, revenue, byMethod, nonCash, cashCollectedTotal, expenses, cashExpenses, ownerCashTaken, cashInHand, accountedFor, leakage, due, salaries };
 }
 
 function _recMonths() {
@@ -11848,6 +11956,120 @@ PAGES.reconciliation = (main) => {
     <div class="text-mute" style="font-size:11px;margin-top:14px;line-height:1.5">${leakNote}</div>`;
 
   $('#rec-month')?.addEventListener('change', e => { window._recMonth = e.target.value; render(); });
+};
+
+// ─── Financial Overview: one simple screen showing where the money is ────────
+// Every riyal collected from invoices is shown distributed across: cash in hand,
+// cash taken by owner, card, transfer/Fawran, expenses and salaries — plus what
+// is still owed (due). Salaries are tracked separately from expenses by design.
+PAGES.moneyflow = (main) => {
+  const months = _recMonths();
+  if (window._mfMonth == null) window._mfMonth = months[0] || 'all';
+  const ym = window._mfMonth;
+  const R = computeReconciliation(ym);
+  const money = (n) => fmt(Math.round(n || 0));
+  const collected = R.revenue;
+  const bank = R.nonCash;                       // card + transfer + fawran
+  const out = R.expenses + R.salaries;
+  const net = collected - out;
+  const periodLabel = ym === 'all' ? t('All time', 'كل الفترات') : fmtMonth(ym);
+
+  const kpi = (icon, label, val, color, sub) => `
+    <div class="card" style="padding:14px 16px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="font-size:18px">${icon}</span><div class="text-mute" style="font-size:12px;font-weight:600">${label}</div></div>
+      <div style="font-size:22px;font-weight:800;color:${color || 'var(--text)'}">${money(val)} <span style="font-size:12px;color:var(--text-mute);font-weight:500">QAR</span></div>
+      ${sub ? `<div class="text-mute" style="font-size:11px;margin-top:3px">${sub}</div>` : ''}
+    </div>`;
+
+  // Distribution of COLLECTED money: where it is held + where it went.
+  const segs = [
+    { label: t('Cash in hand', 'نقد بالصندوق'), val: Math.max(0, R.cashInHand), color: '#10b981' },
+    { label: t('Owner took', 'أخذها المالك'), val: R.ownerCashTaken, color: '#f59e0b' },
+    { label: t('Bank (card/transfer/Fawran)', 'البنك (بطاقة/تحويل/فوران)'), val: bank, color: '#5b8def' },
+    { label: t('Cash expenses', 'مصروفات نقدية'), val: R.cashExpenses, color: '#ef4444' },
+  ].filter(s => s.val > 0);
+  const segTotal = segs.reduce((s, x) => s + x.val, 0) || 1;
+  const bar = `<div style="display:flex;height:26px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
+    ${segs.map(s => `<div title="${s.label}: ${money(s.val)}" style="width:${(s.val / segTotal * 100).toFixed(1)}%;background:${s.color}"></div>`).join('')}
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px">
+    ${segs.map(s => `<div style="display:flex;align-items:center;gap:6px;font-size:11px"><span style="width:10px;height:10px;border-radius:3px;background:${s.color};display:inline-block"></span>${s.label} · <b>${money(s.val)}</b> (${Math.round(s.val / segTotal * 100)}%)</div>`).join('')}
+  </div>`;
+
+  // Method split of what was collected.
+  const methodRow = (icon, label, val) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+    <span style="font-size:13px">${icon} ${label}</span><span class="num" style="font-weight:700">${money(val)} QAR</span></div>`;
+
+  const recOk = Math.abs(R.leakage) < 1;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>💰 ${t('Financial Overview', 'النظرة المالية')}</h1>
+        <div class="subtitle">${t('Where every riyal goes — collected, held, spent and owed', 'أين يذهب كل ريال — المُحصّل والمحتفظ به والمصروف والمستحق')} · ${periodLabel}</div>
+      </div>
+      <div class="topbar-actions">
+        <select id="mf-month" style="padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px">
+          ${['all', ...months].map(m => `<option value="${m}" ${m === ym ? 'selected' : ''}>${m === 'all' ? t('All time', 'كل الفترات') : fmtMonth(m)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <!-- Headline -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px">
+      ${kpi('💰', t('Collected', 'المُحصّل'), collected, 'var(--blue)', t('from invoices this period', 'من الفواتير لهذه الفترة'))}
+      ${kpi('🧾', t('Expenses', 'المصروفات'), R.expenses, '#ef4444', t('excludes salaries', 'بدون الرواتب'))}
+      ${kpi('👥', t('Salaries', 'الرواتب'), R.salaries, '#a855f7', t('paid to coaches', 'المدفوعة للمدربين'))}
+      ${kpi('📈', t('Net', 'الصافي'), net, net >= 0 ? 'var(--green)' : 'var(--red)', t('collected − expenses − salaries', 'المُحصّل − المصروفات − الرواتب'))}
+      ${kpi('⏳', t('Due', 'المستحق'), R.due, '#f59e0b', t('still owed by members (all-time)', 'مستحق على الأعضاء (إجمالي)'))}
+    </div>
+
+    <!-- Distribution of collected money -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><div><div class="card-title">${t('Where the collected money is', 'أين المال المُحصّل')}</div><div class="card-subtitle">${t('Every riyal collected, split across cash, owner, bank and cash spent', 'كل ريال محصّل موزّع على النقد والمالك والبنك والمصروف نقداً')}</div></div></div>
+      ${segTotal > 1 ? bar : `<div class="text-mute" style="font-size:13px">${t('Nothing collected in this period.', 'لا يوجد تحصيل في هذه الفترة.')}</div>`}
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:16px">
+      <!-- Collected by method -->
+      <div class="card">
+        <div class="card-header"><div><div class="card-title">${t('Collected by method', 'المُحصّل حسب الطريقة')}</div></div></div>
+        ${methodRow('💵', t('Cash', 'نقد'), R.byMethod.cash)}
+        ${methodRow('💳', t('Credit card', 'بطاقة ائتمان'), R.byMethod.card)}
+        ${methodRow('🏦', t('Transfer', 'تحويل'), R.byMethod.transfer)}
+        ${methodRow('⚡', t('Fawran', 'فوران'), R.byMethod.fawran)}
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0;font-weight:800">
+          <span>${t('Total collected', 'إجمالي المُحصّل')}</span><span class="num">${money(collected)} QAR</span></div>
+      </div>
+
+      <!-- Cash tracking -->
+      <div class="card">
+        <div class="card-header"><div><div class="card-title">${t('Cash tracking', 'تتبّع النقد')}</div></div></div>
+        ${methodRow('💵', t('Cash collected', 'النقد المُحصّل'), R.cashCollectedTotal)}
+        ${methodRow('👤', t('Cash collected by owner', 'النقد لدى المالك'), R.ownerCashTaken)}
+        ${methodRow('🧾', t('Cash spent on expenses', 'مصروف نقداً'), R.cashExpenses)}
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0;font-weight:800;color:${R.cashInHand >= 0 ? 'var(--green)' : 'var(--red)'}">
+          <span>💰 ${t('Cash in hand now', 'النقد بالصندوق الآن')}</span><span class="num">${money(R.cashInHand)} QAR</span></div>
+        <div class="text-mute" style="font-size:11px;margin-top:6px">${recOk
+          ? '✓ ' + t('Cash reconciles', 'النقد متطابق')
+          : '⚠ ' + t('Unexplained gap', 'فرق غير مفسَّر') + ': ' + money(R.leakage) + ' QAR'}</div>
+      </div>
+    </div>
+
+    <!-- Money out -->
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">${t('Money out vs in', 'الصادر مقابل الوارد')}</div></div></div>
+      ${methodRow('💰', t('Collected (in)', 'المُحصّل (وارد)'), collected)}
+      ${methodRow('🧾', t('Expenses (out)', 'المصروفات (صادر)'), R.expenses)}
+      ${methodRow('👥', t('Salaries (out)', 'الرواتب (صادر)'), R.salaries)}
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0;font-weight:800;font-size:16px;color:${net >= 0 ? 'var(--green)' : 'var(--red)'}">
+        <span>📈 ${t('Net result', 'النتيجة الصافية')}</span><span class="num">${money(net)} QAR</span></div>
+    </div>
+
+    <div class="text-mute" style="font-size:11px;margin-top:10px">${t('Collected and method figures count payments by their date in the selected period. Due is the live total still owed across all members. Salaries are tracked separately from expenses.', 'أرقام التحصيل والطرق تحتسب الدفعات بتاريخها في الفترة المحددة. المستحق هو الإجمالي الحالي على جميع الأعضاء. الرواتب تُتابع بشكل منفصل عن المصروفات.')}</div>`;
+
+  const sel = main.querySelector('#mf-month');
+  if (sel) sel.addEventListener('change', () => { window._mfMonth = sel.value; PAGES.moneyflow(main); });
 };
 
 PAGES.cashcollection = (main) => {
@@ -15289,15 +15511,21 @@ PAGES.attendance = (main) => {
       const sub = (m.subscriptions || []).filter(s => (s.activity || '') === sport).slice(-1)[0];
       const planned = sub ? (parseInt(sub.totalClasses) || 0) : 0;
       if (planned > 0) {
-        // Count ALL present marks for this sport, not just those inside the
-        // subscription's date window — otherwise marks dated before the start (or
-        // after the end) bypass the class limit. The limit is "N classes", period.
-        const live = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(m, sport, null, null) : { y: 0 };
+        // Count present marks ONLY within the CURRENT subscription's window
+        // (start → end). A renewal creates a new subscription with a new start,
+        // so its fresh window resets the count — otherwise a renewed (Active)
+        // member is wrongly told they already finished their classes because the
+        // PREVIOUS cycle's attendance was still being counted.
+        const live = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(m, sport, sub.start || null, sub.end || null) : { y: 0 };
         const alreadyY = live.y || 0;
         // Only block if this cell isn't already counted as Y (it's a NEW present).
         const cellWasY = m.dailyAttendance[mo][sport][String(day)] === 'Y';
         if (!cellWasY && alreadyY >= planned) {
-          if (!confirm(`${m.name} has already attended all ${planned} ${sport} classes for this subscription period.\n\nMark another present anyway? (They may need to renew.)`)) {
+          const nm = m.name, nmAr = m.nameArabic || m.name;
+          if (!confirm(t(
+            `${nm} has already attended all ${planned} ${sport} classes for this subscription period.\n\nMark another present anyway? (They may need to renew.)`,
+            `${nmAr} حضر بالفعل جميع حصص ${sport} (${planned} حصة) لفترة هذا الاشتراك.\n\nهل تريد تسجيل حضور إضافي على أي حال؟ (قد يحتاج إلى التجديد.)`
+          ))) {
             return;
           }
         }
@@ -19501,8 +19729,210 @@ PAGES.advice = (main) => {
   wireReplies();
 };
 
+// ─── Advice & Articles (broadcast: coach→students, admin→coaches+members) ─────
+// Audience targeting, read receipts and reply threads. Recipients auto-mark read
+// on view; authors + admin see who has read each post.
+PAGES.posts = (main) => {
+  const role = currentRole();
+  const meMemberId = (role === 'student') ? ((typeof effectiveMemberId === 'function') ? effectiveMemberId() : null) : null;
+  const meCoachId  = (role === 'coach')   ? ((typeof effectiveCoachId  === 'function') ? effectiveCoachId()  : null) : null;
+  const isAdmin = (role === 'admin');
+  const isRecep = (role === 'receptionist');
+  const TXTAREA = 'display:block;width:100%;min-height:84px;resize:vertical;padding:10px 14px;background:var(--surface-2);border:1.5px solid var(--border);border-radius:var(--r-md);color:var(--text);font-size:14px;box-sizing:border-box';
+
+  // Recipients auto-mark posts as read when they open this screen.
+  if (meMemberId != null) postsForUser('member', meMemberId).forEach(p => markPostRead(p.id, 'member', meMemberId));
+  if (meCoachId  != null) postsForUser('coach',  meCoachId ).forEach(p => markPostRead(p.id, 'coach',  meCoachId));
+
+  const audienceLabel = (p) => {
+    const a = p.audience || {};
+    if (p.authorRole === 'coach') {
+      if (a.scope === 'sport') return t('Sport', 'رياضة') + ': ' + escapeHtml(a.sport || '');
+      if (a.scope === 'custom') return t('Selected students', 'طلاب محددون') + ' (' + (a.memberIds || []).length + ')';
+      return t('All my students', 'كل طلابي');
+    }
+    const co = a.includeCoaches ? ' + ' + t('coaches', 'المدربون') : '';
+    if (a.scope === 'sport') return escapeHtml(a.sport || '') + co;
+    if (a.scope === 'custom') return t('Specific people', 'أشخاص محددون');
+    return t('Everyone', 'الجميع') + co;
+  };
+  const readBadge = (p) => { const r = postReadCount(p); return `<span class="badge" style="background:rgba(91,141,239,.15);color:var(--blue)">👁 ${r.read}/${r.total} ${t('read', 'قرؤوا')}</span>`; };
+  const readList = (p) => {
+    const recips = p.recipients || [];
+    const readKeys = new Set(Object.keys(p.readBy || {}).filter(k => recips.includes(k)));
+    const readNames = [...readKeys].map(postRecipientName);
+    const unreadNames = recips.filter(k => !readKeys.has(k)).map(postRecipientName);
+    return `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:var(--text-mute)">${t('Who read it', 'من قرأها')}</summary>
+      <div style="font-size:11px;margin-top:4px">
+        <div style="color:var(--green)">✓ ${t('Read', 'قرأ')} (${readNames.length}): ${readNames.map(escapeHtml).join(', ') || '—'}</div>
+        <div style="color:var(--text-mute);margin-top:2px">○ ${t('Not yet', 'لم تُقرأ بعد')} (${unreadNames.length}): ${unreadNames.map(escapeHtml).join(', ') || '—'}</div>
+      </div></details>`;
+  };
+  const threadHtml = (p, canReply) => {
+    const list = p.comments || [];
+    const thread = list.map(c => {
+      const tone = c.by === 'admin' ? 'rgba(245,158,11,.12)' : c.by === 'coach' ? 'rgba(91,141,239,.10)' : 'rgba(16,185,129,.10)';
+      const icon = c.by === 'admin' ? '🛡️' : c.by === 'coach' ? '🧑‍🏫' : '🧍';
+      return `<div style="margin-top:6px;padding:6px 9px;border-radius:7px;background:${tone};border:1px solid var(--border)">
+        <div style="font-size:10px;color:var(--text-mute)">${icon} ${escapeHtml(c.name || '')} · ${c.date ? fmtDate(c.date) : ''}</div>
+        <div style="font-size:12px;white-space:pre-wrap;margin-top:2px">${escapeHtml(c.text || '')}</div>
+      </div>`;
+    }).join('');
+    const box = canReply ? `<div style="display:flex;gap:6px;margin-top:8px">
+        <input class="post-c-input" data-pid="${p.id}" placeholder="${t('Write a reply…', 'اكتب رداً…')}" style="flex:1" />
+        <button class="btn ghost sm post-c-send" data-pid="${p.id}">${t('Reply', 'رد')}</button>
+      </div>` : '';
+    return (thread || box) ? `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">${thread}${box}</div>` : '';
+  };
+  const postCard = (p, opts) => {
+    opts = opts || {};
+    const authorIcon = p.authorRole === 'admin' ? '🛡️' : '🧑‍🏫';
+    return `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;background:var(--surface-2)">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+        <div>${p.title ? `<div style="font-weight:700;font-size:14px">${escapeHtml(p.title)}</div>` : ''}
+          <div style="font-size:11px;color:var(--text-mute)">${authorIcon} ${escapeHtml(p.authorName || '')} · ${p.date ? fmtDate(p.date) : ''} · ${audienceLabel(p)}</div></div>
+        <div style="display:flex;gap:6px;align-items:center">${opts.showStats ? readBadge(p) : ''}${opts.canDelete ? `<button class="btn ghost sm" data-del-post="${p.id}" style="padding:2px 8px">${t('Delete', 'حذف')}</button>` : ''}</div>
+      </div>
+      <div style="font-size:13px;white-space:pre-wrap;margin-top:6px">${escapeHtml(p.text || '')}</div>
+      ${opts.showStats ? readList(p) : ''}
+      ${threadHtml(p, opts.canReply)}
+    </div>`;
+  };
+
+  let html = '';
+
+  // ── STUDENT (member): posts addressed to me ──
+  if (role === 'student') {
+    const list = (meMemberId != null) ? postsForUser('member', meMemberId) : [];
+    html = `<div class="topbar"><div><h1>📢 ${t('Advice & Articles', 'النصائح والمقالات')}</h1><div class="subtitle">${t('Messages from your coach and the club', 'رسائل من مدربك ومن النادي')}</div></div></div>
+      <div class="card">${list.length ? list.map(p => postCard(p, { canReply: true })).join('') : `<div class="text-mute" style="font-size:13px">${t('Nothing here yet.', 'لا يوجد شيء بعد.')}</div>`}</div>`;
+  }
+  // ── COACH: received (from admin) + composer + sent ──
+  else if (role === 'coach' && meCoachId != null) {
+    const received = postsForUser('coach', meCoachId);
+    const sent = (state.posts || []).filter(p => p.authorRole === 'coach' && p.authorId === meCoachId).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    const mine = coachStudents(meCoachId).filter(s => !s.deleted);
+    const sports = [...new Set(mine.flatMap(s => s.sports || []))].sort();
+    html = `<div class="topbar"><div><h1>📢 ${t('Advice & Articles', 'النصائح والمقالات')}</h1><div class="subtitle">${t('Publish advice to your students', 'انشر نصائح لطلابك')}</div></div></div>
+      ${received.length ? `<div class="card"><div class="card-header"><div><div class="card-title">📥 ${t('From the club', 'من النادي')}</div></div></div>${received.map(p => postCard(p, { canReply: true })).join('')}</div>` : ''}
+      <div class="card" style="margin-top:14px">
+        <div class="card-header"><div><div class="card-title">📢 ${t('Publish advice', 'نشر نصيحة')}</div><div class="card-subtitle">${t('Your students get a notification', 'يصل طلابك إشعار')}</div></div></div>
+        <div class="field"><label>${t('Audience', 'الجمهور')}</label>
+          <select id="post-scope">
+            <option value="all">${t('All my students', 'كل طلابي')} (${mine.length})</option>
+            <option value="sport">${t('By sport', 'حسب الرياضة')}</option>
+            <option value="custom">${t('Pick students', 'اختيار طلاب')}</option>
+          </select></div>
+        <div class="field" id="post-sport-wrap" style="display:none"><label>${t('Sport', 'الرياضة')}</label>
+          <select id="post-sport">${sports.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('')}</select></div>
+        <div class="field" id="post-pick-wrap" style="display:none"><label>${t('Students', 'الطلاب')}</label>
+          <div style="max-height:160px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px">${mine.length ? mine.map(s => `<label style="display:block;font-size:13px;padding:2px 0"><input type="checkbox" class="post-mem" value="${s.id}"> ${escapeHtml(s.name)} <span class="text-mute" style="font-size:10px">${escapeHtml((s.sports || []).join(', '))}</span></label>`).join('') : `<span class="text-mute">${t('No students', 'لا يوجد طلاب')}</span>`}</div></div>
+        <div class="field"><label>${t('Title (optional)', 'العنوان (اختياري)')}</label><input id="post-title" placeholder="${t('e.g. Training tips', 'مثال: نصائح تدريبية')}" /></div>
+        <div class="field"><label>${t('Message', 'الرسالة')}</label><textarea id="post-text" rows="3" style="${TXTAREA}"></textarea></div>
+        <button class="btn primary" id="post-publish" ${mine.length ? '' : 'disabled'}>📢 ${t('Publish', 'نشر')}</button>
+      </div>
+      <div class="card" style="margin-top:14px"><div class="card-header"><div><div class="card-title">${t('Published', 'المنشورة')} (${sent.length})</div></div></div>
+        ${sent.length ? sent.map(p => postCard(p, { showStats: true, canReply: true, canDelete: true })).join('') : `<div class="text-mute" style="font-size:13px">${t('You have not published anything yet.', 'لم تنشر شيئاً بعد.')}</div>`}</div>`;
+  }
+  // ── ADMIN / RECEPTIONIST: composer (admin) + all posts (read stats) ──
+  else {
+    const allMembers = _activeMembersForPosts().slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    const allCoaches = (state.coaches || []).filter(c => !c.deleted).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    const allSports = [...new Set([...(state.members || []).flatMap(m => [m.sport, ...((m.enrollments || []).map(e => e.sport))])].filter(Boolean))].sort();
+    const myPosts = (state.posts || []).filter(p => p.authorRole === 'admin').sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    const coachPosts = (state.posts || []).filter(p => p.authorRole === 'coach').sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    const composer = isAdmin ? `
+      <div class="card">
+        <div class="card-header"><div><div class="card-title">📢 ${t('Publish advice / article', 'نشر نصيحة / مقال')}</div><div class="card-subtitle">${t('Coaches and members get a notification', 'يصل المدربين والأعضاء إشعار')}</div></div></div>
+        <div class="field"><label>${t('Audience', 'الجمهور')}</label>
+          <select id="post-scope">
+            <option value="all">${t('Everyone', 'الجميع')}</option>
+            <option value="sport">${t('By sport', 'حسب الرياضة')}</option>
+            <option value="custom">${t('Specific people', 'أشخاص محددون')}</option>
+          </select></div>
+        <div class="field" id="post-coach-wrap"><label style="display:flex;align-items:center;gap:8px;font-weight:400"><input type="checkbox" id="post-inc-coaches" checked> ${t('Also notify coaches', 'إشعار المدربين أيضاً')}</label></div>
+        <div class="field" id="post-sport-wrap" style="display:none"><label>${t('Sport', 'الرياضة')}</label>
+          <select id="post-sport">${allSports.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('')}</select></div>
+        <div class="field" id="post-pick-wrap" style="display:none"><label>${t('Members', 'الأعضاء')}</label>
+          <div style="max-height:140px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px">${allMembers.map(m => `<label style="display:block;font-size:13px;padding:2px 0"><input type="checkbox" class="post-mem" value="${m.id}"> ${escapeHtml(m.name || m.nameArabic || ('#' + m.id))}</label>`).join('') || `<span class="text-mute">${t('No members', 'لا يوجد أعضاء')}</span>`}</div>
+          <label style="margin-top:8px">${t('Coaches', 'المدربون')}</label>
+          <div style="max-height:120px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px">${allCoaches.map(c => `<label style="display:block;font-size:13px;padding:2px 0"><input type="checkbox" class="post-coach" value="${c.id}"> ${escapeHtml(c.name || ('#' + c.id))}</label>`).join('') || `<span class="text-mute">${t('No coaches', 'لا يوجد مدربون')}</span>`}</div></div>
+        <div class="field"><label>${t('Title (optional)', 'العنوان (اختياري)')}</label><input id="post-title" placeholder="${t('e.g. Eid holiday schedule', 'مثال: جدول إجازة العيد')}" /></div>
+        <div class="field"><label>${t('Message', 'الرسالة')}</label><textarea id="post-text" rows="3" style="${TXTAREA}"></textarea></div>
+        <button class="btn primary" id="post-publish">📢 ${t('Publish', 'نشر')}</button>
+      </div>` : '';
+    html = `<div class="topbar"><div><h1>📢 ${t('Advice & Articles', 'النصائح والمقالات')}</h1><div class="subtitle">${t('Publish announcements and track who has read them', 'انشر الإعلانات وتابع من قرأها')}</div></div></div>
+      ${composer}
+      ${myPosts.length ? `<div class="card" style="margin-top:14px"><div class="card-header"><div><div class="card-title">🛡️ ${t('Club announcements', 'إعلانات النادي')} (${myPosts.length})</div></div></div>${myPosts.map(p => postCard(p, { showStats: true, canReply: isAdmin, canDelete: isAdmin })).join('')}</div>` : ''}
+      <div class="card" style="margin-top:14px"><div class="card-header"><div><div class="card-title">💬 ${t('Coach advice (all)', 'نصائح المدربين (الكل)')} (${coachPosts.length})</div><div class="card-subtitle">${t('Read-only overview of what coaches have published', 'عرض للقراءة فقط لما نشره المدربون')}</div></div></div>
+        ${coachPosts.length ? coachPosts.map(p => postCard(p, { showStats: true })).join('') : `<div class="text-mute" style="font-size:13px">${t('No coach advice yet.', 'لا توجد نصائح من المدربين بعد.')}</div>`}</div>`;
+  }
+
+  main.innerHTML = html;
+
+  // ── Wire composer audience toggles ──
+  const scopeSel = main.querySelector('#post-scope');
+  const syncScope = () => {
+    const v = scopeSel ? scopeSel.value : 'all';
+    const sw = main.querySelector('#post-sport-wrap'); if (sw) sw.style.display = (v === 'sport') ? '' : 'none';
+    const pw = main.querySelector('#post-pick-wrap'); if (pw) pw.style.display = (v === 'custom') ? '' : 'none';
+    const cw = main.querySelector('#post-coach-wrap'); if (cw) cw.style.display = (v === 'custom') ? 'none' : '';
+  };
+  if (scopeSel) { scopeSel.addEventListener('change', syncScope); syncScope(); }
+
+  // ── Wire publish ──
+  const pubBtn = main.querySelector('#post-publish');
+  if (pubBtn) pubBtn.addEventListener('click', () => {
+    const scope = scopeSel ? scopeSel.value : 'all';
+    const title = (main.querySelector('#post-title') || {}).value || '';
+    const text = ((main.querySelector('#post-text') || {}).value || '').trim();
+    if (!text) { toast(t('Write a message first', 'اكتب رسالة أولاً'), 'error'); return; }
+    const audience = { scope };
+    if (scope === 'sport') audience.sport = (main.querySelector('#post-sport') || {}).value || '';
+    if (scope === 'custom') {
+      audience.memberIds = [...main.querySelectorAll('.post-mem:checked')].map(x => parseInt(x.value));
+      audience.coachIds = [...main.querySelectorAll('.post-coach:checked')].map(x => parseInt(x.value));
+    }
+    let res;
+    if (role === 'coach') {
+      res = publishPost({ authorRole: 'coach', authorId: meCoachId, authorName: coachName(meCoachId) || 'Coach', title, text, audience });
+    } else {
+      audience.includeCoaches = !!(main.querySelector('#post-inc-coaches') && main.querySelector('#post-inc-coaches').checked);
+      res = publishPost({ authorRole: 'admin', authorId: null, authorName: t('Club Admin', 'إدارة النادي'), title, text, audience });
+    }
+    if (!res) { toast(t('No recipients match this audience', 'لا يوجد مستلمون لهذا الجمهور'), 'error'); return; }
+    render(); toast(t('Published', 'تم النشر') + ' · ' + res.recipients.length + ' ' + t('recipients', 'مستلم'));
+  });
+
+  // ── Wire replies ──
+  main.querySelectorAll('.post-c-send').forEach(btn => btn.addEventListener('click', () => {
+    const pid = parseInt(btn.dataset.pid);
+    const inp = main.querySelector(`.post-c-input[data-pid="${pid}"]`);
+    const text = ((inp && inp.value) || '').trim();
+    if (!text) { toast(t('Write a reply first', 'اكتب رداً أولاً'), 'error'); return; }
+    const p = (state.posts || []).find(x => x.id === pid);
+    if (!p) return;
+    if (!Array.isArray(p.comments)) p.comments = [];
+    const by = (role === 'student') ? 'member' : (role === 'coach' ? 'coach' : 'admin');
+    const name = by === 'member' ? ((state.members.find(x => x.id === meMemberId) || {}).name || t('Member', 'عضو'))
+      : by === 'coach' ? (coachName(meCoachId) || t('Coach', 'مدرب'))
+      : t('Club Admin', 'إدارة النادي');
+    p.comments.push({ by, name, text, date: TODAY });
+    if (typeof audit === 'function') audit('post.comment', `post:${pid}`, `${by} reply`);
+    save(); render(); toast(t('Reply posted', 'تم نشر الرد'));
+  }));
+
+  // ── Wire delete ──
+  main.querySelectorAll('[data-del-post]').forEach(btn => btn.addEventListener('click', () => {
+    const id = parseInt(btn.dataset.delPost);
+    if (!confirm(t('Delete this post?', 'حذف هذا المنشور؟'))) return;
+    state.posts = (state.posts || []).filter(p => p.id !== id);
+    save(); render(); toast(t('Deleted', 'تم الحذف'));
+  }));
+};
+
 // Change the signed-in account's password. Stored by Firebase Auth (never in our
-// data). `force` = first-login default-password change (can't be skipped except by signing out).
+// data). `force` = first-login default-password change.
 window.promptPasswordChange = function(force) {
   const myMobile = (() => {
     const id = state.user && state.user.email;

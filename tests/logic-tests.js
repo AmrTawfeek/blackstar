@@ -3119,6 +3119,63 @@ ${seed}
     eq(derive(data, 99), 'cash', 'generate invoice: defaults to cash when no prior invoice');
   })();
 
+  // --- broadcast posts: keys, audience resolution, read tracking ---
+  (function () {
+    eq(postKey('member', 5), 'm:5', 'postKey member');
+    eq(postKey('coach', 2), 'c:2', 'postKey coach');
+    var post = { id: 1, authorRole: 'coach', recipients: ['m:5', 'm:6'], readBy: {}, comments: [] };
+    ok(postIsForUser(post, 'member', 5), 'post: addressed to member 5');
+    ok(!postIsForUser(post, 'coach', 5), 'post: NOT addressed to coach 5');
+    ok(!postIsForUser(post, 'member', 99), 'post: NOT addressed to non-recipient');
+    eq(postReadCount(post).total, 2, 'post: total recipients = 2');
+    eq(postReadCount(post).read, 0, 'post: read = 0 initially');
+    post.readBy['m:5'] = '2026-06-29';
+    eq(postReadCount(post).read, 1, 'post: read = 1 after one read');
+    var savedPosts = state.posts;
+    state.posts = [post];
+    eq(unreadPostsForUser('member', 6).length, 1, 'post: member 6 has 1 unread');
+    eq(unreadPostsForUser('member', 5).length, 0, 'post: member 5 read, 0 unread');
+    eq(unreadPostsForUser('member', 99).length, 0, 'post: non-recipient has 0 unread');
+    // admin custom audience maps the given ids verbatim (members + coaches)
+    var recips = resolvePostRecipients({ scope: 'custom', memberIds: [5, 6], coachIds: [2] }, 'admin', null).sort();
+    eq(recips.join(','), 'c:2,m:5,m:6', 'post: admin custom recipients = members + coaches');
+    state.posts = savedPosts;
+  })();
+
+  // --- revenue identity: billed == collected + due (overpayment clamp + date fallback) ---
+  (function () {
+    var savedInv = state.invoices;
+    state.invoices = [
+      { id: 901, month: '2030-01', amount: 600, amountPaid: 600 },   // fully paid
+      { id: 902, month: '2030-01', amount: 400, amountPaid: 150 },   // partial
+      { id: 903, month: '2030-01', amount: 500, amountPaid: 0 },     // unpaid
+      { id: 904, month: '2030-01', amount: 300, amountPaid: 350 },   // OVERPAID
+      { id: 905, date: '2030-01-09', amount: 200, amountPaid: 200 }, // no month -> date fallback
+      { id: 906, month: '2030-01', amount: 999, amountPaid: 999, deleted: true }, // excluded
+    ];
+    var b = billedInMonth('2030-01'), c = collectedInMonth('2030-01'), d = dueInMonth('2030-01');
+    eq(b, 2000, 'revenue: billed = Σ amount incl date-fallback, excl deleted');
+    eq(c, 1250, 'revenue: collected clamps overpayment (600+150+0+300+200)');
+    eq(d, 750, 'revenue: due = Σ balance (0+250+500+0+0)');
+    eq(b, c + d, 'revenue: billed == collected + due holds even with overpayment');
+    state.invoices = savedInv;
+  })();
+
+  // --- salaries paid: advance.amount + paid.snapshotNet + legacy, no double-count ---
+  (function () {
+    var savedSal = state.salaries;
+    state.salaries = [
+      { id: 1, coachId: 1, month: '2030-02', kind: 'advance', amount: 200 },
+      { id: 2, coachId: 1, month: '2030-02', kind: 'paid', snapshotNet: 600, snapshotGross: 800 },
+      { id: 3, coachId: 2, month: '2030-02', amount: 500 },            // legacy
+      { id: 4, coachId: 3, month: '2030-03', kind: 'paid', snapshotNet: 999 }, // other month
+    ];
+    eq(salariesPaidInMonth('2030-02'), 1300, 'salaries: advance 200 + net 600 + legacy 500 = 1300');
+    eq(salariesPaidInMonth('2030-03'), 999, 'salaries: other month isolated');
+    eq(salariesPaidInMonth('all'), 2299, 'salaries: all-time sum');
+    state.salaries = savedSal;
+  })();
+
   console.log('\\n================ TEST RESULTS ================');
   console.log('PASS: ' + pass + '   FAIL: ' + fail);
   if (fails.length) { console.log('\\nFAILURES:'); fails.forEach(f=>console.log('  ✗ ' + f)); }
