@@ -3280,6 +3280,60 @@ ${seed}
       'valid-end: non-camp uses stored end');
   })();
 
+  // --- per-sport payments don't mix (Edit pricing) ---
+  (function () {
+    // Going-forward: each collection tagged with its sport -> no mixing.
+    var clean = { amount: 775, amountPaid: 600, lineItems: [{ sport: 'Gymnastic', price: 425 }, { sport: 'Summer Camp', price: 350 }], payments: [{ amount: 400, sport: 'Gymnastic' }, { amount: 200, sport: 'Summer Camp' }] };
+    eq(Math.round(invoicePaidForSport(clean, 'Gymnastic')), 400, 'per-sport: Gymnastic keeps its own 400');
+    eq(Math.round(invoicePaidForSport(clean, 'Summer Camp')), 200, 'per-sport: Summer Camp keeps its own 200');
+    // Legacy single-sport untagged still resolves to the full amount.
+    var legacy = { amount: 425, amountPaid: 400, lineItems: [{ sport: 'Gymnastic', price: 425 }], payments: [{ amount: 400 }] };
+    eq(Math.round(invoicePaidForSport(legacy, 'Gymnastic')), 400, 'per-sport: legacy untagged single sport = full paid');
+    // Money is always conserved across sports.
+    var mixed = { amount: 775, amountPaid: 600, lineItems: [{ sport: 'Gymnastic', price: 425 }, { sport: 'Summer Camp', price: 350 }], payments: [{ amount: 400 }, { amount: 200, sport: 'Summer Camp' }] };
+    ok(Math.abs((invoicePaidForSport(mixed, 'Gymnastic') + invoicePaidForSport(mixed, 'Summer Camp')) - 600) < 0.01, 'per-sport: split always sums to total paid');
+  })();
+
+  // --- each invoice line keeps its own issue date (adding a sport never moves it) ---
+  (function () {
+    eq(lineIssueDate({ sport: 'Gymnastic' }, '2026-06-09', '2026-06-29'), '2026-06-09', 'line-date: falls back to sport start, not invoice date');
+    eq(lineIssueDate({ sport: 'Camp', issueDate: '2026-07-15' }, '2026-06-01', '2026-06-01'), '2026-07-15', 'line-date: explicit per-line issueDate wins');
+    eq(lineIssueDate({ sport: 'X' }, null, '2026-06-01'), '2026-06-01', 'line-date: invoice date as last resort');
+  })();
+
+  // --- line-aware billing month: one invoice can span months, split by sport price ---
+  (function () {
+    var saved = state.invoices;
+    state.invoices = [{ id: 1, customerId: 1, date: '2026-06-10', month: '2026-06', amount: 775, amountPaid: 500,
+      lineItems: [{ sport: 'X', price: 425 }, { sport: 'Y', price: 350, billMonth: '2026-07' }],
+      payments: [{ amount: 425, sport: 'X', month: '2026-06' }, { amount: 75, sport: 'Y', month: '2026-07' }] }];
+    eq(Math.round(billedInMonth('2026-06')), 425, 'cross-month: June billed = X price');
+    eq(Math.round(billedInMonth('2026-07')), 350, 'cross-month: July billed = Y price');
+    eq(Math.round(billedInMonth('2026-06') + billedInMonth('2026-07')), 775, 'cross-month: billed conserved');
+    ok(invoiceTouchesMonth(state.invoices[0], '2026-06') && invoiceTouchesMonth(state.invoices[0], '2026-07'), 'cross-month: invoice appears in both months');
+    ok(Math.abs((collectedInMonth('2026-06') + collectedInMonth('2026-07')) - 500) < 0.01, 'cross-month: collected conserved');
+    // A normal single-month invoice still bills entirely in its own month.
+    state.invoices = [{ id: 2, customerId: 1, date: '2026-06-10', month: '2026-06', amount: 500, amountPaid: 500, lineItems: [{ sport: 'X', price: 500 }] }];
+    eq(Math.round(billedInMonth('2026-06')), 500, 'single-month: unchanged, full amount in its month');
+    eq(Math.round(billedInMonth('2026-07')), 0, 'single-month: nothing leaks to other months');
+    state.invoices = saved;
+  })();
+
+  // --- Reports dashboard uses the same billed basis as the Monthly Report ---
+  (function () {
+    var saved = state.invoices, savedC = state.coaches, savedS = state.salaries;
+    state.coaches = []; state.salaries = [];
+    state.invoices = [
+      { id: 1, customerId: 1, date: '2026-06-10', month: '2026-06', amount: 1000, amountPaid: 600, lineItems: [{ sport: 'A', price: 600 }, { sport: 'B', price: 400 }] },
+      { id: 2, customerId: 2, date: '2026-06-15', month: '2026-06', amount: 500, amountPaid: 500, discount: 100, lineItems: [{ sport: 'A', price: 600 }] },
+    ];
+    var june = function (m) { return m === '2026-06'; };
+    eq(Math.round(billedInPeriod(june)), Math.round(billedInMonth('2026-06')), 'reports: billedInPeriod == billedInMonth');
+    var bs = billedBySportInPeriod(june); var sum = 0; for (var k in bs) sum += bs[k];
+    ok(Math.abs(sum - billedInPeriod(june)) < 0.01, 'reports: by-sport re-sums to billed revenue (discount-safe)');
+    state.invoices = saved; state.coaches = savedC; state.salaries = savedS;
+  })();
+
   console.log('\\n================ TEST RESULTS ================');
   console.log('PASS: ' + pass + '   FAIL: ' + fail);
   if (fails.length) { console.log('\\nFAILURES:'); fails.forEach(f=>console.log('  ✗ ' + f)); }

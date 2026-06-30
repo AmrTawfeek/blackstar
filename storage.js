@@ -19,8 +19,31 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 (function() {
-  const LS_KEY = 'blackstars-crm-v1';
+  // Versioned local key. A new deployment uses a NEW key, so any stale data left
+  // by an older version is ignored — never read as authoritative, never able to
+  // overwrite the cloud. The local copy is ONLY a non-authoritative emergency
+  // cache: the cloud (Firebase) is the single source of truth for every save.
+  const LS_KEY = 'blackstars-crm-v2';
+  const LS_LEGACY_KEYS = ['blackstars-crm-v1'];   // older keys: one-time read fallback, then cleaned
   const SAVE_THROTTLE_MS = 3000;   // Debounce Firestore writes (also eases write-stream pressure)
+
+  // Refresh the local emergency cache from CONFIRMED cloud data (called only after
+  // a successful SERVER read). This is the "overwrite-after-good-server-load" step:
+  // the local copy always reflects the last good cloud state, and superseded legacy
+  // keys are dropped. Writes here bypass the empty-write guard because the data was
+  // just read from the authoritative server.
+  function _refreshLocalFromCloud(data) {
+    if (!data) return;
+    try {
+      const persistable = { ...data };
+      delete persistable.user;
+      delete persistable.route;
+      localStorage.setItem(LS_KEY, JSON.stringify(persistable));
+      for (const k of LS_LEGACY_KEYS) { try { localStorage.removeItem(k); } catch (_) {} }
+    } catch (e) {
+      console.warn('[Storage] local cache refresh from cloud failed (non-fatal):', e);
+    }
+  }
 
   let activeBackend = null;
   let remoteUpdateCallback = null;
@@ -89,7 +112,14 @@
     name: 'local',
     async load() {
       try {
-        const raw = localStorage.getItem(LS_KEY);
+        let raw = localStorage.getItem(LS_KEY);
+        if (!raw) {
+          // First run on this version: fall back to an older key ONCE so the user
+          // still has an offline copy if the cloud read fails. This is emergency
+          // read-only — it can never be written back to the cloud (cloudReadFailed
+          // guards that), and it's replaced by cloud data on the next good load.
+          for (const k of LS_LEGACY_KEYS) { const lr = localStorage.getItem(k); if (lr) { raw = lr; break; } }
+        }
         const data = raw ? JSON.parse(raw) : null;
         // NOTE: localStorage is a non-authoritative emergency copy only. It must
         // NOT set the cloud baseline, and data loaded from here must never be
@@ -255,6 +285,7 @@
           loadErrored = false;
           const data = snap.data();
           noteServerLoaded(data);   // establishes trusted baselines + unblocks writes
+          _refreshLocalFromCloud(data);   // overwrite the local emergency cache with confirmed cloud data
           return data;
         } catch (e) {
           console.warn('[Storage:firebase] SERVER load failed — showing offline copy READ-ONLY (cloud writes blocked):', e && e.code || e);

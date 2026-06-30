@@ -17,7 +17,7 @@ function computeStats(monthKey) {
   // is the single source of truth used across Owner Dashboard, Invoices and
   // Transactions, so every screen agrees. (Cash-flow / collected views live on
   // the Monthly Report + Reconciliation.)
-  const _billed = (ym, pred) => monthInvoices(ym).reduce((s, i) => s + ((!pred || pred(i)) ? (Number(i.amount) || 0) : 0), 0);
+  const _billed = (ym, pred) => billedInMonth(ym, pred);
   const currRevenue = _billed(curr);
   const prevRevenue = _billed(prev);
 
@@ -4847,7 +4847,7 @@ window.editMemberPricing = function(memberId) {
       const share = linePrice / lineSum;
       price = linePrice;
       disc  = Math.round((Number(inv.discount) || 0) * share);
-      paid  = Math.round(invoicePaid(inv) * share);
+      paid  = Math.round(invoicePaidForSport(inv, sp));   // real per-sport paid, not a mixed split
     } else if (inv) {
       price = inv.amount || 0;
       disc  = inv.discount || 0;
@@ -4878,19 +4878,104 @@ window.editMemberPricing = function(memberId) {
       </div>
     </div>`).join('');
 
+  // Apply the confirmed per-sport prices + payments. Each payment is tagged with
+  // its sport (so two sports never mix) and appended to the invoice's payment
+  // history. RULE: one membership invoice per member per MONTH — a new sport joins
+  // the existing same-month invoice, and a fresh invoice is only made when that
+  // month has none.
+  function applyPricing(updates, payDate, payMonth, payMethod) {
+    const touched = new Set();
+    const discByInv = new Map();
+    for (const u of updates) {
+      const { r, price, disc, paid } = u;
+      const net = Math.max(0, price - disc);
+      let inv = r.inv;
+      if (!inv) {
+        // A brand-new sport joins the member's CURRENT active membership invoice
+        // (one invoice per member). It carries its own billMonth so its revenue
+        // counts in the month it was ADDED, while the invoice document stays in its
+        // original month. Only when the member has no membership invoice at all do
+        // we create a fresh one.
+        const active = (state.invoices || [])
+          .filter(i => !i.deleted && i.customerId === m.id && (i.category || 'Membership') === 'Membership'
+            && !i.switchCredit && i.activityType !== 'switch-credit')
+          .sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.id - a.id))[0];
+        if (active) {
+          inv = active;
+          if (!Array.isArray(inv.lineItems)) inv.lineItems = [{ sport: inv.sport, coachId: inv.coachId, classes: inv.classes, price: inv.amount || 0 }];
+          const existingLi = inv.lineItems.find(x => x.sport === r.sport);
+          if (!existingLi) {
+            const li = { sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net, issueDate: payDate };
+            if (invoiceBillMonth(inv) !== payMonth) li.billMonth = payMonth;   // revenue in the add-month
+            inv.lineItems.push(li);
+          } else {
+            existingLi.price = net;
+          }
+        } else {
+          inv = {
+            id: nextId(state.invoices), customerId: m.id, customerType: 'member', category: 'Membership',
+            sport: r.sport, description: r.sport, date: payDate, month: payMonth,
+            amount: net, discount: 0, amountPaid: 0, method: '',
+            coachId: (r.enr && r.enr.coachId) || null,
+            ref: (typeof nextInvoiceRef === 'function' ? nextInvoiceRef() : undefined),
+            lineItems: [{ sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net, issueDate: payDate }],
+            payments: [],
+          };
+          state.invoices.push(inv);
+        }
+      } else {
+        if (!Array.isArray(inv.lineItems)) inv.lineItems = [{ sport: inv.sport, coachId: inv.coachId, classes: inv.classes, price: inv.amount || 0 }];
+        const li = inv.lineItems.find(x => x.sport === r.sport) || inv.lineItems[0];
+        if (li) li.price = net;
+      }
+      if (!Array.isArray(inv.payments)) inv.payments = [];
+      // Record only the CHANGE vs what this sport already had, tagged to the sport.
+      const delta = Math.round((paid - r.paid) * 100) / 100;
+      if (Math.abs(delta) > 0.001) {
+        inv.payments.push({ amount: delta, date: payDate, month: payMonth, method: payMethod, sport: r.sport, note: 'Edit pricing' });
+      }
+      discByInv.set(inv, (discByInv.get(inv) || 0) + disc);
+      if (r.enr) r.enr.price = net;
+      touched.add(inv);
+    }
+    for (const inv of touched) {
+      if (Array.isArray(inv.lineItems) && inv.lineItems.length) {
+        inv.amount = inv.lineItems.reduce((s, x) => s + (Number(x.price) || 0), 0);
+      }
+      if (discByInv.has(inv)) inv.discount = discByInv.get(inv);
+      inv.amountPaid = inv.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      if (inv.amountPaid > 0 && !inv.method) inv.method = payMethod;
+      inv.lastUpdated = payDate;   // stamp the change; inv.date (original issue) is never touched
+      if (typeof sportListWithDuration === 'function') inv.sport = sportListWithDuration(inv.lineItems) || inv.lineItems.map(x => x.sport).join(', ');
+    }
+    if (typeof audit === 'function') audit('member.update', 'member:' + m.id, 'edit pricing & payment (per-sport)');
+    save();
+  }
+
   showModal({
     title: '💰 ' + t('Edit pricing & payment', 'تعديل السعر والدفع'),
     wide: true,
     body: `
       <div class="text-mute" style="font-size:12px;margin-bottom:10px">${escapeHtml(m.name)}${m.nameArabic ? ` · <span dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}${m.phone ? ' · ' + phoneCell(m.phone) : ''}</div>
       ${rowHtml}
-      <div class="field" style="margin-top:10px;max-width:220px"><label style="font-size:12px;font-weight:600">📅 ${t('Payment date', 'تاريخ الدفع')}</label><input type="date" id="pri-paydate" value="${TODAY}" /><div class="text-mute" style="font-size:10px;margin-top:3px">${t('Date recorded for these payments (revenue counts in this month).', 'تاريخ تسجيل هذه الدفعات (تُحتسب الإيرادات في هذا الشهر).')}</div></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+        <div class="field" style="margin:0;max-width:200px"><label style="font-size:12px;font-weight:600">📅 ${t('Payment date', 'تاريخ الدفع')}</label><input type="date" id="pri-paydate" value="${TODAY}" /><div class="text-mute" style="font-size:10px;margin-top:3px">${t('Date recorded for these payments (revenue counts in this month).', 'تاريخ تسجيل هذه الدفعات (تُحتسب الإيرادات في هذا الشهر).')}</div></div>
+        <div class="field" style="margin:0;max-width:180px"><label style="font-size:12px;font-weight:600">💳 ${t('Payment method', 'طريقة الدفع')}</label>
+          <select id="pri-method">
+            <option value="cash">${t('Cash', 'نقدي')}</option>
+            <option value="card">${t('Card', 'بطاقة')}</option>
+            <option value="fawran">${t('Fawran', 'فوران')}</option>
+            <option value="transfer">${t('Bank transfer', 'تحويل بنكي')}</option>
+          </select>
+        </div>
+      </div>
       <div class="text-mute" style="font-size:11px;margin-top:4px">${t('Each row updates the membership invoice for that sport. The matching line item, discount, paid total and payments log all reconcile.', 'كل صف يحدّث فاتورة العضوية لتلك الرياضة. يتم مزامنة بند الفاتورة والخصم والمدفوع وسجل الدفعات.')}</div>`,
     actions: [
       { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
       { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
         const payDate = (document.getElementById('pri-paydate') && document.getElementById('pri-paydate').value) || TODAY;
         const payMonth = payDate.slice(0, 7);
+        const payMethod = (document.getElementById('pri-method') && document.getElementById('pri-method').value) || 'cash';
         const updates = rows.map(r => ({
           r,
           price: Math.max(0, parseFloat(document.querySelector(`.pri-price[data-i="${r.idx}"]`).value) || 0),
@@ -4900,106 +4985,48 @@ window.editMemberPricing = function(memberId) {
         for (const u of updates) {
           if (u.paid > Math.max(0, u.price - u.disc)) { toast(`${u.r.sport}: paid cannot exceed price minus discount`, 'error'); return; }
         }
-        const rollups = new Map();   // shared multi-sport invoice → summed {disc, paid}
-        for (const u of updates) {
-          const { r, price, disc, paid } = u;
-          const net = Math.max(0, price - disc);
-          let inv = r.inv;
-          if (!inv) {
-            // No invoice carries this sport yet. Prefer to ADD it as a line item to
-            // the member's EXISTING membership invoice (one invoice per member),
-            // rather than spawning a separate invoice per sport. Only create a
-            // fresh invoice if the member has no membership invoice at all.
-            const existing = (state.invoices || [])
-              .filter(i => !i.deleted && i.customerId === m.id && (i.category || 'Membership') === 'Membership'
-                && !i.switchCredit && i.activityType !== 'switch-credit' && (i.amount || 0) >= 0)
-              .sort((a, b) => (a.date || '').localeCompare(b.date || ''))[0];
-            if (existing) {
-              inv = existing;
-              if (!Array.isArray(inv.lineItems)) {
-                inv.lineItems = [{ sport: inv.sport, coachId: inv.coachId, classes: inv.classes, price: inv.amount || 0 }];
-              }
-              // Add or update this sport's line on the shared invoice.
-              let li = inv.lineItems.find(x => x.sport === r.sport);
-              if (!li) {
-                li = { sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net };
-                inv.lineItems.push(li);
-              } else {
-                li.price = net;
-              }
-              // Roll up totals from all line items; add the discount and payment.
-              inv.amount = inv.lineItems.reduce((s, x) => s + (Number(x.price) || 0), 0);
-              if (disc > 0) inv.discount = (Number(inv.discount) || 0) + disc;
-              if (!Array.isArray(inv.payments)) inv.payments = [];
-              if (paid > 0) inv.payments.push({ amount: paid, date: payDate, month: payMonth, method: 'Cash', note: 'Added via Edit pricing' });
-              inv.amountPaid = inv.payments.reduce((s, p) => s + (p.amount || 0), 0);
-              // Keep the headline sport label in sync (multi-sport summary).
-              if (typeof sportListWithDuration === 'function') {
-                inv.sport = sportListWithDuration(inv.lineItems) || inv.lineItems.map(x => x.sport).join(', ');
-              }
-            } else {
-              inv = {
-                id: nextId(state.invoices),
-                customerId: m.id,
-                customerType: 'member',
-                category: 'Membership',
-                sport: r.sport,
-                description: r.sport,
-                date: payDate,
-                month: payMonth,
-                amount: net,
-                discount: disc,
-                amountPaid: paid,
-                method: paid > 0 ? 'Cash' : '',
-                coachId: (r.enr && r.enr.coachId) || null,
-                lineItems: [{ sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net }],
-                payments: paid > 0 ? [{ amount: paid, date: payDate, month: payMonth, method: 'Cash' }] : [],
-              };
-              state.invoices.push(inv);
-            }
-          } else if (r.multi) {
-            // Multi-sport invoice shared by several sports: set THIS sport's line
-            // price and defer the invoice-level rollup until all its rows are in,
-            // so we never clobber the other sports' prices or paid amounts.
-            if (!Array.isArray(inv.lineItems)) {
-              inv.lineItems = [{ sport: inv.sport, coachId: inv.coachId, classes: inv.classes, price: inv.amount || 0 }];
-            }
-            const li = inv.lineItems.find(x => x.sport === r.sport);
-            if (li) li.price = net;
-            else inv.lineItems.push({ sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net });
-            const acc = rollups.get(inv) || { disc: 0, paid: 0 };
-            acc.disc += disc; acc.paid += paid;
-            rollups.set(inv, acc);
-          } else {
-            inv.amount = net;
-            inv.discount = disc;
-            inv.amountPaid = paid;
-            if (!Array.isArray(inv.payments)) inv.payments = [];
-            const currentLogged = inv.payments.reduce((s, p) => s + (p.amount || 0), 0);
-            const delta = paid - currentLogged;
-            if (Math.abs(delta) > 0.001) inv.payments.push({ amount: delta, date: payDate, month: payMonth, method: 'Cash', note: 'Adjusted via Edit pricing' });
-            if (Array.isArray(inv.lineItems)) {
-              const li = inv.lineItems.find(x => x.sport === r.sport) || inv.lineItems[0];
-              if (li) li.price = net;
-            }
-          }
-          // Also reflect on the enrollment so member view + reports show the new price.
-          if (r.enr) r.enr.price = net;
-        }
-        // Roll up each multi-sport invoice once: amount = Σ line prices, while the
-        // discount + paid are the SUM across its sports (never one sport's value).
-        for (const [inv, acc] of rollups) {
-          inv.amount = inv.lineItems.reduce((s, x) => s + (Number(x.price) || 0), 0);
-          inv.discount = acc.disc;
-          if (!Array.isArray(inv.payments)) inv.payments = [];
-          const currentLogged = inv.payments.reduce((s, p) => s + (p.amount || 0), 0);
-          const delta = acc.paid - currentLogged;
-          if (Math.abs(delta) > 0.001) inv.payments.push({ amount: delta, date: payDate, month: payMonth, method: 'Cash', note: 'Adjusted via Edit pricing' });
-          inv.amountPaid = inv.payments.reduce((s, p) => s + (p.amount || 0), 0);
-          if (typeof sportListWithDuration === 'function') inv.sport = sportListWithDuration(inv.lineItems) || inv.lineItems.map(x => x.sport).join(', ');
-        }
-        if (typeof audit === 'function') audit('member.update', 'member:' + m.id, 'edit pricing & payment');
-        save(); closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
+        // ── Review & confirm — show exactly what will be recorded, per sport, so
+        //    two sports' partial payments are never mixed. ───────────────────────
+        const methodLabel = { cash: t('Cash', 'نقدي'), card: t('Card', 'بطاقة'), fawran: t('Fawran', 'فوران'), transfer: t('Bank transfer', 'تحويل بنكي') }[payMethod] || payMethod;
+        const reviewRows = updates.map(u => {
+          const net = Math.max(0, u.price - u.disc);
+          const addPay = Math.round((u.paid - u.r.paid) * 100) / 100;   // NEW collection for this sport
+          return { sport: u.r.sport, net, disc: u.disc, paidNew: u.paid, addPay, due: Math.max(0, net - u.paid) };
+        });
+        const totalAdd = reviewRows.reduce((s, x) => s + (x.addPay > 0 ? x.addPay : 0), 0);
+        const totalDue = reviewRows.reduce((s, x) => s + x.due, 0);
+        const summaryHtml = `
+          <div class="text-mute" style="font-size:12px;margin-bottom:8px">${escapeHtml(m.name)} · ${fmtDate(payDate)} · ${escapeHtml(methodLabel)}</div>
+          <div class="table-wrap"><table style="font-size:13px;width:100%">
+            <thead><tr><th>${t('Sport', 'الرياضة')}</th><th class="text-right">${t('Price', 'السعر')}</th><th class="text-right">${t('New payment', 'دفعة جديدة')}</th><th class="text-right">${t('Paid', 'المدفوع')}</th><th class="text-right">${t('Due', 'المتبقي')}</th></tr></thead>
+            <tbody>
+              ${reviewRows.map(x => `<tr>
+                <td class="font-bold">${escapeHtml(x.sport)}</td>
+                <td class="text-right num">${fmt(x.net)}${x.disc > 0 ? ` <span class="text-mute" style="font-size:10px">(-${fmt(x.disc)})</span>` : ''}</td>
+                <td class="text-right num" style="color:${x.addPay > 0 ? 'var(--green)' : (x.addPay < 0 ? 'var(--red)' : 'var(--text-mute)')}">${x.addPay > 0 ? '+' : ''}${x.addPay ? fmt(x.addPay) : '—'}</td>
+                <td class="text-right num">${fmt(x.paidNew)}</td>
+                <td class="text-right num" style="color:${x.due > 0 ? 'var(--accent-2)' : 'var(--green)'}">${fmt(x.due)}</td>
+              </tr>`).join('')}
+            </tbody>
+            <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
+              <td>${t('Total', 'الإجمالي')}</td><td></td>
+              <td class="text-right num" style="color:var(--green)">${totalAdd > 0 ? '+' + fmt(totalAdd) : '—'}</td>
+              <td></td>
+              <td class="text-right num" style="color:${totalDue > 0 ? 'var(--accent-2)' : 'var(--green)'}">${fmt(totalDue)}</td>
+            </tr></tfoot>
+          </table></div>
+          <div class="text-mute" style="font-size:11px;margin-top:8px">${t('Each payment is recorded against its own sport and saved in the invoice payment history. One invoice per member per month — no split.', 'تُسجَّل كل دفعة لرياضتها وتُحفظ في سجل دفعات الفاتورة. فاتورة واحدة لكل عضو شهرياً — بدون تقسيم.')}</div>`;
+        showModal({
+          title: '✅ ' + t('Review & confirm', 'مراجعة وتأكيد'),
+          body: summaryHtml,
+          actions: [
+            { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+            { label: t('Confirm & save', 'تأكيد وحفظ'), class: 'btn primary', onclick: () => {
+              applyPricing(updates, payDate, payMonth, payMethod);
+              closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
+            } },
+          ],
+        });
       } },
     ],
   });
@@ -5385,7 +5412,7 @@ PAGES.clubrevenue = (main) => {
     : p.preset === 'last_month' ? String(range.from || '').slice(0, 7) : null;
 
   const inRange = inv => {
-    if (monthScope) return invoiceBillMonth(inv) === monthScope;
+    if (monthScope) return invoiceTouchesMonth(inv, monthScope);
     if (!range.from && !range.to) return true;
     const d = (inv.date || '').slice(0, 10);
     if (!d) return false;
@@ -6493,23 +6520,25 @@ function computeMonthlyReport(ym) {
   const payerTotals = {};     // section 6 (by member id)
   for (const i of (state.invoices || [])) {
     if (i.deleted) continue;
-    if (invoiceBillMonth(i) !== ym) continue;          // billing-month scope (matches billed/collected/due)
+    const sh = invoiceMonthShare(i, ym);               // line-aware month share (1 for single-month)
+    if (!sh) continue;
     const sport = i.sport || (Array.isArray(i.lineItems) && i.lineItems[0] && i.lineItems[0].sport) || i.activity || i.category || 'Other';
     const amount = Number(i.amount) || 0;
-    const paid = Math.min((typeof invoicePaid === 'function') ? invoicePaid(i) : amount, amount);   // collected, clamped
-    if (paid <= 0) continue;
+    const paidFull = Math.min((typeof invoicePaid === 'function') ? invoicePaid(i) : amount, amount);   // collected, clamped
+    if (paidFull <= 0) continue;
+    const paid = paidFull * sh;                         // attributed to THIS month
     // Split the collected amount across the invoice's payment methods.
     const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
     let attributed = 0;
     if (pays) {
       for (const p of pays) {
         const a = Number(p.amount) || 0; if (a <= 0) continue;
-        const add = Math.min(a, paid - attributed); if (add <= 0) break;
-        byMethod[normMethod(p.method || i.method)] += add;
+        const add = Math.min(a, paidFull - attributed); if (add <= 0) break;
+        byMethod[normMethod(p.method || i.method)] += add * sh;
         attributed += add;
       }
     }
-    if (attributed < paid) byMethod[normMethod(i.method)] += (paid - attributed);   // remainder → invoice method
+    if (attributed < paidFull) byMethod[normMethod(i.method)] += (paidFull - attributed) * sh;   // remainder → invoice method
     revenue += paid;
     bySport[sport] = (bySport[sport] || 0) + paid;
     if (i.customerId != null) payerTotals[i.customerId] = (payerTotals[i.customerId] || 0) + paid;
@@ -6906,15 +6935,9 @@ function computeDashboard(ymSel) {
     if (reg === ym) newThisMonth++;
   }
 
-  // Top sports by revenue THIS month — BILLED basis via proportional line
-  // shares, so the sport rows always re-sum to revenueThisMonth.
-  const bySport = {};
-  for (const i of monthInvoices(ym)) {
-    for (const sh of invoiceLineShares(i)) {
-      const sport = sh.sport || i.activity || i.category || 'Other';
-      bySport[sport] = (bySport[sport] || 0) + sh.value;
-    }
-  }
+  // Top sports by revenue THIS month — BILLED basis, line-aware (a sport added in
+  // a later month counts in that month), so the rows re-sum to revenueThisMonth.
+  const bySport = billedBySportInPeriod(mm => mm === ym);
   const topSports = Object.entries(bySport).map(([sport, amt]) => ({ sport, amt })).sort((a, b) => b.amt - a.amt).slice(0, 6);
 
   // Cash in hand (all-time cash collected − all-time cash expenses).
@@ -6950,7 +6973,7 @@ PAGES.dashboardkpi = (main) => {
   const D = computeDashboard(window._dashKpiMonth);
   // Month list = current month + every billing month present in invoices.
   const _mset = new Set([(TODAY || '').slice(0, 7)]);
-  for (const i of (state.invoices || [])) { if (!i.deleted) { const mm = invoiceBillMonth(i); if (mm) _mset.add(mm); } }
+  for (const i of (state.invoices || [])) { if (!i.deleted) { for (const mm of invoiceMonths(i)) if (mm) _mset.add(mm); } }
   const _months = [..._mset].sort().reverse();
   const money = (n) => fmt(Math.round(n));
   const delta = D.revenueThisMonth - D.revenuePrevMonth;
@@ -8616,7 +8639,7 @@ PAGES.invoices = (main) => {
           || phoneQueryMatches(i.customerPhone, filter.search) || phoneQueryMatches(mem && mem.phone, filter.search) || phoneQueryMatches(mem && mem.phone2, filter.search);
         if (!hit) return false;
       }
-      if (filter.month !== 'all' && invoiceBillMonth(i) !== filter.month) return false;
+      if (filter.month !== 'all' && !invoiceTouchesMonth(i, filter.month)) return false;
       if (filter.day && i.date !== filter.day) return false;
       if (filter.method !== 'all' && i.method !== filter.method) return false;
       if (filter.sport !== 'all') {
@@ -9371,7 +9394,7 @@ PAGES.missinginvoices = (main) => {
   if (!window._miMonth) window._miMonth = (TODAY || '').slice(0, 7);
   // Month list = every billing month present in invoices, plus the current month.
   const monthSet = new Set([(TODAY || '').slice(0, 7)]);
-  for (const i of (state.invoices || [])) { if (!i.deleted) { const mm = invoiceBillMonth(i); if (mm) monthSet.add(mm); } }
+  for (const i of (state.invoices || [])) { if (!i.deleted) { for (const mm of invoiceMonths(i)) if (mm) monthSet.add(mm); } }
   const months = [...monthSet].sort().reverse();
   const ym = window._miMonth;
   const rows = computeMissingInvoices(ym);
@@ -9465,7 +9488,7 @@ window._mcExport = function () {
 PAGES.membercommission = (main) => {
   if (!window._mcMonth) window._mcMonth = (TODAY || '').slice(0, 7);
   const monthSet = new Set([(TODAY || '').slice(0, 7)]);
-  for (const i of (state.invoices || [])) { if (!i.deleted) { const mm = invoiceBillMonth(i); if (mm) monthSet.add(mm); } }
+  for (const i of (state.invoices || [])) { if (!i.deleted) { for (const mm of invoiceMonths(i)) if (mm) monthSet.add(mm); } }
   const months = [...monthSet].sort().reverse();
   const ym = window._mcMonth;
   const rows = computeMemberCommissions(ym);
@@ -11200,6 +11223,7 @@ window.printInvoicePDF = function(id) {
       <div class="invoice-label">Invoice · <bdi>فاتورة</bdi></div>
       <div class="invoice-no">${escapeHtml(ref)}</div>
       <div class="invoice-date" dir="ltr">Issued · <bdi>تاريخ الإصدار</bdi>: ${issueDate}</div>
+      ${inv.lastUpdated && String(inv.lastUpdated).slice(0,10) !== String(inv.date).slice(0,10) ? `<div class="invoice-date" dir="ltr" style="opacity:.7;font-size:.85em">Last updated · <bdi>آخر تحديث</bdi>: ${fmtDate(inv.lastUpdated)}</div>` : ''}
       <div class="invoice-date" dir="ltr" style="opacity:.7;font-size:.85em">Printed · <bdi>الطباعة</bdi>: ${fmtDate(TODAY)}</div>
     </div>
   </div>
@@ -11281,14 +11305,21 @@ window.printInvoicePDF = function(id) {
         // Validity is shown bold/prominent so it doesn't get confused with other dates.
         const validEn = period && period.start ? `<div class="item-valid" dir="ltr" style="font-weight:700;color:#111">📅 Valid: ${startEn} → ${endEn}</div>` : '';
         const validAr = period && period.start ? `<div class="item-valid" dir="rtl" style="font-weight:700;color:#111">📅 صالح: ${startAr} ← ${endAr}</div>` : '';
+        // Each line shows ITS OWN issue date — when that sport was added/enrolled —
+        // so adding a second sport later never rewrites the first sport's date.
+        // Prefer an explicit line issueDate, else the sport's subscription start,
+        // else the invoice date.
+        const liIssue = lineIssueDate(li, period && period.start, inv.date);
+        const liIssueEn = fmtDate(liIssue);
+        const liIssueAr = fmtDateAr(liIssue);
         const enLines = [
           `${count} ${unitEn}`,
           // Summer Camp has no coach → don't print a coach line for it.
-          isCamp ? `Issued ${issueDate}` : `Coach: ${escapeHtml(li.coach || '—')} · Issued ${issueDate}`,
+          isCamp ? `Issued ${liIssueEn}` : `Coach: ${escapeHtml(li.coach || '—')} · Issued ${liIssueEn}`,
         ].filter(Boolean).map(x => `<div class="item-sub" dir="ltr">${x}</div>`).join('');
         const arLines = [
           `${count} ${unitAr}`,
-          isCamp ? `صدرت ${issueDateAr}` : `المدرب: ${escapeHtml(li.coach || '—')} · صدرت ${issueDateAr}`,
+          isCamp ? `صدرت ${liIssueAr}` : `المدرب: ${escapeHtml(li.coach || '—')} · صدرت ${liIssueAr}`,
         ].filter(Boolean).map(x => `<div class="item-sub" dir="rtl" style="color:var(--muted,#888)">${x}</div>`).join('');
         return `
       <tr>
@@ -11357,6 +11388,34 @@ window.printInvoicePDF = function(id) {
       </div>` : ''}
     </div>
   </div>
+
+  ${(Array.isArray(inv.payments) && inv.payments.filter(p => Math.abs(Number(p.amount) || 0) > 0.001).length) ? `
+  <div style="margin:0 0 16px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
+    <div style="background:#f8fafc;padding:7px 12px;font-size:11px;font-weight:700;color:#374151;display:flex;justify-content:space-between">
+      <span dir="ltr">💵 Payments received</span><span dir="rtl">الدفعات المستلمة</span>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:11.5px">
+      <thead><tr style="color:#6b7280">
+        <th style="padding:5px 12px;text-align:left">Date · <bdi>التاريخ</bdi></th>
+        <th style="padding:5px 12px;text-align:left">Method · <bdi>الطريقة</bdi></th>
+        <th style="padding:5px 12px;text-align:left">For · <bdi>عن</bdi></th>
+        <th style="padding:5px 12px;text-align:right">Amount · <bdi>المبلغ</bdi></th>
+      </tr></thead>
+      <tbody>
+        ${inv.payments.filter(p => Math.abs(Number(p.amount) || 0) > 0.001).map(p => `
+          <tr style="border-top:1px solid #f1f5f9">
+            <td style="padding:5px 12px">${p.date ? fmtDate(p.date) : '—'}</td>
+            <td style="padding:5px 12px">${escapeHtml(p.method || 'Cash')}</td>
+            <td style="padding:5px 12px">${escapeHtml(p.sport || '—')}</td>
+            <td style="padding:5px 12px;text-align:right;font-weight:600">${Number(p.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+          </tr>`).join('')}
+      </tbody>
+      <tfoot><tr style="border-top:2px solid #e5e7eb;font-weight:700">
+        <td colspan="3" style="padding:6px 12px">Total paid · <bdi>إجمالي المدفوع</bdi></td>
+        <td style="padding:6px 12px;text-align:right;color:#047857">${Number(invoicePaid(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR</td>
+      </tr></tfoot>
+    </table>
+  </div>` : ''}
 
   <div class="amount-words">
     <strong dir="ltr">Amount in words · <bdi>المبلغ كتابةً</bdi>:</strong> ${escapeHtml(amountWords)} Qatari Riyals only.
@@ -11769,22 +11828,23 @@ function computeReconciliation(ym) {
   let revenue = 0;
   for (const i of (state.invoices || [])) {
     if (i.deleted) continue;
-    if (ym !== 'all' && invoiceBillMonth(i) !== ym) continue;        // billing-month scope
+    const sh = ym === 'all' ? 1 : invoiceMonthShare(i, ym);   // line-aware month share
+    if (!sh) continue;
     const amount = Number(i.amount) || 0;
-    const paid = Math.min((typeof invoicePaid === 'function') ? invoicePaid(i) : amount, amount);
-    if (paid <= 0) continue;
+    const paidFull = Math.min((typeof invoicePaid === 'function') ? invoicePaid(i) : amount, amount);
+    if (paidFull <= 0) continue;
     const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
     let attributed = 0;
     if (pays) {
       for (const p of pays) {
         const a = Number(p.amount) || 0; if (a <= 0) continue;
-        const add = Math.min(a, paid - attributed); if (add <= 0) break;
-        byMethod[_normMethodRec(p.method || i.method)] += add;
+        const add = Math.min(a, paidFull - attributed); if (add <= 0) break;
+        byMethod[_normMethodRec(p.method || i.method)] += add * sh;
         attributed += add;
       }
     }
-    if (attributed < paid) byMethod[_normMethodRec(i.method)] += (paid - attributed);
-    revenue += paid;
+    if (attributed < paidFull) byMethod[_normMethodRec(i.method)] += (paidFull - attributed) * sh;
+    revenue += paidFull * sh;
   }
   const nonCash = byMethod.card + byMethod.transfer + byMethod.fawran;
   const cashCollectedTotal = byMethod.cash;
@@ -21377,56 +21437,49 @@ PAGES.reports = (main) => {
 
   // ── Aggregate everything for the chosen period ──
   function compute() {
-    // Filter source data
-    // Revenue is cash-basis: include any invoice with a payment in the period,
-    // and count only the cash received within it.
-    const invs = state.invoices.filter(i => cashInPeriod(i, inPeriod) > 0 || inPeriod(i.month));
+    // Revenue is on the BILLED basis (invoice value by billing month), exactly like
+    // the Monthly Report / Dashboard, so every screen shows the same number.
+    const invs = state.invoices.filter(i => !i.deleted && invoiceMonths(i).some(inPeriod));
     const exps = state.expenses.filter(e => inPeriodDate(e.date) || inPeriod(e.month));
-    const sals = state.salaries.filter(x => inPeriod(x.month));
-    const newMembers = state.members.filter(m => inPeriodDate(m.firstRegistration)).length;
 
-    const revenue = state.invoices.reduce((a, i) => a + cashInPeriod(i, inPeriod), 0);
-    const expensesTotal = exps.reduce((a, e) => a + (e.amount || 0), 0);
-    const salariesTotal = sals.reduce((a, x) => a + (x.salary || x.total || x.amount || 0), 0);
+    const revenue = billedInPeriod(inPeriod);
+    // P&L expenses EXCLUDE salary-category entries (those are settlements; the cost
+    // is the auto-calculated salary below) — same rule as the Monthly Report.
+    let expensesTotal = 0;
+    for (const e of exps) { if (isSalaryCategory(e.category)) continue; expensesTotal += Number(e.amount) || 0; }
+    const salariesTotal = salariesEarnedInPeriod(inPeriod);
     const profit = revenue - expensesTotal - salariesTotal;
     const profitMargin = revenue ? (profit / revenue * 100) : 0;
     const avgInvoice = invs.length ? revenue / invs.length : 0;
 
-    // Previous period (for delta arrow): one month back if monthly, one year back if yearly
+    // Previous period (for delta arrow), billed basis.
     let prevRev = 0;
     if (period.type === 'month') {
       const idx = allMonths.indexOf(period.value);
-      if (idx > 0) prevRev = state.invoices.reduce((a, i) => a + cashInMonth(i, allMonths[idx - 1]), 0);
+      if (idx > 0) prevRev = billedInPeriod(m => m === allMonths[idx - 1]);
     } else if (period.type === 'year') {
       const yIdx = allYears.indexOf(period.value);
-      if (yIdx > 0) prevRev = state.invoices.reduce((a, i) => a + cashInPeriod(i, m => m && m.startsWith(allYears[yIdx - 1])), 0);
+      if (yIdx > 0) prevRev = billedInPeriod(m => m && m.startsWith(allYears[yIdx - 1]));
     }
 
-    // Revenue by category (cash collected in period)
-    const revByCat = {};
-    state.invoices.forEach(i => { const c = i.category || 'Membership'; const v = cashInPeriod(i, inPeriod); if (v) revByCat[c] = (revByCat[c] || 0) + v; });
+    // Revenue by category + by sport — billed, line-aware (re-sums to revenue).
+    const revByCat = billedByCategoryInPeriod(inPeriod);
+    const sportRev = billedBySportInPeriod(inPeriod);
 
-    // Sport revenue (cash collected in period, from invoices linked to a sport)
-    const sportRev = {};
-    state.invoices.forEach(i => { if (i.sport) { const v = cashInPeriod(i, inPeriod); if (v) sportRev[i.sport] = (sportRev[i.sport] || 0) + v; } });
-
-    // Expense by category
+    // Expense by category + top expenses — exclude salary settlements (match P&L).
     const expByCat = {};
-    exps.forEach(e => { expByCat[e.category || 'Other'] = (expByCat[e.category || 'Other'] || 0) + e.amount; });
+    for (const e of exps) { if (isSalaryCategory(e.category)) continue; expByCat[e.category || 'Other'] = (expByCat[e.category || 'Other'] || 0) + (Number(e.amount) || 0); }
+    const topExp = exps.filter(e => !isSalaryCategory(e.category)).sort((a, b) => b.amount - a.amount).slice(0, 10);
 
-    // Top expenses for the period
-    const topExp = [...exps].sort((a, b) => b.amount - a.amount).slice(0, 10);
-
-    // Active members + churn (members with expiry inside or before this period).
-    // Excludes archived (soft-deleted) members. Uses the shared count helper so
-    // this matches the Dashboard and the Members page exactly.
+    // Active members + churn.
     const _activeList = activeMembers();
     const _mcR = memberCounts();
     const activeMembers_ = _mcR.active;
     const totalMembers = _mcR.total;
     const expiredInPeriod = _activeList.filter(m => inPeriodDate(m.expiryDate) && memberStatus(m) === 'Expired').length;
+    const newMembers = state.members.filter(m => inPeriodDate(m.firstRegistration)).length;
 
-    return { invs, exps, sals, revenue, expensesTotal, salariesTotal, profit, profitMargin,
+    return { invs, exps, sals: [], revenue, expensesTotal, salariesTotal, profit, profitMargin,
              avgInvoice, prevRev, revByCat, sportRev, expByCat, topExp,
              activeMembers: activeMembers_, totalMembers, expiredInPeriod, newMembers, invCount: invs.length };
   }
@@ -24077,7 +24130,7 @@ PAGES.transactions = (main) => {
     const monthScope = st.preset === 'this_month' ? TODAY.slice(0, 7)
       : st.preset === 'last_month' ? String(range.from || '').slice(0, 7) : null;
     const inRange = inv => {
-      if (monthScope) return invoiceBillMonth(inv) === monthScope;
+      if (monthScope) return invoiceTouchesMonth(inv, monthScope);
       const d = (inv.date || '').slice(0, 10);
       if (range.from && d < range.from) return false;
       if (range.to && d > range.to) return false;
