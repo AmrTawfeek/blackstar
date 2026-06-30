@@ -35,8 +35,10 @@ function computeStats(monthKey) {
   const currCoachingRevenue = currRevenue - currRentalRevenue - currSalesRevenue;
   const prevCoachingRevenue = prevRevenue - prevRentalRevenue - prevSalesRevenue;
 
-  const currExpenses = state.expenses.filter(e => e.month === curr).reduce((s,e) => s+e.amount, 0);
-  const prevExpenses = state.expenses.filter(e => e.month === prev).reduce((s,e) => s+e.amount, 0);
+  // P&L expenses exclude "Salary"-category entries: those are salary PAYMENTS
+  // (settlements), and the salary COST is already counted via salariesEarnedInMonth.
+  const currExpenses = state.expenses.filter(e => e.month === curr && !isSalaryCategory(e.category)).reduce((s,e) => s+e.amount, 0);
+  const prevExpenses = state.expenses.filter(e => e.month === prev && !isSalaryCategory(e.category)).reduce((s,e) => s+e.amount, 0);
 
   // Total payroll cost = sum of gross pay for every active coach/staff this month.
   // Previously this read `state.salaries[].salary` which doesn't exist in the
@@ -6519,6 +6521,7 @@ function computeMonthlyReport(ym) {
     const d = e.date || (e.month ? e.month + '-01' : '');
     const m = e.month || String(d).slice(0, 7);
     if (m !== ym) continue;
+    if (isSalaryCategory(e.category)) continue;   // salary payments are not a P&L expense (cost = auto-calc)
     expenseEntries += Number(e.amount) || 0;
   }
   // Salaries = the auto-calculated salary COST for the month (single source of
@@ -9273,7 +9276,7 @@ window.showInvoiceHistory = function(customerId) {
 function generateInvoiceForMember(memberId, dateOverride) {
   const m = (state.members || []).find(x => x.id === memberId);
   if (!m) return { created: false, message: 'Member not found' };
-  let enrollments = (m.enrollments || []).filter(e => e.sport && e.coachId);
+  let enrollments = (m.enrollments || []).filter(e => e.sport && ((e.price || 0) > 0 || (e.classes || 0) > 0));
   if (!enrollments.length) {
     const bySport = new Map();
     for (const s of (m.subscriptions || [])) if (s.activity) bySport.set(s.activity, s);
@@ -9675,7 +9678,7 @@ function generateLatestInvoice(onDone) {
         const m = state.members.find(x => x.id === custId);
         if (!m) return;
         // Pull enrollment data; fall back to most recent subscription
-        let enrollments = (m.enrollments || []).filter(e => e.sport && e.coachId);
+        let enrollments = (m.enrollments || []).filter(e => e.sport && ((e.price || 0) > 0 || (e.classes || 0) > 0));
         if (!enrollments.length) {
           // Build from latest subscription per sport
           const bySport = new Map();
@@ -9770,7 +9773,7 @@ function generateLatestInvoice(onDone) {
       if (!id) { preview.style.display = 'none'; return; }
       const m = state.members.find(x => x.id === id);
       if (!m) { preview.style.display = 'none'; return; }
-      let enrollments = (m.enrollments || []).filter(e => e.sport && e.coachId);
+      let enrollments = (m.enrollments || []).filter(e => e.sport && ((e.price || 0) > 0 || (e.classes || 0) > 0));
       if (!enrollments.length) {
         const bySport = new Map();
         for (const s of (m.subscriptions || [])) if (s.activity) bySport.set(s.activity, s);
@@ -10829,11 +10832,9 @@ window.printInvoicePDF = function(id) {
       const sub = matchedMember.subscriptions.find(s => (s.activity || '') === sp && s.invoiceNumber && (s.invoiceNumber === inv.ref || s.invoiceNumber === inv.invoiceNumber))
                || matchedMember.subscriptions.filter(s => (s.activity || '') === sp).slice(-1)[0];
       if (!sub || !sub.start) continue;
-      let endDate = sub.end;
-      if (sp === SUMMER_CAMP && sub.start) {
-        const labelDays = (typeof campDaysForLabel === 'function' && sub.durationLabel) ? campDaysForLabel(sub.durationLabel) : 0;
-        if (labelDays > 0 && typeof addDays === 'function') endDate = addDays(sub.start, labelDays);
-      }
+      // Use the SAME end the member modal shows (the stored end), not a value
+      // recomputed from a possibly-stale camp duration label.
+      const endDate = subscriptionValidEnd(sub);
       const key = sp + '|' + sub.start + '|' + (endDate || '');
       if (seen.has(key)) continue;
       seen.add(key);
@@ -11259,15 +11260,10 @@ window.printInvoicePDF = function(id) {
             ((s.invoiceNumber && (s.invoiceNumber === inv.ref || s.invoiceNumber === inv.invoiceNumber)) || false));
           const subAny = sub || matchedMember.subscriptions.filter(s => (s.activity || '') === li.sport).slice(-1)[0];
           if (subAny) {
-            // For Summer Camp, the VALIDITY window is start + calendar-days of the
-            // duration (e.g. "2 months" = 60 days), independent of the class-day count.
-            // Recompute it here so the printed "Valid" date is correct even if an older
-            // stored end used the class count by mistake.
-            let endDate = subAny.end;
-            if (isCamp && subAny.start) {
-              const labelDays = (typeof campDaysForLabel === 'function' && subAny.durationLabel) ? campDaysForLabel(subAny.durationLabel) : 0;
-              if (labelDays > 0 && typeof addDays === 'function') endDate = addDays(subAny.start, labelDays);
-            }
+            // The printed validity window must match the member's real end date
+            // (the member modal value), not a date recomputed from a stale camp
+            // duration label.
+            const endDate = subscriptionValidEnd(subAny);
             period = { start: subAny.start, end: endDate };
             count = parseInt(subAny.totalClasses) || parseInt(li.classes) || null;
           }
@@ -11793,23 +11789,28 @@ function computeReconciliation(ym) {
   const nonCash = byMethod.card + byMethod.transfer + byMethod.fawran;
   const cashCollectedTotal = byMethod.cash;
 
-  let expenses = 0, cashExpenses = 0, ownerCashTaken = 0;
+  let expenses = 0, cashExpenses = 0, ownerCashTaken = 0, salaryPaid = 0, salaryPaidCash = 0;
   for (const e of (state.expenses || [])) {
     if (e.deleted) continue;
     if (!inMonth(e.date || (e.month ? e.month + '-01' : ''))) continue;
     const amt = Number(e.amount) || 0;
+    const isCash = _normMethodRec(e.method || 'cash') === 'cash';
     if ((e.category || '') === CASH_COLLECTION_CATEGORY) { ownerCashTaken += amt; continue; }
+    if (isSalaryCategory(e.category)) {                     // salary payment, not a P&L expense
+      salaryPaid += amt;
+      if (isCash) salaryPaidCash += amt;
+      continue;
+    }
     expenses += amt;
-    if (_normMethodRec(e.method || 'cash') === 'cash') cashExpenses += amt;
+    if (isCash) cashExpenses += amt;
   }
 
   // Every riyal COLLECTED is traceable to: cash taken by owner + cash still in
-  // hand + cash spent (cash expenses) + money sitting in the bank (non-cash).
-  // Only CASH expenses come out of the collected cash; non-cash expenses are paid
-  // from the bank, so they must NOT be subtracted here (that double-count was the
-  // old "leakage" bug). With consistent figures this reconciles to ~0.
-  const cashInHand = cashCollectedTotal - cashExpenses - ownerCashTaken;
-  const accountedFor = ownerCashTaken + cashInHand + cashExpenses + nonCash;
+  // hand + cash spent (cash expenses) + cash paid to coaches (salary payments) +
+  // money in the bank (non-cash). Only CASH movements reduce the drawer, so the
+  // cash reconciles to ~0.
+  const cashInHand = cashCollectedTotal - cashExpenses - ownerCashTaken - salaryPaidCash;
+  const accountedFor = ownerCashTaken + cashInHand + cashExpenses + salaryPaidCash + nonCash;
   const leakage = revenue - accountedFor;
 
   // Salaries shown = the auto-calculated salary COST (single number across all
@@ -11823,7 +11824,7 @@ function computeReconciliation(ym) {
     if (out > 0) due += out;
   }
 
-  return { ym, revenue, byMethod, nonCash, cashCollectedTotal, expenses, cashExpenses, ownerCashTaken, cashInHand, accountedFor, leakage, due, salaries };
+  return { ym, revenue, byMethod, nonCash, cashCollectedTotal, expenses, cashExpenses, ownerCashTaken, salaryPaid, salaryPaidCash, cashInHand, accountedFor, leakage, due, salaries };
 }
 
 function _recMonths() {
@@ -12000,6 +12001,7 @@ PAGES.moneyflow = (main) => {
     { label: t('Owner took', 'أخذها المالك'), val: R.ownerCashTaken, color: '#f59e0b' },
     { label: t('Bank (card/transfer/Fawran)', 'البنك (بطاقة/تحويل/فوران)'), val: bank, color: '#5b8def' },
     { label: t('Cash expenses', 'مصروفات نقدية'), val: R.cashExpenses, color: '#ef4444' },
+    { label: t('Salaries paid (cash)', 'رواتب مدفوعة نقداً'), val: R.salaryPaidCash || 0, color: '#a855f7' },
   ].filter(s => s.val > 0);
   const segTotal = segs.reduce((s, x) => s + x.val, 0) || 1;
   const bar = `<div style="display:flex;height:26px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
@@ -12540,6 +12542,26 @@ PAGES.expenses = (main) => {
 
 function addExpense() { showExpenseForm(null); }
 window.editExpense = function(id) { showExpenseForm(id); };
+// Show/hide the coach picker when the expense category is a salary payment.
+window._expCatChanged = function() {
+  const c = document.getElementById('f-cat');
+  const row = document.getElementById('f-coach-row');
+  if (!c || !row) return;
+  row.style.display = (typeof isSalaryCategory === 'function' && isSalaryCategory(c.value)) ? '' : 'none';
+};
+// A registered coach and a free-text name are mutually exclusive.
+window._expCoachChanged = function() {
+  const sel = document.getElementById('f-coach');
+  const nm = document.getElementById('f-coach-name');
+  if (!sel || !nm) return;
+  if (sel.value) { nm.value = ''; nm.disabled = true; } else { nm.disabled = false; }
+};
+window._expCoachNameInput = function() {
+  const sel = document.getElementById('f-coach');
+  const nm = document.getElementById('f-coach-name');
+  if (!sel || !nm) return;
+  if (nm.value.trim()) sel.value = '';
+};
 
 function showExpenseForm(id) {
   const e = id ? state.expenses.find(x => x.id === id) : null;
@@ -12555,11 +12577,23 @@ function showExpenseForm(id) {
       <div class="form-row">
         <div class="field"><label>Amount (QAR) <span style="color:var(--accent)">*</span></label><input id="f-amt" type="number" min="0" step="0.01" value="${cur.amount ?? ''}" placeholder="0.00" /></div>
         <div class="field"><label>Category <span style="color:var(--accent)">*</span></label>
-          <select id="f-cat">
+          <select id="f-cat" onchange="window._expCatChanged && window._expCatChanged()">
             <option value="" ${!cur.category ? 'selected' : ''}>— pick a category —</option>
             ${cats.map(c => `<option value="${escapeHtml(c)}" ${c === cur.category ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
           </select>
           <div class="text-mute" style="font-size:10px;margin-top:3px">Manage categories from System → Settings</div>
+        </div>
+      </div>
+      <div class="form-row" id="f-coach-row" style="${isSalaryCategory(cur.category) ? '' : 'display:none'}">
+        <div class="field"><label>Coach <span class="text-mute" style="font-size:10px">(optional)</span></label>
+          <select id="f-coach" onchange="window._expCoachChanged && window._expCoachChanged()">
+            <option value="">— registered coach —</option>
+            ${(state.coaches || []).filter(c => !c.deleted).map(c => `<option value="${c.id}" ${String(cur.coachId) === String(c.id) ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>or external / ad-hoc coach name</label>
+          <input id="f-coach-name" value="${escapeHtml(cur.coachName || '')}" placeholder="Type a name (not a club coach)" ${cur.coachId ? 'disabled' : ''} oninput="window._expCoachNameInput && window._expCoachNameInput()" />
+          <div class="text-mute" style="font-size:10px;margin-top:3px">Pick a registered coach OR type an external coach\u2019s name. Either way it shows in the Salaries report; not double-counted in expenses.</div>
         </div>
       </div>
       <div class="form-row">
@@ -12590,17 +12624,31 @@ function showExpenseForm(id) {
         if (!method) { toast('Payment method is required', 'error'); $('#f-method')?.focus(); return; }
         if (!date) { toast('Date is required', 'error'); $('#f-date')?.focus(); return; }
 
+        // Salary payments may be attributed to a registered coach OR an external
+        // (ad-hoc) coach by name — both optional.
+        let salaryCoachId = null, salaryCoachName = null;
+        if (isSalaryCategory(category)) {
+          const cv = ($('#f-coach') && $('#f-coach').value) || '';
+          const cn = ($('#f-coach-name') && $('#f-coach-name').value.trim()) || '';
+          if (cv) salaryCoachId = Number(cv) || cv;
+          else if (cn) salaryCoachName = cn;
+        }
+
         const data = {
           date, description: desc, amount: amt,
           category, method,
           month: date.slice(0, 7),
         };
+        if (salaryCoachId != null) data.coachId = salaryCoachId;
+        if (salaryCoachName) data.coachName = salaryCoachName;
         if (isNew) {
           state.expenses.push({ id: nextId(state.expenses), ...data });
           toast('Expense added');
         } else {
           // Preserve any legacy fields like `classification` from older data
           Object.assign(e, data);
+          if (!isSalaryCategory(category) || salaryCoachId == null) delete e.coachId;
+          if (!isSalaryCategory(category) || !salaryCoachName) delete e.coachName;
           // If the admin edited the auto Bank Commission row, lock it as overridden so
           // it won't be recomputed from card payments on the next refresh.
           if (e.autoBankCommission) e.edited = true;
@@ -12731,6 +12779,42 @@ PAGES.salaries = (main) => {
     $('#sal-count').textContent = filter.settleDate
       ? `${people.length} active · ${fmtMoney(totalNet)} net · settlement up to ${fmtDate(filter.settleDate)} · ${paidCount} paid`
       : `${people.length} active · ${fmtMoney(totalNet)} net payroll for ${fmtMonth(filter.month)} · ${paidCount} paid`;
+
+    // Ad-hoc / external coach payments (free-text name on a Salary expense). These
+    // people have no auto-calculated pay, so the amount paid IS their salary cost.
+    const adhoc = (state.expenses || []).filter(e => isAdHocSalaryExpense(e)
+      && (e.month || String(e.date || '').slice(0, 7)) === filter.month);
+    const adhocBox = document.getElementById('sal-adhoc');
+    if (adhocBox) {
+      if (!adhoc.length) { adhocBox.innerHTML = ''; }
+      else {
+        const adhocTotal = adhoc.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+        adhocBox.innerHTML = `
+          <div class="card">
+            <div class="card-header"><div>
+              <div class="card-title">🧑\u200d🏫 ${t('Ad-hoc / external coaches', 'مدربون خارجيون / مؤقتون')}</div>
+              <div class="card-subtitle">${t('Logged from the Expenses screen — counted as salary cost for this month', 'مُسجّلة من شاشة المصروفات — تُحتسب ضمن تكلفة الرواتب لهذا الشهر')}</div>
+            </div></div>
+            <div class="table-wrap"><table>
+              <thead><tr><th>${t('Coach', 'المدرب')}</th><th>${t('Description', 'الوصف')}</th><th>${t('Date', 'التاريخ')}</th><th>${t('Method', 'الطريقة')}</th><th class="text-right">${t('Paid (QAR)', 'المدفوع')}</th></tr></thead>
+              <tbody>
+                ${adhoc.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))).map(e => `
+                  <tr>
+                    <td class="font-bold">${escapeHtml(e.coachName || '—')}</td>
+                    <td class="text-mute" style="font-size:12px">${escapeHtml(e.description || '')}</td>
+                    <td class="text-mute" style="font-size:12px">${fmtDate(e.date)}</td>
+                    <td class="text-mute" style="font-size:12px">${escapeHtml(e.method || 'cash')}</td>
+                    <td class="text-right num font-bold">${fmt(Number(e.amount) || 0)}</td>
+                  </tr>`).join('')}
+              </tbody>
+              <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
+                <td colspan="4">${t('Total external coach pay', 'إجمالي رواتب المدربين الخارجيين')}</td>
+                <td class="text-right num" style="color:var(--green)">${fmt(adhocTotal)}</td>
+              </tr></tfoot>
+            </table></div>
+          </div>`;
+      }
+    }
   }
 
   // Generate the month list — include current and future so admin can pre-set
@@ -12796,6 +12880,7 @@ PAGES.salaries = (main) => {
         </table>
       </div>
     </div>
+    <div id="sal-adhoc" style="margin-top:14px"></div>
   `;
   $('#sal-month').addEventListener('change', e => { filter.month = e.target.value; refresh(); });
   const salBasisChange = $('#sal-basis-change');
@@ -12975,7 +13060,8 @@ window.markPaid = function(coachId, monthKey) {
         <div style="display:flex;justify-content:space-between;padding:2px 0"><span class="text-mute">Fixed salary</span><span>${fmt(pay.fixed)}</span></div>
         <div style="display:flex;justify-content:space-between;padding:2px 0"><span class="text-mute">Commission (${pay.commissionRate}% × ${fmt(pay.commissionBase)})</span><span>${fmt(pay.commissionAmount)}</span></div>
         <div style="display:flex;justify-content:space-between;padding:4px 0;border-top:1px solid var(--border);margin-top:4px;font-weight:700"><span>Gross</span><span>${fmt(pay.gross)}</span></div>
-        ${pay.advance > 0 ? `<div style="display:flex;justify-content:space-between;padding:2px 0;color:var(--accent-2)"><span class="text-mute">− Advance</span><span>−${fmt(pay.advance)}</span></div>` : ''}
+        ${pay.advanceRecords > 0 ? `<div style="display:flex;justify-content:space-between;padding:2px 0;color:var(--accent-2)"><span class="text-mute">− Advance</span><span>−${fmt(pay.advanceRecords)}</span></div>` : ''}
+        ${pay.expensePaid > 0 ? `<div style="display:flex;justify-content:space-between;padding:2px 0;color:var(--accent-2)"><span class="text-mute">− Paid via expenses</span><span>−${fmt(pay.expensePaid)}</span></div>` : ''}
         <div style="display:flex;justify-content:space-between;padding:4px 0;border-top:1px solid var(--border);margin-top:4px;font-weight:700;font-size:16px;color:var(--green)"><span>NET PAY</span><span>${fmt(pay.net)}</span></div>
       </div>
       <div class="field"><label>Paid date</label><input id="paid-date" type="date" value="${cur.paidDate}" /></div>

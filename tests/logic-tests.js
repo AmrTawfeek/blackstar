@@ -3212,6 +3212,74 @@ ${seed}
     state.salaries = savedSal;
   })();
 
+  // --- salary-category expenses: excluded from P&L, counted as paid-so-far ---
+  (function () {
+    var savedInv = state.invoices, savedExp = state.expenses, savedMem = state.members, savedSal = state.salaries;
+    state.invoices = [{ id: 950, customerId: 1, month: '2032-05', date: '2032-05-03', amount: 2000, amountPaid: 2000, method: 'cash', payments: [{ amount: 2000, method: 'cash', date: '2032-05-03' }] }];
+    state.members = [{ id: 1, name: 'A' }];
+    state.salaries = [];
+    state.expenses = [
+      { id: 1, amount: 300, month: '2032-05', date: '2032-05-04', category: 'Rent', method: 'cash' },
+      { id: 2, amount: 700, month: '2032-05', date: '2032-05-05', category: 'Salary', method: 'cash', coachId: 9 },
+    ];
+    var YM = '2032-05';
+    var M = computeMonthlyReport(YM);
+    eq(M.expenseEntries, 300, 'salary-exp: P&L expense entries exclude the Salary expense');
+    eq(salariesPaidInMonth(YM), 700, 'salary-exp: counted in paid-so-far');
+    var C = computeReconciliation(YM);
+    eq(C.salaryPaid, 700, 'salary-exp: reconciliation tracks salary paid');
+    eq(C.salaryPaidCash, 700, 'salary-exp: cash salary payment tracked');
+    ok(Math.abs(C.leakage) < 0.5, 'salary-exp: cash still reconciles (leakage 0)');
+    eq(C.expenses, 300, 'salary-exp: reconciliation P&L expenses exclude salary');
+    state.invoices = savedInv; state.expenses = savedExp; state.members = savedMem; state.salaries = savedSal;
+  })();
+
+  // --- generate invoice includes ALL enrolled sports, even coachless ones ---
+  (function () {
+    var savedMem = state.members, savedInv = state.invoices, savedCoach = state.coaches;
+    state.coaches = [{ id: 2, name: 'Jennifer' }];
+    state.members = [{ id: 7001, name: 'MultiSport Kid', enrollments: [
+      { sport: 'Gymnastic', coachId: 2, classes: 8, price: 425 },
+      { sport: 'Summer Camp', coachId: null, classes: 2, price: 350 },   // coachless
+    ] }];
+    state.invoices = [];
+    var r = generateInvoiceForMember(7001, '2033-06-09');
+    ok(r.created, 'multi-sport gen: invoice created');
+    eq(r.invoice ? r.invoice.amount : 0, 775, 'multi-sport gen: total = 425 + 350 (coachless sport included)');
+    eq(r.invoice ? (r.invoice.lineItems || []).length : 0, 2, 'multi-sport gen: both sports as line items');
+    state.members = savedMem; state.invoices = savedInv; state.coaches = savedCoach;
+  })();
+
+  // --- ad-hoc / external coach salary (free-text name) counts as cost ---
+  (function () {
+    var savedExp = state.expenses, savedCoach = state.coaches, savedSal = state.salaries;
+    state.coaches = [{ id: 2, name: 'Reg', role: 'coach', active: true }];
+    state.salaries = [];
+    state.expenses = [
+      { id: 1, amount: 500, month: '2034-03', date: '2034-03-05', category: 'Salary', method: 'cash', coachId: 2 },                 // registered settlement
+      { id: 2, amount: 800, month: '2034-03', date: '2034-03-06', category: 'Salary', method: 'cash', coachName: 'External Coach' }, // ad-hoc cost
+    ];
+    ok(!isAdHocSalaryExpense(state.expenses[0]), 'ad-hoc: registered-coach salary expense is NOT ad-hoc');
+    ok(isAdHocSalaryExpense(state.expenses[1]), 'ad-hoc: free-text-name salary expense IS ad-hoc');
+    eq(adHocSalariesInMonth('2034-03'), 800, 'ad-hoc: external coach pay summed');
+    eq(salariesEarnedInMonth('2034-03'), 800, 'ad-hoc: external pay added to salary cost (auto 0 + 800)');
+    eq(salariesPaidInMonth('2034-03'), 1300, 'ad-hoc: paid-so-far includes both (500 + 800)');
+    state.expenses = savedExp; state.coaches = savedCoach; state.salaries = savedSal;
+  })();
+
+  // --- invoice validity uses the member's real end, not a stale camp label ---
+  (function () {
+    // Joud's case: stored end 28 Aug, but a stale "1 month" label would compute 29 Jul.
+    eq(subscriptionValidEnd({ activity: 'Summer Camp', start: '2026-06-29', end: '2026-08-28', validity: 60, durationLabel: '1 month' }), '2026-08-28',
+      'valid-end: stored subscription end wins over stale duration label');
+    eq(subscriptionValidEnd({ activity: 'Summer Camp', start: '2026-06-29', end: null, durationLabel: '1 month' }), '2026-07-29',
+      'valid-end: falls back to label when end missing');
+    eq(subscriptionValidEnd({ activity: 'Summer Camp', start: '2026-06-29', validity: 60 }), '2026-08-28',
+      'valid-end: falls back to validity day-count when no end/label');
+    eq(subscriptionValidEnd({ activity: 'Gymnastic', start: '2026-06-09', end: '2026-07-09' }), '2026-07-09',
+      'valid-end: non-camp uses stored end');
+  })();
+
   console.log('\\n================ TEST RESULTS ================');
   console.log('PASS: ' + pass + '   FAIL: ' + fail);
   if (fails.length) { console.log('\\nFAILURES:'); fails.forEach(f=>console.log('  ✗ ' + f)); }
