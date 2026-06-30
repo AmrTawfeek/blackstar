@@ -3161,6 +3161,42 @@ ${seed}
     state.invoices = savedInv;
   })();
 
+  // --- financial-screen alignment: all screens read revenue from invoices ---
+  (function () {
+    var savedInv = state.invoices, savedExp = state.expenses, savedMem = state.members, savedSal = state.salaries;
+    state.invoices = [
+      { id: 901, customerId: 1, month: '2031-03', date: '2031-03-05', amount: 1000, amountPaid: 1000, method: 'cash', payments: [{ amount: 600, method: 'cash', date: '2031-03-05' }, { amount: 400, method: 'card', date: '2031-03-06' }] },
+      { id: 902, customerId: 2, month: '2031-03', date: '2031-03-10', amount: 500, amountPaid: 200, method: 'fawran', payments: [{ amount: 200, method: 'fawran', date: '2031-03-10' }] },
+      { id: 903, customerId: 1, month: '2031-02', date: '2031-02-20', amount: 300, amountPaid: 300, method: 'cash', payments: [{ amount: 300, method: 'cash', date: '2031-03-02' }] },
+    ];
+    state.expenses = [{ id: 1, amount: 100, month: '2031-03', date: '2031-03-08', category: 'Rent', method: 'cash' }];
+    state.members = [{ id: 1, name: 'A' }, { id: 2, name: 'B' }];
+    state.salaries = [];
+    var YM = '2031-03';
+    var billed = billedInMonth(YM), collected = collectedInMonth(YM), due = dueInMonth(YM);
+    eq(billed, 1500, 'align: billed = March invoices only (Feb invoice excluded)');
+    eq(collected, 1200, 'align: collected = 1000+200 against March invoices');
+    eq(billed, collected + due, 'align: billed == collected + due');
+    var S = computeStats(YM);
+    eq(S.currRevenue, billed, 'align: Main Dashboard revenue == billed');
+    var M = computeMonthlyReport(YM);
+    eq(M.revenue, collected, 'align: Monthly Report revenue == collected');
+    var C = computeReconciliation(YM);
+    eq(C.revenue, collected, 'align: Reconciliation revenue == collected');
+    ok(Math.abs(C.leakage) < 0.5, 'align: Reconciliation leakage == 0');
+    eq(Math.round(C.byMethod.cash + C.byMethod.card + C.byMethod.transfer + C.byMethod.fawran), collected, 'align: method breakdown sums to collected');
+    // salaries: one auto-calculated number across all report screens
+    eq(S.currSalaries, M.salariesTotal, 'align: Dashboard salaries == Monthly Report salaries');
+    eq(M.salariesTotal, C.salaries, 'align: Monthly Report salaries == Financial Overview salaries');
+    eq(M.salariesTotal, salariesEarnedInMonth(YM), 'align: report salaries == auto-calculated earned');
+    // net profit: one number on the billed (invoice) basis
+    eq(M.billed, billed, 'align: Monthly Report headline == billed');
+    eq(M.billed, M.collected + M.dueThisMonth, 'align: Monthly Report billed == collected + due');
+    eq(S.currProfit, M.net, 'align: Dashboard net profit == Monthly Report net profit');
+    eq(M.net, billed - M.expenses, 'align: net profit = billed − expenses (incl salaries)');
+    state.invoices = savedInv; state.expenses = savedExp; state.members = savedMem; state.salaries = savedSal;
+  })();
+
   // --- salaries paid: advance.amount + paid.snapshotNet + legacy, no double-count ---
   (function () {
     var savedSal = state.salaries;

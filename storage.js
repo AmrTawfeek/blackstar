@@ -30,28 +30,59 @@
 
   // ─── Data-loss guard ──────────────────────────────────────────────────────
   // The cloud save is a FULL-document overwrite (merge:false). If the app ever
-  // holds empty/partial state (a failed cloud read, a fresh deploy, a device
-  // that hasn't synced) and then saves, it would wipe everyone's data. So we
-  // refuse to write an EMPTY dataset over a known-populated one. `lastKnownGood`
-  // is the count of records we last confirmed exist; `loadErrored` means we
-  // could not trust the cloud read, so we treat the cloud as "might have data".
-  let lastKnownGood = 0;
+  // holds empty/partial state and then saves, it would wipe everyone's data. So
+  // we refuse to write a dataset that looks like a wipe over a known-populated
+  // one. We track the last confirmed counts PER critical collection (members AND
+  // invoices) — not just the total — so invoices going to zero while members
+  // remain is also blocked. `cloudReadFailed` means we could not confirm the
+  // cloud (Firebase) state from the SERVER, so we refuse ALL cloud writes until
+  // a real server read succeeds (the app keeps working read-only meanwhile).
+  let lastKnownGood = 0;       // total (members + invoices), kept for back-compat
+  let lkgMembers = 0;          // last confirmed member count (from a server read)
+  let lkgInvoices = 0;         // last confirmed invoice count (from a server read)
   let loadErrored = false;
+  let cloudReadFailed = false; // true until a successful SERVER read → blocks cloud writes
   const recordCount = s => s ? ((s.members?.length || 0) + (s.invoices?.length || 0)) : 0;
-  function blockEmptyWrite(state) {
-    const n = recordCount(state);
+  const _counts = s => ({ m: (s && s.members && s.members.length) || 0, i: (s && s.invoices && s.invoices.length) || 0 });
+  function _blockReason(state) {
     const force = (typeof window !== 'undefined' && window.__allowEmptySave);
-    if (n === 0 && !force && (lastKnownGood > 0 || loadErrored)) {
-      console.error(`[Storage] BLOCKED empty write — refusing to overwrite ${lastKnownGood || 'existing'} records with 0. (Use "Clear all data" if this is intentional.)`);
-      try { if (typeof window !== 'undefined' && typeof window.__onCloudWriteBlocked === 'function') window.__onCloudWriteBlocked(lastKnownGood); } catch (_) {}
+    const c = _counts(state);
+    if (force) return null;                       // explicit reset/restore — allowed
+    // (1) We never confirmed the real cloud state → don't risk overwriting it.
+    if (cloudReadFailed) return 'cloud not confirmed (working from offline copy)';
+    // (2) Whole dataset empty over a known-populated/uncertain cloud.
+    if (c.m + c.i === 0 && (lastKnownGood > 0 || loadErrored)) return 'whole dataset is empty';
+    // (3) A single critical collection wiped while we knew it had data.
+    if (lkgInvoices > 5 && c.i === 0) return `invoices went to 0 (had ${lkgInvoices})`;
+    if (lkgMembers > 5 && c.m === 0) return `members went to 0 (had ${lkgMembers})`;
+    // (4) A critical collection collapsed by >90% (partial/merge corruption).
+    if (lkgInvoices > 20 && c.i < lkgInvoices * 0.1) return `invoices dropped ${lkgInvoices}→${c.i}`;
+    if (lkgMembers > 20 && c.m < lkgMembers * 0.1) return `members dropped ${lkgMembers}→${c.m}`;
+    return null;
+  }
+  function blockEmptyWrite(state) {
+    const force = (typeof window !== 'undefined' && window.__allowEmptySave);
+    const reason = _blockReason(state);
+    if (reason) {
+      console.error(`[Storage] BLOCKED save — refusing to overwrite good data: ${reason}. (Use "Clear all data" / Restore if this is intentional.)`);
+      try { if (typeof window !== 'undefined' && typeof window.__onCloudWriteBlocked === 'function') window.__onCloudWriteBlocked(lastKnownGood, reason); } catch (_) {}
       return true;
     }
-    if (n === 0 && force) lastKnownGood = 0;   // accepted reset = new empty baseline
-    if (n > 0) lastKnownGood = n;
+    const c = _counts(state);
+    if (force && c.m + c.i === 0) { lkgMembers = 0; lkgInvoices = 0; lastKnownGood = 0; }   // accepted reset
+    if (c.m > 0) lkgMembers = c.m;
+    if (c.i > 0) lkgInvoices = c.i;
+    if (c.m + c.i > 0) lastKnownGood = c.m + c.i;
     return false;
   }
-  // Exposed for the app layer / diagnostics.
-  function noteLoaded(data) { const n = recordCount(data); if (n > 0) lastKnownGood = n; }
+  // Called ONLY after a trusted SERVER read — establishes the safe baselines.
+  function noteServerLoaded(data) {
+    const c = _counts(data);
+    if (c.m > 0) lkgMembers = c.m;
+    if (c.i > 0) lkgInvoices = c.i;
+    if (c.m + c.i > 0) lastKnownGood = c.m + c.i;
+    cloudReadFailed = false;   // we have confirmed the cloud → writes allowed again
+  }
 
   // ─── localStorage backend ─────────────────────────────────────────────────
   const localBackend = {
@@ -60,7 +91,9 @@
       try {
         const raw = localStorage.getItem(LS_KEY);
         const data = raw ? JSON.parse(raw) : null;
-        noteLoaded(data);
+        // NOTE: localStorage is a non-authoritative emergency copy only. It must
+        // NOT set the cloud baseline, and data loaded from here must never be
+        // written back to the cloud (the firebase backend sets cloudReadFailed).
         return data;
       } catch (e) {
         console.warn('[Storage:local] load failed:', e);
@@ -209,20 +242,27 @@
       },
       async load() {
         try {
-          const snap = await docRef().get({ source: 'default' });
+          // Read from the SERVER, never the local/IndexedDB cache. This is the
+          // single source of truth — it prevents loading a stale/empty copy and
+          // then overwriting good cloud data with it.
+          const snap = await docRef().get({ source: 'server' });
           if (!snap.exists) {
-            // First time — return null so the app shows empty state / welcome
+            // First time — no document yet. Legit empty; allow first-time setup.
             loadErrored = false;
+            cloudReadFailed = false;
             return null;
           }
           loadErrored = false;
           const data = snap.data();
-          noteLoaded(data);
+          noteServerLoaded(data);   // establishes trusted baselines + unblocks writes
           return data;
         } catch (e) {
-          console.warn('[Storage:firebase] load failed, falling back to local cache:', e);
-          loadErrored = true;   // we could NOT trust the cloud → block empty overwrites
-          // Try local backup
+          console.warn('[Storage:firebase] SERVER load failed — showing offline copy READ-ONLY (cloud writes blocked):', e && e.code || e);
+          loadErrored = true;
+          cloudReadFailed = true;   // we could NOT confirm the cloud → block ALL cloud writes
+          try { if (typeof window !== 'undefined' && typeof window.__onCloudReadFailed === 'function') window.__onCloudReadFailed(e); } catch (_) {}
+          // Show the last local copy so the user is not locked out — but it can
+          // never be written back to the cloud while cloudReadFailed is true.
           return await localBackend.load();
         }
       },

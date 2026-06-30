@@ -13,21 +13,27 @@ function computeStats(monthKey) {
   d.setDate(0);
   const prev = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 
-  const currRevenue = state.invoices.reduce((s, i) => s + cashInMonth(i, curr), 0);
-  const prevRevenue = state.invoices.reduce((s, i) => s + cashInMonth(i, prev), 0);
+  // Revenue = BILLED invoice amount in the billing month (Σ invoice.amount). This
+  // is the single source of truth used across Owner Dashboard, Invoices and
+  // Transactions, so every screen agrees. (Cash-flow / collected views live on
+  // the Monthly Report + Reconciliation.)
+  const _billed = (ym, pred) => monthInvoices(ym).reduce((s, i) => s + ((!pred || pred(i)) ? (Number(i.amount) || 0) : 0), 0);
+  const currRevenue = _billed(curr);
+  const prevRevenue = _billed(prev);
 
-  // Split revenue: coaching/membership vs court rental
-  const currRentalRevenue = state.invoices.filter(i => i.activityType === 'rental').reduce((s, i) => s + cashInMonth(i, curr), 0);
-  const prevRentalRevenue = state.invoices.filter(i => i.activityType === 'rental').reduce((s, i) => s + cashInMonth(i, prev), 0);
-  const currCoachingRevenue = currRevenue - currRentalRevenue;
-  const prevCoachingRevenue = prevRevenue - prevRentalRevenue;
+  // Split revenue: coaching/membership vs court rental vs equipment sales
+  const currRentalRevenue = _billed(curr, i => i.activityType === 'rental');
+  const prevRentalRevenue = _billed(prev, i => i.activityType === 'rental');
 
-  const currRentalCount = state.invoices.filter(i => i.month === curr && i.activityType === 'rental').length;
-  const prevRentalCount = state.invoices.filter(i => i.month === prev && i.activityType === 'rental').length;
+  const currRentalCount = monthInvoices(curr).filter(i => i.activityType === 'rental').length;
+  const prevRentalCount = monthInvoices(prev).filter(i => i.activityType === 'rental').length;
 
   // Product sales revenue (sales auto-create invoices with category='Product')
-  const currSalesRevenue = state.invoices.filter(i => i.activityType === 'sale').reduce((s, i) => s + cashInMonth(i, curr), 0);
-  const prevSalesRevenue = state.invoices.filter(i => i.activityType === 'sale').reduce((s, i) => s + cashInMonth(i, prev), 0);
+  const currSalesRevenue = _billed(curr, i => i.activityType === 'sale');
+  const prevSalesRevenue = _billed(prev, i => i.activityType === 'sale');
+
+  const currCoachingRevenue = currRevenue - currRentalRevenue - currSalesRevenue;
+  const prevCoachingRevenue = prevRevenue - prevRentalRevenue - prevSalesRevenue;
 
   const currExpenses = state.expenses.filter(e => e.month === curr).reduce((s,e) => s+e.amount, 0);
   const prevExpenses = state.expenses.filter(e => e.month === prev).reduce((s,e) => s+e.amount, 0);
@@ -36,16 +42,10 @@ function computeStats(monthKey) {
   // Previously this read `state.salaries[].salary` which doesn't exist in the
   // current lightweight schema (salaries[] now stores advances + paid records),
   // so the KPI showed 0 always. Use the canonical computeMonthlyPay() instead.
-  const currSalaries = (state.coaches || [])
-    .filter(c => isCoachActive(c))
-    .map(c => computeMonthlyPay(c.id, curr))
-    .filter(p => p)
-    .reduce((sum, p) => sum + (p.gross || 0), 0);
-  const prevSalaries = (state.coaches || [])
-    .filter(c => isCoachActive(c))
-    .map(c => computeMonthlyPay(c.id, prev))
-    .filter(p => p)
-    .reduce((sum, p) => sum + (p.gross || 0), 0);
+  // Salaries = the auto-calculated salary cost (single source of truth). Same
+  // helper the Monthly Report + Financial Overview use, so all screens agree.
+  const currSalaries = salariesEarnedInMonth(curr);
+  const prevSalaries = salariesEarnedInMonth(prev);
 
   const currSales = state.sales.filter(s => s.month === curr).reduce((s,x) => s+(x.paid||0), 0);
   const prevSales = state.sales.filter(s => s.month === prev).reduce((s,x) => s+(x.paid||0), 0);
@@ -6481,39 +6481,36 @@ function computeMonthlyReport(ym) {
     return x ? 'cash' : 'cash';
   };
 
-  // 1) Revenue collected this month = sum of PAYMENTS dated in the month, split by method.
-  //    (Falls back to invoice date+method for invoices with no per-payment records.)
+  // 1) Revenue COLLECTED for the month, on the SAME billing-month basis as the
+  //    Invoices / Owner Dashboard (so billed = collected + due everywhere). For
+  //    each invoice billed this month we take its collected amount (paid, capped
+  //    at the invoice total) and split it across the methods of its payments.
   const byMethod = { cash: 0, card: 0, transfer: 0, fawran: 0 };
   let revenue = 0;
   const bySport = {};         // section 5
   const payerTotals = {};     // section 6 (by member id)
   for (const i of (state.invoices || [])) {
     if (i.deleted) continue;
+    if (invoiceBillMonth(i) !== ym) continue;          // billing-month scope (matches billed/collected/due)
     const sport = i.sport || (Array.isArray(i.lineItems) && i.lineItems[0] && i.lineItems[0].sport) || i.activity || i.category || 'Other';
+    const amount = Number(i.amount) || 0;
+    const paid = Math.min((typeof invoicePaid === 'function') ? invoicePaid(i) : amount, amount);   // collected, clamped
+    if (paid <= 0) continue;
+    // Split the collected amount across the invoice's payment methods.
     const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
+    let attributed = 0;
     if (pays) {
       for (const p of pays) {
-        const d = p.date || i.date;
-        if (!inRangePay(d)) continue;
-        const amt = Number(p.amount) || 0;
-        if (amt === 0) continue;
-        const k = normMethod(p.method || i.method);
-        byMethod[k] = (byMethod[k] || 0) + amt;
-        revenue += amt;
-        bySport[sport] = (bySport[sport] || 0) + amt;
-        if (i.customerId != null) payerTotals[i.customerId] = (payerTotals[i.customerId] || 0) + amt;
+        const a = Number(p.amount) || 0; if (a <= 0) continue;
+        const add = Math.min(a, paid - attributed); if (add <= 0) break;
+        byMethod[normMethod(p.method || i.method)] += add;
+        attributed += add;
       }
-    } else {
-      // No payment records — use the invoice's own date + paid amount if in month.
-      if (!inRangePay(i.date)) continue;
-      const amt = (typeof invoicePaid === 'function') ? invoicePaid(i) : (Number(i.amount) || 0);
-      if (amt === 0) continue;
-      const k = normMethod(i.method);
-      byMethod[k] = (byMethod[k] || 0) + amt;
-      revenue += amt;
-      bySport[sport] = (bySport[sport] || 0) + amt;
-      if (i.customerId != null) payerTotals[i.customerId] = (payerTotals[i.customerId] || 0) + amt;
     }
+    if (attributed < paid) byMethod[normMethod(i.method)] += (paid - attributed);   // remainder → invoice method
+    revenue += paid;
+    bySport[sport] = (bySport[sport] || 0) + paid;
+    if (i.customerId != null) payerTotals[i.customerId] = (payerTotals[i.customerId] || 0) + paid;
   }
 
   // 2) Expenses this month + net profit.
@@ -6524,13 +6521,20 @@ function computeMonthlyReport(ym) {
     if (m !== ym) continue;
     expenseEntries += Number(e.amount) || 0;
   }
-  // Salaries paid for this month (if tracked) count as expenses too.
-  // Uses the canonical helper so net pay (snapshotNet) isn't missed.
-  const salariesTotal = (typeof salariesPaidInMonth === 'function')
-    ? salariesPaidInMonth(ym)
-    : (state.salaries || []).reduce((s, slry) => s + ((slry.month || '') === ym ? (Number(slry.amount || slry.paid || 0) || 0) : 0), 0);
+  // Salaries = the auto-calculated salary COST for the month (single source of
+  // truth shared with the Dashboard + Financial Overview), so every report shows
+  // the same number regardless of how much has been paid out yet.
+  const salariesTotal = (typeof salariesEarnedInMonth === 'function')
+    ? salariesEarnedInMonth(ym)
+    : ((typeof salariesPaidInMonth === 'function') ? salariesPaidInMonth(ym) : 0);
   const expenses = expenseEntries + salariesTotal;
-  const net = revenue - expenses;
+  // Net profit on the BILLED (invoice) basis — the single revenue source shared
+  // with the Dashboard, so profit matches across screens. `revenue` above is the
+  // COLLECTED figure (drives the by-method cash breakdown); collected + due = billed.
+  const billed = (typeof billedInMonth === 'function') ? billedInMonth(ym) : revenue;
+  const collected = revenue;
+  const dueThisMonth = Math.max(0, billed - collected);
+  const net = billed - expenses;
 
   // 3) Member movement: new (first registration in month), renewals (a subscription
   //    that started this month but the member registered earlier), churn (membership
@@ -6595,7 +6599,7 @@ function computeMonthlyReport(ym) {
 
   return {
     ym, monthStart, monthEnd,
-    revenue, byMethod, expenses, expenseEntries, salariesTotal, net,
+    revenue, billed, collected, dueThisMonth, byMethod, expenses, expenseEntries, salariesTotal, net,
     newMembers, renewals, churn,
     duesTotal, duesMembers,
     sportRows, topMembers, topFamilies,
@@ -6658,7 +6662,7 @@ PAGES.monthlyreport = (main) => {
     </div>
 
     <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px">
-      ${kpi('Revenue collected', 'الدخل المحصّل', money(R.revenue) + ' QAR', 'var(--green)')}
+      ${kpi('Revenue', 'الإيراد', money(R.billed) + ' QAR', 'var(--green)', `${money(R.collected)} ${t('collected', 'محصّل')} · ${money(R.dueThisMonth)} ${t('due', 'مستحق')}`)}
       ${kpi('Expenses', 'المصروفات', money(R.expenses) + ' QAR', 'var(--red)', R.salariesTotal > 0 ? `${money(R.expenseEntries)} ${t('expenses', 'مصروفات')} + ${money(R.salariesTotal)} ${t('salaries', 'رواتب')}` : '')}
       ${kpi('Net profit', 'صافي الربح', money(R.net) + ' QAR', R.net >= 0 ? 'var(--green)' : 'var(--red)')}
       ${kpi('Outstanding dues', 'مستحقات غير محصّلة', money(R.duesTotal) + ' QAR', 'var(--accent-2)', `${R.duesMembers} ${t('members', 'عضو')}`)}
@@ -11763,25 +11767,28 @@ function _normMethodRec(mRaw) {
 function computeReconciliation(ym) {
   const inMonth = (d) => ym === 'all' ? true : String(d || '').slice(0, 7) === ym;
 
+  // Revenue COLLECTED for the month, on the SAME billing-month basis as the
+  // Invoices / Monthly Report (so all screens agree). Split across methods.
   const byMethod = { cash: 0, card: 0, transfer: 0, fawran: 0 };
   let revenue = 0;
   for (const i of (state.invoices || [])) {
     if (i.deleted) continue;
+    if (ym !== 'all' && invoiceBillMonth(i) !== ym) continue;        // billing-month scope
+    const amount = Number(i.amount) || 0;
+    const paid = Math.min((typeof invoicePaid === 'function') ? invoicePaid(i) : amount, amount);
+    if (paid <= 0) continue;
     const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
+    let attributed = 0;
     if (pays) {
       for (const p of pays) {
-        if (!inMonth(p.date || i.date)) continue;
-        const amt = Number(p.amount) || 0; if (!amt) continue;
-        byMethod[_normMethodRec(p.method || i.method)] += amt;
-        revenue += amt;
+        const a = Number(p.amount) || 0; if (a <= 0) continue;
+        const add = Math.min(a, paid - attributed); if (add <= 0) break;
+        byMethod[_normMethodRec(p.method || i.method)] += add;
+        attributed += add;
       }
-    } else {
-      if (!inMonth(i.date)) continue;
-      const amt = (typeof invoicePaid === 'function') ? invoicePaid(i) : (Number(i.amount) || 0);
-      if (!amt) continue;
-      byMethod[_normMethodRec(i.method)] += amt;
-      revenue += amt;
     }
+    if (attributed < paid) byMethod[_normMethodRec(i.method)] += (paid - attributed);
+    revenue += paid;
   }
   const nonCash = byMethod.card + byMethod.transfer + byMethod.fawran;
   const cashCollectedTotal = byMethod.cash;
@@ -11796,12 +11803,18 @@ function computeReconciliation(ym) {
     if (_normMethodRec(e.method || 'cash') === 'cash') cashExpenses += amt;
   }
 
+  // Every riyal COLLECTED is traceable to: cash taken by owner + cash still in
+  // hand + cash spent (cash expenses) + money sitting in the bank (non-cash).
+  // Only CASH expenses come out of the collected cash; non-cash expenses are paid
+  // from the bank, so they must NOT be subtracted here (that double-count was the
+  // old "leakage" bug). With consistent figures this reconciles to ~0.
   const cashInHand = cashCollectedTotal - cashExpenses - ownerCashTaken;
-  const accountedFor = ownerCashTaken + cashInHand + expenses + nonCash;
+  const accountedFor = ownerCashTaken + cashInHand + cashExpenses + nonCash;
   const leakage = revenue - accountedFor;
 
-  // Salaries paid out this month — tracked separately from expenses by design.
-  const salaries = (typeof salariesPaidInMonth === 'function') ? salariesPaidInMonth(ym) : 0;
+  // Salaries shown = the auto-calculated salary COST (single number across all
+  // reports). The cash reconciliation above doesn't depend on this figure.
+  const salaries = (typeof salariesEarnedInMonth === 'function') ? salariesEarnedInMonth(ym) : 0;
 
   let due = 0;
   for (const m of (state.members || [])) {
@@ -11917,7 +11930,7 @@ PAGES.reconciliation = (main) => {
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div>
           <div style="font-size:13px;color:var(--text-mute);text-transform:uppercase">${t('Check 1 · Revenue reconciliation', 'الفحص ١ · تسوية الإيرادات')}</div>
-          <div style="font-size:13px;margin-top:4px">${t('Revenue', 'الإيراد')} = ${t('cash taken', 'نقد مسحوب')} + ${t('cash in hand', 'نقد بالصندوق')} + ${t('expenses', 'مصروفات')} + ${t('non-cash', 'غير نقدي')}</div>
+          <div style="font-size:13px;margin-top:4px">${t('Revenue', 'الإيراد')} = ${t('cash taken', 'نقد مسحوب')} + ${t('cash in hand', 'نقد بالصندوق')} + ${t('cash expenses', 'مصروفات نقدية')} + ${t('non-cash', 'غير نقدي')}</div>
         </div>
         <div style="text-align:right">
           <div style="font-size:26px;font-weight:800;color:${ok ? 'var(--green)' : 'var(--red)'}">${ok ? '✓ ' + t('Balanced', 'متطابق') : (leak > 0 ? '▲ ' : '▼ ') + money(Math.abs(leak))}</div>
@@ -11931,7 +11944,7 @@ PAGES.reconciliation = (main) => {
         <div class="card-title" style="margin-bottom:6px">${t('Where the revenue went', 'أين ذهبت الإيرادات')}</div>
         ${bucket('💵 ' + t('Cash taken by owner', 'نقد سحبه المالك'), R.ownerCashTaken, 'var(--text)')}
         ${bucket('🧮 ' + t('Cash in hand', 'النقد بالصندوق'), R.cashInHand, R.cashInHand >= 0 ? 'var(--text)' : 'var(--red)', t('cash collected − cash expenses − cash taken', 'النقد المُحصّل − مصروفات نقدية − نقد مسحوب'))}
-        ${bucket('💸 ' + t('Expenses', 'المصروفات'), R.expenses, 'var(--text)')}
+        ${bucket('💸 ' + t('Cash expenses', 'مصروفات نقدية'), R.cashExpenses, 'var(--text)', t('only cash spent reduces collected cash', 'فقط المصروف نقداً يقلّل النقد المُحصّل'))}
         ${bucket('🏦 ' + t('Non-cash collected (bank)', 'غير نقدي (البنك)'), R.nonCash, 'var(--accent)', t('card + transfer + Fawran', 'بطاقة + تحويل + فوران'))}
         <div style="display:flex;justify-content:space-between;padding:11px 0;border-top:2px solid var(--border);font-weight:800">
           <div>${t('Accounted for', 'المُفسّر')}</div><div class="num">${money(R.accountedFor)}</div>
