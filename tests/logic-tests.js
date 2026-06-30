@@ -3334,6 +3334,17 @@ ${seed}
     state.invoices = saved; state.coaches = savedC; state.salaries = savedS;
   })();
 
+  // --- default month never jumps to a future (not-yet-started) month ---
+  (function () {
+    var saved = state.invoices;
+    state.invoices = [
+      { id: 1, customerId: 1, date: '2099-01-01', month: '2099-01', amount: 100 },   // far-future invoice
+    ];
+    ok(latestDataMonth() <= currentMonth(), 'default month: never ahead of the current month');
+    ok(latestDataMonth() !== '2099-01', 'default month: ignores a future-dated invoice');
+    state.invoices = saved;
+  })();
+
   console.log('\\n================ TEST RESULTS ================');
   console.log('PASS: ' + pass + '   FAIL: ' + fail);
   if (fails.length) { console.log('\\nFAILURES:'); fails.forEach(f=>console.log('  ✗ ' + f)); }
