@@ -1,0 +1,30 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Same rules you'll deploy to production (see tools/firestore-rules-recommended.txt).
+    // The seed script creates a staff login (admin@blackstars.qa / admin123) in the
+    // Auth emulator so the app can sign in and write.
+    function isMember() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email.matches('.*@(blackstars[.]com|members[.]blackstars[.]qa)$');
+    }
+    function isStaff() {
+      return request.auth != null && !isMember();
+    }
+
+    match /clubs/{clubId} {
+      allow read:  if request.auth != null;
+      allow write: if isStaff();
+      match /{collection}/{docId} {
+        allow read:  if request.auth != null;
+        allow write: if isStaff();
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

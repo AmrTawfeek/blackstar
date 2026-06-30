@@ -1,15 +1,22 @@
-RECOMMENDED FIRESTORE SECURITY RULES — Black Stars CRM
-=======================================================
+RECOMMENDED FIRESTORE SECURITY RULES — Black Stars CRM (MULTI-DOCUMENT / multi-user)
+====================================================================================
 
 Paste these in Firebase Console → Firestore Database → Rules → Publish.
 
-The app stores everything in a single document: clubs/blackstars.
+The app stores data as MANY documents so any number of users can write at once:
+  • clubs/blackstars                  — parent "meta" doc (settings, schema, camp schedule)
+  • clubs/blackstars/members/{id}     — one document per member (attendance lives here,
+                                        deep-merged field-by-field so two coaches marking
+                                        different members never collide)
+  • clubs/blackstars/invoices/{id}    — one document per invoice
+  • clubs/blackstars/auditLog/{id}    — one document per log entry
+  • …one subcollection per collection.
 
 These rules:
   • require sign-in for any access (no anonymous reads of your club data);
-  • let any signed-in STAFF account (real email) read AND write;
-  • let MEMBER accounts (logins on the blackstars.com domain) only READ —
-    so a member can see their own info via the app but can never change club data.
+  • let any signed-in STAFF account (real email) read AND write — every record;
+  • let MEMBER accounts (logins on the blackstars.com / members.blackstars.qa
+    domains) only READ, so a member can view info via the app but never change data.
 
   ┌──────────────────────────────────────────────────────────────────────────┐
   rules_version = '2';
@@ -26,9 +33,20 @@ These rules:
         return request.auth != null && !isMember();
       }
 
+      // Club parent document (settings, schema, camp schedule, …).
       match /clubs/{clubId} {
         allow read:  if request.auth != null;   // staff + members can read
-        allow write: if isStaff();               // only staff can write
+        allow write: if isStaff();              // only staff can write
+
+        // EVERY per-record subcollection: members, coaches, invoices, expenses,
+        // salaries, sales, advices, trials, rentals, rentalCustomers, schedule,
+        // swimGroups, auditLog, membershipTransfers, cashCounts, families, notes,
+        // products, drivers — and any future one. {collection} matches the
+        // subcollection name; {docId} matches the record id.
+        match /{collection}/{docId} {
+          allow read:  if request.auth != null;
+          allow write: if isStaff();
+        }
       }
 
       // Lock everything else down by default.
@@ -41,11 +59,15 @@ These rules:
 
 NOTES
 -----
-• "Staff" here means any signed-in account whose email is NOT on the
-  blackstars.com domain — i.e. your admin and coach logins.
-• If you DON'T want members reading the whole club document yet (it contains all
-  members), change the read line to `allow read: if isStaff();` until a
-  member-scoped data model is built. With the current single-document design,
-  member read access is all-or-nothing — tell me if you want a stricter split.
-• Members changing their PASSWORD does not touch Firestore — Firebase Auth
-  handles that — so read-only rules don't block the password change.
+• "Staff" means any signed-in account whose email is NOT on the member domains —
+  i.e. your admin, coach and receptionist logins. All of them can write concurrently;
+  the app writes per-record with field-level merge, so simultaneous edits don't clash.
+• Members read access is still all-or-nothing here (any member login can read all
+  member records). The multi-document layout now makes a stricter, member-scoped
+  rule POSSIBLE — e.g. linking a member's auth uid to their member document and
+  using `allow read: if isStaff() || request.auth.uid == resource.data.uid` on the
+  members subcollection. Tell me if you want that built.
+• Members changing their PASSWORD does not touch Firestore — Firebase Auth handles
+  that — so read-only rules don't block the password change.
+• The old single-writer lock document (clubs/blackstars_session) is no longer used
+  and can be deleted from Firestore; these rules simply ignore it.

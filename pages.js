@@ -15194,6 +15194,20 @@ PAGES.settings = (main, section) => {
       </div>
     </div>
 
+    <div class="card" data-sset="data">
+      <div class="card-header"><div><div class="card-title">🧩 ${t('Cloud structure (multi-document)', 'بنية السحابة (متعددة المستندات)')}</div><div class="card-subtitle">Concurrent multi-user · no conflicts · no 1&nbsp;MB limit</div></div></div>
+      ${isCloudStorage() ? `
+        <div id="migrate-status" style="font-size:13px;margin-bottom:10px"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn primary" id="migrate-btn">🧩 ${t('Migrate to multi-document', 'الترحيل إلى متعدد المستندات')}</button>
+        </div>
+        <div id="migrate-progress" class="text-mute" style="font-size:12px;margin-top:8px"></div>
+        <div class="text-mute mt-3" style="font-size:12px">
+          ${t('The multi-document model stores each member, invoice and record as its OWN cloud document, and member attendance is deep-merged field-by-field. This lets reception, coaches and the owner all edit at the same time — even marking attendance for different members at once — with no conflicts or lost data, and removes Firestore’s 1 MB single-document limit. Run this once — it downloads a full backup first and is safe to re-run.', 'يخزّن نموذج المستندات المتعددة كل عضو وفاتورة وسجل كمستند سحابي مستقل، ويتم دمج حضور الأعضاء حقلاً بحقل. يتيح ذلك للاستقبال والمدربين والمالك التعديل في الوقت نفسه — حتى تسجيل الحضور لأعضاء مختلفين معاً — دون تعارض أو فقدان بيانات، ويزيل حدّ 1 ميجابايت للمستند الواحد. شغّله مرة واحدة — يقوم بتنزيل نسخة احتياطية أولاً وآمن لإعادة التشغيل.')}
+        </div>
+      ` : `<div class="text-mute" style="font-size:12px">${t('Sign in to cloud (Firebase) to manage cloud storage structure. In offline (localStorage) mode there is a single device, so no migration is needed.', 'سجّل الدخول للسحابة (Firebase) لإدارة بنية التخزين. في الوضع دون اتصال يوجد جهاز واحد فقط، فلا حاجة للترحيل.')}</div>`}
+    </div>
+
     <div class="card" data-sset="danger" style="border:1px solid var(--red);background:color-mix(in srgb, var(--red) 5%, var(--surface))">
       <div class="card-header"><div><div class="card-title" style="color:var(--red)">⚠️ Danger Zone</div><div class="card-subtitle">Destructive actions. Each one downloads a backup first and asks twice before running.</div></div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
@@ -15401,6 +15415,57 @@ PAGES.settings = (main, section) => {
 
   $('#backup-btn').addEventListener('click', () => window.downloadBackup());
   $('#fixnames-btn')?.addEventListener('click', () => window.fixNameCapitalization());
+
+  // ── Multi-document migration (one-click) ──────────────────────────────────
+  (function setupMigration() {
+    const btn = $('#migrate-btn');
+    const statusEl = $('#migrate-status');
+    const prog = $('#migrate-progress');
+    if (!btn) return;   // offline mode: no card rendered
+    const S = window.Storage;
+    const cloud = !!(S && S.isCloud && S.isCloud());
+    const needs = cloud && S.needsMigration && S.needsMigration();
+    if (statusEl) {
+      statusEl.innerHTML = needs
+        ? `<b style="color:var(--red)">⚠ ${t('Legacy single-document detected.', 'تم اكتشاف نموذج المستند الواحد القديم.')}</b> ${t('All your data is currently in ONE cloud document. Migrate now to enable safe concurrent multi-user editing.', 'كل بياناتك حالياً في مستند سحابي واحد. رحّل الآن لتفعيل تعديل متعدد المستخدمين بأمان.')}`
+        : `<b style="color:var(--green,#16a34a)">✓ ${t('Multi-document is active.', 'نموذج المستندات المتعددة مُفعّل.')}</b> ${t('Each record is stored separately — concurrent editing is safe.', 'كل سجل مخزّن على حدة — التعديل المتزامن آمن.')}`;
+    }
+    if (!needs) {
+      btn.disabled = true;
+      btn.classList.remove('primary'); btn.classList.add('ghost');
+      btn.textContent = '✓ ' + t('Already multi-document', 'متعدد المستندات بالفعل');
+    }
+    btn.addEventListener('click', async () => {
+      if (!cloud) { toast(t('Migration requires cloud sign-in', 'الترحيل يتطلب تسجيل دخول السحابة'), 'error'); return; }
+      try { window.downloadBackup(); } catch (_) {}
+      if (!confirm(t('Migrate all cloud data to the multi-document model?\n\nA backup was just downloaded. This copies every record into its own cloud document, then enables concurrent multi-user editing. It is safe to run and re-run.', 'ترحيل كل بيانات السحابة إلى نموذج المستندات المتعددة؟\n\nتم تنزيل نسخة احتياطية للتو. سيتم نسخ كل سجل إلى مستند سحابي مستقل ثم تفعيل التعديل المتزامن. آمن للتشغيل وإعادة التشغيل.'))) return;
+      const original = btn.textContent;
+      btn.disabled = true; btn.textContent = '⏳ ' + t('Migrating…', 'جارٍ الترحيل…');
+      try {
+        const res = await S.migrateToMultiDoc(p => {
+          if (!prog) return;
+          if (p && p.phase === 'writing' && p.written != null) prog.textContent = t('Writing documents… ', 'كتابة المستندات… ') + p.written + '/' + p.totalDocs;
+          else if (p && p.phase === 'writing') prog.textContent = t('Preparing ', 'تجهيز ') + p.totalDocs + t(' documents…', ' مستند…');
+        });
+        if (res && res.migrated) {
+          if (prog) prog.textContent = t('Done — ', 'تم — ') + res.totalDocs + t(' documents across ', ' مستند عبر ') + res.collections.length + t(' collections.', ' مجموعة.');
+          try { if (typeof audit === 'function') audit('data.migrate', 'cloud', `Migrated to multi-document (${res.totalDocs} docs across ${res.collections.length} collections)`); } catch (_) {}
+          toast('✅ ' + t('Migrated to multi-document. Reloading…', 'تم الترحيل. إعادة التحميل…'), 'success');
+          setTimeout(() => location.reload(), 1600);
+        } else {
+          const reason = (res && res.reason) || t('Already migrated', 'تم الترحيل بالفعل');
+          if (prog) prog.textContent = reason;
+          toast(reason, 'info');
+          btn.textContent = original; btn.disabled = false;
+        }
+      } catch (e) {
+        console.error('[migrate] failed', e);
+        if (prog) prog.textContent = t('Migration failed: ', 'فشل الترحيل: ') + ((e && e.message) || e);
+        toast(t('Migration failed — your data is unchanged. ', 'فشل الترحيل — بياناتك دون تغيير. ') + ((e && e.message) || ''), 'error');
+        btn.textContent = original; btn.disabled = false;
+      }
+    });
+  })();
 
   $('#restore-btn').addEventListener('click', () => $('#restore-file').click());
   $('#restore-file').addEventListener('change', async e => {

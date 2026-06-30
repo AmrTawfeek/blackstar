@@ -431,7 +431,7 @@ function isCloudStorage() {
 const MERGE_COLLECTIONS = [
   'members', 'coaches', 'invoices', 'expenses', 'salaries', 'sales', 'advices',
   'trials', 'rentals', 'rentalCustomers', 'schedule', 'auditLog', 'products',
-  'families', 'notes', 'cashCounts', 'swimGroups', 'posts',
+  'families', 'notes', 'cashCounts', 'swimGroups', 'posts', 'membershipTransfers', 'drivers',
 ];
 let _syncBase = null;        // snapshot of data as last loaded/synced
 const _stableStr = v => { try { return JSON.stringify(v); } catch (_) { return String(v); } };
@@ -581,31 +581,14 @@ const SessionLock = (() => {
   }
 
   async function start() {
+    // DECOMMISSIONED in the multi-document multi-user model: there is no single-
+    // writer lock anymore, so every session is always writable. The function (and
+    // this module's read-only-safe getters) are kept so existing callers in
+    // pages.js / app.js don't break, but it now does nothing except guarantee
+    // writable mode for this session.
     if (started) return;
     started = true;
-    if (!isCloud()) { setReadOnly(false); return; }   // local mode = always sole writer
-    // Ask once for a device label so others can see who holds the session.
-    try { promptDeviceName(false); } catch (_) {}
-    try {
-      const lock = await window.Storage.getLock();
-      if (isStale(lock)) {
-        await claim();                 // free/dead → take it
-      } else if (iHoldIt(lock) || sameDevice(lock)) {
-        // Ours, or held under this same device's name (another tab / previous load).
-        await claim();                 // (re)claim so this session owns it cleanly
-      } else {
-        setReadOnly(true);             // someone else is actively holding it
-        holder = lock;
-        renderBanner();
-      }
-      startHeartbeat();
-      window.Storage.onLockChange(onLock);
-      // Release on tab close so others aren't locked out.
-      window.addEventListener('beforeunload', () => {
-        try { navigator.sendBeacon ? null : null; } catch (_) {}
-        try { window.Storage.clearLock(sessionId); } catch (_) {}
-      });
-    } catch (e) { console.warn('[lock] start failed — defaulting to writable:', e); setReadOnly(false); }
+    setReadOnly(false);
   }
 
   function notifyBlockedSave() {
@@ -767,13 +750,13 @@ function save() {
     try { if (typeof toast === 'function') toast('This tab is running an old version — please refresh (Ctrl+Shift+R) before saving.', 'error'); } catch (_) {}
     return;
   }
-  // Single-writer session lock: if another session holds the writer lock, this
-  // session is READ-ONLY. Block the save and tell the user, so two people can't
-  // overwrite each other's data (the cause of the multi-device data loss).
-  if (typeof SessionLock !== 'undefined' && SessionLock.isReadOnly && SessionLock.isReadOnly()) {
-    try { SessionLock.notifyBlockedSave(); } catch (_) {}
-    return;
-  }
+  // MULTI-DOCUMENT model (multi-user build): the old single-writer "session lock"
+  // that forced everyone but one device into read-only is GONE. The storage layer
+  // now writes only the records that changed, each as its own Firestore document
+  // with field-level merge (nested maps like member.dailyAttendance are deep-merged),
+  // so any number of users — reception, coaches marking attendance, the owner — can
+  // edit at the same time without overwriting each other. No save is ever blocked
+  // for being a non-holder. (The stale-version guard above still applies.)
   let stateToSave;
   try {
     // Device-local / session-only fields must NEVER be synced to other devices:
@@ -5509,26 +5492,11 @@ function render() {
     }
   } catch (_) {}
 
-  // ── Session control button ── Always-visible (admin) button to view who holds the
-  // editing session and force-take it (putting the other device into read-only).
-  try {
-    if (typeof currentRole === 'function' && currentRole() === 'admin' && typeof SessionLock !== 'undefined' && SessionLock.holderInfo) {
-      const topbar = main.querySelector('.topbar');
-      const actions = topbar ? (topbar.querySelector('.topbar-actions') || topbar) : null;
-      if (actions && !actions.querySelector('.session-ctrl-btn')) {
-        const iHold = SessionLock.iHoldSession ? SessionLock.iHoldSession() : true;
-        const btn = document.createElement('button');
-        btn.className = 'btn ghost session-ctrl-btn';
-        btn.type = 'button';
-        btn.title = t('Editing session & connected devices', 'جلسة التعديل والأجهزة المتصلة');
-        btn.style.cssText = 'flex:0 0 auto';
-        btn.innerHTML = iHold ? '🔓' : '🔒';
-        btn.addEventListener('click', () => { if (typeof openSessionManager === 'function') openSessionManager(); });
-        // Put it first in the actions cluster so it's easy to find.
-        actions.insertBefore(btn, actions.firstChild);
-      }
-    }
-  } catch (_) {}
+  // ── Session control button — REMOVED in the multi-document multi-user model ──
+  // The lock/take-over icon belonged to the old single-writer design. With
+  // per-record concurrent editing there is no "editing session" to hold, so the
+  // button is no longer rendered. (openSessionManager() still exists for the
+  // settings "connected devices" view, but is no longer surfaced here.)
 
   // Make every data table sortable by clicking its column headers.
   try { makeTablesSortable(main); } catch (_) {}
@@ -6014,27 +5982,53 @@ async function init() {
     if (!window.Storage.isCloud()) save();
   }
 
-  // Subscribe to remote updates from other devices (cloud only).
-  // Per the chosen design, we do NOT auto-merge remote data into the open session
-  // (auto-merging was the source of edit-loss scares). Instead we simply detect that
-  // the cloud now holds data different from what THIS device last saved/loaded, and
-  // show a small non-intrusive note letting the user refresh when they're ready. A
-  // plain reload pulls the latest cleanly — no merging, no overwriting their work.
+  // Subscribe to remote updates from other users (cloud only) — REAL-TIME AUTO-MERGE.
+  // In the multi-document model the storage layer pushes a fresh snapshot whenever
+  // ANY record changes anywhere (another receptionist adds a member, a coach marks
+  // attendance, the owner records a payment). We merge it into the open session with
+  // the existing record-level merge engine (mergeRemoteIntoState keeps local edits on
+  // a genuine clash), then re-render so other users' changes appear live — UNLESS this
+  // user is mid-edit (a modal is open or a field is focused), in which case we defer
+  // the re-render until they're idle so we never yank a half-typed form out from under
+  // them. Their data is already safely merged into state in the meantime, and the
+  // cloud copy is never corrupted (per-record, field-level, deep-merged writes).
   if (window.Storage.isCloud()) {
-    window.Storage.onRemoteUpdate(remoteState => {
-      if (!remoteState) return;
+    let _remoteRenderPending = false;
+    const isBusyEditing = () => {
       try {
-        // Compare the incoming snapshot against our last-saved base. If it's just an
-        // echo of our own save (or identical), stay quiet.
-        const base = _syncBase || {};
-        let differs = false;
-        for (const key of MERGE_COLLECTIONS) {
-          if (_stableStr(remoteState[key] || []) !== _stableStr(base[key] || [])) { differs = true; break; }
+        if (document.querySelector('.modal-overlay, .modal, [role="dialog"], #blocked-save-modal')) return true;
+        const a = document.activeElement;
+        if (a) {
+          const tag = (a.tagName || '').toUpperCase();
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || a.isContentEditable) return true;
         }
-        if (!differs && _stableStr(remoteState.settings || {}) !== _stableStr(base.settings || {})) differs = true;
-        if (differs) showNewerDataNote();
-      } catch (e) { console.warn('[sync] remote check failed:', e); }
-    });
+      } catch (_) {}
+      return false;
+    };
+    const applyRemote = (remoteState) => {
+      if (!remoteState) return;
+      let res;
+      try { res = mergeRemoteIntoState(remoteState); }
+      catch (e) { console.warn('[sync] merge failed:', e); return; }
+      if (!res || !res.changed) return;
+      if (res.conflicts > 0) {
+        try { toast(t(`Synced — ${res.conflicts} record(s) you were also editing kept your version`, `تمت المزامنة — احتُفظ بنسختك في ${res.conflicts} سجل`), 'info'); } catch (_) {}
+      }
+      if (isBusyEditing()) {
+        _remoteRenderPending = true;
+        try { showNewerDataNote(); } catch (_) {}
+      } else {
+        try { render(); } catch (e) { console.warn('[sync] render failed:', e); }
+      }
+    };
+    window.Storage.onRemoteUpdate(applyRemote);
+    setInterval(() => {
+      if (_remoteRenderPending && !isBusyEditing()) {
+        _remoteRenderPending = false;
+        try { const n = document.getElementById('newer-data-note'); if (n) n.remove(); } catch (_) {}
+        try { render(); } catch (_) {}
+      }
+    }, 1500);
   }
 
   // Set initial route from URL hash
