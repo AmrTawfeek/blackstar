@@ -4817,212 +4817,133 @@ window.editMemberPricing = function(memberId) {
   const m = state.members.find(x => x.id === memberId);
   if (!m) { toast('Member not found', 'error'); return; }
 
-  // Collect every active sport: from enrollments + the legacy m.sport.
+  // Every active sport: from enrollments + the legacy m.sport.
   const sportSet = new Set();
   for (const e of (m.enrollments || [])) if (e.sport) sportSet.add(e.sport);
   if (m.sport) sportSet.add(m.sport);
   const sports = [...sportSet];
   if (!sports.length) { toast('This member has no sports enrolled yet', 'error'); return; }
 
-  // For each sport, find the most recent matching Membership invoice. Either by
-  // i.sport (single-sport invoice) or by a lineItem.sport match (multi-sport).
   function invForSport(sp) {
     return (state.invoices || [])
       .filter(i => !i.deleted && i.customerId === m.id && (i.category || 'Membership') === 'Membership')
       .filter(i => i.sport === sp || (Array.isArray(i.lineItems) && i.lineItems.some(li => li.sport === sp)))
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0] || null;
   }
+  // Most recent membership invoice — a brand-new sport attaches here.
+  const primaryInv = (state.invoices || [])
+    .filter(i => !i.deleted && i.customerId === m.id && (i.category || 'Membership') === 'Membership'
+      && !i.switchCredit && i.activityType !== 'switch-credit')
+    .sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.id - a.id))[0] || null;
+  function startMonthForSport(sp) {
+    const s = (m.subscriptions || []).find(x => x.activity === sp);
+    const st = s && (s.start || s.startDate);
+    return st ? String(st).slice(0, 7) : null;
+  }
 
+  // One row per sport: current line price + discount, mapped to an invoice.
   const rows = sports.map((sp, idx) => {
     const enr = (m.enrollments || []).find(e => e.sport === sp);
-    const inv = invForSport(sp);
+    let inv = invForSport(sp);
+    const isNew = !inv;
+    if (!inv) inv = primaryInv;   // new sport will attach to the primary invoice
     const multi = !!(inv && Array.isArray(inv.lineItems) && inv.lineItems.length > 1);
-    let price, disc, paid;
+    let price, disc;
     if (multi) {
-      // Multi-sport invoice (one invoice, several line items): show THIS sport's
-      // own line price, and apportion the invoice's discount + paid by line share.
       const li = inv.lineItems.find(x => x.sport === sp);
       const lineSum = inv.lineItems.reduce((s, x) => s + (Number(x.price) || 0), 0) || 1;
-      const linePrice = li ? (Number(li.price) || 0) : 0;
-      const share = linePrice / lineSum;
+      const linePrice = li ? (Number(li.price) || 0) : ((enr && enr.price) || 0);
       price = linePrice;
-      disc  = Math.round((Number(inv.discount) || 0) * share);
-      paid  = Math.round(invoicePaidForSport(inv, sp));   // real per-sport paid, not a mixed split
-    } else if (inv) {
-      price = inv.amount || 0;
-      disc  = inv.discount || 0;
-      paid  = invoicePaid(inv);
+      disc  = Math.round((Number(inv.discount) || 0) * (linePrice / lineSum));
+    } else if (inv && !isNew) {
+      price = Number(inv.amount) || 0;
+      disc  = Number(inv.discount) || 0;
     } else {
       price = (enr && enr.price) || (m.price || 0) || 0;
       disc  = 0;
-      paid  = 0;
     }
-    const due = Math.max(0, price - disc - paid);
-    return { idx, sport: sp, enr, inv, price, disc, paid, due, multi };
+    return { idx, sport: sp, enr, inv, isNew, price, disc };
   });
 
-  const rowHtml = rows.map(r => `
-    <div class="card" data-pri-sport="${escapeHtml(r.sport)}" style="background:var(--surface-2);padding:10px 12px;margin-bottom:8px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
-        <div style="font-weight:700">${escapeHtml(r.sport)}${r.enr && r.enr.coachId ? ` <span class="text-mute" style="font-size:11px;font-weight:400">· ${escapeHtml(coachName(r.enr.coachId) || '')}</span>` : ''}</div>
-        ${r.inv ? `<span class="text-mute" style="font-size:10px">invoice #${r.inv.id}</span>` : `<span class="text-mute" style="font-size:10px">no invoice yet — Save creates one</span>`}
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
-        <div class="field" style="margin:0"><label style="font-size:10px">Price (QAR)</label><input class="pri-price" data-i="${r.idx}" type="number" min="0" step="1" value="${r.price}" /></div>
-        <div class="field" style="margin:0"><label style="font-size:10px">Discount</label><input class="pri-disc" data-i="${r.idx}" type="number" min="0" step="1" value="${r.disc}" /></div>
-        <div class="field" style="margin:0"><label style="font-size:10px">Paid so far</label><input class="pri-paid" data-i="${r.idx}" type="number" min="0" step="1" value="${r.paid}" /></div>
-      </div>
-      <div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;font-size:12px">
-        <span class="text-mute">Outstanding</span>
-        <span class="pri-due" data-i="${r.idx}" style="font-weight:800;color:${r.due > 0 ? 'var(--red)' : 'var(--green)'}">${fmt(r.due)} QAR</span>
-      </div>
-    </div>`).join('');
+  // Group rows by their invoice — each invoice gets its OWN dated payment box, so a
+  // June invoice and a July invoice are never paid from the same row.
+  const groups = new Map();
+  rows.forEach(r => {
+    const key = r.inv ? String(r.inv.id) : 'new';
+    if (!groups.has(key)) groups.set(key, { inv: r.inv, rows: [] });
+    groups.get(key).rows.push(r);
+  });
 
-  // Apply the confirmed per-sport prices + payments. Each payment is tagged with
-  // its sport (so two sports never mix) and appended to the invoice's payment
-  // history. RULE: one membership invoice per member per MONTH — a new sport joins
-  // the existing same-month invoice, and a fresh invoice is only made when that
-  // month has none.
-  function applyPricing(updates, payDate, payMonth, payMethod) {
-    const touched = new Set();
-    const discByInv = new Map();
-    for (const u of updates) {
-      const { r, price, disc, paid } = u;
-      const net = Math.max(0, price - disc);
-      let inv = r.inv;
-      if (!inv) {
-        // A brand-new sport joins the member's CURRENT active membership invoice
-        // (one invoice per member). It carries its own billMonth so its revenue
-        // counts in the month it was ADDED, while the invoice document stays in its
-        // original month. Only when the member has no membership invoice at all do
-        // we create a fresh one.
-        const active = (state.invoices || [])
-          .filter(i => !i.deleted && i.customerId === m.id && (i.category || 'Membership') === 'Membership'
-            && !i.switchCredit && i.activityType !== 'switch-credit')
-          .sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.id - a.id))[0];
-        if (active) {
-          inv = active;
-          if (!Array.isArray(inv.lineItems)) inv.lineItems = [{ sport: inv.sport, coachId: inv.coachId, classes: inv.classes, price: inv.amount || 0 }];
-          const existingLi = inv.lineItems.find(x => x.sport === r.sport);
-          if (!existingLi) {
-            const li = { sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net, issueDate: payDate };
-            if (invoiceBillMonth(inv) !== payMonth) li.billMonth = payMonth;   // revenue in the add-month
-            inv.lineItems.push(li);
-          } else {
-            existingLi.price = net;
-          }
-        } else {
-          inv = {
-            id: nextId(state.invoices), customerId: m.id, customerType: 'member', category: 'Membership',
-            sport: r.sport, description: r.sport, date: payDate, month: payMonth,
-            amount: net, discount: 0, amountPaid: 0, method: '',
-            coachId: (r.enr && r.enr.coachId) || null,
-            ref: (typeof nextInvoiceRef === 'function' ? nextInvoiceRef() : undefined),
-            lineItems: [{ sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net, issueDate: payDate }],
-            payments: [],
-          };
-          state.invoices.push(inv);
-        }
-      } else {
-        if (!Array.isArray(inv.lineItems)) inv.lineItems = [{ sport: inv.sport, coachId: inv.coachId, classes: inv.classes, price: inv.amount || 0 }];
-        const li = inv.lineItems.find(x => x.sport === r.sport) || inv.lineItems[0];
-        if (li) li.price = net;
-      }
-      if (!Array.isArray(inv.payments)) inv.payments = [];
-      // Record only the CHANGE vs what this sport already had, tagged to the sport.
-      const delta = Math.round((paid - r.paid) * 100) / 100;
-      if (Math.abs(delta) > 0.001) {
-        inv.payments.push({ amount: delta, date: payDate, month: payMonth, method: payMethod, sport: r.sport, note: 'Edit pricing' });
-      }
-      discByInv.set(inv, (discByInv.get(inv) || 0) + disc);
-      if (r.enr) r.enr.price = net;
-      touched.add(inv);
-    }
-    for (const inv of touched) {
-      if (Array.isArray(inv.lineItems) && inv.lineItems.length) {
-        inv.amount = inv.lineItems.reduce((s, x) => s + (Number(x.price) || 0), 0);
-      }
-      if (discByInv.has(inv)) inv.discount = discByInv.get(inv);
-      inv.amountPaid = inv.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
-      if (inv.amountPaid > 0 && !inv.method) inv.method = payMethod;
-      inv.lastUpdated = payDate;   // stamp the change; inv.date (original issue) is never touched
-      if (typeof sportListWithDuration === 'function') inv.sport = sportListWithDuration(inv.lineItems) || inv.lineItems.map(x => x.sport).join(', ');
-    }
-    if (typeof audit === 'function') audit('member.update', 'member:' + m.id, 'edit pricing & payment (per-sport)');
-    save();
-  }
+  const methodOpts = [['cash', t('Cash', 'نقدي')], ['card', t('Card', 'بطاقة')], ['fawran', t('Fawran', 'فوران')], ['transfer', t('Bank transfer', 'تحويل بنكي')]];
+
+  const groupHtml = [...groups.entries()].map(([key, g]) => {
+    const sportsHtml = g.rows.map(r => `
+      <div style="display:grid;grid-template-columns:1fr 100px 100px;gap:8px;align-items:end;margin-bottom:6px">
+        <div style="font-weight:700;font-size:13px;padding-bottom:6px">${escapeHtml(r.sport)}${r.enr && r.enr.coachId ? ` <span class="text-mute" style="font-size:11px;font-weight:400">· ${escapeHtml(coachName(r.enr.coachId) || '')}</span>` : ''}${r.isNew ? ` <span class="badge" style="font-size:9px">${t('new', 'جديد')}</span>` : ''}</div>
+        <div class="field" style="margin:0"><label style="font-size:10px">${t('Price (QAR)', 'السعر')}</label><input class="pri-price" data-i="${r.idx}" type="number" min="0" step="1" value="${r.price}" /></div>
+        <div class="field" style="margin:0"><label style="font-size:10px">${t('Discount', 'خصم')}</label><input class="pri-disc" data-i="${r.idx}" type="number" min="0" step="1" value="${r.disc}" /></div>
+      </div>`).join('');
+    const inv = g.inv;
+    const paid = inv ? invoicePaymentsSum(inv) : 0;
+    const net = g.rows.reduce((s, r) => s + Math.max(0, r.price - r.disc), 0);
+    const bal = Math.max(0, net - paid);
+    return `
+      <div class="card" data-grp="${key}" style="background:var(--surface-2);padding:10px 12px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-mute);margin-bottom:6px">
+          <span>${inv ? 'invoice #' + inv.id + ` <a href="#" onclick="event.preventDefault();closeModal();editInvoicePayments(${inv.id})" style="color:var(--blue);text-decoration:underline;font-size:10px">${t('payments', 'الدفعات')}</a>` : t('no invoice yet — Save creates one', 'لا توجد فاتورة — سيتم إنشاؤها')}</span>
+          <span>${t('Paid', 'المدفوع')}: ${fmt(paid)} · ${t('Balance', 'المتبقي')}: <b class="grp-bal" data-grp="${key}" style="color:${bal > 0 ? 'var(--accent-2)' : 'var(--green)'}">${fmt(bal)}</b></span>
+        </div>
+        ${sportsHtml}
+        <div class="field" style="margin:6px 0 0;max-width:200px"><label style="font-size:11px;font-weight:600">💵 ${t('Record payment now', 'تسجيل دفعة الآن')}</label><input class="pri-pay" data-grp="${key}" type="number" min="0" step="1" value="0" placeholder="0" /><div class="text-mute" style="font-size:10px;margin-top:3px">${t('Added as ONE dated payment. Leave 0 to only change pricing.', 'تُسجَّل كدفعة واحدة بتاريخها. اتركها 0 لتغيير السعر فقط.')}</div></div>
+      </div>`;
+  }).join('');
 
   showModal({
     title: '💰 ' + t('Edit pricing & payment', 'تعديل السعر والدفع'),
     wide: true,
     body: `
       <div class="text-mute" style="font-size:12px;margin-bottom:10px">${escapeHtml(m.name)}${m.nameArabic ? ` · <span dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}${m.phone ? ' · ' + phoneCell(m.phone) : ''}</div>
-      ${rowHtml}
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-        <div class="field" style="margin:0;max-width:200px"><label style="font-size:12px;font-weight:600">📅 ${t('Payment date', 'تاريخ الدفع')}</label><input type="date" id="pri-paydate" value="${TODAY}" /><div class="text-mute" style="font-size:10px;margin-top:3px">${t('Date recorded for these payments (revenue counts in this month).', 'تاريخ تسجيل هذه الدفعات (تُحتسب الإيرادات في هذا الشهر).')}</div></div>
-        <div class="field" style="margin:0;max-width:180px"><label style="font-size:12px;font-weight:600">💳 ${t('Payment method', 'طريقة الدفع')}</label>
-          <select id="pri-method">
-            <option value="cash">${t('Cash', 'نقدي')}</option>
-            <option value="card">${t('Card', 'بطاقة')}</option>
-            <option value="fawran">${t('Fawran', 'فوران')}</option>
-            <option value="transfer">${t('Bank transfer', 'تحويل بنكي')}</option>
-          </select>
-        </div>
+      ${groupHtml}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+        <div class="field" style="margin:0;max-width:190px"><label style="font-size:12px;font-weight:600">📅 ${t('Payment date', 'تاريخ الدفع')}</label><input type="date" id="pri-paydate" value="${TODAY}" /><div class="text-mute" style="font-size:10px;margin-top:3px">${t('Collection counts in this date\u2019s month.', 'يُحتسب التحصيل في شهر هذا التاريخ.')}</div></div>
+        <div class="field" style="margin:0;max-width:170px"><label style="font-size:12px;font-weight:600">💳 ${t('Payment method', 'طريقة الدفع')}</label>
+          <select id="pri-method">${methodOpts.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></div>
       </div>
-      <div class="text-mute" style="font-size:11px;margin-top:4px">${t('Each row updates the membership invoice for that sport. The matching line item, discount, paid total and payments log all reconcile.', 'كل صف يحدّث فاتورة العضوية لتلك الرياضة. يتم مزامنة بند الفاتورة والخصم والمدفوع وسجل الدفعات.')}</div>`,
+      <div class="text-mute" style="font-size:11px;margin-top:6px">${t('Each payment is appended as one dated row — existing payments are never changed or re-split.', 'تُضاف كل دفعة كسطر واحد بتاريخه — لا تُعدَّل الدفعات السابقة.')}</div>`,
     actions: [
       { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
       { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
         const payDate = (document.getElementById('pri-paydate') && document.getElementById('pri-paydate').value) || TODAY;
-        const payMonth = payDate.slice(0, 7);
         const payMethod = (document.getElementById('pri-method') && document.getElementById('pri-method').value) || 'cash';
-        const updates = rows.map(r => ({
+        const rowVals = rows.map(r => ({
           r,
           price: Math.max(0, parseFloat(document.querySelector(`.pri-price[data-i="${r.idx}"]`).value) || 0),
           disc:  Math.max(0, parseFloat(document.querySelector(`.pri-disc[data-i="${r.idx}"]`).value) || 0),
-          paid:  Math.max(0, parseFloat(document.querySelector(`.pri-paid[data-i="${r.idx}"]`).value) || 0),
         }));
-        for (const u of updates) {
-          if (u.paid > Math.max(0, u.price - u.disc)) { toast(`${u.r.sport}: paid cannot exceed price minus discount`, 'error'); return; }
+        const groupPays = {};
+        document.querySelectorAll('.pri-pay').forEach(inp => { groupPays[inp.dataset.grp] = Math.max(0, parseFloat(inp.value) || 0); });
+        // A payment can never push an invoice's paid above its net price.
+        for (const [key, g] of groups.entries()) {
+          const gNet = rowVals.filter(rv => (rv.r.inv ? String(rv.r.inv.id) : 'new') === key)
+            .reduce((s, rv) => s + Math.max(0, rv.price - rv.disc), 0);
+          const paid = g.inv ? invoicePaymentsSum(g.inv) : 0;
+          if (paid + (groupPays[key] || 0) > gNet + 0.001) { toast(t('Payment exceeds the balance for one invoice', 'الدفعة تتجاوز رصيد الفاتورة'), 'error'); return; }
         }
-        // ── Review & confirm — show exactly what will be recorded, per sport, so
-        //    two sports' partial payments are never mixed. ───────────────────────
-        const methodLabel = { cash: t('Cash', 'نقدي'), card: t('Card', 'بطاقة'), fawran: t('Fawran', 'فوران'), transfer: t('Bank transfer', 'تحويل بنكي') }[payMethod] || payMethod;
-        const reviewRows = updates.map(u => {
-          const net = Math.max(0, u.price - u.disc);
-          const addPay = Math.round((u.paid - u.r.paid) * 100) / 100;   // NEW collection for this sport
-          return { sport: u.r.sport, net, disc: u.disc, paidNew: u.paid, addPay, due: Math.max(0, net - u.paid) };
-        });
-        const totalAdd = reviewRows.reduce((s, x) => s + (x.addPay > 0 ? x.addPay : 0), 0);
-        const totalDue = reviewRows.reduce((s, x) => s + x.due, 0);
+        const methodLabel = (methodOpts.find(x => x[0] === payMethod) || [, payMethod])[1];
+        let totalPay = 0; Object.values(groupPays).forEach(v => totalPay += v);
+        const summaryRows = rowVals.map(rv => `<tr><td class="font-bold">${escapeHtml(rv.r.sport)}</td><td class="text-right num">${fmt(Math.max(0, rv.price - rv.disc))}${rv.disc > 0 ? ` <span class="text-mute" style="font-size:10px">(-${fmt(rv.disc)})</span>` : ''}</td></tr>`).join('');
         const summaryHtml = `
           <div class="text-mute" style="font-size:12px;margin-bottom:8px">${escapeHtml(m.name)} · ${fmtDate(payDate)} · ${escapeHtml(methodLabel)}</div>
-          <div class="table-wrap"><table style="font-size:13px;width:100%">
-            <thead><tr><th>${t('Sport', 'الرياضة')}</th><th class="text-right">${t('Price', 'السعر')}</th><th class="text-right">${t('New payment', 'دفعة جديدة')}</th><th class="text-right">${t('Paid', 'المدفوع')}</th><th class="text-right">${t('Due', 'المتبقي')}</th></tr></thead>
-            <tbody>
-              ${reviewRows.map(x => `<tr>
-                <td class="font-bold">${escapeHtml(x.sport)}</td>
-                <td class="text-right num">${fmt(x.net)}${x.disc > 0 ? ` <span class="text-mute" style="font-size:10px">(-${fmt(x.disc)})</span>` : ''}</td>
-                <td class="text-right num" style="color:${x.addPay > 0 ? 'var(--green)' : (x.addPay < 0 ? 'var(--red)' : 'var(--text-mute)')}">${x.addPay > 0 ? '+' : ''}${x.addPay ? fmt(x.addPay) : '—'}</td>
-                <td class="text-right num">${fmt(x.paidNew)}</td>
-                <td class="text-right num" style="color:${x.due > 0 ? 'var(--accent-2)' : 'var(--green)'}">${fmt(x.due)}</td>
-              </tr>`).join('')}
-            </tbody>
-            <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
-              <td>${t('Total', 'الإجمالي')}</td><td></td>
-              <td class="text-right num" style="color:var(--green)">${totalAdd > 0 ? '+' + fmt(totalAdd) : '—'}</td>
-              <td></td>
-              <td class="text-right num" style="color:${totalDue > 0 ? 'var(--accent-2)' : 'var(--green)'}">${fmt(totalDue)}</td>
-            </tr></tfoot>
-          </table></div>
-          <div class="text-mute" style="font-size:11px;margin-top:8px">${t('Each payment is recorded against its own sport and saved in the invoice payment history. One invoice per member per month — no split.', 'تُسجَّل كل دفعة لرياضتها وتُحفظ في سجل دفعات الفاتورة. فاتورة واحدة لكل عضو شهرياً — بدون تقسيم.')}</div>`;
+          <div class="table-wrap"><table style="font-size:13px;width:100%"><thead><tr><th>${t('Sport', 'الرياضة')}</th><th class="text-right">${t('Net price', 'صافي السعر')}</th></tr></thead><tbody>${summaryRows}</tbody></table></div>
+          <div style="margin-top:10px;font-size:13px;font-weight:700;display:flex;justify-content:space-between"><span>${t('Payment to record now', 'الدفعة المسجلة الآن')}</span><span style="color:var(--green)">${totalPay > 0 ? '+' + fmt(totalPay) : '—'}</span></div>
+          <div class="text-mute" style="font-size:11px;margin-top:8px">${t('Recorded as one dated payment per invoice. Existing payments are not modified.', 'تُسجَّل كدفعة واحدة بتاريخها لكل فاتورة. لا تُعدَّل الدفعات الحالية.')}</div>`;
         showModal({
           title: '✅ ' + t('Review & confirm', 'مراجعة وتأكيد'),
           body: summaryHtml,
           actions: [
             { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
             { label: t('Confirm & save', 'تأكيد وحفظ'), class: 'btn primary', onclick: () => {
-              applyPricing(updates, payDate, payMonth, payMethod);
+              applyPricingSafe(rowVals, groupPays, payDate, payMethod);
               closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
             } },
           ],
@@ -5031,18 +4952,169 @@ window.editMemberPricing = function(memberId) {
     ],
   });
 
-  // Live recompute of the Outstanding row per sport
-  document.querySelectorAll('.pri-price, .pri-disc, .pri-paid').forEach(inp => {
+  // Live balance recompute per invoice group.
+  document.querySelectorAll('.pri-price, .pri-disc, .pri-pay').forEach(inp => {
     inp.addEventListener('input', () => {
-      const i = inp.dataset.i;
-      const p = parseFloat(document.querySelector(`.pri-price[data-i="${i}"]`).value) || 0;
-      const d = parseFloat(document.querySelector(`.pri-disc[data-i="${i}"]`).value) || 0;
-      const pd = parseFloat(document.querySelector(`.pri-paid[data-i="${i}"]`).value) || 0;
-      const due = Math.max(0, p - d - pd);
-      const el = document.querySelector(`.pri-due[data-i="${i}"]`);
-      if (el) { el.textContent = fmt(due) + ' QAR'; el.style.color = due > 0 ? 'var(--red)' : 'var(--green)'; }
+      groups.forEach((g, key) => {
+        let net = 0;
+        g.rows.forEach(r => {
+          const p = parseFloat(document.querySelector(`.pri-price[data-i="${r.idx}"]`).value) || 0;
+          const d = parseFloat(document.querySelector(`.pri-disc[data-i="${r.idx}"]`).value) || 0;
+          net += Math.max(0, p - d);
+        });
+        const paid = g.inv ? invoicePaymentsSum(g.inv) : 0;
+        const payEl = document.querySelector(`.pri-pay[data-grp="${key}"]`);
+        const pay = payEl ? (parseFloat(payEl.value) || 0) : 0;
+        const bal = Math.max(0, net - paid - pay);
+        const el = document.querySelector(`.grp-bal[data-grp="${key}"]`);
+        if (el) { el.textContent = fmt(bal); el.style.color = bal > 0 ? 'var(--accent-2)' : 'var(--green)'; }
+      });
     });
   });
+
+  // ── Safe apply: set line prices/discounts, then APPEND one dated payment per
+  //    invoice via recordPayment. No per-sport payment tagging, no re-splitting —
+  //    so the ledger cannot be corrupted by re-derivation.
+  function applyPricingSafe(rowVals, groupPays, payDate, payMethod) {
+    const payMonth = String(payDate).slice(0, 7);
+    const touched = new Set();
+    const discByInv = new Map();
+    for (const rv of rowVals) {
+      const { r, price, disc } = rv;
+      const net = Math.max(0, price - disc);
+      let inv = r.inv;
+      if (!inv) {
+        inv = {
+          id: nextId(state.invoices), customerId: m.id, customerType: 'member', category: 'Membership',
+          sport: r.sport, description: r.sport, date: payDate, month: payMonth,
+          amount: net, discount: 0, amountPaid: 0, method: '',
+          coachId: (r.enr && r.enr.coachId) || null,
+          ref: (typeof nextInvoiceRef === 'function' ? nextInvoiceRef() : undefined),
+          lineItems: [{ sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net, issueDate: payDate }],
+          payments: [],
+        };
+        state.invoices.push(inv);
+        r.inv = inv;
+      } else {
+        if (!Array.isArray(inv.lineItems) || !inv.lineItems.length) {
+          inv.lineItems = [{ sport: inv.sport, coachId: inv.coachId, classes: inv.classes, price: Number(inv.amount) || 0 }];
+        }
+        const li = inv.lineItems.find(x => x.sport === r.sport);
+        if (!li) {
+          const nli = { sport: r.sport, coachId: (r.enr && r.enr.coachId) || null, classes: (r.enr && r.enr.classes) || null, price: net, issueDate: payDate };
+          const sm = startMonthForSport(r.sport);
+          if (sm && sm !== invoiceBillMonth(inv)) nli.billMonth = sm;   // revenue in the sport's START month
+          inv.lineItems.push(nli);
+        } else {
+          li.price = net;
+        }
+      }
+      discByInv.set(inv, (discByInv.get(inv) || 0) + disc);
+      if (r.enr) r.enr.price = net;
+      touched.add(inv);
+    }
+    // Append ONE dated payment per group/invoice.
+    for (const [key, g] of groups.entries()) {
+      const inv = g.inv || (g.rows[0] && g.rows[0].r.inv);
+      const pay = groupPays[key] || 0;
+      if (inv && pay > 0) { recordPayment(inv, { date: payDate, amount: pay, method: payMethod }); touched.add(inv); }
+    }
+    for (const inv of touched) {
+      if (Array.isArray(inv.lineItems) && inv.lineItems.length) {
+        inv.amount = inv.lineItems.reduce((s, x) => s + (Number(x.price) || 0), 0);
+      }
+      if (discByInv.has(inv)) inv.discount = discByInv.get(inv);
+      inv.amountPaid = Array.isArray(inv.payments) ? inv.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0) : 0;
+      if (inv.amountPaid > 0 && !inv.method) inv.method = payMethod;
+      inv.lastUpdated = payDate;
+      if (typeof sportListWithDuration === 'function') inv.sport = sportListWithDuration(inv.lineItems) || inv.lineItems.map(x => x.sport).join(', ');
+    }
+    if (typeof audit === 'function') audit('member.update', 'member:' + m.id, 'edit pricing & payment (safe ledger)');
+    save();
+  }
+};
+
+// ── Safe Payments panel ──────────────────────────────────────────────────────
+// View an invoice's payment rows and edit DATE / METHOD, remove a row, or append
+// a new one. Editing date or method NEVER changes an amount; paid is always the
+// pure sum of the rows. This is the only place to correct a payment's date, and
+// it cannot reintroduce the old re-derivation corruption.
+window.editInvoicePayments = function(invoiceId) {
+  if (currentRole() !== 'admin' && currentRole() !== 'receptionist') { toast('Admins or receptionists only', 'error'); return; }
+  const inv = (state.invoices || []).find(i => i.id === invoiceId && !i.deleted);
+  if (!inv) { toast('Invoice not found', 'error'); return; }
+  const cust = (state.members || []).find(x => x.id === inv.customerId);
+  const norm = (mRaw) => { const x = String(mRaw || '').toLowerCase(); if (x.indexOf('card') >= 0 || x.indexOf('visa') >= 0) return 'card'; if (x.indexOf('fawran') >= 0 || x.indexOf('\u0641\u0648\u0631\u0627\u0646') >= 0) return 'fawran'; if (x.indexOf('transfer') >= 0 || x.indexOf('bank') >= 0) return 'transfer'; return 'cash'; };
+  const methodOpts = [['cash', t('Cash', '\u0646\u0642\u062f\u064a')], ['card', t('Card', '\u0628\u0637\u0627\u0642\u0629')], ['fawran', t('Fawran', '\u0641\u0648\u0631\u0627\u0646')], ['transfer', t('Bank transfer', '\u062a\u062d\u0648\u064a\u0644 \u0628\u0646\u0643\u064a')]];
+  // Working copy — committed only on Save.
+  let working = (Array.isArray(inv.payments) ? inv.payments : []).map(p => ({ date: p.date || '', method: norm(p.method), amount: Math.round((Number(p.amount) || 0) * 100) / 100 }));
+
+  function bodyHtml() {
+    const net = (Array.isArray(inv.lineItems) && inv.lineItems.length) ? inv.lineItems.reduce((s, x) => s + (Number(x.price) || 0), 0) : (Number(inv.amount) || 0);
+    const sum = Math.round(working.reduce((s, p) => s + p.amount, 0) * 100) / 100;
+    const bal = Math.round((net - sum) * 100) / 100;
+    const rows = working.map((p, idx) => `
+      <tr style="border-top:1px solid var(--border)">
+        <td style="padding:4px 6px"><input type="date" class="ip-date" data-idx="${idx}" value="${p.date || ''}" style="font-size:12px" /></td>
+        <td style="padding:4px 6px"><select class="ip-method" data-idx="${idx}" style="font-size:12px">${methodOpts.map(([v, l]) => `<option value="${v}" ${p.method === v ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
+        <td style="padding:4px 6px;text-align:right;font-weight:600;${p.amount < 0 ? 'color:var(--red)' : ''}">${fmt(p.amount)}</td>
+        <td style="padding:4px 6px;text-align:right"><button class="btn ghost sm ip-del" data-idx="${idx}" title="${t('Remove this payment', '\u062d\u0630\u0641 \u0647\u0630\u0647 \u0627\u0644\u062f\u0641\u0639\u0629')}" style="color:var(--red)">\ud83d\uddd1</button></td>
+      </tr>`).join('');
+    return `
+      <div class="text-mute" style="font-size:12px;margin-bottom:8px">${escapeHtml((cust && cust.name) || inv.customerName || '\u2014')} \u00b7 ${escapeHtml(inv.ref || ('#' + inv.id))}</div>
+      <div class="table-wrap"><table style="width:100%;font-size:12px">
+        <thead><tr style="color:var(--text-mute)"><th style="text-align:left;padding:4px 6px">${t('Date', '\u0627\u0644\u062a\u0627\u0631\u064a\u062e')}</th><th style="text-align:left;padding:4px 6px">${t('Method', '\u0627\u0644\u0637\u0631\u064a\u0642\u0629')}</th><th style="text-align:right;padding:4px 6px">${t('Amount', '\u0627\u0644\u0645\u0628\u0644\u063a')}</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="4" style="padding:12px;text-align:center;color:var(--text-mute)">${t('No payments recorded.', '\u0644\u0627 \u062a\u0648\u062c\u062f \u062f\u0641\u0639\u0627\u062a.')}</td></tr>`}</tbody>
+      </table></div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;margin-top:8px;padding-top:8px;border-top:2px solid var(--border)">
+        <span>${t('Recorded total', '\u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0645\u0633\u062c\u0644')}: <span style="color:var(--green)">${fmt(sum)}</span></span>
+        <span>${t('Balance', '\u0627\u0644\u0645\u062a\u0628\u0642\u064a')}: <span style="color:${bal > 0 ? 'var(--accent-2)' : (bal < 0 ? 'var(--red)' : 'var(--green)')}">${fmt(bal)}</span></span>
+      </div>
+      <div class="card" style="background:var(--surface-2);padding:8px 10px;margin-top:10px">
+        <div style="font-size:11px;font-weight:700;margin-bottom:6px">\u2795 ${t('Add a payment', '\u0625\u0636\u0627\u0641\u0629 \u062f\u0641\u0639\u0629')}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
+          <div class="field" style="margin:0"><label style="font-size:10px">${t('Date', '\u0627\u0644\u062a\u0627\u0631\u064a\u062e')}</label><input type="date" id="ip-add-date" value="${TODAY}" style="font-size:12px" /></div>
+          <div class="field" style="margin:0;max-width:120px"><label style="font-size:10px">${t('Amount', '\u0627\u0644\u0645\u0628\u0644\u063a')}</label><input type="number" id="ip-add-amt" min="0" step="1" value="" placeholder="0" style="font-size:12px" /></div>
+          <div class="field" style="margin:0;max-width:130px"><label style="font-size:10px">${t('Method', '\u0627\u0644\u0637\u0631\u064a\u0642\u0629')}</label><select id="ip-add-method" style="font-size:12px">${methodOpts.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></div>
+          <button class="btn ghost sm" id="ip-add-btn">${t('Add', '\u0625\u0636\u0627\u0641\u0629')}</button>
+        </div>
+      </div>
+      <div class="text-mute" style="font-size:10px;margin-top:8px">${t('Editing date or method never changes an amount. Paid total is always the sum of these rows.', '\u062a\u0639\u062f\u064a\u0644 \u0627\u0644\u062a\u0627\u0631\u064a\u062e \u0623\u0648 \u0627\u0644\u0637\u0631\u064a\u0642\u0629 \u0644\u0627 \u064a\u063a\u064a\u0651\u0631 \u0627\u0644\u0645\u0628\u0644\u063a. \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0645\u062f\u0641\u0648\u0639 \u0647\u0648 \u0645\u062c\u0645\u0648\u0639 \u0647\u0630\u0647 \u0627\u0644\u0623\u0633\u0637\u0631 \u062f\u0627\u0626\u0645\u0627\u064b.')}</div>`;
+  }
+
+  function wire() {
+    document.querySelectorAll('.ip-date').forEach(el => el.addEventListener('change', e => { working[+e.target.dataset.idx].date = e.target.value; }));
+    document.querySelectorAll('.ip-method').forEach(el => el.addEventListener('change', e => { working[+e.target.dataset.idx].method = e.target.value; }));
+    document.querySelectorAll('.ip-del').forEach(el => el.addEventListener('click', e => { working.splice(+e.currentTarget.dataset.idx, 1); refresh(); }));
+    const addBtn = document.getElementById('ip-add-btn');
+    if (addBtn) addBtn.addEventListener('click', () => {
+      const amt = Math.round((parseFloat(document.getElementById('ip-add-amt').value) || 0) * 100) / 100;
+      if (!amt) { toast(t('Enter an amount', '\u0623\u062f\u062e\u0644 \u0645\u0628\u0644\u063a\u0627\u064b'), 'error'); return; }
+      working.push({ date: document.getElementById('ip-add-date').value || TODAY, method: document.getElementById('ip-add-method').value || 'cash', amount: amt });
+      refresh();
+    });
+  }
+  function refresh() { const el = document.getElementById('ip-body'); if (el) { el.innerHTML = bodyHtml(); wire(); } }
+
+  showModal({
+    title: '\ud83d\udcb3 ' + t('Payments', '\u0627\u0644\u062f\u0641\u0639\u0627\u062a'),
+    wide: true,
+    body: `<div id="ip-body">${bodyHtml()}</div>`,
+    actions: [
+      { label: t('Cancel', '\u0625\u0644\u063a\u0627\u0621'), class: 'btn ghost', onclick: closeModal },
+      { label: t('Save', '\u062d\u0641\u0638'), class: 'btn primary', onclick: () => {
+        // Commit the working copy verbatim — amounts come straight from the rows,
+        // never derived. amountPaid is the exact sum.
+        inv.payments = working.map(p => ({ date: p.date || TODAY, month: String(p.date || TODAY).slice(0, 7), amount: Math.round((Number(p.amount) || 0) * 100) / 100, method: p.method || 'cash' }));
+        inv.amountPaid = inv.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+        if (inv.amountPaid > 0 && !inv.method) inv.method = inv.payments[0].method;
+        inv.lastUpdated = TODAY;
+        if (typeof audit === 'function') audit('invoice.payments', 'invoice:' + inv.id, 'edit payments (date/method/rows)');
+        save(); closeModal(); render(); toast(t('Saved', '\u062a\u0645 \u0627\u0644\u062d\u0641\u0638'));
+      } },
+    ],
+  });
+  wire();
 };
 
 // Edit a camp member: update transport flag + camp duration (2/3/6 weeks, etc.)
@@ -7081,42 +7153,69 @@ PAGES.payanalysis = (main) => {
     return normMethod(i.method);
   };
 
-  // Load filters (persisted per page).
-  const filter = loadFilter('payanalysis', { day: '', from: '', to: '', method: '', activity: '', search: '' });
+  // Load filters (persisted per page). Default to the current data month so the
+  // screen opens on a single month, like the other financial screens.
+  const filter = loadFilter('payanalysis', { month: latestDataMonth(), day: '', from: '', to: '', method: '', activity: '', search: '' });
 
-  // Build the row set: all non-deleted invoices that have an actual paid amount.
+  // Build the row set PER PAYMENT (not per invoice), so installments paid across
+  // different months/methods are each counted in their own month. Legacy invoices
+  // with no payments[] array synthesize a single payment from their paid amount.
   const allInvoices = (state.invoices || []).filter(i => !i.deleted);
-  const rowsAll = allInvoices.map(i => {
-    const paid = invoicePaid(i);
+  const rowsAll = [];
+  for (const i of allInvoices) {
     const m = state.members.find(x => x.id === i.customerId);
     const isRental = i.activityType === 'rental';
-    const activity = isRental ? '🏟 ' + (i.sport || t('Rental', 'إيجار')) : (i.sport || i.activity || i.category || t('Other', 'أخرى'));
-    // Grouped activity for the FILTER: collapse any "Summer Camp · 1 month / 1 week /
-    // Custom …" variant into a single "Summer Camp" so the dropdown isn't cluttered.
-    const activityGroup = (() => {
-      const a = activity || '';
-      if (a === SUMMER_CAMP || a.indexOf(SUMMER_CAMP) === 0) return SUMMER_CAMP;
-      return a;
-    })();
-    // Representative date = latest payment date, else invoice date.
-    const payDates = (i.payments || []).map(p => p.date).filter(Boolean).sort();
-    const date = payDates.length ? payDates[payDates.length - 1] : (i.date || '');
-    return {
-      id: i.id, ref: i.ref || ('INV' + i.id), date,
-      value: paid, amount: Number(i.amount) || 0,
-      customer: m ? m.name : (i.customerName || t('Walk-in', 'زائر')),
-      customerAr: m ? (m.nameArabic || '') : '',
-      activity, activityGroup, method: invoiceMethod(i),
-      isCredit: i.switchCredit || i.activityType === 'switch-credit' || (Number(i.amount) || 0) < 0,
+    const baseActivity = isRental ? '🏟 ' + (i.sport || t('Rental', 'إيجار')) : (i.sport || i.activity || i.category || t('Other', 'أخرى'));
+    const customer = m ? m.name : (i.customerName || t('Walk-in', 'زائر'));
+    const customerAr = m ? (m.nameArabic || '') : '';
+    const isCredit = i.switchCredit || i.activityType === 'switch-credit' || (Number(i.amount) || 0) < 0;
+    const ref = i.ref || ('INV' + i.id);
+    const mkActivity = (sport) => {
+      const a = sport || baseActivity;
+      const group = (a === SUMMER_CAMP || String(a).indexOf(SUMMER_CAMP) === 0) ? SUMMER_CAMP : a;
+      return { activity: a, activityGroup: group };
     };
-  });
+    const pays = (Array.isArray(i.payments) && i.payments.length) ? i.payments.filter(p => (Number(p.amount) || 0) !== 0) : null;
+    if (pays && pays.length) {
+      for (const p of pays) {
+        const { activity, activityGroup } = mkActivity(p.sport || baseActivity);
+        rowsAll.push({
+          id: i.id, ref, date: p.date || i.date || '',
+          value: Number(p.amount) || 0, amount: Number(i.amount) || 0,
+          customer, customerAr, activity, activityGroup,
+          method: normMethod(p.method || i.method),
+          isCredit: isCredit || (Number(p.amount) || 0) < 0,
+        });
+      }
+    } else {
+      const paid = invoicePaid(i);
+      if (paid === 0) continue;
+      const { activity, activityGroup } = mkActivity(baseActivity);
+      rowsAll.push({
+        id: i.id, ref, date: i.date || '',
+        value: paid, amount: Number(i.amount) || 0,
+        customer, customerAr, activity, activityGroup,
+        method: normMethod(i.method), isCredit,
+      });
+    }
+  }
 
   // Distinct activities for the filter dropdown — use the GROUPED key so all
   // Summer Camp variants appear as a single "Summer Camp" option.
   const activities = [...new Set(rowsAll.map(r => r.activityGroup))].sort();
+  // Months that have payments or expenses — for the month dropdown.
+  const paMonths = (() => {
+    const s = new Set();
+    rowsAll.forEach(r => { const mo = String(r.date || '').slice(0, 7); if (mo) s.add(mo); });
+    (state.expenses || []).forEach(e => { if (e.deleted) return; const mo = e.month || String(e.date || '').slice(0, 7); if (mo) s.add(mo); });
+    if (filter.month && filter.month !== 'all') s.add(filter.month);
+    return [...s].filter(Boolean).sort().reverse();
+  })();
+  const inMonth = (d) => filter.month === 'all' || !filter.month || String(d || '').slice(0, 7) === filter.month;
 
   // Apply filters.
   const applyFilters = (rows) => rows.filter(r => {
+    if (!inMonth(r.date)) return false;
     if (filter.day && r.date !== filter.day) return false;
     if (filter.from && r.date && r.date < filter.from) return false;
     if (filter.to && r.date && r.date > filter.to) return false;
@@ -7145,6 +7244,8 @@ PAGES.payanalysis = (main) => {
   const expensesAll = (state.expenses || []).filter(e => !e.deleted);
   const expFiltered = expensesAll.filter(e => {
     const d = e.date || (e.month ? e.month + '-01' : '');
+    const mo = e.month || String(d).slice(0, 7);
+    if (filter.month && filter.month !== 'all' && mo !== filter.month) return false;
     if (filter.day && d !== filter.day) return false;
     if (filter.from && d && d < filter.from) return false;
     if (filter.to && d && d > filter.to) return false;
@@ -7184,6 +7285,11 @@ PAGES.payanalysis = (main) => {
 
     <div class="card" style="margin-bottom:14px">
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div class="field" style="margin:0"><label style="font-size:10px">${t('Month', 'الشهر')}</label>
+          <select id="pa-month">
+            <option value="all" ${filter.month === 'all' ? 'selected' : ''}>${t('All months', 'كل الشهور')}</option>
+            ${paMonths.map(mo => `<option value="${mo}" ${filter.month === mo ? 'selected' : ''}>${fmtMonth(mo)}</option>`).join('')}
+          </select></div>
         <div class="field" style="margin:0"><label style="font-size:10px">${t('Day', 'يوم')}</label><input type="date" id="pa-day" value="${filter.day || ''}" /></div>
         <div class="field" style="margin:0"><label style="font-size:10px">${t('From', 'من')}</label><input type="date" id="pa-from" value="${filter.from || ''}" /></div>
         <div class="field" style="margin:0"><label style="font-size:10px">${t('To', 'إلى')}</label><input type="date" id="pa-to" value="${filter.to || ''}" /></div>
@@ -7235,6 +7341,7 @@ PAGES.payanalysis = (main) => {
 
   // ── Wire filters ──
   const saveAndRerender = () => { saveFilter('payanalysis', filter); navigate('payanalysis'); };
+  $('#pa-month').addEventListener('change', e => { filter.month = e.target.value; filter.day = ''; filter.from = ''; filter.to = ''; saveAndRerender(); });
   $('#pa-day').addEventListener('change', e => { filter.day = e.target.value; if (filter.day) { filter.from = ''; filter.to = ''; } saveAndRerender(); });
   $('#pa-from').addEventListener('change', e => { filter.from = e.target.value; if (filter.from) filter.day = ''; saveAndRerender(); });
   $('#pa-to').addEventListener('change', e => { filter.to = e.target.value; if (filter.to) filter.day = ''; saveAndRerender(); });
@@ -7242,12 +7349,13 @@ PAGES.payanalysis = (main) => {
   $('#pa-activity').addEventListener('change', e => { filter.activity = e.target.value; saveAndRerender(); });
   let searchT;
   $('#pa-search').addEventListener('input', e => { clearTimeout(searchT); filter.search = e.target.value; searchT = setTimeout(saveAndRerender, 350); });
-  $('#pa-clear').addEventListener('click', () => { ['day', 'from', 'to', 'method', 'activity', 'search'].forEach(k => filter[k] = ''); saveAndRerender(); });
+  $('#pa-clear').addEventListener('click', () => { filter.month = latestDataMonth(); ['day', 'from', 'to', 'method', 'activity', 'search'].forEach(k => filter[k] = ''); saveAndRerender(); });
 
   // ── Print report ──
   $('#pa-print').addEventListener('click', () => {
     const periodLabel = filter.day ? fmtDate(filter.day)
       : (filter.from || filter.to) ? `${filter.from ? fmtDate(filter.from) : '…'} → ${filter.to ? fmtDate(filter.to) : '…'}`
+      : (filter.month && filter.month !== 'all') ? fmtMonth(filter.month)
       : t('All time', 'كل الفترات');
     const fLabels = [
       filter.method ? `${t('Method', 'الطريقة')}: ${METHOD_LABEL[filter.method]}` : '',
@@ -8708,6 +8816,7 @@ PAGES.invoices = (main) => {
           <button class="btn ghost sm" onclick="sendInvoiceWhatsApp(${i.id})" title="Send invoice as WhatsApp message" style="color:#25D366">💬</button>
           ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="editInvoiceQuick(${i.id})" title="Edit coach/sport">✏️</button>`}
           ${currentRole() === 'admin' && (i.category || 'Membership') === 'Membership' && i.customerId ? `<button class="btn ghost sm" onclick="regenerateInvoice(${i.id})" title="Regenerate from current enrollment (e.g. if duration changed)" style="color:var(--blue)">🔄</button>` : ''}
+          ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="editInvoicePayments(${i.id})" title="View / edit payments (date, method)">💳</button>`}
           ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="deleteInvoice(${i.id})" title="Delete">🗑</button>`}
         </td>
       </tr>`;
@@ -9279,6 +9388,7 @@ window.showInvoiceHistory = function(customerId) {
                 <td class="text-right num font-bold">${fmt(i.amount)}</td>
                 <td class="text-right" style="white-space:nowrap">
                   <button class="btn ghost sm" onclick="closeModal();printInvoicePDF(${i.id})" title="Export PDF">⬇</button>
+                  ${(currentRole() === 'admin' || currentRole() === 'receptionist') ? `<button class="btn ghost sm" onclick="closeModal();editInvoicePayments(${i.id})" title="View / edit payments (date, method)">💳</button>` : ''}
                   ${currentRole() === 'admin' && (i.category || 'Membership') === 'Membership' ? `<button class="btn ghost sm" onclick="closeModal();regenerateInvoice(${i.id})" title="Regenerate from current enrollment" style="color:var(--blue)">🔄</button>` : ''}
                   ${currentRole() === 'admin' ? `<button class="btn ghost sm" onclick="closeModal();deleteInvoice(${i.id})" title="Permanently delete this invoice" style="color:var(--red)">🗑</button>` : ''}
                 </td>
@@ -11389,33 +11499,7 @@ window.printInvoicePDF = function(id) {
     </div>
   </div>
 
-  ${(Array.isArray(inv.payments) && inv.payments.filter(p => Math.abs(Number(p.amount) || 0) > 0.001).length) ? `
-  <div style="margin:0 0 16px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
-    <div style="background:#f8fafc;padding:7px 12px;font-size:11px;font-weight:700;color:#374151;display:flex;justify-content:space-between">
-      <span dir="ltr">💵 Payments received</span><span dir="rtl">الدفعات المستلمة</span>
-    </div>
-    <table style="width:100%;border-collapse:collapse;font-size:11.5px">
-      <thead><tr style="color:#6b7280">
-        <th style="padding:5px 12px;text-align:left">Date · <bdi>التاريخ</bdi></th>
-        <th style="padding:5px 12px;text-align:left">Method · <bdi>الطريقة</bdi></th>
-        <th style="padding:5px 12px;text-align:left">For · <bdi>عن</bdi></th>
-        <th style="padding:5px 12px;text-align:right">Amount · <bdi>المبلغ</bdi></th>
-      </tr></thead>
-      <tbody>
-        ${inv.payments.filter(p => Math.abs(Number(p.amount) || 0) > 0.001).map(p => `
-          <tr style="border-top:1px solid #f1f5f9">
-            <td style="padding:5px 12px">${p.date ? fmtDate(p.date) : '—'}</td>
-            <td style="padding:5px 12px">${escapeHtml(p.method || 'Cash')}</td>
-            <td style="padding:5px 12px">${escapeHtml(p.sport || '—')}</td>
-            <td style="padding:5px 12px;text-align:right;font-weight:600">${Number(p.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-          </tr>`).join('')}
-      </tbody>
-      <tfoot><tr style="border-top:2px solid #e5e7eb;font-weight:700">
-        <td colspan="3" style="padding:6px 12px">Total paid · <bdi>إجمالي المدفوع</bdi></td>
-        <td style="padding:6px 12px;text-align:right;color:#047857">${Number(invoicePaid(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR</td>
-      </tr></tfoot>
-    </table>
-  </div>` : ''}
+  ${'' /* Per-payment history table temporarily removed from the invoice until per-payment tracking is stable (per request). The Paid total and Balance due above are unaffected. */}
 
   <div class="amount-words">
     <strong dir="ltr">Amount in words · <bdi>المبلغ كتابةً</bdi>:</strong> ${escapeHtml(amountWords)} Qatari Riyals only.

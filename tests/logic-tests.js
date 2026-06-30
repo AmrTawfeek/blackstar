@@ -3345,6 +3345,61 @@ ${seed}
     state.invoices = saved;
   })();
 
+  // --- Payment ledger is append-only and cannot be corrupted by re-derivation ---
+  (function () {
+    const inv = { id: 9001, amount: 1000, amountPaid: 0, payments: [] };
+    recordPayment(inv, { date: '2026-06-10', amount: 400, method: 'cash' });
+    recordPayment(inv, { date: '2026-07-05', amount: 600, method: 'card' });
+    eq(inv.payments.length, 2, 'recordPayment: appends one row per call');
+    eq(Math.round(inv.amountPaid), 1000, 'recordPayment: paid = sum of rows');
+    const ref0 = inv.payments[0];
+    const snap0 = JSON.stringify(inv.payments[0]);
+    recordPayment(inv, { date: '2026-07-06', amount: 50, method: 'cash' });
+    eq(JSON.stringify(inv.payments[0]), snap0, 'recordPayment: never rewrites an existing row');
+    ok(inv.payments[0] === ref0, 'recordPayment: existing row identity preserved');
+    recordPayment(inv, { amount: 0 });
+    recordPayment(inv, { amount: NaN });
+    recordPayment(inv, { amount: Infinity });
+    eq(inv.payments.length, 3, 'recordPayment: ignores zero / NaN / Infinity');
+    recordPayment(inv, { amount: 33.333333, method: 'cash' });
+    eq(inv.payments[3].amount, 33.33, 'recordPayment: rounds to 2dp');
+  })();
+
+  // --- Full lifecycle: enroll -> pay installments -> add sport -> SWITCH -> pay.
+  //     Proves earlier payments are never mutated and paid stays an exact sum,
+  //     which is the exact scenario that produced the old garbage rows. ---
+  (function () {
+    const inv = { id: 9100, customerId: 1, category: 'Membership', month: '2026-06', date: '2026-06-01',
+      amount: 1750, amountPaid: 0, lineItems: [{ sport: 'Summer Camp', price: 1750 }], payments: [] };
+    recordPayment(inv, { date: '2026-06-01', amount: 1000, method: 'card' });
+    recordPayment(inv, { date: '2026-06-15', amount: 750, method: 'cash' });
+    const r0 = JSON.stringify(inv.payments[0]), r1 = JSON.stringify(inv.payments[1]);
+    // add a sport (line only, no payment)
+    inv.lineItems.push({ sport: 'Gymnastic', price: 425, billMonth: '2026-07' });
+    // switch: drop that sport, open another, carry a credit line — payments untouched
+    inv.lineItems = inv.lineItems.filter(x => x.sport !== 'Gymnastic');
+    inv.lineItems.push({ sport: 'Karate', price: 500, billMonth: '2026-07' });
+    inv.amount = inv.lineItems.reduce((s, x) => s + x.price, 0);
+    recordPayment(inv, { date: '2026-07-02', amount: 500, method: 'cash' });
+    eq(inv.payments.length, 3, 'lifecycle: exactly 3 payment rows through add + switch + pay');
+    ok(JSON.stringify(inv.payments[0]) === r0 && JSON.stringify(inv.payments[1]) === r1, 'lifecycle: earlier payments untouched by add/switch');
+    eq(Math.round(invoicePaymentsSum(inv)), 2250, 'lifecycle: paid = 1000+750+500 (exact sum)');
+    ok(inv.payments.every(p => Math.abs(p.amount) <= inv.amount + 1), 'lifecycle: no impossible payment row');
+  })();
+
+  // --- Dataset invariant: any invoice that has a payments ledger must have it
+  //     sum to amountPaid (guards against any future re-derivation drift). ---
+  (function () {
+    let bad = 0;
+    for (const i of (state.invoices || [])) {
+      if (i && Array.isArray(i.payments) && i.payments.length && i.amountPaid != null) {
+        const sum = i.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+        if (Math.abs(sum - i.amountPaid) > 0.01) bad++;
+      }
+    }
+    eq(bad, 0, 'invariant: every payments ledger sums to amountPaid');
+  })();
+
   console.log('\\n================ TEST RESULTS ================');
   console.log('PASS: ' + pass + '   FAIL: ' + fail);
   if (fails.length) { console.log('\\nFAILURES:'); fails.forEach(f=>console.log('  ✗ ' + f)); }
