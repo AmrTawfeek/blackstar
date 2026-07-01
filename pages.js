@@ -35,6 +35,11 @@ function computeStats(monthKey) {
   const currCoachingRevenue = currRevenue - currRentalRevenue - currSalesRevenue;
   const prevCoachingRevenue = prevRevenue - prevRentalRevenue - prevSalesRevenue;
 
+  // CASH actually collected this month (by payment date) — the drawer figure, distinct
+  // from billed revenue (which is recognized in each sport's start month).
+  const currCashCollected = (typeof cashCollectedInMonth === 'function') ? cashCollectedInMonth(curr) : 0;
+  const prevCashCollected = (typeof cashCollectedInMonth === 'function') ? cashCollectedInMonth(prev) : 0;
+
   // P&L expenses exclude "Salary"-category entries: those are salary PAYMENTS
   // (settlements), and the salary COST is already counted via salariesEarnedInMonth.
   const currExpenses = state.expenses.filter(e => e.month === curr && !isSalaryCategory(e.category)).reduce((s,e) => s+e.amount, 0);
@@ -68,6 +73,7 @@ function computeStats(monthKey) {
     currMonth: curr, prevMonth: prev,
     currRevenue, prevRevenue,
     currCoachingRevenue, prevCoachingRevenue,
+    currCashCollected, prevCashCollected,
     currRentalRevenue, prevRentalRevenue,
     currRentalCount, prevRentalCount,
     currSalesRevenue, prevSalesRevenue,
@@ -334,7 +340,7 @@ PAGES.dashboard = (main) => {
     <div class="kpi-grid">
       <div class="kpi">
         <div class="kpi-icon">💰</div>
-        <div class="kpi-label" title="${t('Cash actually collected this month (payments dated this month). Differs from the Invoices total, which is everything billed all-time.', 'النقد المُحصّل فعلياً هذا الشهر — يختلف عن إجمالي الفواتير الذي يشمل كل ما تم إصداره')}">${t('Total Revenue','إجمالي الإيرادات')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
+        <div class="kpi-label" title="${t('Revenue billed this month — each sport’s fee counts in the month that sport STARTS (accrual). This is not the cash received; see “Cash collected” for money actually taken in this month.', 'الإيراد المُحتسب هذا الشهر — رسوم كل رياضة تُحتسب في شهر بدايتها. هذا ليس النقد المُحصّل؛ انظر “النقد المُحصّل” للمبلغ المستلم فعلياً.')}">${t('Total Revenue','إجمالي الإيرادات')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
         <div class="kpi-value num">${fmt(s.currRevenue)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
         ${kpiDelta(s.currRevenue, s.prevRevenue)}
         ${sparkline([s.prevRevenue, s.currRevenue])}
@@ -385,6 +391,12 @@ PAGES.dashboard = (main) => {
         <div class="kpi-label">${t('Revenue Mix','توزيع الإيرادات')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
         <div class="kpi-value num">${s.mayRevenue > 0 ? Math.round(s.mayCoachingRevenue / s.mayRevenue * 100) : 0}<span style="font-size:14px">%</span> <span style="font-size:12px;color:var(--text-dim);font-weight:500">${t('coaching','تدريب')}</span></div>
         <div class="kpi-delta flat">${s.mayRevenue > 0 ? Math.round(s.mayRentalRevenue / s.mayRevenue * 100) : 0}% ${t('rental','تأجير')}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-icon">🧾</div>
+        <div class="kpi-label" title="${t('Money physically received this month, by each payment’s date (the drawer). May differ from Revenue: a camp prepaid this month counts as cash now but as revenue in the month it starts, and unpaid billed sports are revenue but not yet cash.', 'المال المستلم فعلياً هذا الشهر حسب تاريخ كل دفعة. قد يختلف عن الإيراد: معسكر مدفوع مقدماً يُحتسب نقداً الآن لكنه إيراد في شهر بدايته.')}">${t('Cash Collected','النقد المُحصّل')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
+        <div class="kpi-value num">${fmt(s.currCashCollected)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
+        ${kpiDelta(s.currCashCollected, s.prevCashCollected)}
       </div>
     </div>
 
@@ -4924,6 +4936,14 @@ window.editMemberPricing = function(memberId) {
       </div>`).join('');
     const inv = g.inv;
     const pays = (inv && Array.isArray(inv.payments)) ? inv.payments : [];
+    // Per-payment sport tag: only meaningful when an invoice has MORE than one sport
+    // (a payment then needs to say which sport/month it pays for). Single-sport
+    // invoices are one month, so no tag is needed.
+    const grpSports = g.rows.map(r => r.sport).filter(Boolean);
+    const multiSport = grpSports.length > 1;
+    const sportOpts = (sel) => grpSports.map(sp => `<option value="${escapeHtml(sp)}" ${sel === sp ? 'selected' : ''}>${escapeHtml(sp)}</option>`).join('');
+    const _sportBal = (sp) => { const li = (inv && inv.lineItems || []).find(x => x.sport === sp); const price = li ? (Number(li.price) || 0) : 0; const p = (inv && typeof invoicePaidForSport === 'function') ? invoicePaidForSport(inv, sp) : 0; return price - p; };
+    const defaultPaySport = multiSport ? (grpSports.find(sp => _sportBal(sp) > 0.5) || grpSports[grpSports.length - 1] || '') : (grpSports[0] || '');
     const paid = inv ? invoicePaymentsSum(inv) : 0;
     const net = g.rows.reduce((s, r) => s + Math.max(0, r.price - r.disc), 0);
     const bal = Math.max(0, net - paid);
@@ -4937,20 +4957,22 @@ window.editMemberPricing = function(memberId) {
             <div class="pay-row" data-inv="${inv.id}" data-pi="${pi}" style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
               <input type="date" class="pri-exist-date" data-inv="${inv.id}" data-pi="${pi}" value="${p.date || ''}" style="font-size:12px" />
               <select class="pri-exist-method" data-inv="${inv.id}" data-pi="${pi}" style="font-size:12px">${methodOpts.map(([v, l]) => `<option value="${v}" ${normMethod(p.method) === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
-              <span style="margin-inline-start:auto;font-weight:600;font-size:12px;${amt < 0 ? 'color:var(--red)' : ''}">${fmt(amt)}</span>
+              ${multiSport ? `<select class="pri-exist-sport" data-inv="${inv.id}" data-pi="${pi}" title="${t('Which sport this installment pays for', 'لأي رياضة هذا القسط')}" style="font-size:11px"><option value="">${t('— any', '— أي')}</option>${sportOpts(p.sport)}</select>` : ''}
+              <input type="number" step="1" class="pri-exist-amt" data-inv="${inv.id}" data-pi="${pi}" value="${amt}" title="${t('Edit amount (a negative value = refund)', 'تعديل المبلغ (قيمة سالبة = استرداد)')}" style="margin-inline-start:auto;width:84px;font-size:12px;font-weight:600;text-align:right;${amt < 0 ? 'color:var(--red)' : ''}" />
               <label style="cursor:pointer;font-size:13px" title="${t('Remove this row', 'حذف هذا السطر')}"><input type="checkbox" class="pri-exist-del" data-inv="${inv.id}" data-pi="${pi}" style="vertical-align:middle"> 🗑</label>
             </div>`; }).join('');
     const paymentsHtml = `
         <div style="margin:10px 0 2px;border-top:1px dashed var(--border);padding-top:8px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px">
-            <div style="font-size:11px;font-weight:700">🧾 ${t('Payments (installments)', 'الدفعات (الأقساط)')} <span class="text-mute" style="font-weight:400;font-size:10px">${t('edit date / method · 🗑 remove · ➕ add below', 'تعديل التاريخ/الطريقة · 🗑 حذف · ➕ إضافة بالأسفل')}</span></div>
+            <div style="font-size:11px;font-weight:700">🧾 ${t('Payments (installments)', 'الدفعات (الأقساط)')} <span class="text-mute" style="font-weight:400;font-size:10px">${t('edit date / method / amount · 🗑 remove · ➕ add below', 'تعديل التاريخ/الطريقة/المبلغ · 🗑 حذف · ➕ إضافة بالأسفل')}</span></div>
             ${corrupted && inv ? `<label style="font-size:10px;color:var(--red);display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:700;white-space:nowrap"><input type="checkbox" class="pri-cleanup" data-inv="${inv.id}"> ⚠ ${t('Fix messy rows → one payment', 'دمج الأسطر في دفعة واحدة')}</label>` : ''}
           </div>
           ${existRowsHtml}
           <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:7px">
               <div style="font-size:11px;font-weight:700;color:var(--green)">➕ ${t('Collect a new payment', 'تحصيل دفعة جديدة')} <span class="text-mute" style="font-weight:400;font-size:10px">${t('— split across methods if needed', '— قابلة للتقسيم بين الطرق')}</span></div>
-              <div style="display:flex;align-items:center;gap:10px">
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                ${multiSport ? `<label style="display:flex;align-items:center;gap:4px;font-size:11px" title="${t('Which sport this payment is for — sets the month it counts toward', 'لأي رياضة هذه الدفعة — يحدد الشهر الذي تُحتسب فيه')}"><span class="text-mute">🏷</span><select class="pri-pay-sport" data-grp="${key}" style="font-size:12px">${sportOpts(defaultPaySport)}</select></label>` : ''}
                 <label style="display:flex;align-items:center;gap:4px;font-size:11px"><span class="text-mute">📅</span><input type="date" class="pri-pay-date" data-grp="${key}" value="${TODAY}" style="font-size:12px" /></label>
                 <span style="font-size:11px;font-weight:700;white-space:nowrap">${t('Total', 'الإجمالي')}: <b class="pri-pay-total" data-grp="${key}" style="color:var(--green)">${fmt(0)}</b></span>
               </div>
@@ -4962,6 +4984,12 @@ window.editMemberPricing = function(memberId) {
                   <input class="pri-pay-m" data-grp="${key}" data-method="${mk}" type="number" min="0" step="1" value="" placeholder="0" inputmode="numeric" style="width:100%;font-size:14px;font-weight:700;text-align:right;background:transparent;border:none;border-bottom:1px solid color-mix(in srgb, ${col} 30%, var(--border));color:var(--text);outline:none" />
                 </div>`).join('')}
             </div>
+            ${inv ? `<div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
+              <span style="font-size:11px;font-weight:700;color:var(--red)">➖ ${t('Refund (money out)', 'استرداد (مبلغ خارج)')}</span>
+              <input class="pri-refund" data-grp="${key}" type="number" min="0" step="1" value="" placeholder="0" style="width:90px;font-size:13px;font-weight:600;text-align:right" />
+              <select class="pri-refund-method" data-grp="${key}" style="font-size:12px">${methodOpts.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+              <span class="text-mute" style="font-size:10px">${t('recorded as a negative payment on the date above', 'يُسجّل كدفعة سالبة بالتاريخ أعلاه')}</span>
+            </div>` : ''}
           </div>
         </div>`;
     return `
@@ -4998,9 +5026,17 @@ window.editMemberPricing = function(memberId) {
           const mEl = document.querySelector(`.pri-exist-method[data-inv="${el.dataset.inv}"][data-pi="${el.dataset.pi}"]`);
           const iv = (state.invoices || []).find(x => x.id === invId);
           const p = iv && Array.isArray(iv.payments) ? iv.payments[pi] : null;
+          const aEl = document.querySelector(`.pri-exist-amt[data-inv="${el.dataset.inv}"][data-pi="${el.dataset.pi}"]`);
+          const spEl = document.querySelector(`.pri-exist-sport[data-inv="${el.dataset.inv}"][data-pi="${el.dataset.pi}"]`);
           const date = el.value, method = mEl ? mEl.value : (p ? p.method : null);
-          if (p && ((date && date !== p.date) || (method && method !== normMethod(p.method)))) existChangedCount++;
-          existEdits.push({ invId, pi, date, method });
+          const amount = (aEl && aEl.value !== '') ? Math.round((parseFloat(aEl.value) || 0) * 100) / 100 : (p ? (Number(p.amount) || 0) : null);
+          const sport = spEl ? spEl.value : (p ? (p.sport || '') : undefined);   // '' = untag
+          const changed = p && ((date && date !== p.date)
+            || (method && normMethod(method) !== normMethod(p.method))
+            || (amount != null && Math.abs(amount - (Number(p.amount) || 0)) > 0.001)
+            || (spEl && sport !== (p.sport || '')));
+          if (changed) existChangedCount++;
+          existEdits.push({ invId, pi, date, method, amount, sport });
         });
         // Rows marked for removal, and invoices marked for "clean up messy rows".
         const removals = [];
@@ -5021,8 +5057,18 @@ window.editMemberPricing = function(memberId) {
             const amt = Math.max(0, parseFloat(mi.value) || 0);
             if (amt > 0) { methods[mi.dataset.method] = Math.round(((methods[mi.dataset.method] || 0) + amt) * 100) / 100; total += amt; }
           });
+          const spEl = document.querySelector(`.pri-pay-sport[data-grp="${key}"]`);
           groupPays[key] = Math.round(total * 100) / 100;
-          groupPayMeta[key] = { date: dEl.value || TODAY, methods };
+          groupPayMeta[key] = { date: dEl.value || TODAY, methods, sport: spEl ? spEl.value : '' };
+        });
+        // Capture refunds NOW (inputs vanish once the review modal opens), apply later.
+        const groupRefunds = {};   // key -> { amount, method }
+        document.querySelectorAll('.pri-refund').forEach(rEl => {
+          const key = rEl.dataset.grp;
+          const rAmt = Math.max(0, parseFloat(rEl.value) || 0);
+          if (rAmt <= 0) return;
+          const rmEl = document.querySelector(`.pri-refund-method[data-grp="${key}"]`);
+          groupRefunds[key] = { amount: Math.round(rAmt * 100) / 100, method: (rmEl && rmEl.value) || 'cash' };
         });
         // A payment can never push an invoice's paid above its net price.
         for (const [key, g] of groups.entries()) {
@@ -5033,13 +5079,15 @@ window.editMemberPricing = function(memberId) {
         }
         const mLabel = (mm) => (methodOpts.find(x => x[0] === mm) || [, mm])[1];
         let totalPay = 0; Object.values(groupPays).forEach(v => totalPay += v);
+        let totalRefund = 0; Object.values(groupRefunds).forEach(r => { totalRefund += r.amount; });
         const summaryRows = rowVals.map(rv => `<tr><td class="font-bold">${escapeHtml(rv.r.sport)}</td><td class="text-right num">${fmt(Math.max(0, rv.price - rv.disc))}${rv.disc > 0 ? ` <span class="text-mute" style="font-size:10px">(-${fmt(rv.disc)})</span>` : ''}</td></tr>`).join('');
         const newPaysList = [];
         for (const [key, g] of groups.entries()) {
           const amt = groupPays[key] || 0; if (amt <= 0) continue;
           const meta = groupPayMeta[key] || {};
           const parts = Object.entries(meta.methods || {}).map(([mk, mv]) => `${escapeHtml(mLabel(mk))} ${fmt(mv)}`).join(' + ');
-          newPaysList.push(`<tr><td class="font-bold">${escapeHtml(g.rows.map(r => r.sport).join(', '))}</td><td class="text-right" style="color:var(--green)">+${fmt(amt)}</td><td class="text-right text-mute" style="font-size:11px">${fmtDate(meta.date)} · ${parts}</td></tr>`);
+          const forSport = meta.sport ? escapeHtml(meta.sport) : escapeHtml(g.rows.map(r => r.sport).join(', '));
+          newPaysList.push(`<tr><td class="font-bold">${forSport}</td><td class="text-right" style="color:var(--green)">+${fmt(amt)}</td><td class="text-right text-mute" style="font-size:11px">${fmtDate(meta.date)} · ${parts}</td></tr>`);
         }
         const newPaysHtml = newPaysList.length
           ? `<div style="margin-top:10px;font-size:12px;font-weight:700">${t('New payment(s)', 'الدفعات الجديدة')} <span style="color:var(--green)">+${fmt(totalPay)}</span></div><div class="table-wrap"><table style="font-size:12px;width:100%"><tbody>${newPaysList.join('')}</tbody></table></div>`
@@ -5048,9 +5096,11 @@ window.editMemberPricing = function(memberId) {
           <div class="text-mute" style="font-size:12px;margin-bottom:8px">${escapeHtml(m.name)}</div>
           <div class="table-wrap"><table style="font-size:13px;width:100%"><thead><tr><th>${t('Sport', 'الرياضة')}</th><th class="text-right">${t('Net price', 'صافي السعر')}</th></tr></thead><tbody>${summaryRows}</tbody></table></div>
           ${newPaysHtml}
+          ${totalRefund > 0 ? `<div style="margin-top:8px;font-size:12px;font-weight:700;color:var(--red)">➖ ${t('Refund', 'استرداد')} −${fmt(totalRefund)}</div>` : ''}
           <div class="text-mute" style="font-size:11px;margin-top:8px">${[
             existChangedCount > 0 ? t(`✎ ${existChangedCount} payment(s) edited`, `تعديل ${existChangedCount} دفعة`) : '',
             removals.length > 0 ? t(`🗑 ${removals.length} removed`, `حذف ${removals.length}`) : '',
+            totalRefund > 0 ? t(`➖ refund −${fmt(totalRefund)}`, `استرداد −${fmt(totalRefund)}`) : '',
             cleanups.size > 0 ? t(`⚠ ${cleanups.size} invoice(s) cleaned up`, `تنظيف ${cleanups.size} فاتورة`) : '',
           ].filter(Boolean).join(' · ') || t('Existing payments unchanged.', 'الدفعات الحالية دون تغيير.')}</div>`;
         showModal({
@@ -5081,6 +5131,8 @@ window.editMemberPricing = function(memberId) {
                     const p = iv.payments[e.pi]; if (!p) continue;
                     if (e.date && e.date !== p.date) { p.date = e.date; p.month = String(e.date).slice(0, 7); }
                     if (e.method && normMethod(e.method) !== normMethod(p.method)) { p.method = e.method; }
+                    if (e.amount != null && Math.abs(e.amount - (Number(p.amount) || 0)) > 0.001) { p.amount = e.amount; }
+                    if (e.sport !== undefined && e.sport !== (p.sport || '')) { if (e.sport) p.sport = e.sport; else delete p.sport; }
                   }
                   // Remove marked rows (descending index so positions stay valid).
                   removals.filter(r => r.invId === invId).map(r => r.pi).sort((a, b) => b - a)
@@ -5090,6 +5142,15 @@ window.editMemberPricing = function(memberId) {
                 iv.lastUpdated = TODAY;
               }
               if (editedInvs.size && typeof audit === 'function') audit('invoice.payments', 'member:' + m.id, `payment edits via edit-pricing (${existChangedCount} edited, ${removals.length} removed, ${cleanups.size} cleaned)`);
+              // Refunds: append a NEGATIVE payment row (money handed back) per invoice.
+              for (const [key, g] of groups.entries()) {
+                const r = groupRefunds[key];
+                if (r && r.amount > 0 && g.inv) {
+                  const rd = (groupPayMeta[key] && groupPayMeta[key].date) || payDate || TODAY;
+                  recordPayment(g.inv, { amount: -r.amount, date: rd, method: r.method });
+                  if (typeof audit === 'function') audit('invoice.refund', 'invoice:' + g.inv.id, `refund ${fmt(r.amount)} (${r.method})`);
+                }
+              }
               applyPricingSafe(rowVals, groupPays, payDate, payMethod, groupPayMeta);
               closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
             } },
@@ -5189,11 +5250,13 @@ window.editMemberPricing = function(memberId) {
       const inv = g.inv || (g.rows[0] && g.rows[0].inv);
       if (!inv) continue;
       const d = dateFor(key);
-      const methods = (groupPayMeta[key] && groupPayMeta[key].methods) || {};
+      const meta = groupPayMeta[key] || {};
+      const methods = meta.methods || {};
+      const paySport = meta.sport || undefined;   // tag every method-row of this collection to the chosen sport
       let any = false;
       for (const [mk, mv] of Object.entries(methods)) {
         const amt = Math.round((Number(mv) || 0) * 100) / 100;
-        if (amt > 0) { recordPayment(inv, { date: d, amount: amt, method: mk }); any = true; }
+        if (amt > 0) { recordPayment(inv, { date: d, amount: amt, method: mk, sport: paySport }); any = true; }
       }
       if (any) { invDate.set(inv, d); touched.add(inv); }
     }
@@ -24530,8 +24593,12 @@ PAGES.transactions = (main) => {
       const _liKept = items.reduce((s, li) => s + (Number(li.price) || 0), 0);
       const _invValue = Number(inv.amount) || _liAll;
       const _narrowed = (actSel.length > 0) || coachFiltered;
-      const invAmount = !_narrowed ? _invValue
+      const _baseAmount = !_narrowed ? _invValue
         : (_liAll > 0 ? (_liKept / _liAll) * _invValue : _invValue);
+      // Whole-month scope: show only THIS month's billed portion. A sport that starts
+      // in another month bills there, so a cross-month invoice contributes its share
+      // to each month — and the month total matches Club Revenue (billedInMonth).
+      const invAmount = _baseAmount * (monthScope ? invoiceMonthShare(inv, monthScope) : 1);
       // Summer Camp is standalone — never attribute it to a coach.
       const allCamp = items.length && items.every(isCampItem);
       const coachId = allCamp ? null : (inv.coachId || (allItems.find(li => li.coachId)?.coachId) || null);
@@ -24547,14 +24614,23 @@ PAGES.transactions = (main) => {
       const ref = inv.ref || ('#' + inv.id);
       // Display coach: when a single coach is selected, show that coach; else the invoice's.
       const displayCoachId = (coachFiltered && coachSel.length === 1) ? coachSel[0] : coachId;
-      // Paid / Due for this row. invoicePaid() is the whole-invoice paid amount; when
-      // the row is narrowed (by coach/activity) to part of a multi-line invoice, prorate
-      // the paid amount by this row's share of the full invoice so Paid/Due stay coherent.
+      // Paid / Due for this row. invoicePaid() is the whole-invoice paid amount.
       const fullInvAmount = _invValue;
       const fullPaid = (typeof invoicePaid === 'function') ? invoicePaid(inv) : (Number(inv.amount) || 0);
-      const share = fullInvAmount > 0 ? (invAmount / fullInvAmount) : 1;
-      const paid = Math.round(fullPaid * share);
-      const due = Math.max(0, invAmount - paid);   // gross due = full unpaid balance
+      // In a WHOLE-MONTH view, the row's Paid comes from the PRECISE per-payment
+      // attribution: each installment counts toward the sport it was tagged to (that
+      // sport's start month); untagged installments fill earliest-month-first. So a
+      // fully-paid earlier month shows due 0 and the balance lands on the later
+      // month(s). Otherwise (date ranges, or a row narrowed by coach/activity)
+      // prorate by the row's share of the full invoice so Paid/Due stay coherent.
+      let paid;
+      if (monthScope && !_narrowed) {
+        paid = Math.round(invoicePaidInMonth(inv, monthScope));
+      } else {
+        const share = fullInvAmount > 0 ? (invAmount / fullInvAmount) : 1;
+        paid = Math.round(fullPaid * share);
+      }
+      const due = Math.max(0, invAmount - paid);   // gross due = this row's unpaid balance
       // Net due = gross due minus any carry-forward credit/advance the member holds
       // for this activity (credits reduce what's really owed).
       let netDue = due;
@@ -25131,6 +25207,59 @@ window.fixAllMessyLedgersUI = function () {
   });
 };
 
+// ── Invoice totals out of sync with their sport line items ────────────────────
+// The invoice's stored `amount` should equal the sum of its sport line prices.
+// When they drift (legacy data, or a sport added without recomputing the total),
+// the balance, the Paid/Partial badge and the per-month revenue split all read the
+// stale amount. The fix sets amount = Σ line prices — exactly what saving the
+// Edit-pricing panel already does. Reviewed PER invoice, because raising the total
+// can reveal a NEW balance the member owes (only right if that sport is really due).
+function findMismatchedInvoiceTotals() {
+  const out = [];
+  for (const i of (state.invoices || [])) {
+    if (!i || i.deleted) continue;
+    if (!Array.isArray(i.lineItems) || !i.lineItems.length) continue;
+    if ((i.category || 'Membership') !== 'Membership') continue;
+    const lineSum = i.lineItems.reduce((s, li) => s + (Number(li.price) || 0), 0);
+    const amt = Number(i.amount) || 0;
+    if (Math.abs(lineSum - amt) > 0.5) out.push({ inv: i, stored: amt, correct: lineSum, paid: invoicePaid(i) });
+  }
+  return out;
+}
+function _fixInvoiceTotal(inv) {
+  if (!inv || !Array.isArray(inv.lineItems) || !inv.lineItems.length) return false;
+  inv.amount = inv.lineItems.reduce((s, li) => s + (Number(li.price) || 0), 0);
+  inv.lastUpdated = TODAY;
+  return true;
+}
+window.fixInvoiceTotalUI = function (invoiceId) {
+  if (currentRole() !== 'admin') { toast(t('Admins only', 'للمشرفين فقط'), 'error'); return; }
+  const inv = (state.invoices || []).find(i => i.id === invoiceId && !i.deleted);
+  if (!inv || !Array.isArray(inv.lineItems) || !inv.lineItems.length) { toast(t('Invoice not found', 'الفاتورة غير موجودة'), 'error'); return; }
+  const oldAmt = Number(inv.amount) || 0;
+  const lineSum = inv.lineItems.reduce((s, li) => s + (Number(li.price) || 0), 0);
+  const paid = invoicePaid(inv);
+  const oldBal = Math.max(0, oldAmt - paid);
+  const newBal = Math.max(0, lineSum - paid);
+  const mem = state.members.find(x => x.id === inv.customerId);
+  const sportsTxt = inv.lineItems.map(li => `${li.sport || '—'} ${fmt(Number(li.price) || 0)}`).join(' + ');
+  if (!confirm(
+    `${(mem && mem.name) || inv.customerName || 'Invoice'} — ${inv.ref || ('INV' + inv.id)}\n\n` +
+    `${sportsTxt} = ${fmt(lineSum)}\n\n` +
+    `Set the invoice total to the sum of its sports?\n` +
+    `  Current total: ${fmt(oldAmt)}\n` +
+    `  New total:     ${fmt(lineSum)}\n` +
+    `  Paid:          ${fmt(paid)}\n` +
+    `  Balance:       ${fmt(oldBal)} → ${fmt(newBal)}\n\n` +
+    (newBal > oldBal + 0.5 ? `⚠ This RAISES the balance owed by ${fmt(newBal - oldBal)}. Only do this if that sport is genuinely still owed. If instead a line PRICE is wrong, fix it in Edit pricing rather than here.\n\n` : '') +
+    `Payments are NOT changed.`
+  )) return;
+  _fixInvoiceTotal(inv);
+  if (typeof audit === 'function') audit('invoice.fix_total', 'invoice:' + inv.id, `total ${fmt(oldAmt)} → ${fmt(lineSum)} (from line items)`);
+  save(); render();
+  toast('✅ ' + t('Invoice total corrected', 'تم تصحيح إجمالي الفاتورة'), 'success');
+};
+
 PAGES.cleanup = (main) => {
   if (currentRole() !== 'admin') { main.innerHTML = `<div class="empty"><div class="empty-icon">🔐</div>${t('Admins only', 'للمشرفين فقط')}</div>`; return; }
   const dupEnr = findDuplicateEnrollments();
@@ -25140,6 +25269,7 @@ PAGES.cleanup = (main) => {
   const campRecalc = findCampMembersToRecalc();
   const enrDrift = findMembersWithEnrollmentDrift();
   const messyLedgers = findMessyLedgers();
+  const badTotals = findMismatchedInvoiceTotals();
 
   const enrSection = dupEnr.length ? dupEnr.map(d => {
     const rows = d.rows.map((e, i) => `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:3px 0;${i === 0 ? '' : 'opacity:.7'}">
@@ -25206,6 +25336,24 @@ PAGES.cleanup = (main) => {
       </div>
     </div>`).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('All members\u2019 enrollments match their subscriptions', 'تسجيلات جميع الأعضاء تطابق اشتراكاتهم')}</div>`;
 
+  const badTotalsSection = badTotals.length ? badTotals.map(d => {
+    const mem = state.members.find(x => x.id === d.inv.customerId);
+    const oldBal = Math.max(0, d.stored - d.paid), newBal = Math.max(0, d.correct - d.paid);
+    const raises = newBal > oldBal + 0.5;
+    return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><b>${escapeHtml((mem && mem.name) || d.inv.customerName || '—')}</b> · <span class="text-mute" style="font-size:12px">${escapeHtml(d.inv.ref || ('INV' + d.inv.id))}</span></div>
+        <button class="btn ghost sm" style="color:var(--blue);white-space:nowrap" onclick="fixInvoiceTotalUI(${d.inv.id})">🧮 ${t('Set total to', 'اضبط الإجمالي على')} ${fmt(d.correct)}</button>
+      </div>
+      <div style="margin-top:6px;font-size:12px" class="text-mute">
+        ${t('Stored total', 'الإجمالي المخزن')} <b style="color:var(--red)">${fmt(d.stored)}</b> → ${t('sum of sports', 'مجموع الرياضات')} <b style="color:var(--green)">${fmt(d.correct)}</b> · ${t('paid', 'مدفوع')} ${fmt(d.paid)}
+        · ${t('balance', 'الرصيد')} ${fmt(oldBal)} → <b style="color:${raises ? 'var(--accent-2)' : 'var(--green)'}">${fmt(newBal)}</b>
+        <div style="margin-top:3px">${(d.inv.lineItems || []).map(li => `${escapeHtml(li.sport || '—')} ${fmt(Number(li.price) || 0)}`).join(' + ')}</div>
+        ${raises ? `<div style="margin-top:3px;color:var(--accent-2)">⚠ ${t('Raises the balance owed — only if that sport is really due; otherwise fix the line price in Edit pricing.', 'يرفع الرصيد المستحق — فقط إذا كانت تلك الرياضة مستحقة فعلاً؛ وإلا صحّح سعر السطر في تعديل التسعير.')}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('') : `<div class="text-mute" style="padding:14px;text-align:center;font-size:13px">✅ ${t('Every invoice total matches its sports', 'كل إجمالي فاتورة يطابق رياضاته')}</div>`;
+
   main.innerHTML = `
     <div class="topbar">
       <div>
@@ -25215,13 +25363,14 @@ PAGES.cleanup = (main) => {
       <div class="topbar-actions"><button class="btn ghost" onclick="render()">↻ ${t('Rescan', 'إعادة الفحص')}</button></div>
     </div>
 
-    <div class="kpi-grid" style="grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px">
+    <div class="kpi-grid" style="grid-template-columns:repeat(7,1fr);gap:12px;margin-bottom:16px">
       <div class="kpi ${dupEnr.length ? 'red' : 'green'}"><div class="kpi-label">${t('Duplicate enrollments', 'تسجيلات مكررة')}</div><div class="kpi-value num">${dupEnr.length}</div></div>
       <div class="kpi ${mergeable.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Members with split invoices', 'أعضاء بفواتير متعددة')}</div><div class="kpi-value num">${mergeable.length}</div></div>
       <div class="kpi ${misdated.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Misdated invoices', 'فواتير بتواريخ خاطئة')}</div><div class="kpi-value num">${misdated.length}</div></div>
       <div class="kpi ${dupProducts.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Duplicate products', 'منتجات مكررة')}</div><div class="kpi-value num">${dupProducts.length}</div></div>
       <div class="kpi ${campRecalc.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Camp to recalc', 'معسكر للإعادة')}</div><div class="kpi-value num">${campRecalc.length}</div></div>
       <div class="kpi ${enrDrift.length ? 'red' : 'green'}"><div class="kpi-label">${t('Enrollment mismatch', 'عدم تطابق التسجيل')}</div><div class="kpi-value num">${enrDrift.length}</div></div>
+      <div class="kpi ${badTotals.length ? 'orange' : 'green'}"><div class="kpi-label">${t('Total ≠ sports', 'الإجمالي ≠ الرياضات')}</div><div class="kpi-value num">${badTotals.length}</div></div>
     </div>
 
     ${messyLedgers.length ? `
@@ -25231,6 +25380,11 @@ PAGES.cleanup = (main) => {
         <button class="btn primary sm" style="white-space:nowrap" onclick="fixAllMessyLedgersUI()">🧹 ${t('Fix all', 'إصلاح الكل')} (${messyLedgers.length})</button>
       </div>
     </div>` : ''}
+
+    <div class="card" style="margin-bottom:14px${badTotals.length ? ';border:1px solid var(--accent-2)' : ''}">
+      <div class="card-header"><div><div class="card-title"${badTotals.length ? ' style="color:var(--accent-2)"' : ''}>🧮 ${t('Invoice total ≠ sum of sports', 'إجمالي الفاتورة ≠ مجموع الرياضات')} (${badTotals.length})</div><div class="card-subtitle">${t('The invoice total drifted from the prices of its sports (legacy data / a sport added without updating the total). This skews the balance, the paid badge and the per-month revenue split. Fix sets the total = sum of its sports — reviewed one by one, because it can reveal a balance the member owes.', 'إجمالي الفاتورة انحرف عن أسعار رياضاتها (بيانات قديمة / رياضة أضيفت دون تحديث الإجمالي). هذا يشوّه الرصيد وشارة الدفع وتوزيع الإيراد الشهري. الإصلاح يضبط الإجمالي = مجموع الرياضات — بمراجعة كل حالة، لأنه قد يكشف رصيداً مستحقاً.')}</div></div></div>
+      <div style="padding:12px">${badTotalsSection}</div>
+    </div>
 
     <div class="card" style="margin-bottom:14px">
       <div class="card-header"><div><div class="card-title">🔁 ${t('Duplicate enrollments', 'تسجيلات مكررة')}</div><div class="card-subtitle">${t('Same sport enrolled more than once on a member. Keep one removes the extras (oldest kept).', 'نفس الرياضة مسجلة أكثر من مرة. الاحتفاظ بواحد يزيل الزائد.')}</div></div></div>

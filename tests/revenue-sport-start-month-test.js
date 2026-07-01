@@ -79,6 +79,24 @@ ok(lineBillMonth(campLine, inv)    === '2026-06', 'commission month for Summer C
 //    still 1500 (driven by the camp's start month, not the payment).
 ok(near(billedInMonth('2026-07'), 1500), 'payment date (June) does not reduce July revenue');
 
+// 5) PRECISE per-payment attribution (invoicePaidInMonth).
+// (a) UNTAGGED single payment (750, June) → waterfalls to the EARLIEST month first:
+//     June fully paid (due 0), July still unpaid.
+ok(near(invoicePaidInMonth(inv, '2026-06'), 750), 'untagged 750 fills June first → June paid 750  (got ' + invoicePaidInMonth(inv, '2026-06') + ')');
+ok(near(invoicePaidInMonth(inv, '2026-07'), 0),   'untagged: July still unpaid  (got ' + invoicePaidInMonth(inv, '2026-07') + ')');
+// (b) TAG the installments: 750 for a June sport (Kick Boxing) + 750 for the July
+//     Summer Camp (physically paid 30 Jun, but tagged to the camp → counts in JULY).
+inv.payments = [
+  { date:'2026-06-07', month:'2026-06', amount:750, method:'card', sport:'Kick Boxing' },
+  { date:'2026-06-30', month:'2026-06', amount:750, method:'card', sport:'Summer Camp' },
+];
+inv.amountPaid = 1500;
+ok(near(invoicePaidInMonth(inv, '2026-06'), 750),  'tagged: June paid = 750 (Kick Boxing installment)  (got ' + invoicePaidInMonth(inv, '2026-06') + ')');
+ok(near(invoicePaidInMonth(inv, '2026-07'), 750),  'tagged: July paid = 750 (Summer Camp installment, though paid 30 Jun)  (got ' + invoicePaidInMonth(inv, '2026-07') + ')');
+// due follows: June 750-750=0, July 1500-750=750.
+ok(near(billedInMonth('2026-06') - invoicePaidInMonth(inv, '2026-06'), 0),   'tagged: June due = 0');
+ok(near(billedInMonth('2026-07') - invoicePaidInMonth(inv, '2026-07'), 750), 'tagged: July due = 750');
+
 globalThis.__pass = pass; globalThis.__fail = fail;
 `;
 
