@@ -13,10 +13,10 @@ function computeStats(monthKey) {
   d.setDate(0);
   const prev = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 
-  // Revenue = BILLED invoice amount in the billing month (Σ invoice.amount). This
-  // is the single source of truth used across Owner Dashboard, Invoices and
-  // Transactions, so every screen agrees. (Cash-flow / collected views live on
-  // the Monthly Report + Reconciliation.)
+  // Revenue = BILLED in each sport's START month (accrual, club policy): a sport's
+  // fee is recognized in the month that sport begins — so a member with a June sport
+  // and a July sport (or a July Summer Camp) has that revenue split across the two
+  // months. Payment DATES are stored on the ledger but do not move revenue.
   const _billed = (ym, pred) => billedInMonth(ym, pred);
   const currRevenue = _billed(curr);
   const prevRevenue = _billed(prev);
@@ -7117,9 +7117,9 @@ function computeDashboard(ymSel) {
     if (x.indexOf('transfer') >= 0 || x.indexOf('bank') >= 0) return 'transfer';
     return 'cash';
   };
-  // Revenue = BILLED in the invoice's billing month — the canonical definition
-  // shared with the Invoices / Transactions / Club Revenue screens so all four
-  // agree. (Collected and Due are shown alongside it as the reconciliation.)
+  // Revenue = BILLED in each sport's START month (accrual, club policy) — the
+  // canonical definition shared with the Dashboard so all screens agree.
+  // (Collected and Due are shown alongside it as the reconciliation.)
   const revenueForMonth = (mym) => billedInMonth(mym);
 
   // 6-month trend (oldest → newest), ending this month.
@@ -8925,6 +8925,9 @@ PAGES.invoices = (main) => {
           || phoneQueryMatches(i.customerPhone, filter.search) || phoneQueryMatches(mem && mem.phone, filter.search) || phoneQueryMatches(mem && mem.phone2, filter.search);
         if (!hit) return false;
       }
+      // An invoice belongs to a month if any of its sports BILLS that month (each
+      // sport bills in its own START month) — so a June sport + a July sport show
+      // the invoice under BOTH months.
       if (filter.month !== 'all' && !invoiceTouchesMonth(i, filter.month)) return false;
       if (filter.day && i.date !== filter.day) return false;
       if (filter.method !== 'all' && i.method !== filter.method) return false;
@@ -9787,7 +9790,13 @@ PAGES.membercommission = (main) => {
 
   const statusBadge = (r) => {
     let bg = 'rgba(34,197,94,.14)', col = 'var(--green)', txt = r.status;
-    if (r.mode === 'prorated' && r.commission > 0) { bg = 'rgba(245,158,11,.16)'; col = 'var(--accent-2)'; txt = r.status + ' · ' + Math.round(r.ratio * 100) + '%'; }
+    if (r.mode === 'frozen') {
+      // Paused membership: coach earns only what's been attended so far; the rest is
+      // deferred until the member returns or the freeze ends and they expire.
+      bg = 'rgba(59,130,246,.14)'; col = 'var(--blue)';
+      txt = '❄️ ' + r.status + ' · ' + Math.round((r.ratio || 0) * 100) + '%' + (r.commission > 0 ? ' attended' : ' (0 — deferred)');
+    }
+    else if (r.mode === 'prorated' && r.commission > 0) { bg = 'rgba(245,158,11,.16)'; col = 'var(--accent-2)'; txt = r.status + ' · ' + Math.round(r.ratio * 100) + '%'; }
     else if (r.commission <= 0) { bg = 'rgba(239,68,68,.12)'; col = 'var(--red)'; txt = r.status + ' · 0'; }
     return `<span class="pill" style="background:${bg};color:${col};font-weight:700;font-size:11px">${escapeHtml(txt)}</span>`;
   };
