@@ -267,6 +267,23 @@
         return;
       }
       const batches = chunk(ops, MAX_BATCH_OPS); if (batches.length === 0) batches.push([]);
+      // ── SAVE VISIBILITY: summarise EXACTLY what is being written to Firestore. ──
+      const perCol = {}; let nSet = 0, nDel = 0;
+      for (const op of ops) { perCol[op.name] = (perCol[op.name] || 0) + 1; if (op.kind === 'set') nSet++; else nDel++; }
+      const writeSummary = {
+        at: new Date().toISOString(), path: PARENT, records: ops.length, sets: nSet, deletes: nDel, metaChanged, byCollection: perCol,
+        docs: ops.map(o => ({ doc: PARENT + '/' + o.name + '/' + o.id, kind: o.kind, fields: o.kind === 'set' ? Object.keys(o.data) : undefined, data: o.kind === 'set' ? o.data : undefined })),
+      };
+      console.log(`%c[Storage] ⤴ writing ${ops.length} doc(s)${metaChanged ? ' + settings' : ''} to Firestore (${PARENT})`, 'color:#5b8def;font-weight:600', perCol);
+      try {
+        if (typeof window !== 'undefined') {
+          window.__lastCloudWrite = writeSummary;   // inspect in devtools to SEE the stored object
+          window.__cloudWriteLog = (window.__cloudWriteLog || []);
+          window.__cloudWriteLog.push({ at: writeSummary.at, records: ops.length, metaChanged, ok: null });
+          if (window.__cloudWriteLog.length > 50) window.__cloudWriteLog.shift();
+          if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'saving', records: ops.length });
+        }
+      } catch (_) {}
       const commits = batches.map((group, bi) => {
         const batch = db.batch();
         for (const op of group) {
@@ -278,11 +295,21 @@
         return batch.commit();
       });
       Promise.all(commits)
-        .then(() => { lastWriteFailed = false; setBaseFromState(state); })
+        .then(() => {
+          lastWriteFailed = false; setBaseFromState(state);
+          console.log(`%c[Storage] ✅ stored in Firestore — ${nSet} written, ${nDel} deleted${metaChanged ? ', settings updated' : ''} @ ${new Date().toLocaleTimeString()}`, 'color:#16a34a;font-weight:700');
+          try { if (typeof window !== 'undefined') { const L = window.__cloudWriteLog; if (L && L.length) L[L.length - 1].ok = true; if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'saved', records: ops.length, at: Date.now() }); } } catch (_) {}
+        })
         .catch(e => {
           lastWriteFailed = true;
-          console.warn('[Storage:firebase] save failed (kept locally, will retry on next change):', (e && e.code) || e);
-          try { if (typeof window !== 'undefined' && typeof window.__onCloudSaveError === 'function') window.__onCloudSaveError(e); } catch (_) {}
+          console.error('[Storage] ❌ save FAILED (kept locally, will retry on next change):', (e && e.code) || e, e);
+          try {
+            if (typeof window !== 'undefined') {
+              const L = window.__cloudWriteLog; if (L && L.length) L[L.length - 1].ok = false;
+              if (typeof window.__onCloudSaveError === 'function') window.__onCloudSaveError(e);
+              if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'error', error: (e && e.code) || String(e) });
+            }
+          } catch (_) {}
         })
         .finally(() => { writeInFlight = false; if (pendingAfterWrite) { const n = pendingAfterWrite; pendingAfterWrite = null; _flushWrite(n); } });
     }
@@ -339,6 +366,7 @@
           Object.assign(result, assembled);
           needsMigrationFlag = false; loadErrored = false; cloudReadFailed = false;
           noteServerLoaded(result); _refreshLocalFromCloud(result);
+          try { console.log(`%c[Storage] ✅ loaded from Firestore — ${(result.members || []).length} members, ${(result.invoices || []).length} invoices from ${PARENT}`, 'color:#16a34a;font-weight:600'); } catch (_) {}
           setBaseFromState(result);
           _liveMeta = pickMeta(result);
           for (const name of COLLECTIONS) { _live[name] = new Map(); for (const r of (assembled[name] || [])) if (r && r.id != null) _live[name].set(String(r.id), r); }
