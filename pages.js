@@ -5186,7 +5186,7 @@ window.editMemberPricing = function(memberId) {
     // Append the NEW payment per group/invoice — ONE clean ledger row PER method used
     // (a split payment = several rows, same date). Never re-splits existing rows.
     for (const [key, g] of groups.entries()) {
-      const inv = g.inv || (g.rows[0] && g.rows[0].r.inv);
+      const inv = g.inv || (g.rows[0] && g.rows[0].inv);
       if (!inv) continue;
       const d = dateFor(key);
       const methods = (groupPayMeta[key] && groupPayMeta[key].methods) || {};
