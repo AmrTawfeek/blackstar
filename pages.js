@@ -4953,43 +4953,51 @@ window.editMemberPricing = function(memberId) {
     const corrupted = pays.length > 1 && pays.some(p => (Number(p.amount) || 0) < 0 || Math.abs((Number(p.amount) || 0) % 1) > 0.001);
     // ONE payments list: existing installments (edit date/method · remove) PLUS a
     // single "add a row" at the bottom (date · method · amount). No separate section.
+    // ── Existing installments as an aligned mini-table (Date · Method · [For] · Amount · ✕) ──
+    const _cols = multiSport ? '122px 1fr 1fr 84px 26px' : '122px 1fr 84px 26px';
+    const existHeader = pays.length ? `
+            <div style="display:grid;grid-template-columns:${_cols};gap:6px;padding:0 2px 4px;font-size:9px;font-weight:700;color:var(--text-mute);text-transform:uppercase;letter-spacing:.04em">
+              <div>${t('Date', 'التاريخ')}</div><div>${t('Method', 'الطريقة')}</div>${multiSport ? `<div>${t('For sport', 'للرياضة')}</div>` : ''}<div style="text-align:right">${t('Amount', 'المبلغ')}</div><div style="text-align:center">🗑</div>
+            </div>` : '';
     const existRowsHtml = pays.map((p, pi) => { const amt = Number(p.amount) || 0; return `
-            <div class="pay-row" data-inv="${inv.id}" data-pi="${pi}" style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
-              <input type="date" class="pri-exist-date" data-inv="${inv.id}" data-pi="${pi}" value="${p.date || ''}" style="font-size:12px" />
-              <select class="pri-exist-method" data-inv="${inv.id}" data-pi="${pi}" style="font-size:12px">${methodOpts.map(([v, l]) => `<option value="${v}" ${normMethod(p.method) === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
-              ${multiSport ? `<select class="pri-exist-sport" data-inv="${inv.id}" data-pi="${pi}" title="${t('Which sport this installment pays for', 'لأي رياضة هذا القسط')}" style="font-size:11px"><option value="">${t('— any', '— أي')}</option>${sportOpts(p.sport)}</select>` : ''}
-              <input type="number" step="1" class="pri-exist-amt" data-inv="${inv.id}" data-pi="${pi}" value="${amt}" title="${t('Edit amount (a negative value = refund)', 'تعديل المبلغ (قيمة سالبة = استرداد)')}" style="margin-inline-start:auto;width:84px;font-size:12px;font-weight:600;text-align:right;${amt < 0 ? 'color:var(--red)' : ''}" />
-              <label style="cursor:pointer;font-size:13px" title="${t('Remove this row', 'حذف هذا السطر')}"><input type="checkbox" class="pri-exist-del" data-inv="${inv.id}" data-pi="${pi}" style="vertical-align:middle"> 🗑</label>
+            <div class="pay-row" data-inv="${inv.id}" data-pi="${pi}" style="display:grid;grid-template-columns:${_cols};gap:6px;align-items:center;margin-bottom:5px">
+              <input type="date" class="pri-exist-date" data-inv="${inv.id}" data-pi="${pi}" value="${p.date || ''}" style="font-size:12px;min-width:0" />
+              <select class="pri-exist-method" data-inv="${inv.id}" data-pi="${pi}" style="font-size:12px;min-width:0">${methodOpts.map(([v, l]) => `<option value="${v}" ${normMethod(p.method) === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+              ${multiSport ? `<select class="pri-exist-sport" data-inv="${inv.id}" data-pi="${pi}" title="${t('Which sport this installment pays for', 'لأي رياضة هذا القسط')}" style="font-size:11px;min-width:0"><option value="">${t('— any', '— أي')}</option>${sportOpts(p.sport)}</select>` : ''}
+              <input type="number" step="1" class="pri-exist-amt" data-inv="${inv.id}" data-pi="${pi}" value="${amt}" title="${t('Edit amount (a negative value = refund)', 'تعديل المبلغ (سالب = استرداد)')}" style="font-size:12px;font-weight:600;text-align:right;min-width:0;${amt < 0 ? 'color:var(--red)' : ''}" />
+              <label style="cursor:pointer;text-align:center" title="${t('Remove this row', 'حذف هذا السطر')}"><input type="checkbox" class="pri-exist-del" data-inv="${inv.id}" data-pi="${pi}" style="margin:0;cursor:pointer"></label>
             </div>`; }).join('');
+    const methodCardsHtml = [['cash', '💵', t('Cash', 'نقدي'), '#16a34a'], ['card', '💳', t('Card', 'بطاقة'), '#3b82f6'], ['fawran', '📲', t('Fawran', 'فوران'), '#8b5cf6'], ['transfer', '🏦', t('Transfer', 'تحويل'), '#f59e0b']].map(([mk, ic, lbl, col]) => `
+                <div style="flex:1;min-width:100px;background:color-mix(in srgb, ${col} 9%, var(--surface));border:1px solid color-mix(in srgb, ${col} 35%, transparent);border-radius:10px;padding:6px 9px">
+                  <div style="font-size:10px;font-weight:700;color:${col};margin-bottom:3px">${ic} ${lbl}</div>
+                  <input class="pri-pay-m" data-grp="${key}" data-method="${mk}" type="number" min="0" step="1" value="" placeholder="0" inputmode="numeric" style="width:100%;font-size:14px;font-weight:700;text-align:right;background:transparent;border:none;border-bottom:1px solid color-mix(in srgb, ${col} 30%, var(--border));color:var(--text);outline:none" />
+                </div>`).join('');
     const paymentsHtml = `
-        <div style="margin:10px 0 2px;border-top:1px dashed var(--border);padding-top:8px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px">
-            <div style="font-size:11px;font-weight:700">🧾 ${t('Payments (installments)', 'الدفعات (الأقساط)')} <span class="text-mute" style="font-weight:400;font-size:10px">${t('edit date / method / amount · 🗑 remove · ➕ add below', 'تعديل التاريخ/الطريقة/المبلغ · 🗑 حذف · ➕ إضافة بالأسفل')}</span></div>
-            ${corrupted && inv ? `<label style="font-size:10px;color:var(--red);display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:700;white-space:nowrap"><input type="checkbox" class="pri-cleanup" data-inv="${inv.id}"> ⚠ ${t('Fix messy rows → one payment', 'دمج الأسطر في دفعة واحدة')}</label>` : ''}
+        <div style="margin:12px 0 2px;border-top:1px dashed var(--border);padding-top:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;gap:8px">
+            <div style="font-size:12px;font-weight:700">🧾 ${t('Payments', 'الدفعات')}${pays.length ? ` <span class="text-mute" style="font-weight:400;font-size:10px">· ${pays.length} ${t('installment(s)', 'قسط')}</span>` : ''}</div>
+            ${corrupted && inv ? `<label style="font-size:10px;color:var(--red);display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:700;white-space:nowrap"><input type="checkbox" class="pri-cleanup" data-inv="${inv.id}"> ⚠ ${t('Merge messy rows', 'دمج الأسطر الفوضوية')}</label>` : ''}
           </div>
-          ${existRowsHtml}
-          <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
-            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:7px">
-              <div style="font-size:11px;font-weight:700;color:var(--green)">➕ ${t('Collect a new payment', 'تحصيل دفعة جديدة')} <span class="text-mute" style="font-weight:400;font-size:10px">${t('— split across methods if needed', '— قابلة للتقسيم بين الطرق')}</span></div>
-              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-                ${multiSport ? `<label style="display:flex;align-items:center;gap:4px;font-size:11px" title="${t('Which sport this payment is for — sets the month it counts toward', 'لأي رياضة هذه الدفعة — يحدد الشهر الذي تُحتسب فيه')}"><span class="text-mute">🏷</span><select class="pri-pay-sport" data-grp="${key}" style="font-size:12px">${sportOpts(defaultPaySport)}</select></label>` : ''}
+          ${existHeader}
+          ${existRowsHtml || `<div class="text-mute" style="font-size:11px;padding:2px 2px 4px">${t('No payments recorded yet.', 'لا توجد دفعات مسجلة بعد.')}</div>`}
+          <div style="margin-top:10px;padding:10px;background:color-mix(in srgb, var(--green) 5%, var(--surface));border:1px solid color-mix(in srgb, var(--green) 22%, var(--border));border-radius:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+              <div style="font-size:12px;font-weight:700;color:var(--green)">➕ ${t('Collect a new payment', 'تحصيل دفعة جديدة')}</div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                ${multiSport ? `<label style="display:flex;align-items:center;gap:4px;font-size:11px" title="${t('Which sport this payment is for — sets the month it counts toward', 'لأي رياضة هذه الدفعة — يحدد الشهر')}"><span class="text-mute">🏷</span><select class="pri-pay-sport" data-grp="${key}" style="font-size:12px">${sportOpts(defaultPaySport)}</select></label>` : ''}
                 <label style="display:flex;align-items:center;gap:4px;font-size:11px"><span class="text-mute">📅</span><input type="date" class="pri-pay-date" data-grp="${key}" value="${TODAY}" style="font-size:12px" /></label>
                 <span style="font-size:11px;font-weight:700;white-space:nowrap">${t('Total', 'الإجمالي')}: <b class="pri-pay-total" data-grp="${key}" style="color:var(--green)">${fmt(0)}</b></span>
               </div>
             </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              ${[['cash', '💵', t('Cash', 'نقدي'), '#16a34a'], ['card', '💳', t('Card', 'بطاقة'), '#3b82f6'], ['fawran', '📲', t('Fawran', 'فوران'), '#8b5cf6'], ['transfer', '🏦', t('Transfer', 'تحويل'), '#f59e0b']].map(([mk, ic, lbl, col]) => `
-                <div style="flex:1;min-width:108px;background:color-mix(in srgb, ${col} 9%, var(--surface));border:1px solid color-mix(in srgb, ${col} 35%, transparent);border-radius:10px;padding:6px 9px">
-                  <div style="font-size:10px;font-weight:700;color:${col};margin-bottom:3px">${ic} ${lbl}</div>
-                  <input class="pri-pay-m" data-grp="${key}" data-method="${mk}" type="number" min="0" step="1" value="" placeholder="0" inputmode="numeric" style="width:100%;font-size:14px;font-weight:700;text-align:right;background:transparent;border:none;border-bottom:1px solid color-mix(in srgb, ${col} 30%, var(--border));color:var(--text);outline:none" />
-                </div>`).join('')}
-            </div>
-            ${inv ? `<div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
-              <span style="font-size:11px;font-weight:700;color:var(--red)">➖ ${t('Refund (money out)', 'استرداد (مبلغ خارج)')}</span>
-              <input class="pri-refund" data-grp="${key}" type="number" min="0" step="1" value="" placeholder="0" style="width:90px;font-size:13px;font-weight:600;text-align:right" />
-              <select class="pri-refund-method" data-grp="${key}" style="font-size:12px">${methodOpts.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
-              <span class="text-mute" style="font-size:10px">${t('recorded as a negative payment on the date above', 'يُسجّل كدفعة سالبة بالتاريخ أعلاه')}</span>
-            </div>` : ''}
+            <div style="display:flex;gap:8px;flex-wrap:wrap">${methodCardsHtml}</div>
+            ${inv ? `<details style="margin-top:8px">
+              <summary style="font-size:11px;color:var(--red);cursor:pointer;font-weight:600;user-select:none">➖ ${t('Record a refund (money out)', 'تسجيل استرداد')}</summary>
+              <div style="display:flex;align-items:center;gap:8px;margin-top:7px;flex-wrap:wrap">
+                <input class="pri-refund" data-grp="${key}" type="number" min="0" step="1" value="" placeholder="0" style="width:90px;font-size:13px;font-weight:600;text-align:right" />
+                <select class="pri-refund-method" data-grp="${key}" style="font-size:12px">${methodOpts.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+                <span class="text-mute" style="font-size:10px">${t('recorded as a negative payment on the date above', 'يُسجّل كدفعة سالبة بالتاريخ أعلاه')}</span>
+              </div>
+            </details>` : ''}
           </div>
         </div>`;
     return `
@@ -8963,7 +8971,7 @@ window.toggleCoachActive = function(coachId) {
 PAGES.invoices = (main) => {
   // Treat every "Summer Camp · <duration>" variant as Summer Camp for filtering.
   const _isCampActivity = s => typeof s === 'string' && (s === SUMMER_CAMP || s.indexOf(SUMMER_CAMP) === 0);
-  let filter = loadFilter('invoices', { search: '', month: (TODAY || '').slice(0, 7) || 'all', day: '', method: 'all', sport: 'all', coach: 'all', category: 'all' });
+  let filter = loadFilter('invoices', { search: '', month: (TODAY || '').slice(0, 7) || 'all', day: '', from: '', to: '', method: 'all', sport: 'all', coach: 'all', category: 'all' });
   const pg = makePager(10);
   const selected = new Set();   // invoice ids ticked for merging
 
@@ -8990,9 +8998,13 @@ PAGES.invoices = (main) => {
       }
       // An invoice belongs to a month if any of its sports BILLS that month (each
       // sport bills in its own START month) — so a June sport + a July sport show
-      // the invoice under BOTH months.
-      if (filter.month !== 'all' && !invoiceTouchesMonth(i, filter.month)) return false;
+      // the invoice under BOTH months. A From/To range (on the invoice's date) takes
+      // over the month scope so it can span months.
+      const _range = !!(filter.from || filter.to);
+      if (!_range && filter.month !== 'all' && !invoiceTouchesMonth(i, filter.month)) return false;
       if (filter.day && i.date !== filter.day) return false;
+      if (filter.from && (!i.date || i.date < filter.from)) return false;
+      if (filter.to && (!i.date || i.date > filter.to)) return false;
       if (filter.method !== 'all' && i.method !== filter.method) return false;
       if (filter.sport !== 'all') {
         // "Summer Camp" matches every camp duration variant (Summer Camp · 1 week, …).
@@ -9151,8 +9163,14 @@ PAGES.invoices = (main) => {
           ${[...new Set([(TODAY || '').slice(0, 7), ...state.invoices.map(i => i.month).filter(Boolean)])].filter(Boolean).sort().reverse().map(m => `<option value="${m}" ${m === filter.month ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
         </select>
         <div style="display:flex;align-items:center;gap:4px">
-          <input id="inv-day" type="date" class="btn ghost" style="padding:6px 10px" title="${t('Filter by a specific day', 'تصفية بيوم محدد')}" />
-          <button id="inv-day-clear" class="btn ghost sm" title="${t('Clear day filter', 'مسح تصفية اليوم')}" style="padding:6px 8px;display:none">✕</button>
+          <input id="inv-day" type="date" class="btn ghost" style="padding:6px 10px" value="${filter.day || ''}" title="${t('Filter by a specific day', 'تصفية بيوم محدد')}" />
+          <button id="inv-day-clear" class="btn ghost sm" title="${t('Clear day filter', 'مسح تصفية اليوم')}" style="padding:6px 8px;${filter.day ? '' : 'display:none'}">✕</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:4px" title="${t('Filter by a date range (invoice date) — spans months', 'تصفية بنطاق تاريخ الفاتورة — عبر الأشهر')}">
+          <span class="text-mute" style="font-size:11px">${t('From', 'من')}</span>
+          <input id="inv-from" type="date" class="btn ghost" style="padding:6px 8px" value="${filter.from || ''}" />
+          <span class="text-mute" style="font-size:11px">${t('To', 'إلى')}</span>
+          <input id="inv-to" type="date" class="btn ghost" style="padding:6px 8px" value="${filter.to || ''}" />
         </div>
         <select id="inv-category" class="btn ghost">
           <option value="all">All categories</option>
@@ -9171,6 +9189,7 @@ PAGES.invoices = (main) => {
           <option value="cash">Cash</option>
           <option value="card">Card</option><option value="fawran">Fawran</option>
         </select>
+        <button id="inv-clear-filters" class="btn ghost" title="${t('Clear all filters', 'مسح كل الفلاتر')}">✕ ${t('Clear filters', 'مسح الفلاتر')}</button>
       </div>
       <div id="inv-mergebar" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px">
         <span style="font-size:16px">🧾</span>
@@ -9203,9 +9222,15 @@ PAGES.invoices = (main) => {
   `;
   $('#inv-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   attachRecentSearch('inv-search', 'invoices');
-  $('#inv-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
+  $('#inv-month').addEventListener('change', e => {
+    filter.month = e.target.value; filter.from = ''; filter.to = ''; filter.day = '';
+    const f = $('#inv-from'), tt = $('#inv-to'), dd = $('#inv-day'), c = $('#inv-day-clear');
+    if (f) f.value = ''; if (tt) tt.value = ''; if (dd) dd.value = ''; if (c) c.style.display = 'none';
+    pg.page = 1; refresh();
+  });
   $('#inv-day')?.addEventListener('change', e => {
     filter.day = e.target.value || '';
+    if (filter.day) { filter.from = ''; filter.to = ''; const f = $('#inv-from'), tt = $('#inv-to'); if (f) f.value = ''; if (tt) tt.value = ''; }
     const clr = $('#inv-day-clear'); if (clr) clr.style.display = filter.day ? '' : 'none';
     pg.page = 1; refresh();
   });
@@ -9214,6 +9239,15 @@ PAGES.invoices = (main) => {
     const di = $('#inv-day'); if (di) di.value = '';
     const clr = $('#inv-day-clear'); if (clr) clr.style.display = 'none';
     pg.page = 1; refresh();
+  });
+  // From/To date range — takes over the month scope (so it can span months).
+  const _onRange = () => { if (filter.from || filter.to) { filter.day = ''; filter.month = 'all'; const dd = $('#inv-day'), ms = $('#inv-month'), c = $('#inv-day-clear'); if (dd) dd.value = ''; if (ms) ms.value = 'all'; if (c) c.style.display = 'none'; } pg.page = 1; refresh(); };
+  $('#inv-from')?.addEventListener('change', e => { filter.from = e.target.value || ''; _onRange(); });
+  $('#inv-to')?.addEventListener('change', e => { filter.to = e.target.value || ''; _onRange(); });
+  $('#inv-clear-filters')?.addEventListener('click', () => {
+    filter.search = ''; filter.month = 'all'; filter.day = ''; filter.from = ''; filter.to = '';
+    filter.method = 'all'; filter.sport = 'all'; filter.coach = 'all'; filter.category = 'all';
+    pg.page = 1; saveFilter('invoices', filter); PAGES.invoices(main);   // full re-render resets every control
   });
   $('#inv-method').addEventListener('change', e => { filter.method = e.target.value; pg.page = 1; refresh(); });
   $('#inv-sport').addEventListener('change', e => { filter.sport = e.target.value; pg.page = 1; refresh(); });
@@ -16078,14 +16112,19 @@ PAGES.attendance = (main) => {
     // period: if this new Y would push attended past the total, warn first so a
     // member can't be marked present more times than classes they paid for.
     if (next === 'Y') {
-      const sub = (m.subscriptions || []).filter(s => (s.activity || '') === sport).slice(-1)[0];
+      // Pick the subscription whose window CONTAINS the marked day (falls back to the
+      // latest) so a renewed member's present is counted against the NEW cycle, not
+      // an expired one.
+      const markISO = `${mo}-${String(day).padStart(2, '0')}`;
+      const sub = (typeof subForAttendanceDate === 'function')
+        ? subForAttendanceDate(m, sport, markISO)
+        : (m.subscriptions || []).filter(s => (s.activity || '') === sport).slice(-1)[0];
       const planned = sub ? (parseInt(sub.totalClasses) || 0) : 0;
       if (planned > 0) {
-        // Count present marks ONLY within the CURRENT subscription's window
-        // (start → end). A renewal creates a new subscription with a new start,
-        // so its fresh window resets the count — otherwise a renewed (Active)
-        // member is wrongly told they already finished their classes because the
-        // PREVIOUS cycle's attendance was still being counted.
+        // Count present marks ONLY within that subscription's window (start → end).
+        // A renewal creates a new subscription with a fresh window, so the count
+        // resets — otherwise a renewed (Active) member is wrongly told they already
+        // finished their classes because the PREVIOUS cycle's attendance still counted.
         const live = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(m, sport, sub.start || null, sub.end || null) : { y: 0 };
         const alreadyY = live.y || 0;
         // Only block if this cell isn't already counted as Y (it's a NEW present).
@@ -16239,10 +16278,15 @@ PAGES.attendance = (main) => {
       // flag the row red and surface the "Completed" status so it's obvious.
       let campOver = false, campLimit = 0, campMarked = 0;
       if (sport === SUMMER_CAMP) {
-        const sub = (m.subscriptions || []).filter(s => (s.activity || '') === SUMMER_CAMP).slice(-1)[0];
+        // Use the CURRENT camp cycle (the one active this month) and count only its
+        // window, so a renewed camp member isn't flagged "over limit" by a previous
+        // cycle's days.
+        const sub = (typeof subForAttendanceDate === 'function')
+          ? subForAttendanceDate(m, SUMMER_CAMP, `${gMonth}-15`)
+          : (m.subscriptions || []).filter(s => (s.activity || '') === SUMMER_CAMP).slice(-1)[0];
         campLimit = sub ? (parseInt(sub.totalClasses) || 0) : 0;
         if (campLimit > 0 && typeof liveAttendanceCount === 'function') {
-          campMarked = liveAttendanceCount(m, SUMMER_CAMP, null, null).y || 0;
+          campMarked = liveAttendanceCount(m, SUMMER_CAMP, sub ? (sub.start || null) : null, sub ? (sub.end || null) : null).y || 0;
           campOver = campMarked >= campLimit;
         }
       }
@@ -18378,6 +18422,7 @@ window.addRenewal = function(memberId) {
               classes,
               price: amount,
               durationLabel: dl || null,
+              billMonth: start.slice(0, 7),   // renewal revenue lands in the RENEWAL month, unambiguously
             }],
           });
         }
