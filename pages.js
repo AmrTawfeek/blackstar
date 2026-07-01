@@ -9009,7 +9009,14 @@ PAGES.invoices = (main) => {
   function refresh() {
     saveFilter('invoices', filter);
     const allRows = applyFilter().sort((a,b) => b.date.localeCompare(a.date));
-    const total = allRows.reduce((s,r) => s+r.amount, 0);
+    // Whole-month filter → show each invoice's SHARE for that month (each sport bills
+    // in its start month), so a cross-month invoice contributes its portion per month
+    // and the totals never double-count. 'all' shows full invoice amounts. Paid/Due use
+    // the precise per-payment (sport-tag) attribution.
+    const ms = (filter.month && filter.month !== 'all') ? filter.month : null;
+    const rowAmtOf  = (i) => ms ? (Number(i.amount) || 0) * invoiceMonthShare(i, ms) : (Number(i.amount) || 0);
+    const rowPaidOf = (i) => ms ? invoicePaidInMonth(i, ms) : invoicePaid(i);
+    const total = allRows.reduce((s,r) => s + rowAmtOf(r), 0);
     const rows = paginate(allRows, pg);
     $('#inv-tbody').innerHTML = rows.length ? rows.map(i => {
       // Customer cell — always use LIVE member info if linked. Deleted members
@@ -9048,13 +9055,14 @@ PAGES.invoices = (main) => {
         <td>${i.sport ? `<span class="badge ${sportBadgeColor}">${escapeHtml(sportLabel)}</span>` : '<span class="text-mute">—</span>'}</td>
         <td>${i.coach ? `<span class="text-dim">${escapeHtml(i.coach)}</span>` : '<span class="text-mute">—</span>'}</td>
         <td><span class="badge ${i.method === 'card' ? 'blue' : ''}">${i.method}</span></td>
-        <td class="text-right num font-bold">${fmt(i.amount)}${(() => {
-          const st = invoiceStatus(i);
+        <td class="text-right num font-bold">${fmt(rowAmtOf(i))}${(() => {
+          const rAmt = rowAmtOf(i), rPaid = rowPaidOf(i), rDue = Math.max(0, rAmt - rPaid);
+          const st = rAmt <= 0.001 ? 'Paid' : (rPaid <= 0.001 ? 'Unpaid' : (rDue > 0.5 ? 'Partial' : 'Paid'));
           if (st === 'Paid') return '';
-          return `<div style="font-size:10px;font-weight:700;color:${st === 'Unpaid' ? 'var(--red)' : 'var(--accent-2)'};margin-top:2px">${st} · ${fmt(invoiceBalance(i))} due</div>`;
+          return `<div style="font-size:10px;font-weight:700;color:${st === 'Unpaid' ? 'var(--red)' : 'var(--accent-2)'};margin-top:2px">${st} · ${fmt(rDue)} due</div>`;
         })()}</td>
         <td class="text-right" style="white-space:nowrap">
-          ${invoiceStatus(i) !== 'Paid' ? `<button class="btn ghost sm" onclick="recordPaymentUI(${i.id})" title="Record a payment toward the balance" style="color:var(--green)">💵 Pay</button>` : ''}
+          ${(ms ? (rowAmtOf(i) - rowPaidOf(i)) > 0.5 : invoiceStatus(i) !== 'Paid') ? `<button class="btn ghost sm" onclick="recordPaymentUI(${i.id})" title="Record a payment toward the balance" style="color:var(--green)">💵 Pay</button>` : ''}
           ${i.customerId && !isViewerRole() ? `<button class="btn ghost sm" onclick="showInvoiceHistory(${i.customerId})" title="See all invoices for this customer">📜</button>` : ''}
           ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="printInvoicePDF(${i.id})" title="Export invoice as PDF (filename = customer name)">⬇ Export</button>`}
           <button class="btn ghost sm" onclick="sendInvoiceWhatsApp(${i.id})" title="Send invoice as WhatsApp message" style="color:#25D366">💬</button>
@@ -9069,8 +9077,8 @@ PAGES.invoices = (main) => {
     // all-time — distinct from the Dashboard's "Total Revenue", which is cash
     // COLLECTED in a given month. Show collected + outstanding too so the figures
     // are unambiguous and reconcile with the Dashboard.
-    const collected = allRows.reduce((s, r) => s + invoicePaid(r), 0);
-    const outstanding = allRows.reduce((s, r) => s + invoiceBalance(r), 0);
+    const collected = allRows.reduce((s, r) => s + rowPaidOf(r), 0);
+    const outstanding = ms ? Math.max(0, total - collected) : allRows.reduce((s, r) => s + invoiceBalance(r), 0);
     $('#inv-count').textContent = isViewerRole()
       ? `${allRows.length} invoices`
       : `${allRows.length} invoices · ${fmtMoney(total)} charged · ${fmtMoney(collected)} collected${outstanding > 0.5 ? ` · ${fmtMoney(outstanding)} due` : ''}`;
@@ -9328,13 +9336,15 @@ PAGES.invoices = (main) => {
     // Export the CURRENT filtered set (was: all invoices regardless of filter)
     const all = applyFilter().sort((a,b) => b.date.localeCompare(a.date));
     if (!all.length) { toast('No invoices to export', 'error'); return; }
+    // Match the on-screen totals: whole-month filter → each invoice's month SHARE.
+    const ms = (filter.month && filter.month !== 'all') ? filter.month : null;
     const rows = [['Ref','Date','Month','Category','Customer','Mobile','QID','Activity','Coach','Description','Method','Total','Paid','Due']];
     let sumTotal = 0, sumPaid = 0, sumDue = 0;
     for (const i of all) {
       const cust = customerInfo(i);
-      const total = Number(i.amount) || 0;
-      const paid = (typeof invoicePaid === 'function') ? invoicePaid(i) : 0;
-      const due = (typeof invoiceBalance === 'function') ? invoiceBalance(i) : Math.max(0, total - paid);
+      const total = ms ? (Number(i.amount) || 0) * invoiceMonthShare(i, ms) : (Number(i.amount) || 0);
+      const paid = ms ? invoicePaidInMonth(i, ms) : ((typeof invoicePaid === 'function') ? invoicePaid(i) : 0);
+      const due = Math.max(0, total - paid);
       sumTotal += total; sumPaid += paid; sumDue += Math.max(0, due);
       rows.push([
         i.ref || `#${i.id}`,
