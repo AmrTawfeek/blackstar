@@ -12001,8 +12001,10 @@ window.printInvoicePDF = function(id) {
       .slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
     if (!pays.length) return '';
     const money = n => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    // Hidden by DEFAULT — the plain invoice omits the per-installment breakdown.
+    // Reveal it with the "Show installments" button (only when a member asks).
     return `
-  <div style="margin:24px 0">
+  <div id="pay-history" style="margin:24px 0;display:none">
     <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:8px">Payment History · <bdi>سجل المدفوعات</bdi></div>
     <table style="width:100%;border-collapse:collapse;font-size:12px">
       <thead><tr style="background:#f7f7f8">
@@ -12085,8 +12087,9 @@ window.printInvoicePDF = function(id) {
   <div class="print-btn-wrap">
     <button class="print-btn" onclick="exportPdf()">⬇ Export PDF</button>
     <button class="print-btn secondary" onclick="window.print()">🖨 Print</button>
+    <button class="print-btn secondary" id="toggle-pay-history" onclick="togglePayHistory(this)">🧾 Show installments</button>
     <button class="print-btn secondary" onclick="window.close()">Close</button>
-    <div class="hint">"Export PDF" opens the save dialog — the file is named after the customer. Choose "Save as PDF" as the destination.</div>
+    <div class="hint">"Export PDF" opens the save dialog — the file is named after the customer. Choose "Save as PDF" as the destination. Click "Show installments" to add the per-payment history if the member asks for it.</div>
   </div>
 
   <script>
@@ -12096,6 +12099,20 @@ window.printInvoicePDF = function(id) {
       // Ensure the title (filename) is the customer name at print time
       document.title = ${JSON.stringify(fileName)};
       window.print();
+    }
+    // Reveal / hide the per-installment payment history (hidden by default). Only
+    // what's visible on screen prints, so the plain invoice stays clean.
+    function togglePayHistory(btn) {
+      var h = document.getElementById('pay-history');
+      if (!h) return;
+      var show = h.style.display === 'none';
+      h.style.display = show ? 'block' : 'none';
+      btn.textContent = show ? '🧾 Hide installments' : '🧾 Show installments';
+    }
+    // No payments recorded → nothing to toggle, hide the button.
+    if (!document.getElementById('pay-history')) {
+      var _tb = document.getElementById('toggle-pay-history');
+      if (_tb) _tb.style.display = 'none';
     }
     // Keyboard shortcut
     document.addEventListener('keydown', function(e) {
