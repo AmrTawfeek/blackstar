@@ -381,7 +381,7 @@ ${seed}
   // deleted/archived member must NOT count toward commission
   state.coaches.push({ id:15, name:'CoachDel', rate:100, fixedSalary:0, active:'Y' });
   state.members.push({ id:78, name:'DeletedMem', deleted:true, coachId:15, subscriptions:[{activity:'Boxing',coachId:15,totalClasses:6,amountPaid:500,start:'2026-06-01',end:'2026-07-01',invoiceNumber:'INVDEL'}], dailyAttendance:{} });
-  state.members.push({ id:79, name:'LiveMem', coachId:15, subscriptions:[{activity:'Boxing',coachId:15,totalClasses:6,amountPaid:500,start:'2026-06-01',end:'2026-07-01',invoiceNumber:'INVLIVE'}], dailyAttendance:{'2026-06':{'Boxing':{'1':'Y','2':'Y','3':'Y'}}} });
+  state.members.push({ id:79, name:'LiveMem', coachId:15, expiryDate:'2099-12-31', subscriptions:[{activity:'Boxing',coachId:15,totalClasses:6,amountPaid:500,start:'2026-06-01',end:'2099-12-31',invoiceNumber:'INVLIVE'}], dailyAttendance:{'2026-06':{'Boxing':{'1':'Y','2':'Y','3':'Y'}}} });
   state.invoices.push({ id:710, ref:'INVDEL',  date:'2026-06-01', month:'2026-06', amount:500, category:'Membership', sport:'Boxing', coachId:15, customerId:78, lineItems:[{sport:'Boxing',coachId:15,price:500}] });
   state.invoices.push({ id:711, ref:'INVLIVE', date:'2026-06-01', month:'2026-06', amount:500, category:'Membership', sport:'Boxing', coachId:15, customerId:79, lineItems:[{sport:'Boxing',coachId:15,price:500}] });
   // two identical invoices for the same member = a duplicate the finder must catch
@@ -1461,9 +1461,41 @@ ${seed}
   // reserved category present, and an expense row with the reserved category
   // counts toward the expense totals like any other expense.
   ok(ROUTES.cashcollection && ROUTES.cashcollection.section === 'Finance', 'nav: Cash Collection under Finance');
-  ok(ROLE_ALLOWED.receptionist.includes('cashcollection'), 'role: receptionist can record cash collections (front desk hands the envelope)');
+  ok(!ROLE_ALLOWED.receptionist.includes('cashcollection'), 'role: receptionist CANNOT see Cash Collection (owner till-withdrawal totals leak revenue — payments are recorded via the Invoices "Pay" flow instead)');
   ok(EXP_CATS.includes('Cash collected by owner'), 'expenses: reserved category "Cash collected by owner" is always present in EXP_CATS');
   ok(RESERVED_EXPENSE_CATEGORIES.includes('Cash collected by owner'), 'expenses: "Cash collected by owner" is reserved (admin cannot delete it from settings)');
+  // ── Batch 1 permission rules (consolidated requirements #2, #9) ──
+  ok(!ROLE_ALLOWED.receptionist.includes('coaches'), 'role #9: receptionist has NO Team/coach roster (least-privilege)');
+  (() => {
+    const savedUser = state.user, savedSession = state.session;
+    const asRole = (r) => { state.user = { role: r }; state.session = null; };
+    asRole('admin');        ok(canManageFreeze() === true,  'freeze #2: admin CAN manage freezes');
+    asRole('receptionist'); ok(canManageFreeze() === true,  'freeze #2: reception CAN manage freezes');
+    asRole('coach');        ok(canManageFreeze() === false, 'freeze #2: coach CANNOT manage freezes');
+    asRole('student');      ok(canManageFreeze() === false, 'freeze #2: member CANNOT freeze own membership');
+    state.user = savedUser; state.session = savedSession;
+  })();
+  // ── Batch 2: audit enrichment + record stamping (requirements #5, #8) ──
+  ok(ROUTES.audit && ROUTES.audit.adminOnly === true, 'audit #8: Audit Log route is admin-only');
+  (() => {
+    const savedUser = state.user, savedSession = state.session, savedLog = state.auditLog;
+    state.user = { role: 'admin', name: 'Test Admin', username: 'test@blackstars.qa' }; state.session = null;
+    state.auditLog = [];
+    audit('member.update', 'member:42', 'Edited Foo', { name: 'Foo Bar', old: { phone: '111' }, new: { phone: '222' } });
+    const e = state.auditLog[0];
+    ok(e.userName === 'Test Admin' && e.role === 'admin', 'audit #8: entry captures full name + role');
+    ok(e.module === 'member' && e.recType === 'member' && e.recId === '42', 'audit #8: entry parses module + record id from target');
+    ok(e.recordName === 'Foo Bar', 'audit #8: entry captures record name');
+    ok(e.oldValue && e.oldValue.phone === '111' && e.newValue && e.newValue.phone === '222', 'audit #8: entry captures previous → new value');
+    const rec = {};
+    stampUpdate(rec);
+    ok(rec.updatedBy === 'test@blackstars.qa' && rec.updatedByName === 'Test Admin' && !!rec.updatedAt, 'lastupdated #5: stampUpdate sets updatedBy/name/at');
+    ok(rec.createdBy === 'test@blackstars.qa' && !!rec.createdAt, 'lastupdated #5: stampUpdate sets createdBy/at on first stamp');
+    const firstCreated = rec.createdAt;
+    stampUpdate(rec);
+    ok(rec.createdAt === firstCreated, 'lastupdated #5: createdAt is preserved on later updates');
+    state.user = savedUser; state.session = savedSession; state.auditLog = savedLog;
+  })();
   (() => {
     const before = state.expenses ? state.expenses.slice() : [];
     state.expenses = [
@@ -3194,6 +3226,31 @@ ${seed}
     eq(M.billed, M.collected + M.dueThisMonth, 'align: Monthly Report billed == collected + due');
     eq(S.currProfit, M.net, 'align: Dashboard net profit == Monthly Report net profit');
     eq(M.net, billed - M.expenses, 'align: net profit = billed − expenses (incl salaries)');
+
+    // ── CROSS-MONTH: one invoice whose sports bill in DIFFERENT months must split
+    //    billed/collected/due per month, and EVERY financial screen must agree. ──
+    state.invoices = [
+      { id: 950, customerId: 1, ref: 'INVX', date: '2031-03-05', month: '2031-03', amount: 2250, amountPaid: 1500, method: 'cash', category: 'Membership',
+        lineItems: [ { sport: 'KB', price: 750, billMonth: '2031-03' }, { sport: 'Camp', price: 1500, billMonth: '2031-04' } ],
+        payments: [ { amount: 1500, method: 'cash', date: '2031-03-05', month: '2031-03' } ] },
+    ];
+    state.expenses = [];
+    eq(Math.round(billedInMonth('2031-03')), 750,  'xmonth: March billed = 750 (KB)');
+    eq(Math.round(billedInMonth('2031-04')), 1500, 'xmonth: April billed = 1500 (Camp)');
+    eq(Math.round(collectedInMonth('2031-03')), 750, 'xmonth: March collected = 750 (paid fills earliest first)');
+    eq(Math.round(collectedInMonth('2031-04')), 750, 'xmonth: April collected = 750 (remainder)');
+    eq(Math.round(dueInMonth('2031-03')), 0,   'xmonth: March due = 0');
+    eq(Math.round(dueInMonth('2031-04')), 750, 'xmonth: April due = 750');
+    ['2031-03','2031-04'].forEach(function(ym){
+      var b = billedInMonth(ym), c = collectedInMonth(ym), d = dueInMonth(ym);
+      eq(Math.round(b), Math.round(c + d), 'xmonth ' + ym + ': billed == collected + due');
+      var Mx = computeMonthlyReport(ym), Cx = computeReconciliation(ym);
+      eq(Math.round(Mx.revenue), Math.round(c), 'xmonth ' + ym + ': Monthly Report collected == collectedInMonth');
+      eq(Math.round(Cx.revenue), Math.round(c), 'xmonth ' + ym + ': Reconciliation revenue == collectedInMonth');
+      eq(Math.round(Cx.byMethod.cash + Cx.byMethod.card + Cx.byMethod.transfer + Cx.byMethod.fawran), Math.round(c), 'xmonth ' + ym + ': recon by-method sums to collected');
+      ok(Math.abs(Cx.leakage) < 0.5, 'xmonth ' + ym + ': reconciliation leakage == 0');
+    });
+
     state.invoices = savedInv; state.expenses = savedExp; state.members = savedMem; state.salaries = savedSal;
   })();
 

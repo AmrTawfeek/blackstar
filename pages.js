@@ -366,6 +366,52 @@ PAGES.dashboard = (main) => {
       </div>
     </div>
 
+    <!-- Data & Cloud Sync — document count + server load/save confirmation -->
+    ${(() => {
+      const COLS = ['members','coaches','invoices','expenses','salaries','sales','advices','trials','rentals','rentalCustomers','schedule','swimGroups','auditLog','membershipTransfers','cashCounts','families','notes','products','drivers','posts'];
+      const counts = {}; let totalDocs = 1;   // + parent meta document
+      for (const k of COLS) { const n = Array.isArray(state[k]) ? state[k].length : 0; counts[k] = n; totalDocs += n; }
+      const paymentRows = (state.invoices || []).reduce((sm, i) => sm + (Array.isArray(i.payments) ? i.payments.length : 0), 0);
+      const rd = (typeof window !== 'undefined' && window.__lastCloudRead) || null;
+      const wr = (typeof window !== 'undefined' && window.__lastCloudWrite) || null;
+      const wrLog = (typeof window !== 'undefined' && Array.isArray(window.__cloudWriteLog) && window.__cloudWriteLog.length) ? window.__cloudWriteLog[window.__cloudWriteLog.length - 1] : null;
+      const fmtT = (ms) => { if (!ms) return null; try { return new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); } catch (e) { return null; } };
+      const readTxt = fmtT(rd && rd.at);
+      const saveTxt = fmtT((wr && wr.at) || (wrLog && wrLog.at));
+      const readBadge = readTxt
+        ? `<span style="color:var(--green);font-weight:700">✅ ${t('Loaded from server','تم التحميل من الخادم')} · ${readTxt}</span>`
+        : `<span style="color:var(--accent-2);font-weight:700">⚠ ${t('Local cache (offline)','نسخة محلية — بدون اتصال')}</span>`;
+      const saveBadge = saveTxt
+        ? `<span style="color:var(--green);font-weight:700">✅ ${t('Saved to cloud','تم الحفظ في السحابة')} · ${saveTxt}</span>`
+        : `<span class="text-mute">${t('No changes saved yet this session','لا تغييرات محفوظة بعد هذه الجلسة')}</span>`;
+      const cells = [['Members','الأعضاء','members'],['Invoices','الفواتير','invoices'],['Coaches','المدربون','coaches'],['Expenses','المصروفات','expenses'],['Sales','المبيعات','sales'],['Rentals','الإيجارات','rentals'],['Trials','التجارب','trials'],['Families','العائلات','families'],['Products','المنتجات','products'],['Schedule','الجدول','schedule'],['Transfers','التحويلات','membershipTransfers'],['Audit log','سجل التدقيق','auditLog']]
+        .map(([en,ar,k]) => `<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span class="text-mute">${t(en,ar)}</span><span class="num font-bold">${(counts[k]||0).toLocaleString()}</span></div>`).join('');
+      return `
+    <div class="card" id="data-sync-card" style="margin-bottom:16px;border:1px solid rgba(34,197,94,.28)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:22px">☁️</span>
+          <div>
+            <div style="font-weight:700;font-size:14px">${t('Data & Cloud Sync','البيانات والمزامنة السحابية')}</div>
+            <div class="text-mute" style="font-size:11px">${t('Every record is its own document — no overwriting, safe for many users at once','كل سجل مستند مستقل — بلا استبدال، آمن للاستخدام المتعدد')}</div>
+          </div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:26px;font-weight:800;color:var(--green);line-height:1">${totalDocs.toLocaleString()}</div>
+          <div class="text-mute" style="font-size:10px;text-transform:uppercase;letter-spacing:.05em">${t('documents in cloud','مستند في السحابة')}</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;margin-bottom:10px;padding:8px 10px;background:var(--surface-2);border-radius:8px">
+        <div>⬇️ ${readBadge}</div>
+        <div>⬆️ ${saveBadge}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:0 18px;border-top:1px solid var(--border);padding-top:8px">
+        ${cells}
+        <div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span class="text-mute">${t('Payment records','سجلات الدفع')}</span><span class="num font-bold">${paymentRows.toLocaleString()}</span></div>
+      </div>
+    </div>`;
+    })()}
+
     <!-- Revenue stream breakdown -->
     <div class="kpi-grid mb-3">
       <div class="kpi green">
@@ -1170,7 +1216,7 @@ PAGES.members = (main) => {
         <span style="font-size:16px">☑️</span>
         <div style="flex:1;font-size:13px;font-weight:600"><span id="members-bulk-count">0</span> selected</div>
         ${isViewerRole() ? '' : `<button class="btn ghost sm" id="members-bulk-family" title="Group the selected members under one family/household">👨‍👩‍👧 Add to family</button>
-        ${currentRole() === 'admin' ? `<button class="btn ghost sm" id="members-bulk-freeze" title="Freeze the selected member (pause membership and shift expiry)">❄️ Freeze</button>` : ''}
+        ${canManageFreeze() ? `<button class="btn ghost sm" id="members-bulk-freeze" title="Freeze the selected member (pause membership and shift expiry)">❄️ Freeze</button>` : ''}
         <button class="btn ghost sm" id="members-bulk-export" title="Export the selected members to CSV">📥 Export selected</button>
         <button class="btn ghost sm" id="members-bulk-archive" title="Archive (soft-delete) the selected members" style="color:var(--red)">🗑 Archive selected</button>`}
         <button class="btn ghost sm" id="members-bulk-clear">Clear</button>
@@ -1299,7 +1345,7 @@ PAGES.members = (main) => {
   $('#filter-expiry')?.addEventListener('change', e => { filter.expiry = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#filter-dupnames')?.addEventListener('click', () => { filter.dupNames = !filter.dupNames; pg.page = 1; refreshAndSave(); });
   $('#add-member').addEventListener('click', () => addMember());
-  $('#export-members').addEventListener('click', () => exportMembersChoice());
+  $('#export-members')?.addEventListener('click', () => exportMembersChoice());   // hidden for viewer/reception role
   const colBtn = $('#member-columns'); if (colBtn) colBtn.addEventListener('click', () => openMemberColumns());
   $('#find-duplicates').addEventListener('click', showDuplicatesModal);
 
@@ -1323,7 +1369,7 @@ PAGES.members = (main) => {
     assignFamilyBulk(ids);
   });
   $('#members-bulk-freeze')?.addEventListener('click', () => {
-    if (currentRole() !== 'admin') { toast('Only an admin can freeze a membership', 'error'); return; }
+    if (!canManageFreeze()) { toast('Only Admin or Reception can freeze a membership', 'error'); return; }
     const list = state.members.filter(m => selected.has(m.id) && !m.deleted);
     if (list.length !== 1) { toast('Select exactly one member to freeze', 'error'); return; }
     freezeMember(list[0].id);   // opens the freeze dialog (date-range supported)
@@ -2047,6 +2093,7 @@ window.duplicateMember = function(id) {
 };
 
 window.freezeMember = function(id) {
+  if (!canManageFreeze()) { toast(t('Only Admin or Reception can freeze a membership.', 'يمكن للمشرف أو الاستقبال فقط تجميد العضوية.'), 'error'); return; }
   const m = state.members.find(x => x.id === id);
   if (!m) return;
   const allow = freezeAllowance(m);
@@ -2230,13 +2277,20 @@ window.freezeMember = function(id) {
 };
 
 window.unfreezeMember = function(id) {
+  if (!canManageFreeze()) { toast(t('Only Admin or Reception can unfreeze a membership.', 'يمكن للمشرف أو الاستقبال فقط إلغاء تجميد العضوية.'), 'error'); return; }
   const m = state.members.find(x => x.id === id);
   if (!m || !m.currentFreezeUntil) return;
   if (!confirm(`End the freeze for ${m.name} now?\n\nThe expiry date stays where it is (already shifted when the freeze was applied). Future activity resumes immediately.`)) return;
   // Mark the freeze as ended early
   const f = (m.freezes || []).find(fr => fr.end === m.currentFreezeUntil);
   if (f) f.endedEarly = TODAY;
+  const wasUntil = m.currentFreezeUntil;
   m.currentFreezeUntil = null;
+  stampUpdate(m);
+  audit('member.unfreeze', `member:${m.id}`, `Unfroze ${m.name} early (was frozen until ${fmtDate(wasUntil)})`, {
+    name: m.name, memberId: m.id, membershipNo: m.membershipNo || m.qid || '', mobile: m.phone || '',
+    old: { frozenUntil: wasUntil }, new: { frozenUntil: null },
+  });
   save();
   toast(`${m.name} unfrozen.`, 'success');
   viewMember(m.id);
@@ -3127,6 +3181,7 @@ function showMemberForm(m) {
         };
 
         if (isNew) {
+          stampUpdate(data);
           state.members.push(data);
           pushRecentMember(data.id);
           audit('member.create', `member:${data.id}`,
@@ -3186,7 +3241,7 @@ function showMemberForm(m) {
                 durationLabel: e.durationLabel || null,
               })),
             };
-            state.invoices.push(newInv);
+            stampUpdate(newInv); state.invoices.push(newInv);
 
             // One subscription record per enrolled sport. Most sports share
             // the transaction-level validity, but Summer Camp uses its own
@@ -3467,6 +3522,7 @@ function showMemberForm(m) {
         const subEnds = subs.map(s => s.end).filter(Boolean).sort();
         if (subEnds.length) data.expiryDate = subEnds[subEnds.length - 1];
         state.members[idx] = Object.assign({}, existing, data);
+        stampUpdate(state.members[idx]);   // who/when last modified (req #5)
         // Keep the member's invoice snapshot in sync when their details change —
         // no new invoice, just update the existing linked ones' name/phone.
         for (const iv of (state.invoices || [])) {
@@ -5354,11 +5410,20 @@ window.editInvoicePayments = function(invoiceId) {
       { label: t('Save', '\u062d\u0641\u0638'), class: 'btn primary', onclick: () => {
         // Commit the working copy verbatim — amounts come straight from the rows,
         // never derived. amountPaid is the exact sum.
-        inv.payments = working.map(p => ({ date: p.date || TODAY, month: String(p.date || TODAY).slice(0, 7), amount: Math.round((Number(p.amount) || 0) * 100) / 100, method: p.method || 'cash' }));
+        inv.payments = working.map(p => {
+          const row = { date: p.date || TODAY, month: String(p.date || TODAY).slice(0, 7), amount: Math.round((Number(p.amount) || 0) * 100) / 100, method: p.method || 'cash' };
+          if (p.sport) row.sport = p.sport;
+          // Preserve who originally entered a payment; stamp new/edited rows to the current user (req #4/#5).
+          row.by = p.by || currentUserId();
+          row.byName = p.byName || currentUserName();
+          row.at = p.at || new Date().toISOString();
+          return row;
+        });
         inv.amountPaid = inv.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
         if (inv.amountPaid > 0 && !inv.method) inv.method = inv.payments[0].method;
         inv.lastUpdated = TODAY;
-        if (typeof audit === 'function') audit('invoice.payments', 'invoice:' + inv.id, 'edit payments (date/method/rows)');
+        stampUpdate(inv);
+        if (typeof audit === 'function') audit('invoice.payments', 'invoice:' + inv.id, 'edit payments (date/method/rows)', { recordName: inv.customerName || '' });
         save(); closeModal(); render(); toast(t('Saved', '\u062a\u0645 \u0627\u0644\u062d\u0641\u0638'));
       } },
     ],
@@ -6881,12 +6946,14 @@ function computeMonthlyReport(ym) {
     ? salariesEarnedInMonth(ym)
     : ((typeof salariesPaidInMonth === 'function') ? salariesPaidInMonth(ym) : 0);
   const expenses = expenseEntries + salariesTotal;
-  // Net profit on the BILLED (invoice) basis — the single revenue source shared
-  // with the Dashboard, so profit matches across screens. `revenue` above is the
-  // COLLECTED figure (drives the by-method cash breakdown); collected + due = billed.
+  // Net profit on the BILLED (invoice) basis — the single revenue source shared with
+  // the Dashboard, so profit matches across screens. COLLECTED / DUE use the SAME
+  // precise per-payment attribution as collectedInMonth/dueInMonth (and the Invoices
+  // & Transactions screens), so every screen agrees. billed = collected + due.
   const billed = (typeof billedInMonth === 'function') ? billedInMonth(ym) : revenue;
-  const collected = revenue;
-  const dueThisMonth = Math.max(0, billed - collected);
+  const collected = (typeof collectedInMonth === 'function') ? collectedInMonth(ym) : revenue;
+  const dueThisMonth = (typeof dueInMonth === 'function') ? dueInMonth(ym) : Math.max(0, billed - collected);
+  revenue = collected;   // headline collected figure = the precise per-month collected
   const net = billed - expenses;
 
   // 3) Member movement: new (first registration in month), renewals (a subscription
@@ -8967,11 +9034,61 @@ window.toggleCoachActive = function(coachId) {
   toast(`${c.name} marked ${c.active === 'Y' ? 'Active' : 'Inactive'}`);
 };
 
+// ─── Multi-select month picker ─────────────────────────────────
+// A dropdown button + checkbox popover for filtering by one OR MANY months.
+// `selected` is an array of 'YYYY-MM' (empty = ALL months). Returns HTML; after
+// inserting it, call bindMonthMulti(id, onChange) to wire it — onChange receives
+// the new selected-months array. Used on Invoices, Transactions, etc.
+function monthMultiHTML(id, months, selected) {
+  const sel = new Set(selected || []);
+  const optStyle = 'display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;font-size:13px;white-space:nowrap;border-radius:6px';
+  const label = !sel.size ? t('All months', 'كل الأشهر')
+    : (sel.size === 1 ? fmtMonth([...sel][0]) : `${sel.size} ${t('months', 'أشهر')}`);
+  const opts = (months || []).map(m =>
+    `<label class="mm-opt" style="${optStyle}"><input type="checkbox" value="${m}" ${sel.has(m) ? 'checked' : ''}/> ${fmtMonth(m)}</label>`
+  ).join('');
+  return `<div class="month-multi" id="${id}" style="position:relative;display:inline-block">
+    <button type="button" class="btn ghost mm-btn" style="min-width:140px;text-align:start">📅 <span class="mm-label">${label}</span> <span style="opacity:.6">▾</span></button>
+    <div class="mm-pop" style="display:none;position:absolute;z-index:60;top:calc(100% + 4px);inset-inline-start:0;background:var(--card,#fff);border:1px solid var(--border);border-radius:8px;padding:6px;min-width:190px;max-height:300px;overflow:auto;box-shadow:0 10px 28px rgba(0,0,0,.28)">
+      <label class="mm-opt mm-all" style="${optStyle};font-weight:700;border-bottom:1px solid var(--border);margin-bottom:4px;padding-bottom:6px;border-radius:0"><input type="checkbox" class="mm-all-cb" ${!sel.size ? 'checked' : ''}/> ${t('All months', 'كل الأشهر')}</label>
+      ${opts}
+    </div>
+  </div>`;
+}
+function bindMonthMulti(id, onChange) {
+  const wrap = document.getElementById(id);
+  if (!wrap) return;
+  const btn = wrap.querySelector('.mm-btn');
+  const pop = wrap.querySelector('.mm-pop');
+  const lbl = wrap.querySelector('.mm-label');
+  const allCb = wrap.querySelector('.mm-all-cb');
+  const boxes = () => [...wrap.querySelectorAll('.mm-pop input[type=checkbox]:not(.mm-all-cb)')];
+  const current = () => boxes().filter(b => b.checked).map(b => b.value);
+  const relabel = () => {
+    const c = current();
+    lbl.textContent = !c.length ? t('All months', 'كل الأشهر')
+      : (c.length === 1 ? fmtMonth(c[0]) : `${c.length} ${t('months', 'أشهر')}`);
+    if (allCb) allCb.checked = !c.length;
+  };
+  btn.addEventListener('click', e => { e.stopPropagation(); pop.style.display = pop.style.display === 'none' ? 'block' : 'none'; });
+  if (allCb) allCb.addEventListener('change', () => { if (allCb.checked) boxes().forEach(b => { b.checked = false; }); relabel(); onChange(current()); });
+  boxes().forEach(b => b.addEventListener('change', () => { relabel(); onChange(current()); }));
+  // Close on outside click; the listener removes itself once this picker leaves the DOM.
+  const onDoc = (ev) => {
+    if (!document.body.contains(wrap)) { document.removeEventListener('click', onDoc); return; }
+    if (!wrap.contains(ev.target)) pop.style.display = 'none';
+  };
+  document.addEventListener('click', onDoc);
+}
+
 // ─── INVOICES ──────────────────────────────────────────────────
 PAGES.invoices = (main) => {
   // Treat every "Summer Camp · <duration>" variant as Summer Camp for filtering.
   const _isCampActivity = s => typeof s === 'string' && (s === SUMMER_CAMP || s.indexOf(SUMMER_CAMP) === 0);
-  let filter = loadFilter('invoices', { search: '', month: (TODAY || '').slice(0, 7) || 'all', day: '', from: '', to: '', method: 'all', sport: 'all', coach: 'all', category: 'all' });
+  let filter = loadFilter('invoices', { search: '', months: [(TODAY || '').slice(0, 7)].filter(Boolean), day: '', from: '', to: '', method: 'all', sport: 'all', coach: 'all', category: 'all' });
+  // Migrate any legacy single-month filter ({month:'YYYY-MM'|'all'}) to the array form.
+  if (!Array.isArray(filter.months)) filter.months = (filter.month && filter.month !== 'all') ? [filter.month] : [];
+  delete filter.month;
   const pg = makePager(10);
   const selected = new Set();   // invoice ids ticked for merging
 
@@ -8998,10 +9115,11 @@ PAGES.invoices = (main) => {
       }
       // An invoice belongs to a month if any of its sports BILLS that month (each
       // sport bills in its own START month) — so a June sport + a July sport show
-      // the invoice under BOTH months. A From/To range (on the invoice's date) takes
-      // over the month scope so it can span months.
+      // the invoice under BOTH months. With several months ticked, the invoice
+      // shows if it touches ANY of them. A From/To range (on the invoice's date)
+      // takes over the month scope so it can span months.
       const _range = !!(filter.from || filter.to);
-      if (!_range && filter.month !== 'all' && !invoiceTouchesMonth(i, filter.month)) return false;
+      if (!_range && filter.months.length && !filter.months.some(m => invoiceTouchesMonth(i, m))) return false;
       if (filter.day && i.date !== filter.day) return false;
       if (filter.from && (!i.date || i.date < filter.from)) return false;
       if (filter.to && (!i.date || i.date > filter.to)) return false;
@@ -9025,9 +9143,11 @@ PAGES.invoices = (main) => {
     // in its start month), so a cross-month invoice contributes its portion per month
     // and the totals never double-count. 'all' shows full invoice amounts. Paid/Due use
     // the precise per-payment (sport-tag) attribution.
-    const ms = (filter.month && filter.month !== 'all') ? filter.month : null;
-    const rowAmtOf  = (i) => ms ? (Number(i.amount) || 0) * invoiceMonthShare(i, ms) : (Number(i.amount) || 0);
-    const rowPaidOf = (i) => ms ? invoicePaidInMonth(i, ms) : invoicePaid(i);
+    // When one or more months are ticked (and no date range), show each invoice's
+    // SHARE summed across the ticked months. No months ticked → full amounts.
+    const selMonths = (!filter.from && !filter.to) ? filter.months : [];
+    const rowAmtOf  = (i) => selMonths.length ? selMonths.reduce((s,m) => s + (Number(i.amount) || 0) * invoiceMonthShare(i, m), 0) : (Number(i.amount) || 0);
+    const rowPaidOf = (i) => selMonths.length ? selMonths.reduce((s,m) => s + invoicePaidInMonth(i, m), 0) : invoicePaid(i);
     const total = allRows.reduce((s,r) => s + rowAmtOf(r), 0);
     const rows = paginate(allRows, pg);
     $('#inv-tbody').innerHTML = rows.length ? rows.map(i => {
@@ -9074,7 +9194,7 @@ PAGES.invoices = (main) => {
           return `<div style="font-size:10px;font-weight:700;color:${st === 'Unpaid' ? 'var(--red)' : 'var(--accent-2)'};margin-top:2px">${st} · ${fmt(rDue)} due</div>`;
         })()}</td>
         <td class="text-right" style="white-space:nowrap">
-          ${(ms ? (rowAmtOf(i) - rowPaidOf(i)) > 0.5 : invoiceStatus(i) !== 'Paid') ? `<button class="btn ghost sm" onclick="recordPaymentUI(${i.id})" title="Record a payment toward the balance" style="color:var(--green)">💵 Pay</button>` : ''}
+          ${(selMonths.length ? (rowAmtOf(i) - rowPaidOf(i)) > 0.5 : invoiceStatus(i) !== 'Paid') ? `<button class="btn ghost sm" onclick="recordPaymentUI(${i.id})" title="Record a payment toward the balance" style="color:var(--green)">💵 Pay</button>` : ''}
           ${i.customerId && !isViewerRole() ? `<button class="btn ghost sm" onclick="showInvoiceHistory(${i.customerId})" title="See all invoices for this customer">📜</button>` : ''}
           ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="printInvoicePDF(${i.id})" title="Export invoice as PDF (filename = customer name)">⬇ Export</button>`}
           <button class="btn ghost sm" onclick="sendInvoiceWhatsApp(${i.id})" title="Send invoice as WhatsApp message" style="color:#25D366">💬</button>
@@ -9090,7 +9210,7 @@ PAGES.invoices = (main) => {
     // COLLECTED in a given month. Show collected + outstanding too so the figures
     // are unambiguous and reconcile with the Dashboard.
     const collected = allRows.reduce((s, r) => s + rowPaidOf(r), 0);
-    const outstanding = ms ? Math.max(0, total - collected) : allRows.reduce((s, r) => s + invoiceBalance(r), 0);
+    const outstanding = selMonths.length ? Math.max(0, total - collected) : allRows.reduce((s, r) => s + invoiceBalance(r), 0);
     $('#inv-count').textContent = isViewerRole()
       ? `${allRows.length} invoices`
       : `${allRows.length} invoices · ${fmtMoney(total)} charged · ${fmtMoney(collected)} collected${outstanding > 0.5 ? ` · ${fmtMoney(outstanding)} due` : ''}`;
@@ -9158,10 +9278,7 @@ PAGES.invoices = (main) => {
     <div class="card">
       <div class="filter-bar">
         <div class="search"><input id="inv-search" type="text" value="${escapeHtml(filter.search || '')}" placeholder="${t('Search name (EN/AR), mobile, QID, coach, sport...', 'ابحث بالاسم أو الجوال أو الهوية أو المدرب أو الرياضة...')}" /></div>
-        <select id="inv-month" class="btn ghost">
-          <option value="all" ${filter.month === 'all' ? 'selected' : ''}>All months</option>
-          ${[...new Set([(TODAY || '').slice(0, 7), ...state.invoices.map(i => i.month).filter(Boolean)])].filter(Boolean).sort().reverse().map(m => `<option value="${m}" ${m === filter.month ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
-        </select>
+        ${monthMultiHTML('inv-month', [...new Set([(TODAY || '').slice(0, 7), ...state.invoices.map(i => i.month).filter(Boolean)])].filter(Boolean).sort().reverse(), filter.months)}
         <div style="display:flex;align-items:center;gap:4px">
           <input id="inv-day" type="date" class="btn ghost" style="padding:6px 10px" value="${filter.day || ''}" title="${t('Filter by a specific day', 'تصفية بيوم محدد')}" />
           <button id="inv-day-clear" class="btn ghost sm" title="${t('Clear day filter', 'مسح تصفية اليوم')}" style="padding:6px 8px;${filter.day ? '' : 'display:none'}">✕</button>
@@ -9222,8 +9339,8 @@ PAGES.invoices = (main) => {
   `;
   $('#inv-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   attachRecentSearch('inv-search', 'invoices');
-  $('#inv-month').addEventListener('change', e => {
-    filter.month = e.target.value; filter.from = ''; filter.to = ''; filter.day = '';
+  bindMonthMulti('inv-month', (months) => {
+    filter.months = months; filter.from = ''; filter.to = ''; filter.day = '';
     const f = $('#inv-from'), tt = $('#inv-to'), dd = $('#inv-day'), c = $('#inv-day-clear');
     if (f) f.value = ''; if (tt) tt.value = ''; if (dd) dd.value = ''; if (c) c.style.display = 'none';
     pg.page = 1; refresh();
@@ -9241,11 +9358,19 @@ PAGES.invoices = (main) => {
     pg.page = 1; refresh();
   });
   // From/To date range — takes over the month scope (so it can span months).
-  const _onRange = () => { if (filter.from || filter.to) { filter.day = ''; filter.month = 'all'; const dd = $('#inv-day'), ms = $('#inv-month'), c = $('#inv-day-clear'); if (dd) dd.value = ''; if (ms) ms.value = 'all'; if (c) c.style.display = 'none'; } pg.page = 1; refresh(); };
+  const _onRange = () => {
+    if (filter.from || filter.to) {
+      filter.day = ''; filter.months = [];
+      const dd = $('#inv-day'), c = $('#inv-day-clear'); if (dd) dd.value = ''; if (c) c.style.display = 'none';
+      const mm = document.getElementById('inv-month');
+      if (mm) { mm.querySelectorAll('.mm-pop input[type=checkbox]').forEach(b => { b.checked = b.classList.contains('mm-all-cb'); }); const l = mm.querySelector('.mm-label'); if (l) l.textContent = t('All months', 'كل الأشهر'); }
+    }
+    pg.page = 1; refresh();
+  };
   $('#inv-from')?.addEventListener('change', e => { filter.from = e.target.value || ''; _onRange(); });
   $('#inv-to')?.addEventListener('change', e => { filter.to = e.target.value || ''; _onRange(); });
   $('#inv-clear-filters')?.addEventListener('click', () => {
-    filter.search = ''; filter.month = 'all'; filter.day = ''; filter.from = ''; filter.to = '';
+    filter.search = ''; filter.months = []; filter.day = ''; filter.from = ''; filter.to = '';
     filter.method = 'all'; filter.sport = 'all'; filter.coach = 'all'; filter.category = 'all';
     pg.page = 1; saveFilter('invoices', filter); PAGES.invoices(main);   // full re-render resets every control
   });
@@ -9366,18 +9491,19 @@ PAGES.invoices = (main) => {
   $('#generate-latest-inv').addEventListener('click', () => generateLatestInvoice(refresh));
   var _msBtn = document.getElementById('member-statement-btn'); if (_msBtn) _msBtn.addEventListener('click', function(){ memberStatement(); });
   $('#quick-rental-inv').addEventListener('click', () => addRental(refresh));
-  $('#export-inv').addEventListener('click', () => {
+  $('#export-inv')?.addEventListener('click', () => {   // hidden for viewer/receptionist role
     // Export the CURRENT filtered set (was: all invoices regardless of filter)
     const all = applyFilter().sort((a,b) => b.date.localeCompare(a.date));
     if (!all.length) { toast('No invoices to export', 'error'); return; }
-    // Match the on-screen totals: whole-month filter → each invoice's month SHARE.
-    const ms = (filter.month && filter.month !== 'all') ? filter.month : null;
+    // Match the on-screen totals: month filter → each invoice's SHARE summed over
+    // the ticked months (no months ticked → full amounts).
+    const selMonths = (!filter.from && !filter.to) ? filter.months : [];
     const rows = [['Ref','Date','Month','Category','Customer','Mobile','QID','Activity','Coach','Description','Method','Total','Paid','Due']];
     let sumTotal = 0, sumPaid = 0, sumDue = 0;
     for (const i of all) {
       const cust = customerInfo(i);
-      const total = ms ? (Number(i.amount) || 0) * invoiceMonthShare(i, ms) : (Number(i.amount) || 0);
-      const paid = ms ? invoicePaidInMonth(i, ms) : ((typeof invoicePaid === 'function') ? invoicePaid(i) : 0);
+      const total = selMonths.length ? selMonths.reduce((s,m) => s + (Number(i.amount) || 0) * invoiceMonthShare(i, m), 0) : (Number(i.amount) || 0);
+      const paid = selMonths.length ? selMonths.reduce((s,m) => s + invoicePaidInMonth(i, m), 0) : ((typeof invoicePaid === 'function') ? invoicePaid(i) : 0);
       const due = Math.max(0, total - paid);
       sumTotal += total; sumPaid += paid; sumDue += Math.max(0, due);
       rows.push([
@@ -9734,7 +9860,7 @@ function generateInvoiceForMember(memberId, dateOverride) {
     coachId: primary.coachId, customerId: m.id, customerName: m.name,
     lineItems: enrollments.map(e => ({ sport: e.sport, coach: coachName(e.coachId) || ((state.coaches || []).find(c => c.id === e.coachId) || {}).name || '', coachId: e.coachId, classes: e.classes, price: e.price || 0 })),
   };
-  state.invoices.push(newInv); save();
+  stampUpdate(newInv); state.invoices.push(newInv); save();
   return { created: true, invoice: newInv, message: `Invoice ${newInv.ref} created — ${fmt(totalAmt)} QAR` };
 }
 
@@ -10181,7 +10307,7 @@ function generateLatestInvoice(onDone) {
             price: e.price || 0,
           })),
         };
-        state.invoices.push(newInv);
+        stampUpdate(newInv); state.invoices.push(newInv);
         save();
         closeModal();
         toast(`Invoice ${newInv.ref} created — ${fmt(totalAmt)} QAR`, 'success');
@@ -12206,23 +12332,23 @@ function computeReconciliation(ym) {
   let revenue = 0;
   for (const i of (state.invoices || [])) {
     if (i.deleted) continue;
-    const sh = ym === 'all' ? 1 : invoiceMonthShare(i, ym);   // line-aware month share
-    if (!sh) continue;
     const amount = Number(i.amount) || 0;
-    const paidFull = Math.min((typeof invoicePaid === 'function') ? invoicePaid(i) : amount, amount);
-    if (paidFull <= 0) continue;
-    const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : null;
-    let attributed = 0;
-    if (pays) {
-      for (const p of pays) {
-        const a = Number(p.amount) || 0; if (a <= 0) continue;
-        const add = Math.min(a, paidFull - attributed); if (add <= 0) break;
-        byMethod[_normMethodRec(p.method || i.method)] += add * sh;
-        attributed += add;
-      }
-    }
-    if (attributed < paidFull) byMethod[_normMethodRec(i.method)] += (paidFull - attributed) * sh;
-    revenue += paidFull * sh;
+    // COLLECTED this month — the SAME precise per-payment figure as collectedInMonth
+    // and the Invoices/Transactions screens (so the reconciliation agrees with them).
+    const monthColl = ym === 'all'
+      ? Math.min((typeof invoicePaid === 'function') ? invoicePaid(i) : amount, amount)
+      : Math.min((typeof invoicePaidInMonth === 'function') ? invoicePaidInMonth(i, ym) : 0,
+                 (typeof invoiceBilledInMonth === 'function') ? invoiceBilledInMonth(i, ym) : amount);
+    if (monthColl <= 0.001) continue;
+    revenue += monthColl;
+    // Split this month's collected across the invoice's payment methods, proportional
+    // to how it was actually paid — so the by-method breakdown sums to `revenue`.
+    const totalPaid = (typeof invoicePaid === 'function') ? invoicePaid(i) : 0;
+    const byM = {};   // include ALL non-zero rows (incl. refunds) so Σ byM = totalPaid
+    for (const p of (Array.isArray(i.payments) ? i.payments : [])) { const a = Number(p.amount) || 0; if (a !== 0) { const mk = _normMethodRec(p.method || i.method); byM[mk] = (byM[mk] || 0) + a; } }
+    const keys = Object.keys(byM);
+    if (keys.length && Math.abs(totalPaid) > 0.001) { for (const mk of keys) byMethod[mk] += monthColl * (byM[mk] / totalPaid); }
+    else byMethod[_normMethodRec(i.method)] += monthColl;
   }
   const nonCash = byMethod.card + byMethod.transfer + byMethod.fawran;
   const cashCollectedTotal = byMethod.cash;
@@ -12842,7 +12968,9 @@ function syncBankCommission() {
 }
 
 PAGES.expenses = (main) => {
-  let filter = loadFilter('expenses', { search: '', month: (TODAY || '').slice(0, 7) || 'all', categories: [], methods: [] });
+  let filter = loadFilter('expenses', { search: '', months: [(TODAY || '').slice(0, 7)].filter(Boolean), categories: [], methods: [] });
+  if (!Array.isArray(filter.months)) filter.months = (filter.month && filter.month !== 'all') ? [filter.month] : [];
+  delete filter.month;
   const pg = makePager(10);
   let _exportRows = [], _exportMeta = {};
 
@@ -12855,7 +12983,7 @@ PAGES.expenses = (main) => {
     const realExpenses = state.expenses.filter(e => (e.category || '') !== CASH_COLLECTION_CATEGORY);
     const allRows = realExpenses.filter(e => {
       if (filter.search && !e.description.toLowerCase().includes(filter.search.toLowerCase())) return false;
-      if (filter.month !== 'all' && e.month !== filter.month) return false;
+      if (filter.months.length && !filter.months.includes(e.month)) return false;
       if (filter.categories.length && !filter.categories.includes(e.category || 'Others')) return false;
       if (filter.methods.length && !filter.methods.includes(e.method || '')) return false;
       return true;
@@ -12868,7 +12996,7 @@ PAGES.expenses = (main) => {
 
     const total = allRows.reduce((s,r) => s + (r.amount || 0), 0);          // filtered total
     const grandTotal = realExpenses.reduce((s,r) => s + (r.amount || 0), 0); // all real expenses
-    const anyFilter = filter.search || filter.month !== 'all' || filter.categories.length || filter.methods.length;
+    const anyFilter = filter.search || filter.months.length || filter.categories.length || filter.methods.length;
     // Per-category totals — replaces old monthly/equipment split since the
     // Type field is removed. Top 3 categories shown in the subtitle.
     const byCat = {};
@@ -12923,10 +13051,7 @@ PAGES.expenses = (main) => {
     <div class="card">
       <div class="filter-bar">
         <div class="search"><input id="exp-search" type="text" value="${escapeHtml(filter.search || '')}" placeholder="${t('Search description...', 'ابحث في الوصف...')}" /></div>
-        <select id="exp-month" class="btn ghost">
-          <option value="all" ${filter.month === 'all' ? 'selected' : ''}>All months</option>
-          ${[...new Set([(TODAY || '').slice(0, 7), ...state.expenses.map(e => e.month).filter(Boolean)])].filter(Boolean).sort().reverse().map(m => `<option value="${m}" ${m === filter.month ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
-        </select>
+        ${monthMultiHTML('exp-month', [...new Set([(TODAY || '').slice(0, 7), ...state.expenses.map(e => e.month).filter(Boolean)])].filter(Boolean).sort().reverse(), filter.months)}
         <div style="position:relative">
           <button type="button" id="exp-cat-btn" class="btn ghost" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px">
             <span id="exp-cat-label">All categories</span><span style="opacity:.6">▾</span>
@@ -12957,7 +13082,7 @@ PAGES.expenses = (main) => {
   $('#exp-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   attachRecentSearch('exp-search', 'expenses');
   $('#exp-pdf')?.addEventListener('click', () => exportExpensesPDF(_exportRows, _exportMeta));
-  $('#exp-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
+  bindMonthMulti('exp-month', (months) => { filter.months = months; pg.page = 1; refresh(); });
   // Multi-select category + method dropdowns (checkbox menus).
   function wireExpMulti(key, cbClass, btnId, menuId, labelId, allText, oneFmt) {
     const btn = $('#' + btnId), menu = $('#' + menuId);
@@ -13500,8 +13625,13 @@ window.markPaid = function(coachId, monthKey) {
         <div style="display:flex;justify-content:space-between;padding:4px 0;border-top:1px solid var(--border);margin-top:4px;font-weight:700"><span>Gross</span><span>${fmt(pay.gross)}</span></div>
         ${pay.advanceRecords > 0 ? `<div style="display:flex;justify-content:space-between;padding:2px 0;color:var(--accent-2)"><span class="text-mute">− Advance</span><span>−${fmt(pay.advanceRecords)}</span></div>` : ''}
         ${pay.expensePaid > 0 ? `<div style="display:flex;justify-content:space-between;padding:2px 0;color:var(--accent-2)"><span class="text-mute">− Paid via expenses</span><span>−${fmt(pay.expensePaid)}</span></div>` : ''}
-        <div style="display:flex;justify-content:space-between;padding:4px 0;border-top:1px solid var(--border);margin-top:4px;font-weight:700;font-size:16px;color:var(--green)"><span>NET PAY</span><span>${fmt(pay.net)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;border-top:1px solid var(--border);margin-top:4px;font-weight:700;font-size:16px;color:var(--green)"><span>NET PAY</span><span id="mp-netpay">${fmt(pay.net)}</span></div>
       </div>
+      ${!existing && pay.basis === 'attendance' && pay.commissionPending > 0 ? `
+      <label style="display:flex;gap:9px;align-items:flex-start;padding:11px;background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.30);border-radius:8px;margin-bottom:14px;cursor:pointer;font-size:12px;line-height:1.5">
+        <input type="checkbox" id="settle-pending" style="margin-top:2px;flex-shrink:0">
+        <span><b>${t('Settle pending in full now', 'تسوية المعلّق بالكامل الآن')}</b> — ${t('also pay the', 'ادفع أيضاً')} <b style="color:var(--accent-2)">${fmt(pay.commissionPending)} QAR</b> ${t('pending (classes not yet attended), mark it PAID, and don’t carry it to next month.', 'المعلّق (حصص لم تُحضر بعد)، وضعه كمدفوع، ولا يُرحّل للشهر القادم.')}<br><span class="text-mute">${t('Net becomes', 'يصبح الصافي')} <b>${fmt(pay.net + pay.commissionPending)} QAR</b>.</span></span>
+      </label>` : ''}
       <div class="field"><label>Paid date</label><input id="paid-date" type="date" value="${cur.paidDate}" /></div>
     `,
     actions: [
@@ -13515,23 +13645,35 @@ window.markPaid = function(coachId, monthKey) {
       }}] : []),
       { label: existing ? 'Update' : '💰 Mark Paid', class: 'btn primary', onclick: () => {
         const paidDate = $('#paid-date').value || TODAY;
+        const settle = !!document.getElementById('settle-pending')?.checked;
+        const pendingPaid = settle ? (pay.commissionPending || 0) : 0;
+        const gross = pay.gross + pendingPaid;
+        const net = pay.net + pendingPaid;
         if (existing) {
           existing.paidDate = paidDate;
         } else {
+          // Settle the pending IN FULL first (marks the active memberships so their
+          // remainder is neither carried forward nor trued-up later), then snapshot.
+          let settledCount = 0;
+          if (settle && pendingPaid > 0 && typeof settleCoachPendingCommission === 'function') {
+            settledCount = settleCoachPendingCommission(coachId, monthKey);
+          }
           state.salaries.push({
             id: nextId(state.salaries),
             coachId, month: monthKey, kind: 'paid',
             paidDate,
             // Snapshot the computed values so audits later show what was paid
-            snapshotGross: pay.gross, snapshotNet: pay.net,
-            snapshotFixed: pay.fixed, snapshotCommission: pay.commissionAmount,
+            snapshotGross: gross, snapshotNet: net,
+            snapshotFixed: pay.fixed, snapshotCommission: pay.commissionAmount + pendingPaid,
             snapshotCommissionBase: pay.commissionBase,
+            settledPending: pendingPaid || undefined,       // pending commission paid out early
+            settledSubs: settledCount || undefined,
           });
         }
-        audit('salary.paid', `coach:${coachId}`,
-          `${existing ? 'Updated payment for' : 'Paid'} ${c.name} · ${fmt(pay.net)} QAR for ${fmtMonth(monthKey)}`,
-          { coachId, month: monthKey, coachName: c.name, net: pay.net, gross: pay.gross, advance: pay.advance });
-        save(); closeModal(); render(); toast(`${c.name}: ${fmt(pay.net)} QAR marked paid`);
+        audit(settle && pendingPaid > 0 ? 'salary.paid_full' : 'salary.paid', `coach:${coachId}`,
+          `${existing ? 'Updated payment for' : 'Paid'} ${c.name} · ${fmt(net)} QAR for ${fmtMonth(monthKey)}${pendingPaid > 0 ? ` (incl. ${fmt(pendingPaid)} pending settled)` : ''}`,
+          { coachId, month: monthKey, coachName: c.name, net, gross, advance: pay.advance, settledPending: pendingPaid });
+        save(); closeModal(); render(); toast(`${c.name}: ${fmt(net)} QAR marked paid${pendingPaid > 0 ? ' · pending settled' : ''}`);
       }},
     ],
   });
@@ -14331,7 +14473,7 @@ window.restockProduct = function(id) {
 
 // ─── SALES PAGE (POS-style) ────────────────────────────────────────────
 PAGES.sales = (main) => {
-  let filter = { search: '', month: 'all', method: 'all', custType: 'all' };
+  let filter = { search: '', months: [], method: 'all', custType: 'all' };
   const pg = makePager(10);
 
   function applyFilter() {
@@ -14343,7 +14485,7 @@ PAGES.sales = (main) => {
         const hay = [cust.name, cust.nameArabic, cust.phone, cust.phone2, cust.qid, itemsText, s.notes].filter(Boolean).join(' ').toLowerCase();
         if (!searchMatchesFields(q, [cust.name, cust.nameArabic, cust.phone, cust.phone2, cust.qid, itemsText, s.notes], [cust.phone, cust.phone2])) return false;
       }
-      if (filter.month !== 'all' && s.month !== filter.month) return false;
+      if (filter.months.length && !filter.months.includes(s.month)) return false;
       if (filter.method !== 'all' && s.method !== filter.method) return false;
       if (filter.custType !== 'all') {
         if (filter.custType === 'historical' && !s.historical) return false;
@@ -14404,10 +14546,7 @@ PAGES.sales = (main) => {
     <div class="card">
       <div class="filter-bar">
         <div class="search"><input id="sale-search" type="text" placeholder="${t('Search items, customer name, mobile...', 'ابحث في المنتجات أو اسم العميل أو الجوال...')}" /></div>
-        <select id="sale-month" class="btn ghost">
-          <option value="all">All months</option>
-          ${months.map(m => `<option value="${m}">${fmtMonth(m)}</option>`).join('')}
-        </select>
+        ${monthMultiHTML('sale-month', months, filter.months)}
         <select id="sale-method" class="btn ghost">
           <option value="all">All methods</option>
           <option value="cash">Cash</option>
@@ -14441,7 +14580,7 @@ PAGES.sales = (main) => {
 
   $('#sale-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   attachRecentSearch('sale-search', 'sales');
-  $('#sale-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
+  bindMonthMulti('sale-month', (months) => { filter.months = months; pg.page = 1; refresh(); });
   $('#sale-method').addEventListener('change', e => { filter.method = e.target.value; pg.page = 1; refresh(); });
   $('#sale-cust').addEventListener('change', e => { filter.custType = e.target.value; pg.page = 1; refresh(); });
   $('#sale-new').addEventListener('click', () => newSale(refresh));
@@ -14730,7 +14869,7 @@ function completeSale(onDone) {
     sport: null, coach: null, coachId: null,
     customerId, customerName,
   };
-  state.invoices.push(newInv);
+  stampUpdate(newInv); state.invoices.push(newInv);
 
   const saleId = nextId(state.sales || []);
   state.sales.push({
@@ -15128,87 +15267,126 @@ window.moveSport = function(name, delta) {
 // Read-only. Records hooked from key actions in app.js audit() helper.
 // ═══════════════════════════════════════════════════════════════════
 PAGES.audit = (main) => {
-  let filter = { search: '', action: 'all', days: '30' };
+  // Admin-only, hard guard (req #8) — Reception/Coach/Member never see this.
+  if (currentRole() !== 'admin') {
+    main.innerHTML = `<div class="card" style="text-align:center;padding:40px"><div style="font-size:40px">🔒</div><h2>${t('Admins only', 'للمسؤولين فقط')}</h2><div class="text-mute">${t('The Audit Trail is restricted to administrators.', 'سجل التدقيق متاح للمسؤولين فقط.')}</div></div>`;
+    return;
+  }
+  let filter = { search: '', module: 'all', action: 'all', user: 'all', from: '', to: '' };
   const pg = makePager(50);
 
-  function refresh() {
+  // Short display of an old/new value (primitive or small object).
+  const fmtVal = (v) => {
+    if (v == null) return '';
+    if (typeof v === 'object') { try { return Object.entries(v).map(([k, x]) => `${k}: ${x}`).join(', '); } catch (_) { return JSON.stringify(v); } }
+    return String(v);
+  };
+  // Everything an entry can be searched by (req #8 search: member name, mobile, invoice#, username).
+  const hayOf = (e) => {
+    const d = e.details || {};
+    return [e.action, e.module, e.target, e.summary, e.user, e.userName, e.role, e.recordName, e.recId,
+      d.mobile, d.phone, d.membershipNo, d.invoiceRef, d.ref, e.recType].filter(Boolean).join(' ').toLowerCase();
+  };
+  // Rows for export (CSV / Excel / PDF) — full detail.
+  const HEADER = ['When', 'Username', 'Full Name', 'Role', 'Module', 'Action', 'Record ID', 'Record Name', 'Description', 'Previous Value', 'New Value'];
+  const exportRow = (e) => [
+    e.ts || '', e.user || '', e.userName || '', e.role || '', e.module || (e.action || '').split('.')[0],
+    e.action || '', e.recId || '', e.recordName || '', e.summary || '', fmtVal(e.oldValue), fmtVal(e.newValue),
+  ];
+
+  function currentAll() {
     const log = Array.isArray(state.auditLog) ? state.auditLog : [];
-    // Newest first
-    const sorted = [...log].sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
-    const cutoff = filter.days === 'all' ? null
-      : new Date(Date.now() - parseInt(filter.days) * 86400000).toISOString();
-    const all = sorted.filter(e => {
-      if (cutoff && e.ts < cutoff) return false;
-      if (filter.action !== 'all' && !e.action.startsWith(filter.action)) return false;
-      if (filter.search) {
-        const q = filter.search.toLowerCase();
-        const hay = [e.action, e.target, e.summary, e.user].filter(Boolean).join(' ').toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
+    const sorted = [...log].sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));   // newest first
+    const fromISO = filter.from ? filter.from + 'T00:00:00.000Z' : null;
+    const toISO = filter.to ? filter.to + 'T23:59:59.999Z' : null;
+    return sorted.filter(e => {
+      if (fromISO && (e.ts || '') < fromISO) return false;
+      if (toISO && (e.ts || '') > toISO) return false;
+      if (filter.module !== 'all' && (e.module || (e.action || '').split('.')[0]) !== filter.module) return false;
+      if (filter.action !== 'all' && e.action !== filter.action) return false;
+      if (filter.user !== 'all' && e.user !== filter.user) return false;
+      if (filter.search && !hayOf(e).includes(filter.search.toLowerCase())) return false;
       return true;
     });
-    const rows = paginate(all, pg);
+  }
 
-    $('#audit-count').textContent = `${all.length} entries${cutoff ? ' · last ' + filter.days + ' days' : ''}`;
+  function refresh() {
+    const all = currentAll();
+    const rows = paginate(all, pg);
+    $('#audit-count').textContent = `${all.length} ${t('entries', 'سجل')}`;
     $('#audit-tbody').innerHTML = rows.length ? rows.map(e => {
       const ts = new Date(e.ts);
       const dateStr = isNaN(ts) ? '—' : ts.toLocaleString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:false });
-      const actionColor = e.action.includes('archive') ? 'var(--red)'
-                       : e.action.includes('restore') ? 'var(--green)'
-                       : e.action.includes('withdraw') ? 'var(--accent-2)'
-                       : 'var(--blue)';
+      const act = e.action || '';
+      const actionColor = /delete|archive|purge|cancel|refund|unfreeze/.test(act) ? 'var(--red)'
+                       : /create|restore|paid|add/.test(act) ? 'var(--green)'
+                       : /freeze|withdraw/.test(act) ? 'var(--accent-2)' : 'var(--blue)';
+      const change = (e.oldValue != null || e.newValue != null)
+        ? `<div class="text-mute" style="font-size:10px;margin-top:2px">${e.oldValue != null ? `<span style="color:var(--red)">${escapeHtml(fmtVal(e.oldValue))}</span> → ` : ''}<span style="color:var(--green)">${escapeHtml(fmtVal(e.newValue))}</span></div>`
+        : '';
       return `
         <tr>
           <td class="text-mute" style="white-space:nowrap;font-size:11px">${dateStr}</td>
-          <td><span class="badge" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:${actionColor}">${escapeHtml(e.action)}</span></td>
-          <td style="font-weight:500">${escapeHtml(e.summary || '—')}</td>
-          <td class="text-mute" style="font-size:11px">${escapeHtml(e.user || 'unknown')}</td>
-          <td class="text-mute" style="font-family:'JetBrains Mono',monospace;font-size:10px">${escapeHtml(e.target || '')}</td>
-        </tr>
-      `;
-    }).join('') : `<tr><td colspan="5" class="empty"><div class="empty-icon">📋</div>No audit entries match these filters</td></tr>`;
-
+          <td style="font-size:11px"><div class="font-bold">${escapeHtml(e.userName || e.user || 'unknown')}</div><div class="text-mute" style="font-size:10px">${escapeHtml(e.user || '')}${e.role ? ` · ${escapeHtml(e.role)}` : ''}</div></td>
+          <td><span class="badge" style="font-size:10px">${escapeHtml(e.module || act.split('.')[0])}</span></td>
+          <td><span class="badge" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:${actionColor}">${escapeHtml(act)}</span></td>
+          <td style="font-size:11px">${e.recordName ? `<div class="font-bold">${escapeHtml(e.recordName)}</div>` : ''}${e.recId ? `<div class="text-mute" style="font-family:monospace;font-size:10px">#${escapeHtml(String(e.recId))}</div>` : ''}</td>
+          <td style="font-weight:500;font-size:12px">${escapeHtml(e.summary || '—')}${change}</td>
+        </tr>`;
+    }).join('') : `<tr><td colspan="6" class="empty"><div class="empty-icon">📋</div>${t('No audit entries match these filters', 'لا توجد سجلات مطابقة')}</td></tr>`;
     $('#audit-pagination').innerHTML = paginationBar(pg, all.length, 'audit');
     bindPagination('audit', pg, all.length, refresh);
   }
 
-  // Build list of action prefixes present
   const log = Array.isArray(state.auditLog) ? state.auditLog : [];
-  const prefixes = [...new Set(log.map(e => (e.action || '').split('.')[0]))].filter(Boolean).sort();
+  const modules = [...new Set(log.map(e => e.module || (e.action || '').split('.')[0]))].filter(Boolean).sort();
+  const actions = [...new Set(log.map(e => e.action))].filter(Boolean).sort();
+  const users = [...new Set(log.map(e => e.user))].filter(Boolean).sort();
 
   main.innerHTML = `
     <div class="topbar">
       <div>
-        <h1>Audit Log</h1>
-        <div class="subtitle"><span id="audit-count">Loading…</span> · last 1000 actions retained</div>
+        <h1>📋 ${t('Audit Trail', 'سجل التدقيق')}</h1>
+        <div class="subtitle"><span id="audit-count">Loading…</span> · ${t('immutable — records cannot be edited or deleted', 'غير قابل للتعديل — لا يمكن تحرير السجلات أو حذفها')}</div>
       </div>
       <div class="topbar-actions">
-        <button class="btn ghost" id="audit-export">📥 Export CSV</button>
-        <button class="btn ghost" id="audit-clear" title="Permanently clear the audit log">🗑 Clear</button>
+        <button class="btn ghost" id="audit-xlsx">📊 ${t('Excel', 'إكسل')}</button>
+        <button class="btn ghost" id="audit-pdf">📄 ${t('PDF', 'PDF')}</button>
+        <button class="btn ghost" id="audit-csv">📥 ${t('CSV', 'CSV')}</button>
       </div>
     </div>
     <div class="card">
-      <div class="filter-bar">
-        <div class="search"><input id="audit-search" type="text" placeholder="${t('Search action, summary, user…', 'ابحث في الإجراء أو الملخص أو المستخدم…')}" /></div>
+      <div class="filter-bar" style="flex-wrap:wrap;gap:8px">
+        <div class="search"><input id="audit-search" type="text" placeholder="${t('Search member, mobile, invoice #, username…', 'ابحث بالعضو أو الجوال أو رقم الفاتورة أو المستخدم…')}" /></div>
+        <select id="audit-module" class="btn ghost">
+          <option value="all">${t('All modules', 'كل الوحدات')}</option>
+          ${modules.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')}
+        </select>
         <select id="audit-action" class="btn ghost">
-          <option value="all">All actions</option>
-          ${prefixes.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')}
+          <option value="all">${t('All actions', 'كل الإجراءات')}</option>
+          ${actions.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')}
         </select>
-        <select id="audit-days" class="btn ghost">
-          <option value="7">Last 7 days</option>
-          <option value="30" selected>Last 30 days</option>
-          <option value="90">Last 90 days</option>
-          <option value="all">All time</option>
+        <select id="audit-user" class="btn ghost">
+          <option value="all">${t('All users', 'كل المستخدمين')}</option>
+          ${users.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')}
         </select>
+        <div style="display:flex;align-items:center;gap:4px" title="${t('Date range', 'نطاق التاريخ')}">
+          <span class="text-mute" style="font-size:11px">${t('From', 'من')}</span>
+          <input id="audit-from" type="date" class="btn ghost" style="padding:6px 8px" />
+          <span class="text-mute" style="font-size:11px">${t('To', 'إلى')}</span>
+          <input id="audit-to" type="date" class="btn ghost" style="padding:6px 8px" />
+        </div>
+        <button id="audit-clear-filters" class="btn ghost" title="${t('Clear filters', 'مسح الفلاتر')}">✕ ${t('Clear', 'مسح')}</button>
       </div>
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th style="width:140px">When</th>
-            <th style="width:140px">Action</th>
-            <th>What happened</th>
-            <th style="width:100px">By</th>
-            <th style="width:120px">Target</th>
+            <th style="width:130px">${t('When', 'الوقت')}</th>
+            <th style="width:130px">${t('User', 'المستخدم')}</th>
+            <th style="width:90px">${t('Module', 'الوحدة')}</th>
+            <th style="width:130px">${t('Action', 'الإجراء')}</th>
+            <th style="width:140px">${t('Record', 'السجل')}</th>
+            <th>${t('Description', 'الوصف')}</th>
           </tr></thead>
           <tbody id="audit-tbody"></tbody>
         </table>
@@ -15218,24 +15396,40 @@ PAGES.audit = (main) => {
   `;
   $('#audit-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   attachRecentSearch('audit-search', 'audit');
+  $('#audit-module').addEventListener('change', e => { filter.module = e.target.value; pg.page = 1; refresh(); });
   $('#audit-action').addEventListener('change', e => { filter.action = e.target.value; pg.page = 1; refresh(); });
-  $('#audit-days').addEventListener('change', e => { filter.days = e.target.value; pg.page = 1; refresh(); });
-  $('#audit-export').addEventListener('click', () => {
-    const log = state.auditLog || [];
-    if (!log.length) { toast('Nothing to export', 'error'); return; }
-    const csv = [
-      ['Timestamp','User','Action','Target','Summary'],
-      ...log.map(e => [e.ts, e.user, e.action, e.target, e.summary]),
-    ].map(r => r.map(c => `"${String(c || '').replace(/"/g, '""')}"`).join(',')).join('\n');
-    downloadFile(`audit-log-${TODAY}.csv`, csv, 'text/csv');
-    toast(`Exported ${log.length} entries`);
+  $('#audit-user').addEventListener('change', e => { filter.user = e.target.value; pg.page = 1; refresh(); });
+  $('#audit-from').addEventListener('change', e => { filter.from = e.target.value; pg.page = 1; refresh(); });
+  $('#audit-to').addEventListener('change', e => { filter.to = e.target.value; pg.page = 1; refresh(); });
+  $('#audit-clear-filters').addEventListener('click', () => { filter = { search: '', module: 'all', action: 'all', user: 'all', from: '', to: '' }; pg.page = 1; PAGES.audit(main); });
+  $('#audit-csv').addEventListener('click', () => {
+    const all = currentAll();
+    if (!all.length) { toast('Nothing to export', 'error'); return; }
+    const csv = [HEADER, ...all.map(exportRow)]
+      .map(r => r.map(c => `"${String(c == null ? '' : c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    downloadFile(`audit-trail-${TODAY}.csv`, csv, 'text/csv');
+    toast(`Exported ${all.length} entries`);
   });
-  $('#audit-clear').addEventListener('click', () => {
-    if (!confirm('Clear the entire audit log? This cannot be undone.\n\n(Tip: Export to CSV first if you need a copy.)')) return;
-    state.auditLog = [];
-    save();
-    render();
-    toast('Audit log cleared');
+  $('#audit-xlsx').addEventListener('click', async () => {
+    const all = currentAll();
+    if (!all.length) { toast('Nothing to export', 'error'); return; }
+    if (!window.XlsxMini) { toast('Excel export unavailable', 'error'); return; }
+    try {
+      await window.XlsxMini.downloadFile(`audit-trail-${TODAY}.xlsx`, { sheets: [{ name: 'Audit Trail', rows: [HEADER, ...all.map(exportRow)] }] });
+      toast(`📊 Exported ${all.length} entries to Excel`);
+    } catch (err) { toast('Excel export failed: ' + (err.message || err), 'error'); }
+  });
+  $('#audit-pdf').addEventListener('click', () => {
+    const all = currentAll();
+    if (!all.length) { toast('Nothing to export', 'error'); return; }
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
+    const body = all.map(e => `<tr><td>${esc((e.ts||'').replace('T',' ').slice(0,16))}</td><td>${esc(e.userName||e.user)}<br><small>${esc(e.user)} · ${esc(e.role||'')}</small></td><td>${esc(e.module||'')}</td><td>${esc(e.action||'')}</td><td>${esc(e.recordName||'')}${e.recId?(' #'+esc(e.recId)):''}</td><td>${esc(e.summary||'')}${(e.oldValue!=null||e.newValue!=null)?`<br><small>${esc(fmtVal(e.oldValue))} → ${esc(fmtVal(e.newValue))}</small>`:''}</td></tr>`).join('');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Audit Trail ${TODAY}</title>
+      <style>@page{size:landscape;margin:10mm}body{font-family:Arial,sans-serif;color:#111;padding:6px}h1{font-size:16px}table{width:100%;border-collapse:collapse;font-size:9px}th,td{border:1px solid #ccc;padding:3px 5px;text-align:left;vertical-align:top}th{background:#f0f0f0}small{color:#666}</style>
+      </head><body onload="window.print()"><h1>Black Stars Sports — Audit Trail (${all.length} entries · ${TODAY})</h1>
+      <table><thead><tr><th>When</th><th>User</th><th>Module</th><th>Action</th><th>Record</th><th>Description</th></tr></thead><tbody>${body}</tbody></table></body></html>`;
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); } else { toast('Allow pop-ups to export PDF', 'error'); }
   });
   refresh();
 };
@@ -15979,6 +16173,14 @@ PAGES.attendance = (main) => {
   // actually coach (per-enrolment coachId), so a coach can mark their own
   // classes and nobody else's.
   const myCoachId = (typeof currentRole === 'function' && currentRole() === 'coach') ? effectiveCoachId() : null;
+  // Coaches may only record TODAY's attendance — lock the grid to the current
+  // day so past/future dates can't even be selected (also enforced in applyMark).
+  const _coachLockToday = myCoachId != null;
+  if (_coachLockToday) {
+    filter.month = _todayMonth;
+    filter.days = [_now.getDate()];
+    filter.search = '';
+  }
   function coachSportsFor(m, cid) {
     const set = new Set();
     if (m.coachId === cid && m.sport) set.add(m.sport);
@@ -16103,6 +16305,16 @@ PAGES.attendance = (main) => {
 
   function applyMark(memberId, sport, day, next) {
     const mo = gridMonth();
+    // A COACH may only mark attendance for the CURRENT DAY — never a past or
+    // future date. (Enforced here as well as in the UI, so it holds even if the
+    // grid is manipulated.) Admin/Reception are unrestricted.
+    if (typeof currentRole === 'function' && currentRole() === 'coach') {
+      const markISO = `${mo}-${String(day).padStart(2, '0')}`;
+      if (markISO !== TODAY) {
+        toast(t('Coaches can only mark attendance for today.', 'يمكن للمدرب تسجيل الحضور لليوم الحالي فقط.'), 'error');
+        return;
+      }
+    }
     const m = state.members.find(x => x.id === memberId);
     if (!m) return;
     if (!m.dailyAttendance) m.dailyAttendance = {};
@@ -16140,8 +16352,18 @@ PAGES.attendance = (main) => {
         }
       }
     }
+    const _prevMark = m.dailyAttendance[mo][sport][String(day)] || null;
     if (next === null) delete m.dailyAttendance[mo][sport][String(day)];
     else m.dailyAttendance[mo][sport][String(day)] = next;
+    // Stamp + audit the attendance change (req #5 last-updated, #8 audit trail —
+    // attendance was previously NOT logged).
+    const _markISO = `${mo}-${String(day).padStart(2, '0')}`;
+    const _label = next === 'Y' ? 'present' : next === 'N' ? 'absent' : 'cleared';
+    stampUpdate(m);
+    audit('attendance.mark', `member:${m.id}`, `Attendance ${_label}: ${m.name} · ${sport} · ${_markISO}`, {
+      name: m.name, memberId: m.id, mobile: m.phone || '', sport, date: _markISO,
+      old: _prevMark, new: next || 'cleared',
+    });
     save();
     refresh();
   }
@@ -16464,11 +16686,12 @@ PAGES.attendance = (main) => {
 
     <div class="card">
       <div class="filter-bar att-filter-bar" style="flex-wrap:wrap;align-items:stretch">
-        <select id="att-month" class="btn ghost">
+        ${_coachLockToday ? `<div class="btn ghost" style="pointer-events:none;font-weight:700;background:rgba(16,185,129,.10);border-color:rgba(16,185,129,.4);color:var(--green)">📅 ${t('Today', 'اليوم')} · ${fmtDate(TODAY)}</div>` : ''}
+        <select id="att-month" class="btn ghost" ${_coachLockToday ? 'style="display:none"' : ''}>
           <option value="all">All months</option>
           ${availableMonths({includeFuture:true}).map(m=>`<option value="${m}" ${filter.month===m?'selected':''}>${fmtMonth(m)}</option>`).join('')}
         </select>
-        <div style="position:relative">
+        <div style="position:relative${_coachLockToday ? ';display:none' : ''}">
           <button type="button" id="att-day-btn" class="btn ghost" style="min-width:130px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Pick one or more days">All days <span style="opacity:.6">▾</span></button>
           <div id="att-day-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:240px;max-height:340px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
             <div style="display:flex;gap:6px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
@@ -16479,7 +16702,7 @@ PAGES.attendance = (main) => {
             <div id="att-day-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px"></div>
           </div>
         </div>
-        <select id="att-week" class="btn ghost" title="Quick-pick a week (selects all 7 days)">
+        <select id="att-week" class="btn ghost" title="Quick-pick a week (selects all 7 days)" ${_coachLockToday ? 'style="display:none"' : ''}>
           <option value="all">All weeks</option>
           <option value="1">Week 1 (1–7)</option>
           <option value="2">Week 2 (8–14)</option>
@@ -17207,12 +17430,13 @@ PAGES.history = (main) => {
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             <button class="btn ghost sm" onclick="editMember(${m.id})" title="Edit member">✏️ Edit</button>
             <button class="btn ghost sm" onclick="duplicateMember(${m.id})" title="Create a new member copying this one's contact info (for siblings)">⧉ Duplicate</button>
-            <button class="btn ghost sm" onclick="freezeMember(${m.id})" title="Freeze membership (pause and shift expiry)">❄️ Freeze</button>
+            ${canManageFreeze() ? `<button class="btn ghost sm" onclick="freezeMember(${m.id})" title="Freeze membership (pause and shift expiry)">❄️ Freeze</button>` : ''}
             <button class="btn ghost sm" onclick="switchSport(${m.id})" title="Switch this member to a different sport/coach">🔄 Switch Sport</button>
             <button class="btn ghost sm" onclick="printIdCard(${m.id})" title="Print membership ID card">🪪 ID Card</button>
             <button class="btn primary sm" onclick="addRenewal(${m.id})" title="Record a new subscription / renewal">+ Add Renewal</button>
           </div>
         </div>
+        ${m.updatedAt ? `<div class="text-mute" style="font-size:11px;margin:-6px 0 12px">🕓 ${t('Last updated by', 'آخر تعديل بواسطة')} <b>${escapeHtml(m.updatedByName || m.updatedBy)}</b> · ${fmtDateTime(m.updatedAt)}</div>` : ''}
 
         ${(() => {
           const isFrozen = m.currentFreezeUntil && TODAY <= m.currentFreezeUntil;
@@ -17225,7 +17449,7 @@ PAGES.history = (main) => {
               <div style="font-weight:700;color:var(--blue)">Frozen until ${fmtDate(m.currentFreezeUntil)}</div>
               <div class="text-mute" style="font-size:12px">${remaining} day${remaining === 1 ? '' : 's'} remaining${f && f.reason ? ` · "${escapeHtml(f.reason)}"` : ''}</div>
             </div>
-            <button class="btn ghost sm" onclick="unfreezeMember(${m.id})" title="End the freeze early">⏯ Unfreeze</button>
+            ${canManageFreeze() ? `<button class="btn ghost sm" onclick="unfreezeMember(${m.id})" title="End the freeze early">⏯ Unfreeze</button>` : ''}
           </div>`;
         })()}
 
@@ -19260,7 +19484,7 @@ Waab, Doha`;
     }
   });
 
-  $('#export-expiring').addEventListener('click', () => {
+  $('#export-expiring')?.addEventListener('click', () => {   // hidden for viewer/reception role
     const all = [...expiringSoon.filter(matchFilter).map(x => ({ ...x, bucket: 'Expiring soon' })),
                  ...expired.filter(matchFilter).map(x => ({ ...x, bucket: 'Expired' })),
                  ...upcoming.filter(matchFilter).map(x => ({ ...x, bucket: 'Upcoming' }))];
@@ -19429,7 +19653,7 @@ PAGES.trials = (main) => {
   $('#trial-status').addEventListener('change', e => { filter.status = e.target.value; pg.page = 1; refresh(); });
   $('#trial-sport').addEventListener('change', e => { filter.sport = e.target.value; pg.page = 1; refresh(); });
   $('#add-trial').addEventListener('click', () => addTrial());
-  $('#export-trials').addEventListener('click', () => {
+  $('#export-trials')?.addEventListener('click', () => {   // hidden for viewer/reception role
     const rows = [['Name','Name Arabic','Mobile','Email','Sport','Coach','2nd Sport','2nd Coach','Trial Date','Follow-up Date','Status','Source','Notes']];
     for (const t of (state.trials || [])) {
       rows.push([t.name, t.nameArabic || '', t.phone || '', t.email || '', t.sport || '',
@@ -19603,6 +19827,9 @@ window.deleteTrial = function(id) {
 // ─── My Membership (member self-service, read-only, own data only) ──
 // Student self-service freeze: pick days within the per-cycle allowance.
 window.studentFreeze = function(memberId) {
+  // Members may NOT freeze their own membership — only Admin/Reception can.
+  // (Kept as a hard guard even though the self-service UI has been removed.)
+  if (!canManageFreeze()) { toast(t('Please contact reception to freeze your membership.', 'يرجى التواصل مع الاستقبال لتجميد عضويتك.'), 'error'); return; }
   const m = state.members.find(x => x.id === memberId);
   if (!m) return;
   if (m.currentFreezeUntil && TODAY <= m.currentFreezeUntil) {
@@ -19849,16 +20076,14 @@ PAGES.mymembership = (main) => {
           <div class="text-mute" style="font-size:12px">${t('Resumes on', 'يُستأنف في')} <b>${fmtDate(m.currentFreezeUntil)}</b> · ${t('your expiry was extended', 'تم تمديد تاريخ انتهائك')}</div></div>
       </div></div>`;
   } else if (memberStatus(m) === 'Active') {
-    const canFreeze = Math.min(fz.remainingDays, fz.perRequestCap) >= 1;
+    // Members can no longer freeze themselves — freezes are handled by reception
+    // (Admin/Reception only). Show an informational card instead of a button.
     freezeCardHtml = `<div class="card" style="margin-bottom:16px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-        <div><div class="card-title">❄️ ${t('Freeze my membership', 'تجميد عضويتي')}</div>
-          <div class="card-subtitle">${t('Pause your membership — your expiry shifts forward by the same days', 'أوقف عضويتك مؤقتاً — يتأجل انتهاؤك بنفس عدد الأيام')}</div>
-          <div class="text-mute" style="font-size:12px;margin-top:4px">${t('Allowance', 'الرصيد')}: <b>${fz.remainingDays}</b> ${t('of', 'من')} ${fz.allowanceDays} ${t('days left this cycle', 'يوم متبقٍ هذه الدورة')}${fz.usedDays ? ` · ${fz.usedDays} ${t('used', 'مستخدم')}` : ''}</div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div style="font-size:28px">❄️</div>
+        <div><div class="card-title">${t('Need to pause your membership?', 'تحتاج إلى إيقاف عضويتك مؤقتاً؟')}</div>
+          <div class="card-subtitle">${t('Please contact reception to freeze your membership. Your allowance is', 'يرجى التواصل مع الاستقبال لتجميد عضويتك. رصيدك هو')} <b>${fz.remainingDays}</b> ${t('of', 'من')} ${fz.allowanceDays} ${t('days this cycle', 'يوم هذه الدورة')}.</div>
         </div>
-        ${canFreeze
-          ? `<button class="btn primary" onclick="studentFreeze(${m.id})">❄️ ${t('Freeze now', 'تجميد الآن')}</button>`
-          : `<span class="text-mute" style="font-size:12px">${t('No freeze days left this cycle', 'لا يوجد رصيد تجميد متبقٍ هذه الدورة')}</span>`}
       </div></div>`;
   }
 
@@ -20697,9 +20922,10 @@ window.lookupUserRole = function() {
   else if (r.role === 'student') { const m = state.members.find(x => x.id === r.memberId); linked = m ? ' · ' + escapeHtml(m.name) : (looksPhone ? ' · no member matches this mobile' : ''); }
   const how = mapped ? 'mapped explicitly' : (isMemberEmail(email) ? 'member mobile login' : 'not mapped → default');
   const revoked = mapped && mapped.disabled ? ' <span class="badge" style="background:var(--red);color:#fff">revoked</span>' : '';
+  const upd = (mapped && mapped.updatedAt) ? `<div class="text-mute" style="font-size:11px;margin-top:2px">🕓 ${t('Last updated by', 'آخر تعديل بواسطة')} <b>${escapeHtml(mapped.updatedByName || mapped.updatedBy)}</b> · ${fmtDateTime(mapped.updatedAt)}</div>` : '';
   out.innerHTML = `<div style="padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px">
     <span style="font-family:monospace;font-size:12px">${escapeHtml(email)}</span> → <span class="badge">${ROLE_LABELS[r.role] || r.role}</span>${revoked}${escapeHtml(linked)}
-    <div class="text-mute" style="font-size:11px;margin-top:2px">${how}</div></div>`;
+    <div class="text-mute" style="font-size:11px;margin-top:2px">${how}</div>${upd}</div>`;
 };
 // ─── Users & Roles — dedicated admin screen ────────────────────────
 PAGES.users = (main) => {
@@ -20851,8 +21077,9 @@ window.editUserRole = function(email) {
           }
           if (!state.settings) state.settings = {};
           if (!state.settings.userRoles) state.settings.userRoles = {};
+          stampUpdate(entry);   // who/when created-or-changed this account mapping (req #5)
           state.settings.userRoles[e] = entry;
-          audit('user.role_map', e, `Mapped ${e} → ${role}${pass ? ' (login created)' : ''}`, entry);
+          audit('user.role_map', `user:${e}`, `Mapped ${e} → ${role}${pass ? ' (login created)' : ''}`, { name: e, recordName: e, new: { role, coachId: entry.coachId ?? null, memberId: entry.memberId ?? null } });
           save(); closeModal(); renderUserRolesList(); toast(`${e} → ${ROLE_LABELS[role] || role}`);
         } },
     ],
@@ -23240,7 +23467,7 @@ PAGES.dataexport = (main) => {
 //                notes, invoiceId? (created automatically), createdAt }
 
 PAGES.rentals = (main) => {
-  let filter = { search: '', facility: 'all', month: 'all' };
+  let filter = { search: '', facility: 'all', months: [] };
   const pg = makePager(10);
 
   function applyFilter() {
@@ -23251,7 +23478,7 @@ PAGES.rentals = (main) => {
         if (!hay.includes(q)) return false;
       }
       if (filter.facility !== 'all' && r.facility !== filter.facility) return false;
-      if (filter.month !== 'all' && (r.date || '').slice(0,7) !== filter.month) return false;
+      if (filter.months.length && !filter.months.includes((r.date || '').slice(0,7))) return false;
       return true;
     });
   }
@@ -23327,10 +23554,7 @@ PAGES.rentals = (main) => {
           <option value="all">All facilities</option>
           ${FACILITIES.map(f => `<option>${escapeHtml(f)}</option>`).join('')}
         </select>
-        <select id="rent-month" class="btn ghost">
-          <option value="all">All months</option>
-          ${monthsInRentals.map(m => `<option value="${m}">${fmtMonth(m)}</option>`).join('')}
-        </select>
+        ${monthMultiHTML('rent-month', monthsInRentals, filter.months)}
       </div>
       <div class="table-wrap">
         <table>
@@ -23356,7 +23580,7 @@ PAGES.rentals = (main) => {
 
   $('#rent-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   $('#rent-facility').addEventListener('change', e => { filter.facility = e.target.value; pg.page = 1; refresh(); });
-  $('#rent-month').addEventListener('change', e => { filter.month = e.target.value; pg.page = 1; refresh(); });
+  bindMonthMulti('rent-month', (months) => { filter.months = months; pg.page = 1; refresh(); });
   $('#rentals-add').addEventListener('click', () => addRental(refresh));
   $('#rentals-rates')?.addEventListener('click', editFacilityRates);
   $('#rentals-customers').addEventListener('click', () => showRentalCustomersList());
@@ -23958,7 +24182,7 @@ function saveRental(existingId, onDone) {
     customerName: name,
     rentalId,                          // back-reference to the rental
   };
-  state.invoices.push(newInv);
+  stampUpdate(newInv); state.invoices.push(newInv);
 
   state.rentals.push({
     id: rentalId,
@@ -24154,7 +24378,7 @@ window.transferMembership = function(fromId, sport, toId) {
             payments: movePaid > 0 ? [{ amount: movePaid, date: start, method: inv.method || 'transfer' }] : [],
             lineItems: [{ sport, coach: coachName(coachId), coachId, classes, price: moveValue }],
           };
-          state.invoices.push(newInv);
+          stampUpdate(newInv); state.invoices.push(newInv);
           invId = newInv.id;
         } else { invId = inv.id; }
       } else {
@@ -24208,7 +24432,7 @@ window.transferMembership = function(fromId, sport, toId) {
           payments: movedPaid > 0 ? [{ amount: movedPaid, date: start, method: inv.method || 'transfer' }] : [],
           lineItems: [{ sport, coach: coachName(coachId), coachId, classes, price: moveOut }],
         };
-        state.invoices.push(newInv);
+        stampUpdate(newInv); state.invoices.push(newInv);
         invId = newInv.id;
       }
     }

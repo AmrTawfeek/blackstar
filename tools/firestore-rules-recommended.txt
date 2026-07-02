@@ -38,14 +38,25 @@ These rules:
         allow read:  if request.auth != null;   // staff + members can read
         allow write: if isStaff();              // only staff can write
 
-        // EVERY per-record subcollection: members, coaches, invoices, expenses,
+        // AUDIT TRAIL is IMMUTABLE: staff may CREATE entries, everyone signed-in
+        // may READ, but NOBODY may update or delete. This MUST come before the
+        // generic rule below (and the generic rule excludes 'auditLog') — Firestore
+        // grants if ANY matching rule allows, so a broad allow-write would otherwise
+        // re-permit deletes.
+        match /auditLog/{docId} {
+          allow read:   if request.auth != null;
+          allow create: if isStaff();
+          allow update, delete: if false;
+        }
+
+        // EVERY OTHER per-record subcollection: members, coaches, invoices, expenses,
         // salaries, sales, advices, trials, rentals, rentalCustomers, schedule,
-        // swimGroups, auditLog, membershipTransfers, cashCounts, families, notes,
-        // products, drivers — and any future one. {collection} matches the
-        // subcollection name; {docId} matches the record id.
+        // swimGroups, membershipTransfers, cashCounts, families, notes, products,
+        // drivers — and any future one. {collection} matches the subcollection name;
+        // {docId} matches the record id.
         match /{collection}/{docId} {
           allow read:  if request.auth != null;
-          allow write: if isStaff();
+          allow write: if isStaff() && collection != 'auditLog';
         }
       }
 

@@ -140,6 +140,14 @@
     if (c.i > 0) lkgInvoices = c.i;
     if (c.m + c.i > 0) lastKnownGood = c.m + c.i;
     cloudReadFailed = false;
+    // Expose a confirmation flag so the UI can show "loaded from the server at HH:MM".
+    try {
+      if (typeof window !== 'undefined') {
+        let docs = 0; for (const k of COLLECTIONS) if (Array.isArray(data && data[k])) docs += data[k].length;
+        window.__lastCloudRead = { at: Date.now(), source: 'server', members: c.m, invoices: c.i, documents: docs + 1 /* + parent meta */ };
+        if (typeof window.__onCloudReadOK === 'function') window.__onCloudReadOK(window.__lastCloudRead);
+      }
+    } catch (_) {}
   }
 
   // ─── localStorage backend (unchanged emergency cache) ───────────────────────

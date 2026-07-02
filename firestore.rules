@@ -17,9 +17,22 @@ service cloud.firestore {
     match /clubs/{clubId} {
       allow read:  if request.auth != null;
       allow write: if isStaff();
+
+      // AUDIT TRAIL is IMMUTABLE (req #8): staff may CREATE audit entries and
+      // everyone signed-in may READ them, but NOBODY may update or delete them.
+      // (Firestore grants if ANY matching rule allows, so this must be declared
+      // BEFORE the generic collection rule AND the generic rule must exclude
+      // 'auditLog' — otherwise the broad allow-write would re-permit deletes.)
+      match /auditLog/{docId} {
+        allow read:   if request.auth != null;
+        allow create: if isStaff();
+        allow update, delete: if false;
+      }
+
+      // Every OTHER per-record subcollection: staff read/write, members read-only.
       match /{collection}/{docId} {
         allow read:  if request.auth != null;
-        allow write: if isStaff();
+        allow write: if isStaff() && collection != 'auditLog';
       }
     }
 
