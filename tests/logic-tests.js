@@ -1496,6 +1496,62 @@ ${seed}
     ok(rec.createdAt === firstCreated, 'lastupdated #5: createdAt is preserved on later updates');
     state.user = savedUser; state.session = savedSession; state.auditLog = savedLog;
   })();
+  // ── Batch 3: payment "entered by" (#4) + portal account status (#6) ──
+  (() => {
+    const savedUser = state.user, savedSession = state.session;
+    state.user = { role: 'receptionist', name: 'Front Desk', username: 'fd@blackstars.qa' }; state.session = null;
+    const inv = { id: 990001, amount: 500, payments: [] };
+    recordPayment(inv, { amount: 200, date: '2026-06-01', method: 'cash' });
+    ok(inv.payments[0].by === 'fd@blackstars.qa' && inv.payments[0].byName === 'Front Desk', 'payment #4: recordPayment stamps who entered it');
+    ok(!!inv.payments[0].at, 'payment #4: recordPayment records a timestamp');
+    ok(!!inv.updatedAt, 'payment #4: recording a payment stamps the invoice updatedAt');
+    // Portal onboarding status (#6)
+    ok(typeof memberAccountStatus === 'function', 'onboarding #6: memberAccountStatus helper exists');
+    ok(memberAccountStatus({ phone: '55123456' }) === 'Not Created', 'onboarding #6: unknown member → Not Created');
+    ok(memberAccountStatus({ phone: '55123456', portalAccount: { status: 'Invitation Sent' } }) === 'Invitation Sent', 'onboarding #6: tracked status wins');
+    ok(ROUTES.onboarding && ROLE_ALLOWED.receptionist.includes('onboarding'), 'onboarding #6: reception can access the onboarding screen');
+    state.user = savedUser; state.session = savedSession;
+  })();
+  // ── "Kenan" data-integrity bugs: a sport ADDED to a member left the invoice
+  //     amount stale (Football hidden from Due) + the line had no linked subscription
+  //     (Football hidden from the coach salary report). ──
+  (() => {
+    const savedM = state.members, savedI = state.invoices, savedCS = state.settings && state.settings.commissionStartDate;
+    if (state.settings) state.settings.commissionStartDate = '';
+    const COACH = 88801;
+    state.members = [{ id: 9500, name: 'Kenan Test', phone: '55990001', startDate: '2026-06-01', expiryDate: '2099-12-31',
+      enrollments: [
+        { sport: 'Football', coachId: COACH, classes: 8, price: 475, validity: 30 },
+        { sport: 'Summer Camp', coachId: null, classes: 0, price: 175 },
+      ],
+      subscriptions: [ { activity: 'Summer Camp', coachId: null, start: '2026-06-01', end: '2099-12-31', totalClasses: 0 } ],  // NO Football sub
+      dailyAttendance: {} }];
+    state.invoices = [{ id: 273273, ref: 'INV273T', date: '2026-06-28', month: '2026-06',
+      amount: 175,          // STALE — Football (475) was added without recomputing; line sum is 650
+      amountPaid: 175, category: 'Membership', customerId: 9500,
+      payments: [{ date: '2026-06-28', month: '2026-06', amount: 175, method: 'cash', sport: 'Summer Camp' }],
+      lineItems: [ { sport: 'Football', coachId: COACH, price: 475 }, { sport: 'Summer Camp', coachId: null, price: 175 } ] }];
+    const inv = state.invoices[0];
+    eq(invoiceBalance(inv), 475, 'DUE FIX: invoiceBalance uses line-sum (650) − paid (175) = 475 even though inv.amount is a stale 175');
+    ok(invoiceStatus(inv) === 'Partial', 'DUE FIX: status is Partial (not falsely Paid from the stale amount)');
+    const r = computeAttendanceCommission(COACH, '2026-06');
+    const inReport = [...(r.pendingLines || []), ...(r.lines || [])].some(l => /Kenan/.test(l.memberName) && l.sport === 'Football');
+    ok(inReport, 'SALARY FIX: an added Football sport with no linked subscription still shows in the coach report (enrollment fallback)');
+    // CROSS-SCREEN CONSISTENCY: every canonical money function must use the SAME total
+    // (Σ lines = 650), so all financial screens agree and billed = collected + due.
+    const months = invoiceMonths(inv);
+    let tB = 0, tC = 0, tD = 0;
+    for (const mo of months) {
+      const b = billedInMonth(mo), c = collectedInMonth(mo), d = dueInMonth(mo);
+      ok(Math.abs(b - (c + d)) < 0.01, 'identity: billed == collected + due for ' + mo + ' (' + Math.round(b) + ' = ' + Math.round(c) + ' + ' + Math.round(d) + ')');
+      tB += b; tC += c; tD += d;
+    }
+    eq(Math.round(tB), 650, 'consistency: total billed (Dashboard/Monthly/ClubRevenue) == Σ lines (650), not the stale amount 175');
+    eq(Math.round(tD), 475, 'consistency: total due (Monthly/Reconciliation) == invoiceBalance/Due-screen (475)');
+    eq(Math.round(tC), 175, 'consistency: total collected == amount paid (175)');
+    eq(Math.round(billedInPeriod(() => true)), 650, 'consistency: billedInPeriod (Owner Dashboard/reports) == Σ lines too');
+    state.members = savedM; state.invoices = savedI; if (state.settings) state.settings.commissionStartDate = savedCS;
+  })();
   (() => {
     const before = state.expenses ? state.expenses.slice() : [];
     state.expenses = [
@@ -1534,6 +1590,17 @@ ${seed}
     eq(inv.lineItems[0].durationLabel, '1 month', 'edit camp: line item duration label updates');
     ok(/1 month/.test(inv.description), 'edit camp: invoice description reflects the new duration');
     ok(/1 month/.test(inv.sport), 'edit camp: invoice header sport label reflects the new duration');
+    // UPGRADE must NOT silently mark the higher amount as paid — the member has only
+    // paid the old 300; the extra is now DUE (the reported scenario).
+    eq(invoicePaid(inv), 300, 'upgrade: paid stays 300 — NOT bumped to 1500');
+    eq(Math.round(invoiceBalance(inv)), 1200, 'upgrade: the unpaid difference (1500 − 300) shows as a new balance due');
+    ok(!!inv._upgradeDue && inv._upgradeDue.to === 1500, 'upgrade: flagged so the member-save UI can surface the new balance');
+  })();
+  // A DOWNGRADE / price correction on a paid-in-full invoice DOES stay paid in full.
+  (() => {
+    const inv = { id: 4002, ref: 'INV-T02', customerId: 4002, category: 'Membership', amount: 300, amountPaid: 300, payments: [{ amount: 300, method: 'cash' }], lineItems: [{ sport: 'Boxing', price: 300 }] };
+    syncSubToEnrollment({ activity: 'Boxing', invoiceNumber: 'INV-T02', amountPaid: 300 }, { sport: 'Boxing', price: 250 }, { id: 4002, name: 'T' }, [inv]);
+    eq(Math.round(invoiceBalance(inv)), 0, 'downgrade/correction on a paid invoice stays paid in full (no phantom balance)');
   })();
   // #3: renewals always create a NEW invoice — never amend the original.
   // We verify the contract by counting invoices before and after a simulated

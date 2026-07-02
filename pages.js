@@ -796,6 +796,8 @@ PAGES.members = (main) => {
   if (!Array.isArray(filter.nationalities)) filter.nationalities = (filter.nationality && filter.nationality !== 'all') ? [filter.nationality] : [];
   const pg = makePager(10);
   const selected = new Set();   // member ids ticked for bulk actions (persists across pages)
+  // List (table) vs Grid (cards) view — persisted.
+  let viewMode = (() => { try { return localStorage.getItem('bs-members-view') === 'grid' ? 'grid' : 'list'; } catch (_) { return 'list'; } })();
 
   const dash = '<span class="text-mute">—</span>';
   let sort = { key: null, dir: 1 };   // active header sort (1=asc, -1=desc)
@@ -853,7 +855,7 @@ PAGES.members = (main) => {
         sortVal: m => (m.name || '').toLowerCase(),
         getVal: m => m.name || '',
         cell: m => `<div style="display:flex;align-items:center;gap:10px">
-            <div class="avatar" style="width:32px;height:32px;font-size:11px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(m.name)}</div>
+            ${memberAvatarHtml(m, 32)}
             <div><div style="font-weight:600">${escapeHtml(m.name)}</div>
             <div class="text-mute" style="font-size:11px">${isRealPhone(m.phone) ? phoneCell(m.phone) : (m.email ? escapeHtml(m.email) : '')}</div></div>
           </div>` },
@@ -1029,6 +1031,33 @@ PAGES.members = (main) => {
     });
   }
 
+  // One member CARD for the Grid view (mirrors the list row's data + click/select).
+  function memberCardHtml(m) {
+    const status = (typeof memberStatus === 'function') ? memberStatus(m) : '';
+    const stColor = status === 'Active' ? 'green' : status === 'Frozen' ? 'blue' : status === 'Expired' ? 'red' : status === 'Trial' ? 'purple' : '';
+    const sports = [...new Set([...(m.enrollments || []).map(e => e.sport), m.sport].filter(Boolean))];
+    const bal = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0;
+    return `<div class="member-card" data-id="${m.id}" style="position:relative;border:1px solid var(--border);border-radius:14px;padding:16px 12px;background:var(--surface);cursor:pointer;transition:box-shadow .15s,border-color .15s${m.deleted ? ';opacity:.55' : ''}" onmouseover="this.style.boxShadow='0 6px 18px rgba(0,0,0,.12)';this.style.borderColor='var(--blue)'" onmouseout="this.style.boxShadow='';this.style.borderColor='var(--border)'">
+      <input type="checkbox" class="member-cb" value="${m.id}" ${selected.has(m.id) ? 'checked' : ''} onclick="event.stopPropagation()" style="position:absolute;top:10px;inset-inline-start:10px;cursor:pointer">
+      ${m.deleted ? '<span class="badge" style="position:absolute;top:8px;inset-inline-end:8px;font-size:9px">archived</span>' : ''}
+      <div style="display:flex;flex-direction:column;align-items:center;text-align:center;gap:8px">
+        ${memberAvatarHtml(m, 60)}
+        <div style="min-height:34px">
+          <div style="font-weight:700;font-size:14px;line-height:1.2">${escapeHtml(m.name)}</div>
+          ${m.nameArabic ? `<div class="text-mute" style="font-size:11px" dir="rtl">${escapeHtml(m.nameArabic)}</div>` : ''}
+        </div>
+        <span class="badge ${stColor}" style="font-size:10px">${escapeHtml(status)}</span>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;justify-content:center">${sports.length ? sports.map(s => `<span class="badge" style="font-size:9px">${escapeHtml(s)}</span>`).join('') : '<span class="text-mute" style="font-size:10px">—</span>'}</div>
+        ${isRealPhone(m.phone) ? `<div class="text-mute" style="font-size:11px">${phoneCell(m.phone)}</div>` : ''}
+        ${bal > 0.5 ? `<div style="font-size:11px;font-weight:700;color:var(--accent-2)">${fmt(bal)} QAR ${t('due', 'مستحق')}</div>` : ''}
+        <div style="display:flex;gap:2px;margin-top:2px" onclick="event.stopPropagation()">
+          <button class="btn ghost sm" onclick="editMember(${m.id})" title="${t('Edit', 'تعديل')}">✏️</button>
+          ${m.deleted ? '' : `<button class="btn ghost sm" onclick="addRenewal(${m.id})" title="${t('Renew', 'تجديد')}">🔄</button>`}
+        </div>
+      </div>
+    </div>`;
+  }
+
   function refresh() {
     let allRows = applyFilter();
     const cols = visibleColumns();
@@ -1080,6 +1109,15 @@ PAGES.members = (main) => {
         banner.innerHTML = '';
       }
     }
+    // ── List vs Grid view ──
+    const _gridEl = $('#members-grid'), _tableEl = $('#members-table-wrap');
+    if (viewMode === 'grid') {
+      if (_tableEl) _tableEl.style.display = 'none';
+      if (_gridEl) { _gridEl.style.display = 'grid'; _gridEl.innerHTML = rows.length ? rows.map(memberCardHtml).join('') : `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">👥</div>No members match your filters</div>`; }
+    } else {
+      if (_gridEl) _gridEl.style.display = 'none';
+      if (_tableEl) _tableEl.style.display = '';
+    }
     $('#members-tbody').innerHTML = rows.length ? rows.map(m => {
       return `
       <tr class="${m.deleted ? 'member-archived' : ''}" style="cursor:pointer${m.deleted ? ';opacity:.55' : ''}" data-id="${m.id}" ${m.deleted ? 'title="Archived member"' : ''}>
@@ -1106,8 +1144,8 @@ PAGES.members = (main) => {
     $('#members-pagination').innerHTML = paginationBar(pg, allRows.length, 'members');
     bindPagination('members', pg, allRows.length, refresh);
 
-    $$('#members-tbody tr[data-id]').forEach(tr => {
-      tr.addEventListener('click', () => viewMember(parseInt(tr.dataset.id)));
+    $$('#members-tbody tr[data-id], #members-grid .member-card[data-id]').forEach(el => {
+      el.addEventListener('click', () => viewMember(parseInt(el.dataset.id)));
     });
 
     // ── Bulk selection wiring (tbody is rebuilt each refresh) ──
@@ -1130,7 +1168,7 @@ PAGES.members = (main) => {
         sa.indeterminate = onPage > 0 && onPage < pageIds.length;
       }
     };
-    $$('#members-tbody .member-cb').forEach(cb => {
+    $$('#members-tbody .member-cb, #members-grid .member-cb').forEach(cb => {
       cb.addEventListener('change', () => {
         const id = parseInt(cb.value);
         if (cb.checked) selected.add(id); else selected.delete(id);
@@ -1141,7 +1179,7 @@ PAGES.members = (main) => {
     if (selectAll) {
       selectAll.onchange = () => {
         rows.forEach(m => { if (selectAll.checked) selected.add(m.id); else selected.delete(m.id); });
-        $$('#members-tbody .member-cb').forEach(cb => { cb.checked = selectAll.checked; });
+        $$('#members-tbody .member-cb, #members-grid .member-cb').forEach(cb => { cb.checked = selectAll.checked; });
         updateBulkBar();
       };
     }
@@ -1185,6 +1223,7 @@ PAGES.members = (main) => {
         </div>
       </div>
       <div class="topbar-actions">
+        <button class="btn ghost" id="members-view-toggle" title="${t('Switch between list and grid view', 'التبديل بين عرض القائمة والشبكة')}">${viewMode === 'grid' ? '☰ ' + t('List', 'قائمة') : '▦ ' + t('Grid', 'شبكة')}</button>
         <button class="btn ghost" id="find-duplicates" title="Scan all members for duplicate phone numbers">🔍 Find Duplicates</button>
         <button class="btn ghost" id="member-columns" title="Show / hide table columns">🧩 ${t('Columns', 'الأعمدة')}</button>
         ${isViewerRole() ? '' : '<button class="btn ghost" id="export-members">📥 Export CSV</button>'}
@@ -1292,7 +1331,7 @@ PAGES.members = (main) => {
       </div>
       ${filter.dupNames && dupNameInfo ? `<div class="text-mute" style="font-size:12px;padding:0 2px 10px">${t('Showing members with same / near-identical names', 'عرض الأعضاء ذوي الأسماء المتطابقة أو المتشابهة')} · ${dupNameInfo.groupCount} ${t('groups', 'مجموعة')} · ${dupNameInfo.ids.size} ${t('members', 'عضو')}. ${t('Open each to compare and merge/archive duplicates.', 'افتح كل عضو للمقارنة ودمج/أرشفة المكررين.')}</div>` : ''}
 
-      <div class="table-wrap">
+      <div class="table-wrap" id="members-table-wrap">
         <table>
           <thead>
             <tr>
@@ -1307,6 +1346,7 @@ PAGES.members = (main) => {
           <tbody id="members-tbody"></tbody>
         </table>
       </div>
+      <div id="members-grid" style="display:none;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px"></div>
       <div id="members-pagination"></div>
     </div>
   `;
@@ -1314,6 +1354,12 @@ PAGES.members = (main) => {
   // Wrap refresh to also persist filter for restoring on return
   const refreshAndSave = () => { saveFilter('members', filter); refresh(); };
 
+  $('#members-view-toggle')?.addEventListener('click', () => {
+    viewMode = viewMode === 'grid' ? 'list' : 'grid';
+    try { localStorage.setItem('bs-members-view', viewMode); } catch (_) {}
+    const b = $('#members-view-toggle'); if (b) b.innerHTML = viewMode === 'grid' ? '☰ ' + t('List', 'قائمة') : '▦ ' + t('Grid', 'شبكة');
+    refresh();
+  });
   $('#search-input').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refreshAndSave(); });
   attachRecentSearch('search-input', 'members');
   // Reusable multi-select dropdown wiring (button + checkbox menu).
@@ -1840,7 +1886,7 @@ function viewMember(id) {
   // Charge/paid totals exclude switch-credit (negative) invoices so the displayed
   // "Total" reconciles with the balance-due figure, which also excludes them.
   const chargeInvs = memberInvs.filter(i => !i.switchCredit && i.activityType !== 'switch-credit' && (Number(i.amount) || 0) >= 0);
-  const totalCharged = chargeInvs.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+  const totalCharged = chargeInvs.reduce((s, i) => s + invoiceTotal(i), 0);   // Σ line prices — reconciles with memberOutstanding (balance)
   const totalPaid = chargeInvs.reduce((s, i) => s + invoicePaid(i), 0);
   const balanceDue = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : Math.max(0, totalCharged - totalPaid);
   const anyLiveMarks = allSubs.some(x => liveAttendanceCount(m, x.activity, x.start || null, x.end || null).total > 0);
@@ -1851,7 +1897,7 @@ function viewMember(id) {
     title: `Member: ${escapeHtml(m.name)}`,
     body: `
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px">
-        <div class="avatar" style="width:64px;height:64px;font-size:24px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(m.name)}</div>
+        ${memberAvatarHtml(m, 64)}
         <div>
           <div style="font-size:18px;font-weight:700">${escapeHtml(m.name)}</div>
           ${m.nameArabic ? `<div style="font-size:14px;color:var(--text-dim)" dir="rtl">${escapeHtml(m.nameArabic)}</div>` : ''}
@@ -3534,9 +3580,23 @@ function showMemberForm(m) {
         audit('member.update', `member:${data.id}`,
           `Updated ${data.name || data.nameArabic}`,
           { memberId: data.id, name: data.name, nameArabic: data.nameArabic, phone: data.phone });
+        // If a sport/duration change RAISED the price (an upgrade), the extra isn't paid
+        // yet — surface the new balance so it's never silently treated as fully paid.
+        const _upgrades = (state.invoices || [])
+          .filter(iv => iv.customerId === data.id && iv._upgradeDue)
+          .map(iv => ({ u: iv._upgradeDue, bal: invoiceBalance(iv) }));
+        (state.invoices || []).forEach(iv => { if (iv._upgradeDue) delete iv._upgradeDue; });   // transient flag, never persist
         save();
         closeModal();
         render();
+        if (_upgrades.length) {
+          const u = _upgrades[0].u;
+          const totalDue = _upgrades.reduce((s, x) => s + x.bal, 0);
+          toast(t(`⬆ ${u.sport} upgraded to ${fmt(u.to)} · paid ${fmt(u.paid)} so far · ${fmt(totalDue)} now due`,
+            `⬆ تم ترقية ${u.sport} إلى ${fmt(u.to)} · المدفوع ${fmt(u.paid)} · المستحق الآن ${fmt(totalDue)}`), 'info');
+        } else {
+          toast(t('Member updated', 'تم تحديث العضو'), 'success');
+        }
       }},
     ],
   });
@@ -5352,7 +5412,7 @@ window.editInvoicePayments = function(invoiceId) {
   const norm = (mRaw) => { const x = String(mRaw || '').toLowerCase(); if (x.indexOf('card') >= 0 || x.indexOf('visa') >= 0) return 'card'; if (x.indexOf('fawran') >= 0 || x.indexOf('\u0641\u0648\u0631\u0627\u0646') >= 0) return 'fawran'; if (x.indexOf('transfer') >= 0 || x.indexOf('bank') >= 0) return 'transfer'; return 'cash'; };
   const methodOpts = [['cash', t('Cash', '\u0646\u0642\u062f\u064a')], ['card', t('Card', '\u0628\u0637\u0627\u0642\u0629')], ['fawran', t('Fawran', '\u0641\u0648\u0631\u0627\u0646')], ['transfer', t('Bank transfer', '\u062a\u062d\u0648\u064a\u0644 \u0628\u0646\u0643\u064a')]];
   // Working copy — committed only on Save.
-  let working = (Array.isArray(inv.payments) ? inv.payments : []).map(p => ({ date: p.date || '', method: norm(p.method), amount: Math.round((Number(p.amount) || 0) * 100) / 100 }));
+  let working = (Array.isArray(inv.payments) ? inv.payments : []).map(p => ({ date: p.date || '', method: norm(p.method), amount: Math.round((Number(p.amount) || 0) * 100) / 100, by: p.by, byName: p.byName, at: p.at, sport: p.sport }));
 
   function bodyHtml() {
     const net = (Array.isArray(inv.lineItems) && inv.lineItems.length) ? inv.lineItems.reduce((s, x) => s + (Number(x.price) || 0), 0) : (Number(inv.amount) || 0);
@@ -5363,13 +5423,14 @@ window.editInvoicePayments = function(invoiceId) {
         <td style="padding:4px 6px"><input type="date" class="ip-date" data-idx="${idx}" value="${p.date || ''}" style="font-size:12px" /></td>
         <td style="padding:4px 6px"><select class="ip-method" data-idx="${idx}" style="font-size:12px">${methodOpts.map(([v, l]) => `<option value="${v}" ${p.method === v ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
         <td style="padding:4px 6px;text-align:right;font-weight:600;${p.amount < 0 ? 'color:var(--red)' : ''}">${fmt(p.amount)}</td>
+        <td style="padding:4px 6px;font-size:11px" class="text-mute">${escapeHtml(p.byName || p.by || '\u2014')}</td>
         <td style="padding:4px 6px;text-align:right"><button class="btn ghost sm ip-del" data-idx="${idx}" title="${t('Remove this payment', '\u062d\u0630\u0641 \u0647\u0630\u0647 \u0627\u0644\u062f\u0641\u0639\u0629')}" style="color:var(--red)">\ud83d\uddd1</button></td>
       </tr>`).join('');
     return `
       <div class="text-mute" style="font-size:12px;margin-bottom:8px">${escapeHtml((cust && cust.name) || inv.customerName || '\u2014')} \u00b7 ${escapeHtml(inv.ref || ('#' + inv.id))}</div>
       <div class="table-wrap"><table style="width:100%;font-size:12px">
-        <thead><tr style="color:var(--text-mute)"><th style="text-align:left;padding:4px 6px">${t('Date', '\u0627\u0644\u062a\u0627\u0631\u064a\u062e')}</th><th style="text-align:left;padding:4px 6px">${t('Method', '\u0627\u0644\u0637\u0631\u064a\u0642\u0629')}</th><th style="text-align:right;padding:4px 6px">${t('Amount', '\u0627\u0644\u0645\u0628\u0644\u063a')}</th><th></th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="4" style="padding:12px;text-align:center;color:var(--text-mute)">${t('No payments recorded.', '\u0644\u0627 \u062a\u0648\u062c\u062f \u062f\u0641\u0639\u0627\u062a.')}</td></tr>`}</tbody>
+        <thead><tr style="color:var(--text-mute)"><th style="text-align:left;padding:4px 6px">${t('Date', '\u0627\u0644\u062a\u0627\u0631\u064a\u062e')}</th><th style="text-align:left;padding:4px 6px">${t('Method', '\u0627\u0644\u0637\u0631\u064a\u0642\u0629')}</th><th style="text-align:right;padding:4px 6px">${t('Amount', '\u0627\u0644\u0645\u0628\u0644\u063a')}</th><th style="text-align:left;padding:4px 6px">${t('Entered By', '\u0623\u062f\u062e\u0644\u0647\u0627')}</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="5" style="padding:12px;text-align:center;color:var(--text-mute)">${t('No payments recorded.', '\u0644\u0627 \u062a\u0648\u062c\u062f \u062f\u0641\u0639\u0627\u062a.')}</td></tr>`}</tbody>
       </table></div>
       <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;margin-top:8px;padding-top:8px;border-top:2px solid var(--border)">
         <span>${t('Recorded total', '\u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0645\u0633\u062c\u0644')}: <span style="color:var(--green)">${fmt(sum)}</span></span>
@@ -6909,7 +6970,7 @@ function computeMonthlyReport(ym) {
     const sh = invoiceMonthShare(i, ym);               // line-aware month share (1 for single-month)
     if (!sh) continue;
     const sport = i.sport || (Array.isArray(i.lineItems) && i.lineItems[0] && i.lineItems[0].sport) || i.activity || i.category || 'Other';
-    const amount = Number(i.amount) || 0;
+    const amount = invoiceTotal(i);   // canonical total (Σ lines)
     const paidFull = Math.min((typeof invoicePaid === 'function') ? invoicePaid(i) : amount, amount);   // collected, clamped
     if (paidFull <= 0) continue;
     const paid = paidFull * sh;                         // attributed to THIS month
@@ -7290,7 +7351,7 @@ function computeDashboard(ymSel) {
   let billed = 0, collected = 0;
   for (const i of (state.invoices || [])) {
     if (i.deleted) continue;
-    billed += Number(i.amount) || 0;
+    billed += invoiceTotal(i);   // canonical total (Σ lines)
     collected += (typeof invoicePaid === 'function') ? invoicePaid(i) : 0;
   }
   const collectionRate = billed > 0 ? Math.round(collected / billed * 100) : 0;
@@ -7471,7 +7532,11 @@ PAGES.payanalysis = (main) => {
 
   // Load filters (persisted per page). Default to the current data month so the
   // screen opens on a single month, like the other financial screens.
-  const filter = loadFilter('payanalysis', { month: latestDataMonth(), day: '', from: '', to: '', method: '', activity: '', search: '' });
+  const filter = loadFilter('payanalysis', { months: [latestDataMonth()].filter(Boolean), day: '', from: '', to: '', method: '', activity: '', search: '' });
+  if (!Array.isArray(filter.months)) filter.months = (filter.month && filter.month !== 'all') ? [filter.month] : [];   // migrate single-month
+  delete filter.month;
+  // NOTE: this page re-navigates on every filter change, so the multi-select popover
+  // reopens per pick — acceptable; picks accumulate in filter.months across re-renders.
 
   // Build the row set PER PAYMENT (not per invoice), so installments paid across
   // different months/methods are each counted in their own month. Legacy invoices
@@ -7509,7 +7574,7 @@ PAGES.payanalysis = (main) => {
       const { activity, activityGroup } = mkActivity(baseActivity);
       rowsAll.push({
         id: i.id, ref, date: i.date || '',
-        value: paid, amount: Number(i.amount) || 0,
+        value: paid, amount: invoiceTotal(i),
         customer, customerAr, activity, activityGroup,
         method: normMethod(i.method), isCredit,
       });
@@ -7524,10 +7589,10 @@ PAGES.payanalysis = (main) => {
     const s = new Set();
     rowsAll.forEach(r => { const mo = String(r.date || '').slice(0, 7); if (mo) s.add(mo); });
     (state.expenses || []).forEach(e => { if (e.deleted) return; const mo = e.month || String(e.date || '').slice(0, 7); if (mo) s.add(mo); });
-    if (filter.month && filter.month !== 'all') s.add(filter.month);
+    filter.months.forEach(mo => s.add(mo));
     return [...s].filter(Boolean).sort().reverse();
   })();
-  const inMonth = (d) => filter.month === 'all' || !filter.month || String(d || '').slice(0, 7) === filter.month;
+  const inMonth = (d) => filter.months.length === 0 || filter.months.includes(String(d || '').slice(0, 7));
 
   // Apply filters.
   const applyFilters = (rows) => rows.filter(r => {
@@ -7602,10 +7667,7 @@ PAGES.payanalysis = (main) => {
     <div class="card" style="margin-bottom:14px">
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
         <div class="field" style="margin:0"><label style="font-size:10px">${t('Month', 'الشهر')}</label>
-          <select id="pa-month">
-            <option value="all" ${filter.month === 'all' ? 'selected' : ''}>${t('All months', 'كل الشهور')}</option>
-            ${paMonths.map(mo => `<option value="${mo}" ${filter.month === mo ? 'selected' : ''}>${fmtMonth(mo)}</option>`).join('')}
-          </select></div>
+          ${monthMultiHTML('pa-month', paMonths, filter.months)}</div>
         <div class="field" style="margin:0"><label style="font-size:10px">${t('Day', 'يوم')}</label><input type="date" id="pa-day" value="${filter.day || ''}" /></div>
         <div class="field" style="margin:0"><label style="font-size:10px">${t('From', 'من')}</label><input type="date" id="pa-from" value="${filter.from || ''}" /></div>
         <div class="field" style="margin:0"><label style="font-size:10px">${t('To', 'إلى')}</label><input type="date" id="pa-to" value="${filter.to || ''}" /></div>
@@ -7657,7 +7719,7 @@ PAGES.payanalysis = (main) => {
 
   // ── Wire filters ──
   const saveAndRerender = () => { saveFilter('payanalysis', filter); navigate('payanalysis'); };
-  $('#pa-month').addEventListener('change', e => { filter.month = e.target.value; filter.day = ''; filter.from = ''; filter.to = ''; saveAndRerender(); });
+  bindMonthMulti('pa-month', (months) => { filter.months = months; filter.day = ''; filter.from = ''; filter.to = ''; saveAndRerender(); });
   $('#pa-day').addEventListener('change', e => { filter.day = e.target.value; if (filter.day) { filter.from = ''; filter.to = ''; } saveAndRerender(); });
   $('#pa-from').addEventListener('change', e => { filter.from = e.target.value; if (filter.from) filter.day = ''; saveAndRerender(); });
   $('#pa-to').addEventListener('change', e => { filter.to = e.target.value; if (filter.to) filter.day = ''; saveAndRerender(); });
@@ -7665,13 +7727,14 @@ PAGES.payanalysis = (main) => {
   $('#pa-activity').addEventListener('change', e => { filter.activity = e.target.value; saveAndRerender(); });
   let searchT;
   $('#pa-search').addEventListener('input', e => { clearTimeout(searchT); filter.search = e.target.value; searchT = setTimeout(saveAndRerender, 350); });
-  $('#pa-clear').addEventListener('click', () => { filter.month = latestDataMonth(); ['day', 'from', 'to', 'method', 'activity', 'search'].forEach(k => filter[k] = ''); saveAndRerender(); });
+  $('#pa-clear').addEventListener('click', () => { filter.months = [latestDataMonth()].filter(Boolean); ['day', 'from', 'to', 'method', 'activity', 'search'].forEach(k => filter[k] = ''); saveAndRerender(); });
 
   // ── Print report ──
   $('#pa-print').addEventListener('click', () => {
     const periodLabel = filter.day ? fmtDate(filter.day)
       : (filter.from || filter.to) ? `${filter.from ? fmtDate(filter.from) : '…'} → ${filter.to ? fmtDate(filter.to) : '…'}`
-      : (filter.month && filter.month !== 'all') ? fmtMonth(filter.month)
+      : filter.months.length === 1 ? fmtMonth(filter.months[0])
+      : filter.months.length > 1 ? filter.months.slice().sort().map(fmtMonth).join(', ')
       : t('All time', 'كل الفترات');
     const fLabels = [
       filter.method ? `${t('Method', 'الطريقة')}: ${METHOD_LABEL[filter.method]}` : '',
@@ -9146,7 +9209,7 @@ PAGES.invoices = (main) => {
     // When one or more months are ticked (and no date range), show each invoice's
     // SHARE summed across the ticked months. No months ticked → full amounts.
     const selMonths = (!filter.from && !filter.to) ? filter.months : [];
-    const rowAmtOf  = (i) => selMonths.length ? selMonths.reduce((s,m) => s + (Number(i.amount) || 0) * invoiceMonthShare(i, m), 0) : (Number(i.amount) || 0);
+    const rowAmtOf  = (i) => selMonths.length ? selMonths.reduce((s,m) => s + invoiceTotal(i) * invoiceMonthShare(i, m), 0) : invoiceTotal(i);   // canonical total (Σ lines) — same as billed/dues
     const rowPaidOf = (i) => selMonths.length ? selMonths.reduce((s,m) => s + invoicePaidInMonth(i, m), 0) : invoicePaid(i);
     const total = allRows.reduce((s,r) => s + rowAmtOf(r), 0);
     const rows = paginate(allRows, pg);
@@ -9502,7 +9565,7 @@ PAGES.invoices = (main) => {
     let sumTotal = 0, sumPaid = 0, sumDue = 0;
     for (const i of all) {
       const cust = customerInfo(i);
-      const total = selMonths.length ? selMonths.reduce((s,m) => s + (Number(i.amount) || 0) * invoiceMonthShare(i, m), 0) : (Number(i.amount) || 0);
+      const total = selMonths.length ? selMonths.reduce((s,m) => s + invoiceTotal(i) * invoiceMonthShare(i, m), 0) : invoiceTotal(i);
       const paid = selMonths.length ? selMonths.reduce((s,m) => s + invoicePaidInMonth(i, m), 0) : ((typeof invoicePaid === 'function') ? invoicePaid(i) : 0);
       const due = Math.max(0, total - paid);
       sumTotal += total; sumPaid += paid; sumDue += Math.max(0, due);
@@ -9772,7 +9835,7 @@ window.showInvoiceHistory = function(customerId) {
   const invs = state.invoices
     .filter(i => i.customerId === customerId)
     .sort((a, b) => b.date.localeCompare(a.date));
-  const total = invs.reduce((s, i) => s + (i.amount || 0), 0);
+  const total = invs.reduce((s, i) => s + invoiceTotal(i), 0);   // canonical total (Σ lines)
   showModal({
     title: `Invoice history: ${escapeHtml(m.name)}`,
     body: `
@@ -9884,7 +9947,7 @@ function computeMissingInvoices(ym) {
     const ymInvs = (state.invoices || []).filter(i => !i.deleted && i.customerId === m.id
       && (i.category || 'Membership') === 'Membership' && !i.switchCredit
       && invoiceBillMonth(i) === ym);
-    const billed = ymInvs.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+    const billed = ymInvs.reduce((s, i) => s + invoiceTotal(i), 0);   // canonical total (Σ lines)
     const startM = String(m.startDate || m.firstRegistration || '').slice(0, 7);
     const expM = String(m.expiryDate || '').slice(0, 7);
     const renewedThisMonth = startM === ym;
@@ -10449,7 +10512,7 @@ function buildMemberStatementPDF(m) {
 
   let totCharged = 0, totPaid = 0;
   const rows = invs.map(i => {
-    const amount = Number(i.amount) || 0;
+    const amount = invoiceTotal(i);   // canonical total (Σ lines) — statement balance matches Due screen
     const paid = invoicePaid(i);
     const bal = Math.max(0, amount - paid);
     // Switch-credit (negative) invoices are shown but excluded from charge totals.
@@ -10615,31 +10678,41 @@ window.recordPaymentUI = function(id) {
   const bal = invoiceBalance(inv);
   const cust = customerInfo(inv);
   showModal({
-    title: '💵 Record payment',
+    title: '💵 ' + t('Record payment', 'تسجيل دفعة'),
     body: `
-      <div style="margin-bottom:12px;font-size:13px">
-        ${cust.name ? `<div class="font-bold">${escapeHtml(cust.name)}</div>` : ''}
-        <div class="text-mute" style="font-size:12px">${inv.ref || '#' + inv.id} · ${escapeHtml(inv.sport || inv.description || '')}</div>
-        <div style="margin-top:8px;display:flex;gap:18px;flex-wrap:wrap">
-          <span class="text-mute">Total <b style="color:var(--text)">${fmt(inv.amount)}</b></span>
-          <span class="text-mute">Paid <b style="color:var(--green)">${fmt(invoicePaid(inv))}</b></span>
-          <span class="text-mute">Balance <b style="color:var(--accent-2)">${fmt(bal)}</b></span>
+      <style>
+        .payui{font-size:14px}
+        .payui .pay-totals{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:4px 0 18px}
+        .payui .pay-tcard{background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:14px 10px;text-align:center}
+        .payui .pay-tcard .l{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-mute);margin-bottom:6px}
+        .payui .pay-tcard .v{font-size:24px;font-weight:800;line-height:1}
+        .payui label{font-size:13px;font-weight:600;margin-bottom:6px;display:block}
+        .payui input,.payui select{font-size:16px;padding:11px 12px;width:100%;box-sizing:border-box}
+        .payui #pay-amt{font-size:28px;font-weight:800;text-align:center;letter-spacing:.5px}
+        .payui .pay-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}
+        .payui .pay-hint{font-size:12px;color:var(--text-mute);margin-top:10px;line-height:1.5}
+        .payui .pay-split-toggle{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;cursor:pointer;padding:10px 12px;border:1px dashed var(--border);border-radius:10px;margin-top:10px}
+        .payui .pay-split-toggle input{width:auto}
+        @media (max-width:560px){ .payui .pay-totals{grid-template-columns:1fr} .payui .pay-row{grid-template-columns:1fr} }
+      </style>
+      <div class="payui">
+        <div style="margin-bottom:6px">
+          ${cust.name ? `<div style="font-weight:800;font-size:18px">${escapeHtml(cust.name)}</div>` : ''}
+          <div class="text-mute" style="font-size:13px">${inv.ref || '#' + inv.id} · ${escapeHtml(inv.sport || inv.description || '')}</div>
         </div>
-      </div>
-      <div class="form-row">
-        <div class="field"><label>Date</label><input id="pay-date" type="date" value="${TODAY}" /></div>
-        <div class="field" style="display:flex;align-items:flex-end">
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
-            <input type="checkbox" id="pay-split" /> ${t('Split between cash + card', 'تقسيم بين النقد والبطاقة')}
-          </label>
+        <div class="pay-totals">
+          <div class="pay-tcard"><div class="l">${t('Total', 'الإجمالي')}</div><div class="v">${fmt(inv.amount)}</div></div>
+          <div class="pay-tcard"><div class="l">${t('Paid', 'المدفوع')}</div><div class="v" style="color:var(--green)">${fmt(invoicePaid(inv))}</div></div>
+          <div class="pay-tcard" style="border-color:rgba(242,163,60,.45);background:rgba(242,163,60,.08)"><div class="l" style="color:var(--accent-2)">${t('Balance', 'المتبقي')}</div><div class="v" style="color:var(--accent-2)">${fmt(bal)}</div></div>
         </div>
-      </div>
-      <div id="pay-single" style="margin-top:8px">
-        <div class="form-row">
-          <div class="field"><label>${t('Amount (QAR)', 'المبلغ (ر.ق)')}</label><input id="pay-amt" type="number" min="0" step="0.01" value="${bal.toFixed(2)}" /></div>
-          <div class="field"><label>${t('Method', 'الطريقة')}</label><select id="pay-method"><option value="cash">${t('Cash', 'نقداً')}</option><option value="card">${t('Card', 'بطاقة')}</option><option value="fawran">${t('Fawran', 'فوران')}</option></select></div>
+        <div class="pay-row">
+          <div class="field" style="margin:0"><label>${t('Date', 'التاريخ')}</label><input id="pay-date" type="date" value="${TODAY}" /></div>
+          <div class="field" id="pay-method-field" style="margin:0"><label>${t('Method', 'الطريقة')}</label><select id="pay-method"><option value="cash">💵 ${t('Cash', 'نقداً')}</option><option value="card">💳 ${t('Card', 'بطاقة')}</option><option value="fawran">📲 ${t('Fawran', 'فوران')}</option></select></div>
         </div>
-      </div>
+        <label class="pay-split-toggle"><input type="checkbox" id="pay-split" /> ${t('Split between cash + card', 'تقسيم بين النقد والبطاقة')}</label>
+        <div id="pay-single" style="margin-top:12px">
+          <div class="field" style="margin:0"><label>${t('Amount (QAR)', 'المبلغ (ر.ق)')}</label><input id="pay-amt" type="number" min="0" step="0.01" value="${bal.toFixed(2)}" /></div>
+        </div>
       <div id="pay-split-rows" style="display:none;margin-top:8px">
         <div class="form-row">
           <div class="field"><label>💵 ${t('Cash (QAR)', 'النقد (ر.ق)')}</label><input id="pay-cash" type="number" min="0" step="0.01" value="" placeholder="0.00" /></div>
@@ -10661,7 +10734,8 @@ window.recordPaymentUI = function(id) {
         </div>
         <div class="text-mute" style="font-size:11px;margin-top:6px">${t('Each part is logged as its own payment row, so reports show how much was cash vs card.', 'كل جزء يُسجّل كدفعة منفصلة لتظهر التقارير التوزيع بين النقد والبطاقة.')}</div>
       </div>
-      <div class="text-mute" style="font-size:11px;margin-top:6px">${t('Counts as revenue in the month of the payment date.', 'تُحتسب كإيرادات في شهر تاريخ الدفع.')}</div>
+        <div class="pay-hint">${t('Counts as revenue in the month of the payment date.', 'تُحتسب كإيرادات في شهر تاريخ الدفع.')}</div>
+      </div>
     `,
     actions: [
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
@@ -10736,6 +10810,7 @@ window.recordPaymentUI = function(id) {
   $('#pay-split')?.addEventListener('change', e => {
     const split = e.target.checked;
     $('#pay-single').style.display = split ? 'none' : '';
+    const mf = $('#pay-method-field'); if (mf) mf.style.display = split ? 'none' : '';
     $('#pay-split-rows').style.display = split ? '' : 'none';
     if (split) recomputeSplit();
   });
@@ -11919,7 +11994,34 @@ window.printInvoicePDF = function(id) {
     </div>
   </div>
 
-  ${'' /* Per-payment history table temporarily removed from the invoice until per-payment tracking is stable (per request). The Paid total and Balance due above are unaffected. */}
+  ${(() => {
+    // Complete payment history (req #4): every installment, chronological, with who
+    // entered it. Permanently stored on inv.payments so it travels with the invoice.
+    const pays = (Array.isArray(inv.payments) ? inv.payments : []).filter(p => (Number(p.amount) || 0) !== 0)
+      .slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+    if (!pays.length) return '';
+    const money = n => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `
+  <div style="margin:24px 0">
+    <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:8px">Payment History · <bdi>سجل المدفوعات</bdi></div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="background:#f7f7f8">
+        <th style="text-align:left;padding:8px 12px">Date · <bdi>التاريخ</bdi></th>
+        <th style="text-align:right;padding:8px 12px">Amount · <bdi>المبلغ</bdi></th>
+        <th style="text-align:left;padding:8px 12px">Method · <bdi>الطريقة</bdi></th>
+        <th style="text-align:left;padding:8px 12px">Entered By · <bdi>أدخلها</bdi></th>
+      </tr></thead>
+      <tbody>
+        ${pays.map(p => `<tr style="border-bottom:1px solid #eee">
+          <td style="padding:6px 12px">${fmtDate(p.date)}</td>
+          <td style="padding:6px 12px;text-align:right;${(Number(p.amount) || 0) < 0 ? 'color:#c0392b' : ''}">${money(p.amount)} QAR</td>
+          <td style="padding:6px 12px;text-transform:capitalize">${escapeHtml(p.method || 'cash')}</td>
+          <td style="padding:6px 12px">${escapeHtml(p.byName || p.by || '—')}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+  })()}
 
   <div class="amount-words">
     <strong dir="ltr">Amount in words · <bdi>المبلغ كتابةً</bdi>:</strong> ${escapeHtml(amountWords)} Qatari Riyals only.
@@ -12332,7 +12434,7 @@ function computeReconciliation(ym) {
   let revenue = 0;
   for (const i of (state.invoices || [])) {
     if (i.deleted) continue;
-    const amount = Number(i.amount) || 0;
+    const amount = (typeof invoiceTotal === 'function') ? invoiceTotal(i) : (Number(i.amount) || 0);   // canonical total (Σ lines)
     // COLLECTED this month — the SAME precise per-payment figure as collectedInMonth
     // and the Invoices/Transactions screens (so the reconciliation agrees with them).
     const monthColl = ym === 'all'
@@ -12402,24 +12504,41 @@ PAGES.bankaccount = (main) => {
   const months = _recMonths();
   if (window._bankMonth == null) window._bankMonth = months[0] || 'all';
   const ym = window._bankMonth;
-  const R = computeReconciliation(ym);
   const money = (n) => fmt(Math.round(n));
 
+  // Build the non-cash ledger AND the by-method totals from the SAME per-invoice
+  // figure the Invoices screen / Reconciliation use — the amount COLLECTED in this
+  // month on the invoice's billing-month basis, split across the methods it was paid
+  // with. This guarantees the rows, the KPI cards and the Total all agree, and that
+  // they tie back to the invoice "collected" number (the single revenue source of
+  // truth). Previously the rows were built by raw payment DATE while the totals used
+  // the billing-month basis, so a partial / cross-month invoice made them disagree.
+  const byMethod = { card: 0, transfer: 0, fawran: 0 };
   const ledger = [];
   for (const i of (state.invoices || [])) {
     if (i.deleted) continue;
-    const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : [{ method: i.method, date: i.date, amount: (typeof invoicePaid === 'function') ? invoicePaid(i) : i.amount }];
-    for (const p of pays) {
-      const mth = _normMethodRec(p.method || i.method);
-      if (mth === 'cash') continue;
-      const d = String(p.date || i.date).slice(0, 10);
-      if (ym !== 'all' && d.slice(0, 7) !== ym) continue;
-      const amt = Number(p.amount) || 0; if (!amt) continue;
-      const mm = (state.members || []).find(x => x.id === i.customerId);
-      ledger.push({ date: d, ref: i.ref || ('#' + i.id), customer: mm ? mm.name : (i.customerName || '—'), method: mth, amount: amt });
+    const amount = (typeof invoiceTotal === 'function') ? invoiceTotal(i) : (Number(i.amount) || 0);   // canonical total (Σ lines)
+    const monthColl = ym === 'all'
+      ? Math.min((typeof invoicePaid === 'function') ? invoicePaid(i) : amount, amount)
+      : Math.min((typeof invoicePaidInMonth === 'function') ? invoicePaidInMonth(i, ym) : 0,
+                 (typeof invoiceBilledInMonth === 'function') ? invoiceBilledInMonth(i, ym) : amount);
+    if (monthColl <= 0.001) continue;
+    const totalPaid = (typeof invoicePaid === 'function') ? invoicePaid(i) : 0;
+    const byM = {};   // how this invoice was actually paid, across methods
+    for (const p of (Array.isArray(i.payments) ? i.payments : [])) { const a = Number(p.amount) || 0; if (a !== 0) { const mk = _normMethodRec(p.method || i.method); byM[mk] = (byM[mk] || 0) + a; } }
+    const keys = Object.keys(byM);
+    const mm = (state.members || []).find(x => x.id === i.customerId);
+    for (const mk of ['card', 'transfer', 'fawran']) {
+      const amt = (keys.length && Math.abs(totalPaid) > 0.001)
+        ? monthColl * ((byM[mk] || 0) / totalPaid)          // proportional to how it was paid
+        : (_normMethodRec(i.method) === mk ? monthColl : 0); // legacy: single method on the invoice
+      if (amt <= 0.001) continue;
+      byMethod[mk] += amt;
+      ledger.push({ date: String(i.date || (i.month ? i.month + '-01' : '')).slice(0, 10), ref: i.ref || ('#' + i.id), customer: mm ? mm.name : (i.customerName || '—'), method: mk, amount: amt });
     }
   }
-  ledger.sort((a, b) => b.date.localeCompare(a.date));
+  const nonCashTotal = byMethod.card + byMethod.transfer + byMethod.fawran;
+  ledger.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
   main.innerHTML = `
     <div class="topbar">
@@ -12437,10 +12556,10 @@ PAGES.bankaccount = (main) => {
     </div>
 
     <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px">
-      <div class="card" style="padding:16px"><div class="text-mute" style="font-size:11px;text-transform:uppercase">${t('Bank credit (non-cash)', 'الرصيد البنكي')}</div><div style="font-size:24px;font-weight:800;color:var(--accent)">${money(R.nonCash)} <span style="font-size:13px">QAR</span></div></div>
-      <div class="card" style="padding:16px"><div class="text-mute" style="font-size:11px;text-transform:uppercase">${t('Card', 'بطاقة')}</div><div style="font-size:20px;font-weight:700">${money(R.byMethod.card)}</div></div>
-      <div class="card" style="padding:16px"><div class="text-mute" style="font-size:11px;text-transform:uppercase">${t('Transfer', 'تحويل')}</div><div style="font-size:20px;font-weight:700">${money(R.byMethod.transfer)}</div></div>
-      <div class="card" style="padding:16px"><div class="text-mute" style="font-size:11px;text-transform:uppercase">Fawran</div><div style="font-size:20px;font-weight:700">${money(R.byMethod.fawran)}</div></div>
+      <div class="card" style="padding:16px"><div class="text-mute" style="font-size:11px;text-transform:uppercase">${t('Bank credit (non-cash)', 'الرصيد البنكي')}</div><div style="font-size:24px;font-weight:800;color:var(--accent)">${money(nonCashTotal)} <span style="font-size:13px">QAR</span></div></div>
+      <div class="card" style="padding:16px"><div class="text-mute" style="font-size:11px;text-transform:uppercase">${t('Card', 'بطاقة')}</div><div style="font-size:20px;font-weight:700">${money(byMethod.card)}</div></div>
+      <div class="card" style="padding:16px"><div class="text-mute" style="font-size:11px;text-transform:uppercase">${t('Transfer', 'تحويل')}</div><div style="font-size:20px;font-weight:700">${money(byMethod.transfer)}</div></div>
+      <div class="card" style="padding:16px"><div class="text-mute" style="font-size:11px;text-transform:uppercase">Fawran</div><div style="font-size:20px;font-weight:700">${money(byMethod.fawran)}</div></div>
     </div>
 
     <div class="card">
@@ -12451,7 +12570,7 @@ PAGES.bankaccount = (main) => {
             <tr><td class="text-dim">${fmtDate(r.date)}</td><td>${escapeHtml(r.ref)}</td><td>${escapeHtml(r.customer)}</td>
             <td><span class="badge ${r.method === 'card' ? 'blue' : 'cyan'}">${r.method}</span></td>
             <td class="text-right num font-bold">${money(r.amount)}</td></tr>`).join('') : `<tr><td colspan="5" class="empty">${t('No non-cash payments', 'لا توجد مدفوعات غير نقدية')}</td></tr>`}</tbody>
-          <tfoot><tr style="border-top:2px solid var(--border);font-weight:800"><td colspan="4">${t('Total', 'الإجمالي')}</td><td class="text-right num">${money(R.nonCash)}</td></tr></tfoot>
+          <tfoot><tr style="border-top:2px solid var(--border);font-weight:800"><td colspan="4">${t('Total', 'الإجمالي')}</td><td class="text-right num">${money(nonCashTotal)}</td></tr></tfoot>
         </table>
       </div>
     </div>`;
@@ -16160,6 +16279,13 @@ PAGES.attendance = (main) => {
   // filter.days is an array of day-numbers; empty = all days
   const _defaultDays = _defaultMonth === _todayMonth ? [_now.getDate()] : [];
   let filter = { month: _defaultMonth, coach: 'all', search: '', sports: [], memberId: null, days: _defaultDays, att: 'all' };
+  // Month MULTI-select: filter.months = [] → summary over ALL months; exactly ONE →
+  // the editable day-grid for that month; TWO+ → summary over just those months.
+  // filter.month stays derived (single month or 'all') so all the grid logic below
+  // is untouched.
+  filter.months = (_defaultMonth && _defaultMonth !== 'all') ? [_defaultMonth] : [];
+  const syncMonthFromMonths = () => { filter.month = filter.months.length === 1 ? filter.months[0] : 'all'; };
+  syncMonthFromMonths();
   // If navigated here from a member profile ("see attendance"), pre-fill the
   // search with that member's name and show all months so their full history is
   // visible. Consumed once.
@@ -16177,6 +16303,7 @@ PAGES.attendance = (main) => {
   // day so past/future dates can't even be selected (also enforced in applyMark).
   const _coachLockToday = myCoachId != null;
   if (_coachLockToday) {
+    filter.months = [_todayMonth];
     filter.month = _todayMonth;
     filter.days = [_now.getDate()];
     filter.search = '';
@@ -16411,7 +16538,9 @@ PAGES.attendance = (main) => {
     // Respects the day filter: if specific day(s) are selected we count only those
     // days, so the total matches what the grid is showing (otherwise the whole
     // grid month, or every month when "All months" is selected).
-    const totalMonths = (filter.month === 'all') ? monthsWithData() : [gMonth];
+    // When several months are ticked the summary covers just those; none ticked = all.
+    const _summaryMonths = filter.months.length ? filter.months.slice().sort() : monthsWithData();
+    const totalMonths = (filter.month === 'all') ? _summaryMonths : [gMonth];
     const dayFilter = (filter.month === 'all') ? [] : (filter.days || []).filter(d => d >= 1 && d <= 31);
     let clubAttended = 0;
     for (const { m, sport } of rows) {
@@ -16429,9 +16558,9 @@ PAGES.attendance = (main) => {
     const grandLabelEl = document.getElementById('att-grand-label');
     if (grandLabelEl) grandLabelEl.textContent = dayFilter.length === 1 ? 'ATTENDED · DAY ' + dayFilter[0] : dayFilter.length > 1 ? 'ATTENDED · ' + dayFilter.length + ' DAYS' : (filter.month === 'all' ? 'ATTENDED · ALL' : 'ATTENDED · ' + fmtMonth(gMonth).toUpperCase());
 
-    // ── "All months" summary: one column per month, Y counts + year total ──
+    // ── Multi-month summary: one column per month, Y counts + total ──
     if (filter.month === 'all') {
-      const months = monthsWithData();
+      const months = _summaryMonths;
       const monthHeaders = months.map(mo => `<th class="att-day-h" style="min-width:62px;width:62px">${fmtMonth(mo)}</th>`).join('');
       const body = rows.map(({ m, sport, coachId }) => {
         let grandY = 0;
@@ -16467,7 +16596,7 @@ PAGES.attendance = (main) => {
           <tbody>${body || `<tr><td colspan="${months.length + 3}" class="empty">No attendance recorded yet.</td></tr>`}</tbody>
         </table>`;
       const distinctMembers = new Set(rows.map(r => r.m.id)).size;
-      $('#att-count').textContent = `${rows.length} attendance row${rows.length === 1 ? '' : 's'} · ${distinctMembers} student${distinctMembers === 1 ? '' : 's'} · all months (${months.length}) — present (Y) per month`;
+      $('#att-count').textContent = `${rows.length} attendance row${rows.length === 1 ? '' : 's'} · ${distinctMembers} student${distinctMembers === 1 ? '' : 's'} · ${filter.months.length ? filter.months.length + ' month' + (filter.months.length === 1 ? '' : 's') : 'all months (' + months.length + ')'} — present (Y) per month`;
       return;
     }
 
@@ -16687,10 +16816,7 @@ PAGES.attendance = (main) => {
     <div class="card">
       <div class="filter-bar att-filter-bar" style="flex-wrap:wrap;align-items:stretch">
         ${_coachLockToday ? `<div class="btn ghost" style="pointer-events:none;font-weight:700;background:rgba(16,185,129,.10);border-color:rgba(16,185,129,.4);color:var(--green)">📅 ${t('Today', 'اليوم')} · ${fmtDate(TODAY)}</div>` : ''}
-        <select id="att-month" class="btn ghost" ${_coachLockToday ? 'style="display:none"' : ''}>
-          <option value="all">All months</option>
-          ${availableMonths({includeFuture:true}).map(m=>`<option value="${m}" ${filter.month===m?'selected':''}>${fmtMonth(m)}</option>`).join('')}
-        </select>
+        ${_coachLockToday ? '' : monthMultiHTML('att-month', availableMonths({ includeFuture: true }), filter.months)}
         <div style="position:relative${_coachLockToday ? ';display:none' : ''}">
           <button type="button" id="att-day-btn" class="btn ghost" style="min-width:130px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Pick one or more days">All days <span style="opacity:.6">▾</span></button>
           <div id="att-day-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:240px;max-height:340px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
@@ -16758,11 +16884,11 @@ PAGES.attendance = (main) => {
     refresh();
   }
 
-  $('#att-month').addEventListener('change', e => {
-    filter.month = e.target.value;
+  bindMonthMulti('att-month', (months) => {
+    filter.months = months;
+    syncMonthFromMonths();   // 1 month → day-grid; 0 or 2+ → month summary
     const dm = filter.month === 'all' ? 31 : daysInMonth(filter.month);
-    // Drop days outside the new month's range
-    filter.days = (filter.days || []).filter(d => d >= 1 && d <= dm);
+    filter.days = (filter.days || []).filter(d => d >= 1 && d <= dm);   // drop days outside the new month
     buildDayGrid();
     applyDays();
   });
@@ -17142,8 +17268,11 @@ PAGES.attendance = (main) => {
     const dayNum = now.getDate();
     const monthsAvail = availableMonths();
     const target = monthsAvail.includes(ymonth) ? ymonth : (monthsAvail.length ? monthsAvail[monthsAvail.length-1] : ymonth);
-    filter.month = target;
-    const monthSel = $('#att-month'); if (monthSel) monthSel.value = target;
+    filter.months = [target];
+    syncMonthFromMonths();
+    // Reflect the single-month pick in the month multi-select picker.
+    const mm = document.getElementById('att-month');
+    if (mm) { mm.querySelectorAll('.mm-pop input[type=checkbox]').forEach(b => { b.checked = !b.classList.contains('mm-all-cb') && b.value === target; }); const l = mm.querySelector('.mm-label'); if (l) l.textContent = fmtMonth(target); }
     const dm = daysInMonth(target);
     const useDay = dayNum <= dm ? dayNum : 1;
     filter.days = [useDay];
@@ -20052,8 +20181,8 @@ PAGES.mymembership = (main) => {
   const myInvoices = (state.invoices || []).filter(inv => inv.customerId === m.id)
     .sort((a, b) => (b.date || b.month || '').localeCompare(a.date || a.month || ''));
   const payHtml = myInvoices.length ? myInvoices.map(inv => {
-    const paid = inv.amountPaid != null ? inv.amountPaid : (inv.amount || 0);
-    const due = Math.max(0, (inv.amount || 0) - paid);
+    const paid = invoicePaid(inv);
+    const due = invoiceBalance(inv);   // canonical (Σ lines − paid) — member sees the SAME due as reception
     return `<tr style="border-top:1px solid var(--border)">
       <td style="padding:7px 8px">${inv.date ? fmtDate(inv.date) : (inv.month || '—')}</td>
       <td style="padding:7px 8px">${escapeHtml(inv.ref || '—')}</td>
@@ -20818,6 +20947,159 @@ window.promptPasswordChange = function(force) {
 // password). Runs client-side via a secondary Firebase app, throttled, skipping
 // members who already have a login. For very large clubs the Admin-SDK script in
 // tools/ is more reliable (no client rate limits).
+// ─── Portal Onboarding (WhatsApp invite + auto account creation, req #6) ─────
+// Account status for a member's portal login: 'Not Created' | 'Created' |
+// 'Invitation Sent'. Prefers the tracked portalAccount, falls back to a userRoles
+// mapping existing for the member's canonical email.
+function memberAccountStatus(m) {
+  const pa = m && m.portalAccount;
+  if (pa && pa.status) return pa.status;
+  const email = phoneToMemberEmail(m.phone);
+  const map = (state.settings && state.settings.userRoles) || {};
+  if (email && map[email]) return 'Created';
+  return 'Not Created';
+}
+
+// Create the member's portal login (if missing), record invitation tracking, and
+// open WhatsApp with the pre-filled welcome message. Admin/Reception only.
+window.sendMemberInvite = async function(memberId) {
+  if (!['admin', 'receptionist'].includes(currentRole())) { toast(t('Admins or receptionists only', 'للمسؤولين أو موظفي الاستقبال فقط'), 'error'); return; }
+  const m = state.members.find(x => x.id === memberId);
+  if (!m) return;
+  const digits = canonicalMobile(m.phone);
+  if (!digits || digits.length < 6) { toast(t('This member has no valid mobile number', 'لا يوجد رقم جوال صالح لهذا العضو'), 'error'); return; }
+  const email = phoneToMemberEmail(m.phone);
+  const pw = digits;
+  if (!m.portalAccount) m.portalAccount = {};
+  // Step 1 — create the login if it doesn't already exist (secondary Firebase app,
+  // so the admin's own session is untouched). Role = Member (student), no extras.
+  let createResult;
+  try {
+    createResult = await window.Storage.provisionMemberLogin(email, pw);
+  } catch (err) {
+    toast(t('Could not create the login (needs cloud sign-in): ', 'تعذّر إنشاء الحساب (يتطلب تسجيل الدخول السحابي): ') + (err.message || err.code || err), 'error');
+    return;
+  }
+  if (!m.portalAccount.createdAt) m.portalAccount.createdAt = new Date().toISOString();
+  if (!state.settings) state.settings = {};
+  if (!state.settings.userRoles) state.settings.userRoles = {};
+  if (!state.settings.userRoles[email]) {
+    const entry = { role: 'student', memberId: m.id };   // Member role — no additional permissions
+    stampUpdate(entry);
+    state.settings.userRoles[email] = entry;
+  }
+  // Step 3 — invitation tracking (created date, sent date, sent by, status).
+  m.portalAccount.invitedAt = new Date().toISOString();
+  m.portalAccount.invitedBy = currentUserName();
+  m.portalAccount.status = 'Invitation Sent';
+  stampUpdate(m);
+  audit('member.invite', `member:${m.id}`,
+    `WhatsApp portal invite sent to ${m.name} (${email})`,
+    { name: m.name, mobile: m.phone, membershipNo: m.qid || '', new: { account: email, status: 'Invitation Sent', created: createResult === 'created' } });
+  save();
+  // Step 2 — open WhatsApp with the pre-filled invitation message.
+  const msg = [
+    'Welcome to Black Stars Sports!',
+    'Your account is now ready.',
+    'Website: https://www.blackstarssports.com',
+    'Username: ' + email,
+    'Password: ' + pw,
+    'Please change your password after your first login.',
+  ].join('\n');
+  const url = waLink(m.phone, msg);
+  if (url) window.open(url, '_blank');
+  toast('💬 ' + (createResult === 'created' ? t('Account created & invite opened', 'تم إنشاء الحساب وفتح الدعوة') : t('Invite opened', 'تم فتح الدعوة')) + ' — ' + m.name);
+  const main = document.querySelector('.main'); if (main && typeof PAGES.onboarding === 'function') PAGES.onboarding(main);
+};
+
+PAGES.onboarding = (main) => {
+  if (!['admin', 'receptionist'].includes(currentRole())) {
+    main.innerHTML = `<div class="card" style="text-align:center;padding:40px"><div style="font-size:40px">🔒</div><h2>${t('Admins or receptionists only', 'للمسؤولين أو موظفي الاستقبال فقط')}</h2></div>`;
+    return;
+  }
+  let filter = { search: '', status: 'all' };
+  const pg = makePager(15);
+  const STATUS_BADGE = {
+    'Not Created': 'pending', 'Created': 'blue', 'Invitation Sent': 'green',
+  };
+  const cloudOn = !!(window.Storage && window.Storage.isCloud && window.Storage.isCloud());
+
+  function eligible() {
+    return (state.members || []).filter(m => !m.deleted && canonicalMobile(m.phone).length >= 6);
+  }
+  function applyFilter() {
+    return eligible().filter(m => {
+      const st = memberAccountStatus(m);
+      if (filter.status !== 'all' && st !== filter.status) return false;
+      if (filter.search) {
+        const q = filter.search.toLowerCase();
+        const hay = [m.name, m.nameArabic, m.phone, m.phone2, phoneToMemberEmail(m.phone)].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(q) && !phoneQueryMatches(m.phone, filter.search)) return false;
+      }
+      return true;
+    });
+  }
+  function refresh() {
+    const all = applyFilter().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    const rows = paginate(all, pg);
+    const counts = { 'Not Created': 0, 'Created': 0, 'Invitation Sent': 0 };
+    eligible().forEach(m => { counts[memberAccountStatus(m)] = (counts[memberAccountStatus(m)] || 0) + 1; });
+    $('#onb-count').textContent = `${all.length} ${t('members', 'عضو')} · ${counts['Invitation Sent']} ${t('invited', 'تمت دعوتهم')} · ${counts['Not Created']} ${t('not created', 'بدون حساب')}`;
+    $('#onb-tbody').innerHTML = rows.length ? rows.map(m => {
+      const st = memberAccountStatus(m);
+      const pa = m.portalAccount || {};
+      const email = phoneToMemberEmail(m.phone);
+      const invited = pa.invitedAt ? `<div class="text-mute" style="font-size:10px">${t('Invited by', 'دعاه')} ${escapeHtml(pa.invitedBy || '—')} · ${fmtDate(pa.invitedAt.slice(0,10))}</div>` : '';
+      return `<tr>
+        <td><div class="font-bold">${escapeHtml(m.name || '—')}</div><div class="text-mute" style="font-size:10px;font-family:monospace">${escapeHtml(email)}</div></td>
+        <td>${phoneCell(m.phone)}</td>
+        <td><span class="badge ${STATUS_BADGE[st] || ''}">${t(st, st === 'Not Created' ? 'بدون حساب' : st === 'Created' ? 'تم الإنشاء' : 'تم إرسال الدعوة')}</span>${invited}</td>
+        <td class="text-right">
+          <button class="btn ${st === 'Invitation Sent' ? 'ghost' : 'primary'} sm" onclick="sendMemberInvite(${m.id})" style="color:${st==='Invitation Sent'?'#25D366':''}" title="${t('Create account (if needed) and open WhatsApp invite', 'إنشاء الحساب (إن لزم) وفتح دعوة واتساب')}">💬 ${st === 'Invitation Sent' ? t('Resend', 'إعادة إرسال') : t('Send WhatsApp', 'إرسال واتساب')}</button>
+        </td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="4" class="empty"><div class="empty-icon">📲</div>${t('No members match', 'لا يوجد أعضاء مطابقون')}</td></tr>`;
+    $('#onb-pagination').innerHTML = paginationBar(pg, all.length, 'onb');
+    bindPagination('onb', pg, all.length, refresh);
+  }
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>📲 ${t('Portal Onboarding', 'إعداد بوابة الأعضاء')}</h1>
+        <div class="subtitle"><span id="onb-count">Loading…</span></div>
+      </div>
+    </div>
+    ${cloudOn ? '' : `<div class="card" style="margin-bottom:12px;border-color:var(--accent-2);background:rgba(242,163,60,.08)"><div style="padding:10px 14px;font-size:13px">⚠️ ${t('Account creation needs the cloud (Firebase) site. On this local copy you can preview the list, but Send WhatsApp will not create logins.', 'إنشاء الحسابات يتطلب موقع Firebase السحابي. في هذه النسخة المحلية يمكنك معاينة القائمة فقط.')}</div></div>`}
+    <div class="card">
+      <div class="filter-bar">
+        <div class="search"><input id="onb-search" type="text" placeholder="${t('Search name or mobile…', 'ابحث بالاسم أو الجوال…')}" value="${escapeHtml(filter.search)}" /></div>
+        <select id="onb-status" class="btn ghost">
+          <option value="all">${t('All statuses', 'كل الحالات')}</option>
+          <option value="Not Created">${t('Not Created', 'بدون حساب')}</option>
+          <option value="Created">${t('Created', 'تم الإنشاء')}</option>
+          <option value="Invitation Sent">${t('Invitation Sent', 'تم إرسال الدعوة')}</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>${t('Member', 'العضو')}</th>
+            <th>${t('Mobile', 'الجوال')}</th>
+            <th>${t('Account Status', 'حالة الحساب')}</th>
+            <th class="text-right">${t('WhatsApp', 'واتساب')}</th>
+          </tr></thead>
+          <tbody id="onb-tbody"></tbody>
+        </table>
+      </div>
+      <div id="onb-pagination"></div>
+    </div>
+  `;
+  $('#onb-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
+  $('#onb-status').addEventListener('change', e => { filter.status = e.target.value; pg.page = 1; refresh(); });
+  refresh();
+};
+
 window.generateMemberLogins = function() {
   if (!window.Storage.isCloud || !window.Storage.isCloud()) { toast('This only works on the cloud (Firebase) site.', 'error'); return; }
   const all = (state.members || []).filter(m => !m.deleted);
@@ -24782,7 +25064,7 @@ function bindMultiSelect(id, onChange) {
 
 PAGES.transactions = (main) => {
   const isoOf = x => x.toISOString().slice(0, 10);
-  if (!window._txnState) window._txnState = { preset: 'this_month', from: '', to: '', categories: [], activities: [], methods: [], coachIds: [], hasDue: false, dueMode: 'gross', amountField: 'due', amountPreset: 'any', amountMin: '', amountMax: '', search: '' };
+  if (!window._txnState) window._txnState = { preset: 'this_month', from: '', to: '', months: [], years: [], categories: [], activities: [], methods: [], coachIds: [], hasDue: false, dueMode: 'gross', amountField: 'due', amountPreset: 'any', amountMin: '', amountMax: '', search: '' };
   // Migrate older single-value state shape → arrays (so a returning session doesn't break).
   (() => {
     const s = window._txnState;
@@ -24790,6 +25072,8 @@ PAGES.transactions = (main) => {
     if (!Array.isArray(s.activities)) s.activities = (s.activity && s.activity !== 'all') ? [s.activity] : [];
     if (!Array.isArray(s.methods)) s.methods = (s.method && s.method !== 'all') ? [s.method] : [];
     if (!Array.isArray(s.coachIds)) s.coachIds = (s.coachId && s.coachId !== 'all') ? [String(s.coachId)] : [];
+    if (!Array.isArray(s.months)) s.months = [];
+    if (!Array.isArray(s.years)) s.years = [];
   })();
   const st = window._txnState;
   const pg = (window._txnPager = window._txnPager || makePager(25));
@@ -24815,12 +25099,22 @@ PAGES.transactions = (main) => {
 
   function build() {
     const range = resolveRange(st.preset, st.from, st.to);
-    // Whole-month presets scope by the invoice BILLING MONTH so the total matches
-    // the Invoices / Dashboard / Club Revenue screens. Other presets stay by date.
-    const monthScope = st.preset === 'this_month' ? TODAY.slice(0, 7)
-      : st.preset === 'last_month' ? String(range.from || '').slice(0, 7) : null;
+    // Which billing months to scope to (each invoice's share is summed across them
+    // so totals match Invoices / Dashboard / Club Revenue). this_month / last_month
+    // use a single month; the Month + Year multi-picker (req #7) builds every
+    // (year × month) combo — e.g. Jun+Jul across 2025 & 2026. Other presets stay by date.
+    let monthScopes = [];
+    if (st.preset === 'this_month') monthScopes = [TODAY.slice(0, 7)];
+    else if (st.preset === 'last_month') monthScopes = [String(range.from || '').slice(0, 7)];
+    else if (st.preset === 'monthyear') {
+      const yrs = (st.years && st.years.length) ? st.years.map(Number) : [parseInt(TODAY.slice(0, 4))];
+      const mos = (st.months && st.months.length) ? st.months.map(Number) : [];
+      if (mos.length) { for (const y of yrs) for (const mo of mos) monthScopes.push(`${y}-${String(mo).padStart(2, '0')}`); }
+      else { for (const y of yrs) for (let mo = 1; mo <= 12; mo++) monthScopes.push(`${y}-${String(mo).padStart(2, '0')}`); }   // whole selected year(s)
+    }
+    const scoped = monthScopes.length > 0;
     const inRange = inv => {
-      if (monthScope) return invoiceTouchesMonth(inv, monthScope);
+      if (scoped) return monthScopes.some(ym => invoiceTouchesMonth(inv, ym));
       const d = (inv.date || '').slice(0, 10);
       if (range.from && d < range.from) return false;
       if (range.to && d > range.to) return false;
@@ -24864,20 +25158,20 @@ PAGES.transactions = (main) => {
         else if (anyLineHasCoach) continue;   // none of these coaches on any line → skip
         // (else: no per-line coaches → fall through to invoice-level coach check below)
       }
-      // Canonical per-invoice value = i.amount. When the row is narrowed by a
-      // coach / activity filter, take that line subset's PROPORTIONAL slice of
-      // i.amount (not a raw line-item sum, which can drift from the amount and
-      // is what made the Transactions total disagree with the Invoices screen).
+      // Canonical per-invoice value = invoiceTotal (Σ line prices, or inv.amount if
+      // no line items) — the SAME total the Invoices screen, billed/dues and Bank
+      // Account use, so all financial screens agree. When the row is narrowed by a
+      // coach / activity filter, take that line subset's PROPORTIONAL slice of it.
       const _liAll = allItems.reduce((s, li) => s + (Number(li.price) || 0), 0);
       const _liKept = items.reduce((s, li) => s + (Number(li.price) || 0), 0);
-      const _invValue = Number(inv.amount) || _liAll;
+      const _invValue = _liAll || (Number(inv.amount) || 0);   // === invoiceTotal(inv)
       const _narrowed = (actSel.length > 0) || coachFiltered;
       const _baseAmount = !_narrowed ? _invValue
         : (_liAll > 0 ? (_liKept / _liAll) * _invValue : _invValue);
       // Whole-month scope: show only THIS month's billed portion. A sport that starts
       // in another month bills there, so a cross-month invoice contributes its share
       // to each month — and the month total matches Club Revenue (billedInMonth).
-      const invAmount = _baseAmount * (monthScope ? invoiceMonthShare(inv, monthScope) : 1);
+      const invAmount = _baseAmount * (scoped ? monthScopes.reduce((s, ym) => s + invoiceMonthShare(inv, ym), 0) : 1);
       // Summer Camp is standalone — never attribute it to a coach.
       const allCamp = items.length && items.every(isCampItem);
       const coachId = allCamp ? null : (inv.coachId || (allItems.find(li => li.coachId)?.coachId) || null);
@@ -24903,8 +25197,8 @@ PAGES.transactions = (main) => {
       // month(s). Otherwise (date ranges, or a row narrowed by coach/activity)
       // prorate by the row's share of the full invoice so Paid/Due stay coherent.
       let paid;
-      if (monthScope && !_narrowed) {
-        paid = Math.round(invoicePaidInMonth(inv, monthScope));
+      if (scoped && !_narrowed) {
+        paid = Math.round(monthScopes.reduce((s, ym) => s + invoicePaidInMonth(inv, ym), 0));
       } else {
         const share = fullInvAmount > 0 ? (invAmount / fullInvAmount) : 1;
         paid = Math.round(fullPaid * share);
@@ -25014,9 +25308,11 @@ PAGES.transactions = (main) => {
     $('#txn-count').textContent = countText;
     $('#txn-pagination').innerHTML = paginationBar(pg, txns.length, 'txn');
     bindPagination('txn', pg, txns.length, refresh);
-    // custom range visibility
+    // custom range + month/year picker visibility
     const cr = $('#txn-customrange');
     if (cr) cr.style.display = st.preset === 'custom' ? 'flex' : 'none';
+    const my = $('#txn-monthyear');
+    if (my) my.style.display = st.preset === 'monthyear' ? 'inline-flex' : 'none';
   }
 
   window._txnExportCSV = () => {
@@ -25051,6 +25347,7 @@ PAGES.transactions = (main) => {
           ${presetOpt('this_month', t('This month', 'هذا الشهر'))}
           ${presetOpt('last_month', t('Last month', 'الشهر الماضي'))}
           ${presetOpt('this_year', t('This year', 'هذا العام'))}
+          ${presetOpt('monthyear', t('Months / Years…', 'أشهر / سنوات…'))}
           ${presetOpt('all', t('All time', 'كل الوقت'))}
           ${presetOpt('custom', t('Custom range', 'فترة مخصصة'))}
         </select>
@@ -25058,6 +25355,14 @@ PAGES.transactions = (main) => {
           <input id="txn-from" type="date" class="btn ghost" value="${st.from}" />
           <span class="text-mute">→</span>
           <input id="txn-to" type="date" class="btn ghost" value="${st.to}" />
+        </div>
+        <div id="txn-monthyear" style="display:${st.preset === 'monthyear' ? 'inline-flex' : 'none'};gap:6px;align-items:center">
+          ${multiSelectHtml('txn-months', t('Months', 'الأشهر'),
+            [['1','Jan'],['2','Feb'],['3','Mar'],['4','Apr'],['5','May'],['6','Jun'],['7','Jul'],['8','Aug'],['9','Sep'],['10','Oct'],['11','Nov'],['12','Dec']].map(([v, l]) => ({ value: v, label: l })),
+            st.months)}
+          ${multiSelectHtml('txn-years', t('Years', 'السنوات'),
+            [...new Set([...(state.invoices || []).map(i => String(i.month || i.date || '').slice(0, 4)).filter(y => y && y.length === 4), String(TODAY).slice(0, 4)])].sort().reverse().map(y => ({ value: y, label: y })),
+            st.years)}
         </div>
         ${multiSelectHtml('txn-cat', t('Category', 'الفئة'),
           [...new Set((state.invoices || []).filter(i => !i.deleted).map(i => i.category || 'Membership'))].sort().map(c => ({ value: c, label: c })),
@@ -25129,6 +25434,8 @@ PAGES.transactions = (main) => {
   $('#txn-amtmax')?.addEventListener('input', e => { st.amountMax = e.target.value; pg.page = 1; refresh(); });
   bindMultiSelect('txn-method', (vals) => { st.methods = vals; pg.page = 1; refresh(); });
   bindMultiSelect('txn-coach', (vals) => { st.coachIds = vals; pg.page = 1; refresh(); });
+  bindMultiSelect('txn-months', (vals) => { st.months = vals; pg.page = 1; refresh(); });   // req #7: multi-month
+  bindMultiSelect('txn-years', (vals) => { st.years = vals; pg.page = 1; refresh(); });      // req #7: multi-year
   $('#txn-search').addEventListener('input', e => { st.search = e.target.value; pg.page = 1; refresh(); });
   refresh();
 };
