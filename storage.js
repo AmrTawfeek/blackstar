@@ -56,7 +56,12 @@
   // included because the portal must find the signed-in member's OWN record; per-
   // record isolation of the roster needs auth custom claims — a later step.)
   const MEMBER_READABLE = new Set(['members', 'schedule', 'advices', 'posts', 'swimGroups']);
-  const _isMemberEmail = em => typeof em === 'string' && /@(blackstars[.]com|members[.]blackstars[.]qa)$/i.test(em);
+  // A MEMBER portal login is created as `<mobile>@blackstars.com` — the local part is
+  // ALL DIGITS. STAFF (admin / receptionist) are commonly created on the SAME domain
+  // with a NAMED local part (receptionist@…, test@…, admin@…), so we must NOT scope
+  // them as members or they'd load none of the club's data (0 invoices, etc.). Only a
+  // digit-only local part on a member domain is treated as a member/portal login.
+  const _isMemberEmail = em => typeof em === 'string' && /^[0-9]+@(blackstars[.]com|members[.]blackstars[.]qa)$/i.test(em);
   const DEVICE_ONLY = ['user', 'route', 'session'];
   const MAX_BATCH_OPS = 400;   // Firestore hard limit is 500 ops/batch.
 

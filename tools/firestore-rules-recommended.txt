@@ -27,11 +27,15 @@ These rules:
   service cloud.firestore {
     match /databases/{database}/documents {
 
-      // Is the request from a signed-in member login (mobile-number account)?
+      // Is the request from a signed-in MEMBER portal login? These are created as
+      // `<mobile>@blackstars.com` — the local part is ALL DIGITS. STAFF (receptionist/
+      // admin) use the SAME domain with a NAMED local part (receptionist@…, test@…),
+      // so we match ONLY a digit local part — otherwise staff would be denied the
+      // club's financial/operational data (0 invoices, etc.).
       function isMember() {
         return request.auth != null
           && request.auth.token.email != null
-          && request.auth.token.email.matches('.*@(blackstars[.]com|members[.]blackstars[.]qa)$');
+          && request.auth.token.email.matches('^[0-9]+@(blackstars[.]com|members[.]blackstars[.]qa)$');
       }
       function isStaff() {
         return request.auth != null && !isMember();

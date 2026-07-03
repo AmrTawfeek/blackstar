@@ -1273,6 +1273,19 @@ ${seed}
   ok(!roleCanAccess('coach', 'databackup') && !roleCanAccess('student', 'preferences') && !roleCanAccess('student', 'users'), 'settings split: non-admins cannot open settings sub-pages');
   ok(roleCanAccess('admin', 'danger'), 'danger zone: admin can open');
   ok(!roleCanAccess('coach', 'danger') && !roleCanAccess('student', 'danger'), 'danger zone: non-admins blocked');
+  // Front-desk cash management (owner request): receptionist gets Cash in Hand + Cash Collection.
+  ok(roleCanAccess('receptionist', 'cashinhand'), 'reception: can open Cash in Hand');
+  ok(roleCanAccess('receptionist', 'cashcollection'), 'reception: can open Cash Collection');
+  ok(roleCanAccess('receptionist', 'invoices'), 'reception: can open Invoices');
+  ok(!roleCanAccess('receptionist', 'salaries') && !roleCanAccess('receptionist', 'dashboardkpi'), 'reception: still blocked from Salaries + Owner Dashboard');
+  // Admin Insights menu flip: these are shown (not hidden), those are hidden.
+  ['monthlyreport', 'coachperf', 'transactions', 'renewals', 'renewaldetail', 'attreport']
+    .forEach(r => ok(ROUTES[r] && !ROUTES[r].hidden, 'insights shown: ' + r + ' not hidden'));
+  // missinginvoices is now FOLDED into Invoice Integrity (invoicechecker) → hidden from the menu.
+  ok(ROUTES.missinginvoices && ROUTES.missinginvoices.hidden === true, 'insights: missinginvoices folded into Invoice Integrity (hidden)');
+  ok(ROUTES.invoicechecker && ROUTES.invoicechecker.label === 'Invoice Integrity' && !ROUTES.invoicechecker.hidden, 'insights: Invoice Integrity (invoicechecker) shown as the unified tool');
+  ['dashboardkpi', 'payanalysis', 'clubrevenue', 'moneyflow', 'membercommission']
+    .forEach(r => ok(ROUTES[r] && ROUTES[r].hidden === true, 'insights hidden: ' + r + ' hidden'));
   var schedCanEdit = r => r === 'admin';
   ok(schedCanEdit('admin') && !schedCanEdit('coach') && !schedCanEdit('student'), 'schedule: editable for admin only; coach/student read-only');
   // Coach Advice: coach + student can access; coachStudents (invoice-based) resolves students
@@ -1380,7 +1393,7 @@ ${seed}
   var _perClass = (_fee * _rate / 100) / _planned; // 22.5
   eq(Math.round(_perClass * 3 * 100) / 100, 67.5, 'attendance-commission: 3 attended classes earn 3x the per-class amount');
   eq(Math.round((_perClass * 3 + _perClass * 5) * 100) / 100, Math.round(_fee * _rate / 100 * 100) / 100, 'attendance-commission: attended + expiry true-up equals the full commission');
-  ok(ROUTES.renewaldetail && ROUTES.renewaldetail.hidden && ROUTES.renewaldetail.adminOnly, 'routes: renewaldetail is a hidden admin-only page');
+  ok(ROUTES.renewaldetail && !ROUTES.renewaldetail.hidden && ROUTES.renewaldetail.adminOnly, 'routes: renewaldetail (Renewal Potential) is a SHOWN admin-only page');
   ok(typeof (typeof window !== 'undefined' ? window.downloadBackup : globalThis.downloadBackup) === 'function', 'backup: downloadBackup is defined globally (works from any page, incl. Dashboard)');
   ok(ROUTES.campschedule.section === 'Summer Camp' && ROUTES.campmembers.section === 'Summer Camp', 'nav: camp pages grouped under a Summer Camp section');
   ok(ROUTES.coaches.section === 'Team & Sports' && ROUTES.sports.section === 'Team & Sports', 'nav: Team and Sports grouped into one section');
@@ -1465,7 +1478,7 @@ ${seed}
   // reserved category present, and an expense row with the reserved category
   // counts toward the expense totals like any other expense.
   ok(ROUTES.cashcollection && ROUTES.cashcollection.section === 'Finance', 'nav: Cash Collection under Finance');
-  ok(!ROLE_ALLOWED.receptionist.includes('cashcollection'), 'role: receptionist CANNOT see Cash Collection (owner till-withdrawal totals leak revenue — payments are recorded via the Invoices "Pay" flow instead)');
+  ok(ROLE_ALLOWED.receptionist.includes('cashcollection') && ROLE_ALLOWED.receptionist.includes('cashinhand'), 'role: receptionist CAN see Cash Collection + Cash in Hand (front-desk cash management — owner request 2026-07-03)');
   ok(EXP_CATS.includes('Cash collected by owner'), 'expenses: reserved category "Cash collected by owner" is always present in EXP_CATS');
   ok(RESERVED_EXPENSE_CATEGORIES.includes('Cash collected by owner'), 'expenses: "Cash collected by owner" is reserved (admin cannot delete it from settings)');
   // ── Batch 1 permission rules (consolidated requirements #2, #9) ──
@@ -1539,6 +1552,119 @@ ${seed}
     // A genuinely per-sport invoice is returned untouched.
     const inv2 = { id: 7778, category: 'Membership', lineItems: [{ sport: 'Boxing', coachId: 2, price: 500 }] };
     eq(commissionLineItems(inv2, mem).length, 1, 'a real per-sport invoice is left as-is');
+  })();
+  // ── Invoice Checker: an invoice's stored snapshot (name / phone / QID) can drift
+  //    from the member's CURRENT data (e.g. member renamed or changed mobile); the
+  //    checker flags the diff and a stale stored amount, and a matching invoice is
+  //    clean. (Invoice Checker screen.) ──
+  (() => {
+    const savedMembers = state.members;
+    state.members = [{ id: 9001, name: 'Karim Ahmed Amro', phone: '+97455551111', phone2: '', qid: '111', nameArabic: '' }];
+    const drift = { id: 9001, ref: 'INV-DRIFT', customerId: 9001, category: 'Membership', amount: 500,
+      customerName: 'Kinan Amer', customerPhone: '+97455559999', customerQid: '222',
+      lineItems: [{ sport: 'Boxing', coachId: 1, price: 300 }] };
+    const iss = _icInvoiceIssues(drift);
+    eq(iss.diffs.map(d => d.key).sort(), ['name', 'phone', 'qid'], 'invoice checker: detects name + phone + QID drift');
+    eq(iss.diffs.find(d => d.key === 'name').neu, 'Karim Ahmed Amro', 'invoice checker: proposed new value = member current name');
+    const amt = _icAmountIssue(drift);
+    ok(amt && amt.lineSum === 300 && amt.amount === 500, 'invoice checker: stale stored amount detected (line-sum 300 ≠ stored 500)');
+    const clean = { id: 9002, customerId: 9001, category: 'Membership', amount: 300,
+      customerName: 'Karim Ahmed Amro', customerPhone: '+97455551111', lineItems: [{ sport: 'Boxing', coachId: 1, price: 300 }] };
+    eq(_icInvoiceIssues(clean).diffs.length, 0, 'invoice checker: a matching invoice shows no diffs');
+    ok(!_icAmountIssue(clean), 'invoice checker: matching amount → no amount issue');
+    const broken = { id: 9003, customerId: 99999, category: 'Product', customerName: 'Ghost', amount: 50, lineItems: [] };
+    ok(_icInvoiceIssues(broken).flags.some(f => f.type === 'broken'), 'invoice checker: missing member link → broken flag (manual review)');
+    // A member's SECOND phone matching the invoice is NOT a drift.
+    state.members = [{ id: 9001, name: 'Karim Ahmed Amro', phone: '+97455551111', phone2: '+97455559999', qid: '' }];
+    ok(!_icInvoiceIssues(drift).diffs.some(d => d.key === 'phone'), 'invoice checker: invoice phone matching member phone2 is not flagged');
+    state.members = savedMembers;
+  })();
+  // ── Citadel: the club owes the facility company a % of ALL Football + Swimming
+  //    revenue (membership sport + facility rent). citadelCompute splits each and
+  //    excludes every other sport. (Citadel screen.) ──
+  (() => {
+    const savedInv = state.invoices;
+    state.invoices = [
+      { id: 1, ref: 'F-M', month: '2026-06', date: '2026-06-05', amount: 1000, category: 'Membership', lineItems: [{ sport: 'Football', price: 1000 }] },
+      { id: 2, ref: 'F-R', month: '2026-06', date: '2026-06-06', amount: 250, category: 'Court Rental', lineItems: [{ sport: 'Football Court', price: 200 }, { sport: 'Football Court', price: 50 }] },
+      { id: 3, ref: 'S-M', month: '2026-06', date: '2026-06-07', amount: 600, category: 'Membership', lineItems: [{ sport: 'Swimming', price: 600 }] },
+      { id: 4, ref: 'S-R', month: '2026-05', date: '2026-05-20', amount: 180, category: 'Court Rental', lineItems: [{ sport: 'Swimming Pool', price: 180 }] },
+      { id: 5, ref: 'BOX', month: '2026-06', date: '2026-06-08', amount: 500, category: 'Membership', lineItems: [{ sport: 'Boxing', price: 500 }] }, // excluded
+      { id: 6, ref: 'DEL', month: '2026-06', date: '2026-06-09', amount: 999, deleted: true, lineItems: [{ sport: 'Football', price: 999 }] }, // excluded
+    ];
+    const all = citadelCompute([]);
+    eq(Math.round(all.agg.football.membership), 1000, 'citadel: football membership = 1000');
+    eq(Math.round(all.agg.football.rent), 250, 'citadel: football rent (Football Court) = 250');
+    eq(Math.round(all.agg.swimming.membership), 600, 'citadel: swimming membership = 600');
+    eq(Math.round(all.agg.swimming.rent), 180, 'citadel: swimming rent (Swimming Pool) = 180');
+    eq(Math.round(all.grand), 2030, 'citadel: grand = 2030 (Boxing + deleted excluded)');
+    eq(Math.round(all.grand * 30 / 100), 609, 'citadel: 30% company share = 609');
+    // Month filter drops the May pool rent.
+    const jun = citadelCompute(['2026-06']);
+    eq(Math.round(jun.agg.swimming.rent), 0, 'citadel: June scope excludes the May pool rent');
+    eq(Math.round(jun.grand), 1850, 'citadel: June grand = 1850');
+    state.invoices = savedInv;
+  })();
+  // ── Salary multi-payment: helpers + partial/paid/pending status (with override). ──
+  (() => {
+    eq(salaryPaidTotal({ payments: [{ amount: 100 }, { amount: 50 }] }), 150, 'salary: paid total = sum of payments');
+    eq(salaryPaidTotal({ paidDate: '2026-06-01', snapshotNet: 200 }), 200, 'salary: legacy record → one payment total');
+    eq(salaryTarget({ target: 500 }, 300), 500, 'salary: explicit target override wins');
+    eq(salaryTarget({ snapshotNet: 250 }, 300), 250, 'salary: legacy snapshotNet is the target');
+    eq(salaryTarget({}, 300), 300, 'salary: target falls back to computed net');
+    const savedSal = state.salaries;
+    const net = computeMonthlyPay(1, '2026-06').net;   // coach 1 = fixed 3000, no commission
+    state.salaries = [{ id: 't1', coachId: 1, month: '2026-06', kind: 'paid', target: net, payments: [{ id: 'a', amount: Math.round(net / 3), date: '2026-06-05', method: 'cash' }] }];
+    const pp = computeMonthlyPay(1, '2026-06');
+    eq(pp.paidStatus, 'partial', 'salary: one-third paid → PARTIAL');
+    ok(pp.paidRemaining > 0, 'salary: partial leaves a remaining balance');
+    state.salaries = [{ id: 't1', coachId: 1, month: '2026-06', kind: 'paid', target: net, payments: [{ id: 'a', amount: net, date: '2026-06-05', method: 'cash' }] }];
+    eq(computeMonthlyPay(1, '2026-06').paidStatus, 'paid', 'salary: full amount paid → PAID');
+    state.salaries = [{ id: 't1', coachId: 1, month: '2026-06', kind: 'paid', target: net + 500, payments: [{ id: 'a', amount: net, date: '2026-06-05', method: 'cash' }] }];
+    eq(computeMonthlyPay(1, '2026-06').paidStatus, 'partial', 'salary: bonus override not fully covered → PARTIAL');
+    state.salaries = savedSal;
+  })();
+  // ── Payment-method normalization: casing/labels collapse to a canonical token so
+  //    the by-method breakdown never splits "cash" vs "Cash". ──
+  (() => {
+    eq(normalizeMethod('Cash'), 'cash', 'method: "Cash" → cash');
+    eq(normalizeMethod('cash'), 'cash', 'method: cash → cash');
+    eq(normalizeMethod('CARD'), 'card', 'method: CARD → card');
+    eq(normalizeMethod('Visa'), 'card', 'method: Visa → card');
+    eq(normalizeMethod('Bank transfer'), 'transfer', 'method: Bank transfer → transfer');
+    eq(normalizeMethod('Fawran'), 'fawran', 'method: Fawran → fawran');
+    eq(normalizeMethod(''), 'cash', 'method: blank → cash (default)');
+    eq(normalizeMethod(null), 'cash', 'method: null → cash (default)');
+    // recordPayment normalizes on write, so a caller passing "Cash" never leaks it.
+    const inv = { id: 1, payments: [] };
+    recordPayment(inv, { amount: 100, method: 'Cash', date: '2026-06-01' });
+    eq(inv.payments[0].method, 'cash', 'recordPayment: normalizes "Cash" to cash on write');
+  })();
+  // ── Member card: clear a completed sport's attendance within its period window. ──
+  (() => {
+    const mm = { dailyAttendance: { '2026-06': { 'Swimming': { '21': 'Y', '23': 'Y', '28': 'Y' }, 'Karate': { '21': 'Y' } }, '2026-07': { 'Swimming': { '02': 'Y' } } } };
+    const removed = _clearSportAttendanceWindow(mm, 'Swimming', '2026-06-20', '2026-06-30');
+    eq(removed, 3, 'attendance clear: removes the 3 Swimming marks inside the June window');
+    ok(!mm.dailyAttendance['2026-06'].Swimming, 'attendance clear: emptied Swimming-June map is pruned');
+    ok(mm.dailyAttendance['2026-06'].Karate && mm.dailyAttendance['2026-06'].Karate['21'] === 'Y', 'attendance clear: a different sport is untouched');
+    ok(mm.dailyAttendance['2026-07'].Swimming['02'] === 'Y', 'attendance clear: Swimming outside the window is untouched');
+  })();
+  // ── Missing Invoices: confirms every member ACTIVE in the month (enrolled that
+  //    month OR carried forward) has a covering invoice; distinguishes the two. ──
+  (() => {
+    const savedM = state.members, savedI = state.invoices;
+    state.members = [
+      { id: 8001, name: 'EnrollNew', status: 'Active', expiryDate: '2026-08-01', subscriptions: [{ activity: 'Boxing', start: '2026-06-05', end: '2026-08-05', totalClasses: 8, amountPaid: 0 }], enrollments: [{ sport: 'Boxing', classes: 8, price: 400 }] },
+      { id: 8002, name: 'CarryNoInv', status: 'Active', expiryDate: '2026-08-01', subscriptions: [{ activity: 'MMA', start: '2026-04-10', end: '2026-08-10', totalClasses: 8, amountPaid: 0 }], enrollments: [{ sport: 'MMA', classes: 8, price: 350 }] },
+      { id: 8003, name: 'CarryCovered', status: 'Active', expiryDate: '2026-08-01', subscriptions: [{ activity: 'Karate', start: '2026-04-10', end: '2026-08-10', totalClasses: 8, amountPaid: 300, invoiceNumber: 'INV-C' }], enrollments: [{ sport: 'Karate', classes: 8, price: 300 }] },
+    ];
+    state.invoices = [{ id: 8003, ref: 'INV-C', customerId: 8003, category: 'Membership', month: '2026-04', date: '2026-04-10', amount: 300, lineItems: [{ sport: 'Karate', price: 300 }] }];
+    const rows = computeMissingInvoices('2026-06');
+    const rA = rows.find(r => r.m.id === 8001), rB = rows.find(r => r.m.id === 8002), rC = rows.find(r => r.m.id === 8003);
+    ok(rA && rA.kind === 'missing' && rA.basis === 'enrolled', 'missing-inv: enrolled this month + no invoice → missing / enrolled');
+    ok(rB && rB.kind === 'missing' && rB.basis === 'carry', 'missing-inv: carry-forward (started earlier, active now) + no invoice → missing / carry');
+    ok(!rC, 'missing-inv: carry-forward WITH a covering invoice → NOT flagged');
+    state.members = savedM; state.invoices = savedI;
   })();
   // ── DATA-LOSS REGRESSION: a locally-added record must SURVIVE a remote sync that
   //    does not yet include it (its cloud write hasn't echoed). Reproduces the

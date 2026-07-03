@@ -5,10 +5,14 @@ service cloud.firestore {
     // Same rules you'll deploy to production (see tools/firestore-rules-recommended.txt).
     // The seed script creates a staff login (admin@blackstars.qa / admin123) in the
     // Auth emulator so the app can sign in and write.
+    // A MEMBER portal login is `<mobile>@blackstars.com` — the local part is all
+    // DIGITS. STAFF (receptionist/admin) use the SAME domain with a NAMED local part
+    // (receptionist@…, test@…), so match ONLY a digit local part — otherwise staff
+    // would be denied the club's data (0 invoices, etc.).
     function isMember() {
       return request.auth != null
         && request.auth.token.email != null
-        && request.auth.token.email.matches('.*@(blackstars[.]com|members[.]blackstars[.]qa)$');
+        && request.auth.token.email.matches('^[0-9]+@(blackstars[.]com|members[.]blackstars[.]qa)$');
     }
     function isStaff() {
       return request.auth != null && !isMember();
