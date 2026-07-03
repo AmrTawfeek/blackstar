@@ -770,6 +770,115 @@ window.downloadBackup = function() {
   }
 };
 
+// ─── LOCAL AUTO-BACKUPS (recovery from the on-device snapshot ring) ────────────
+window.showLocalBackupsUI = async function () {
+  if (currentRole() !== 'admin') { toast('Admins only', 'error'); return; }
+  if (!(window.Storage && window.Storage.backupsAvailable && window.Storage.backupsAvailable())) {
+    toast(t('Auto-backups are not available in this browser', 'النسخ التلقائية غير متاحة في هذا المتصفح'), 'error'); return;
+  }
+  let list = [];
+  try { list = await window.Storage.listBackups(); } catch (_) {}
+  const fmtWhen = iso => { try { return new Date(iso).toLocaleString(); } catch (_) { return iso; } };
+  const rows = list.length ? list.map(b => {
+    const c = b.counts || {};
+    return `<tr>
+      <td style="padding:6px 8px;white-space:nowrap">${fmtWhen(b.at)}</td>
+      <td style="padding:6px 8px"><span class="badge" style="font-size:10px">${escapeHtml(b.reason || 'auto')}</span></td>
+      <td style="padding:6px 8px;font-size:12px">${(c.members || 0)} ${t('members', 'عضو')} · ${(c.invoices || 0)} ${t('invoices', 'فاتورة')} · ${(c.expenses || 0)} ${t('expenses', 'مصروف')}</td>
+      <td style="padding:6px 8px;text-align:right"><button class="btn ghost sm" onclick="restoreLocalBackup(${b.ts})">↩ ${t('Restore', 'استرجاع')}</button></td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="4" class="empty" style="padding:16px">${t('No auto-backups yet — they build up automatically as you use the app.', 'لا توجد نسخ تلقائية بعد — تُنشأ تلقائياً أثناء الاستخدام.')}</td></tr>`;
+  showModal({
+    title: '🛟 ' + t('Local auto-backups', 'النسخ الاحتياطية التلقائية'),
+    wide: true,
+    body: `<div class="text-mute" style="font-size:12px;margin-bottom:10px">${t('Rolling snapshots kept on THIS device (the last 2 days in full, then one per day for 3 weeks). Restoring rolls the whole app back to that point — a safety copy of your current data downloads first, so this is always undoable.', 'لقطات محفوظة على هذا الجهاز (آخر يومين بالكامل ثم لقطة يومياً لثلاثة أسابيع). الاسترجاع يعيد التطبيق إلى تلك اللحظة، مع تنزيل نسخة أمان أولاً.')}</div>
+      <div class="table-wrap" style="max-height:50vh;overflow:auto"><table style="width:100%;font-size:13px">
+        <thead><tr><th style="text-align:left;padding:6px 8px">${t('When', 'الوقت')}</th><th style="text-align:left;padding:6px 8px">${t('Trigger', 'السبب')}</th><th style="text-align:left;padding:6px 8px">${t('Contents', 'المحتوى')}</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`,
+    actions: [{ label: t('Close', 'إغلاق'), class: 'btn primary', onclick: closeModal }],
+  });
+};
+window.restoreLocalBackup = async function (ts) {
+  if (currentRole() !== 'admin') { toast('Admins only', 'error'); return; }
+  let snap = null;
+  try { snap = await window.Storage.getBackup(ts); } catch (_) {}
+  if (!snap || !snap.data) { toast(t('Backup not found', 'النسخة غير موجودة'), 'error'); return; }
+  let data; try { data = JSON.parse(snap.data); } catch (_) { toast('Backup is corrupt', 'error'); return; }
+  if (!Array.isArray(data.members)) { toast('Backup is not valid', 'error'); return; }
+  const when = (() => { try { return new Date(snap.at).toLocaleString(); } catch (_) { return snap.at; } })();
+  const summary = `${(data.members || []).length} members · ${(data.invoices || []).length} invoices · ${(data.expenses || []).length} expenses`;
+  if (!confirm(`${t('Restore the snapshot from', 'استرجاع النسخة من')} ${when}?\n\n${summary}\n\n${t('This replaces ALL current data. A safety copy of your current data downloads first.', 'سيستبدل كل البيانات الحالية. سيتم تنزيل نسخة أمان أولاً.')}`)) return;
+  try { const safety = JSON.stringify({ appVersion: APP_VERSION, schemaVersion: SCHEMA_VERSION, exported: new Date().toISOString(), ...state, user: undefined, route: undefined }, null, 2); downloadFile(`blackstars-PRE-RESTORE-${TODAY}.json`, safety, 'application/json'); } catch (_) {}
+  const incoming = { ...data }; delete incoming.user; delete incoming.route; delete incoming.session; delete incoming.__appVersion;
+  Object.assign(state, incoming);
+  if (typeof audit === 'function') audit('data.restore', 'auto-backup', `Restored on-device auto-backup from ${when} (${summary})`, { ts });
+  window.__allowEmptySave = true; save(); window.__allowEmptySave = false;
+  closeModal(); render();
+  toast(`✓ ${t('Restored from', 'تم الاسترجاع من')} ${when} · ${state.members.length} ${t('members', 'عضو')}`);
+};
+
+// ─── SYNC CHECK: compare THIS device's data against the authoritative cloud ────
+// Reads the cloud fresh (no side effects) and reports discrepancies per collection:
+//   ⚠ "Only here"  = a record on this device that is NOT in the cloud (at risk —
+//                    push it with "Save to cloud now").
+//   ☁ "Only cloud" = a record another device added that isn't loaded here (refresh).
+//   ≠ "Differ"     = present on both but content differs (usually an unsaved edit).
+window.runSyncCheck = async function () {
+  if (currentRole() !== 'admin') { toast('Admins only', 'error'); return; }
+  if (!(window.Storage && window.Storage.isCloud && window.Storage.isCloud())) { toast(t('Cloud sync is not active on this device', 'المزامنة السحابية غير مفعّلة على هذا الجهاز'), 'info'); return; }
+  toast(t('Checking against the cloud…', 'جارٍ المقارنة مع السحابة…'), 'info');
+  let cloud = null;
+  try { cloud = await window.Storage.readCloud(); }
+  catch (e) { toast(t('Could not read the cloud', 'تعذّرت قراءة السحابة') + ': ' + ((e && e.code) || e), 'error'); return; }
+  if (!cloud) { toast(t('The cloud returned no data', 'لم تُرجع السحابة أي بيانات'), 'error'); return; }
+  const COLS = [['members', t('members', 'الأعضاء')], ['invoices', t('invoices', 'الفواتير')], ['expenses', t('expenses', 'المصروفات')], ['sales', t('product sales', 'مبيعات المنتجات')], ['coaches', t('staff', 'الطاقم')], ['trials', t('trials', 'التجارب')], ['rentals', t('rentals', 'الإيجارات')], ['products', t('products', 'المنتجات')], ['families', t('families', 'العائلات')], ['salaries', t('salaries', 'الرواتب')], ['schedule', t('schedule', 'الجدول')], ['cashCounts', t('cash counts', 'جرد النقد')], ['notes', t('notes', 'الملاحظات')], ['membershipTransfers', t('transfers', 'التحويلات')], ['drivers', t('drivers', 'السائقون')]];
+  const byId = arr => { const m = new Map(); for (const r of (arr || [])) if (r && r.id != null) m.set(String(r.id), r); return m; };
+  const strip = r => { const o = { ...r }; delete o._updatedAt; delete o.lastUpdated; return JSON.stringify(o); };
+  const rows = []; let totLocalOnly = 0, totCloudOnly = 0, totDiff = 0; const localOnlySamples = [];
+  for (const [k, label] of COLS) {
+    const L = byId(state[k]), C = byId(cloud[k]);
+    let lOnly = 0, cOnly = 0, diff = 0;
+    for (const [id, r] of L) { if (!C.has(id)) { lOnly++; if (localOnlySamples.length < 15) localOnlySamples.push(label + ': ' + escapeHtml(r.name || r.ref || r.description || ('#' + id))); } else if (strip(r) !== strip(C.get(id))) diff++; }
+    for (const id of C.keys()) if (!L.has(id)) cOnly++;
+    if (lOnly || cOnly || diff) rows.push({ label, Ln: L.size, Cn: C.size, lOnly, cOnly, diff });
+    totLocalOnly += lOnly; totCloudOnly += cOnly; totDiff += diff;
+  }
+  const clean = !totLocalOnly && !totCloudOnly && !totDiff;
+  const rowsHtml = rows.map(r => `<tr>
+      <td style="padding:6px 8px">${escapeHtml(r.label)}</td>
+      <td style="padding:6px 8px;text-align:right">${r.Ln}</td>
+      <td style="padding:6px 8px;text-align:right">${r.Cn}</td>
+      <td style="padding:6px 8px;text-align:right;color:${r.lOnly ? 'var(--red)' : 'var(--text-mute)'};font-weight:${r.lOnly ? 700 : 400}">${r.lOnly || '·'}</td>
+      <td style="padding:6px 8px;text-align:right;color:${r.cOnly ? 'var(--blue)' : 'var(--text-mute)'}">${r.cOnly || '·'}</td>
+      <td style="padding:6px 8px;text-align:right;color:${r.diff ? 'var(--accent-2)' : 'var(--text-mute)'}">${r.diff || '·'}</td>
+    </tr>`).join('');
+  showModal({
+    title: '🔍 ' + t('Sync check — this device vs cloud', 'فحص المزامنة — هذا الجهاز مقابل السحابة'),
+    wide: true,
+    body: clean
+      ? `<div style="padding:16px;border-radius:10px;background:rgba(16,185,129,.12);border:1px solid var(--green);color:var(--green);font-weight:700;font-size:14px">✓ ${t('Fully in sync — every record on this device matches the cloud.', 'متطابق تماماً — كل سجل على هذا الجهاز مطابق للسحابة.')}</div>`
+      : `<div style="font-size:13px;margin-bottom:10px">${t('This device compared against the authoritative cloud copy:', 'مقارنة هذا الجهاز بالنسخة السحابية المعتمدة:')}</div>
+        <div class="table-wrap"><table style="width:100%;font-size:12.5px">
+          <thead><tr>
+            <th style="text-align:left;padding:6px 8px">${t('Records', 'السجلات')}</th>
+            <th style="text-align:right;padding:6px 8px">${t('Here', 'هنا')}</th>
+            <th style="text-align:right;padding:6px 8px">${t('Cloud', 'السحابة')}</th>
+            <th style="text-align:right;padding:6px 8px" title="${t('On this device but NOT in the cloud — at risk until saved', 'هنا وليست في السحابة — معرّضة للفقد حتى تُحفظ')}">⚠ ${t('Only here', 'هنا فقط')}</th>
+            <th style="text-align:right;padding:6px 8px" title="${t('In the cloud but not loaded here — refresh to pull', 'في السحابة وغير محمّلة هنا — حدّث للجلب')}">☁ ${t('Only cloud', 'السحابة فقط')}</th>
+            <th style="text-align:right;padding:6px 8px" title="${t('Present on both but content differs', 'موجودة في الاثنين لكنها مختلفة')}">≠ ${t('Differ', 'مختلفة')}</th>
+          </tr></thead><tbody>${rowsHtml}</tbody></table></div>
+        ${totLocalOnly ? `<div style="margin-top:12px;padding:10px 12px;border-radius:8px;background:rgba(239,68,68,.10);border:1px solid rgba(239,68,68,.4);font-size:12.5px">
+          <b style="color:var(--red)">⚠ ${totLocalOnly} ${t('record(s) here are not in the cloud yet.', 'سجل هنا ليست في السحابة بعد.')}</b> ${t('Use “Save to cloud now” to push them so they can never be lost.', 'استخدم «احفظ في السحابة الآن» لدفعها كي لا تُفقد.')}
+          <div class="text-mute" style="margin-top:6px">${localOnlySamples.join(' · ')}${totLocalOnly > localOnlySamples.length ? ' …' : ''}</div></div>` : ''}
+        ${totCloudOnly ? `<div style="margin-top:8px;font-size:12px;color:var(--text-mute)">☁ ${totCloudOnly} ${t('record(s) in the cloud (added on another device) aren’t loaded here — refresh to pull them in.', 'سجل في السحابة (من جهاز آخر) غير محمّلة هنا — حدّث للجلب.')}</div>` : ''}`,
+    actions: [
+      ...(totLocalOnly ? [{ label: '💾 ' + t('Save to cloud now', 'احفظ في السحابة الآن'), class: 'btn primary', onclick: () => { try { save(); } catch (_) {} closeModal(); toast(t('Pushing your data to the cloud…', 'جارٍ حفظ بياناتك في السحابة…'), 'success'); } }] : []),
+      ...((totCloudOnly || totDiff) ? [{ label: '🔄 ' + t('Refresh from cloud', 'تحديث من السحابة'), class: 'btn ghost', onclick: () => location.reload() }] : []),
+      { label: t('Close', 'إغلاق'), class: clean ? 'btn primary' : 'btn ghost', onclick: closeModal },
+    ],
+  });
+};
+
 // ─── MEMBERS ──────────────────────────────────────────────────
 // Clicking a status chip in the Members header filters the table to that status.
 // Clicking the same chip again clears the filter (toggle). Persists the filter and
@@ -1132,7 +1241,7 @@ PAGES.members = (main) => {
             <button class="btn ghost sm" onclick="event.stopPropagation();switchSport(${m.id})" title="Switch sport / change coach">🔀</button>
             <button class="btn ghost sm" onclick="event.stopPropagation();duplicateMember(${m.id})" title="Add sibling — copy ALL details to a new member">⧉</button>
             <button class="btn ghost sm" onclick="event.stopPropagation();editMember(${m.id})">✏️</button>
-            ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="event.stopPropagation();deleteMember(${m.id})" title="Archive (soft delete)">🗑</button>`}
+            <button class="btn ghost sm" onclick="event.stopPropagation();deleteMember(${m.id})" title="Archive (soft delete — recoverable by an admin)">🗑</button>
           `}
         </td>
       </tr>`;
@@ -2343,10 +2452,12 @@ window.unfreezeMember = function(id) {
 };
 
 window.deleteMember = function(id) {
-  if (currentRole() !== 'admin') { toast('Only admins can archive or restore members', 'error'); return; }
+  const _role = currentRole();
+  if (_role !== 'admin' && _role !== 'receptionist') { toast('You do not have permission to archive members', 'error'); return; }
   const m = state.members.find(x => x.id === id);
   if (!m) return;
   if (m.deleted) {
+    if (_role !== 'admin') { toast('Only an admin can restore an archived member', 'error'); return; }
     // Already archived — offer to restore instead
     if (confirm(`${m.name} is already archived (since ${fmtDate((m.deletedAt || '').slice(0,10))}).\n\nRestore them?`)) {
       delete m.deleted;
@@ -4009,33 +4120,75 @@ window.deleteCoach = function(id) {
   const c = state.coaches.find(x => x.id === id);
   if (!c) return;
   const students = coachStudents(id).length;
-  const enrollLinks = state.members.filter(m => !m.deleted && (m.coachId === id || (m.enrollments || []).some(e => e.coachId === id))).length;
+  const enrollLinks = state.members.reduce((n, m) => n + ((m.coachId === id && !m.deleted) ? 1 : 0)
+    + (m.enrollments || []).filter(e => e.coachId === id).length
+    + (m.subscriptions || []).filter(s => s.coachId === id).length, 0);
   const schedLinks = (state.schedule || []).filter(s => s.coachId === id).length;
-  const invLinks = (state.invoices || []).some(inv => inv.coachId === id || (inv.lineItems || []).some(li => li.coachId === id));
-  if (students || enrollLinks || schedLinks || invLinks) {
-    showModal({
-      title: 'Cannot delete this coach yet',
-      body: `<div style="padding:4px 2px;font-size:13px;line-height:1.6">
-        <b>${escapeHtml(c.name)}</b> still has linked records, so deleting would orphan data:
-        <ul style="margin:10px 0 0;padding-left:18px">
-          ${students ? `<li><b>${students}</b> active student${students === 1 ? '' : 's'}</li>` : ''}
-          ${enrollLinks ? `<li><b>${enrollLinks}</b> member${enrollLinks === 1 ? '' : 's'} assigned (enrolment / primary coach)</li>` : ''}
-          ${schedLinks ? `<li><b>${schedLinks}</b> scheduled class${schedLinks === 1 ? '' : 'es'}</li>` : ''}
-          ${invLinks ? `<li>past invoices reference this coach</li>` : ''}
-        </ul>
-        <div style="margin-top:12px;color:var(--text-mute)">Use <b>🔁 Transfer students</b> to move everyone to another coach first (choose the <b>registration-date</b> basis to also hand over past invoices), then delete. Or just <b>Deactivate</b> to hide the coach while keeping all history.</div>
-      </div>`,
-      actions: [
-        { label: '🔁 Transfer students', class: 'btn ghost', onclick: () => { closeModal(); transferCoachStudents(id); } },
-        { label: 'Close', class: 'btn primary', onclick: closeModal },
-      ],
-    });
+  const invLinks = (state.invoices || []).reduce((n, inv) => n + (inv.coachId === id ? 1 : 0) + (inv.lineItems || []).filter(li => li.coachId === id).length, 0);
+  const hasLinks = students || enrollLinks || schedLinks || invLinks;
+  const others = activeCoaches().filter(x => x.id !== id);
+
+  // targetId = another coach's id (move students to them) OR null (keep without a coach).
+  const doDelete = (targetId) => {
+    const to = targetId != null ? state.coaches.find(x => x.id === targetId) : null;
+    const toName = to ? to.name : null;
+    let moved = 0, movedInv = 0, movedSched = 0;
+    for (const m of state.members) {
+      if (m.coachId === id) { m.coachId = targetId; moved++; }
+      for (const e of (m.enrollments || [])) if (e.coachId === id) { e.coachId = targetId; moved++; }
+      for (const s of (m.subscriptions || [])) if (s.coachId === id) { s.coachId = targetId; s.coach = toName; moved++; }
+    }
+    for (const s of (state.schedule || [])) if (s.coachId === id) { s.coachId = targetId; s.coach = toName; movedSched++; }
+    for (const inv of (state.invoices || [])) {
+      if (inv.coachId === id) { inv.coachId = targetId; inv.coach = toName; movedInv++; }
+      for (const li of (inv.lineItems || [])) if (li.coachId === id) { li.coachId = targetId; li.coach = toName; movedInv++; }
+    }
+    state.coaches = state.coaches.filter(x => x.id !== id);
+    audit('coach.delete', 'coach:' + id, `Deleted ${c.name}${to ? ' — students moved to ' + to.name : ' — students kept without a coach'}`, { coachId: id, targetId, moved, movedInv, movedSched });
+    save(); closeModal(); render();
+    toast(`✅ ${t('Deleted', 'تم حذف')} ${c.name}${to ? ' · ' + t('students moved to', 'نُقل الطلاب إلى') + ' ' + to.name : ' · ' + t('students unassigned', 'الطلاب بلا مدرب')}`, 'success');
+  };
+
+  // No links → straight delete.
+  if (!hasLinks) {
+    if (confirm(`${t('Delete', 'حذف')} "${c.name}"? ${t('This cannot be undone.', 'لا يمكن التراجع.')}`)) doDelete(null);
     return;
   }
-  if (!confirm(`Delete coach "${c.name}"? This cannot be undone.`)) return;
-  state.coaches = state.coaches.filter(x => x.id !== id);
-  audit('coach.delete', 'coach:' + id, 'Deleted coach ' + c.name);
-  save(); render(); toast('Coach deleted');
+  // Has students/classes/invoices → ask WHERE they go before deleting.
+  showModal({
+    title: `🗑 ${t('Delete', 'حذف')} · ${escapeHtml(c.name)}`,
+    body: `
+      <div style="font-size:13px;line-height:1.6;margin-bottom:12px">
+        <b>${escapeHtml(c.name)}</b> ${t('is linked to', 'مرتبط بـ')}
+        ${[students ? `<b>${students}</b> ${t('student', 'طالب')}${students === 1 || getLang() === 'ar' ? '' : 's'}` : '',
+           schedLinks ? `<b>${schedLinks}</b> ${t('class', 'حصة')}${schedLinks === 1 || getLang() === 'ar' ? '' : 'es'}` : '',
+           invLinks ? t('past invoices', 'فواتير سابقة') : ''].filter(Boolean).join(' · ')}.
+        ${t('Choose what happens to them, then delete.', 'اختر ما يحدث لهم ثم احذف.')}
+      </div>
+      <label style="display:flex;gap:8px;align-items:flex-start;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;cursor:${others.length ? 'pointer' : 'not-allowed'};opacity:${others.length ? 1 : .5}">
+        <input type="radio" name="del-mode" value="move" ${others.length ? 'checked' : 'disabled'} style="margin-top:3px" />
+        <span style="font-size:12px;flex:1"><b>${t('Move students to another coach', 'نقل الطلاب إلى مدرب آخر')}</b>
+          <select id="del-to" ${others.length ? '' : 'disabled'} style="margin-top:6px;width:100%">${others.map(x => `<option value="${x.id}">${escapeHtml(x.name)} · ${x.rate || 0}%</option>`).join('') || `<option>${t('No other active coach', 'لا يوجد مدرب آخر')}</option>`}</select>
+          <span class="text-mute" style="display:block;margin-top:4px">${t('Their enrolments, classes and past invoices move to the new coach.', 'تنتقل تسجيلاتهم وحصصهم وفواتيرهم السابقة إلى المدرب الجديد.')}</span>
+        </span>
+      </label>
+      <label style="display:flex;gap:8px;align-items:flex-start;padding:10px;border:1px solid var(--border);border-radius:8px;cursor:pointer">
+        <input type="radio" name="del-mode" value="none" ${others.length ? '' : 'checked'} style="margin-top:3px" />
+        <span style="font-size:12px"><b>${t('Keep students without a coach', 'إبقاء الطلاب بلا مدرب')}</b><br><span class="text-mute">${t('Students stay; their coach is cleared (assign one later).', 'يبقى الطلاب وتُمسح جهة المدرب (يمكن تعيين مدرب لاحقاً).')}</span></span>
+      </label>`,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: `🗑 ${t('Delete coach', 'حذف المدرب')}`, class: 'btn primary', onclick: () => {
+        const mode = (document.querySelector('input[name="del-mode"]:checked') || {}).value || 'none';
+        let targetId = null;
+        if (mode === 'move') {
+          targetId = parseInt($('#del-to').value);
+          if (!state.coaches.find(x => x.id === targetId)) { toast(t('Pick a coach to move students to', 'اختر مدرباً لنقل الطلاب إليه'), 'error'); return; }
+        }
+        doDelete(targetId);
+      } },
+    ],
+  });
 };
 
 // Transfer one coach's students/classes to another coach. Salary basis:
@@ -8838,6 +8991,9 @@ PAGES.schedule = (main) => {
 };
 
 PAGES.coaches = (main) => {
+  // Staff screen is ADMIN-ONLY (pay rates, commission, delete). ROLE_ALLOWED already
+  // blocks non-admins from the route; this is a defence-in-depth guard.
+  if (currentRole() !== 'admin') { main.innerHTML = `<div class="empty"><div class="empty-icon">🔐</div>${t('Admins only', 'للمشرفين فقط')}</div>`; return; }
   // Revenue/commission come from actual invoices linked to each coach (real cash).
   // Students + attendance come from member subscriptions.
   // Per-coach commission % is configured in Settings → Coach Commission Rates.
@@ -9025,7 +9181,7 @@ PAGES.coaches = (main) => {
   main.innerHTML = `
     <div class="topbar">
       <div>
-        <h1>Team</h1>
+        <h1>${t('Staff', 'الطاقم')}</h1>
         <div class="subtitle"><span id="coach-subtitle"></span></div>
       </div>
       ${isViewerRole() ? '' : `<div style="display:flex;gap:8px">
@@ -9157,7 +9313,9 @@ PAGES.invoices = (main) => {
 
   function applyFilter() {
     return state.invoices.filter(i => {
-      if (i.deleted) return false;   // soft-deleted invoices never count anywhere
+      // Archived view shows ONLY soft-deleted invoices; the normal view hides them.
+      if (filter.archived) { if (!i.deleted) return false; }
+      else if (i.deleted) return false;
       if (filter.search) {
         const q = filter.search.toLowerCase();
         const cust = customerInfo(i);   // live name + phone if linked
@@ -9257,6 +9415,13 @@ PAGES.invoices = (main) => {
           return `<div style="font-size:10px;font-weight:700;color:${st === 'Unpaid' ? 'var(--red)' : 'var(--accent-2)'};margin-top:2px">${st} · ${fmt(rDue)} due</div>`;
         })()}</td>
         <td class="text-right" style="white-space:nowrap">
+          ${filter.archived ? `
+          <span class="text-mute" style="font-size:11px;margin-inline-end:6px">🗑 ${i.deletedAt ? fmtDate(String(i.deletedAt).slice(0, 10)) : t('archived', 'مؤرشف')}</span>
+          ${currentRole() === 'admin'
+            ? `<button class="btn primary sm" onclick="restoreInvoice(${i.id})" title="Restore this invoice">↩ ${t('Restore', 'استرجاع')}</button>
+               <button class="btn ghost sm" onclick="hardDeleteInvoice(${i.id})" title="Permanently delete — cannot be undone" style="color:var(--red)">🗑 ${t('Delete forever', 'حذف نهائي')}</button>`
+            : `<span class="text-mute" style="font-size:11px">${t('admin can restore', 'يمكن للمشرف الاسترجاع')}</span>`}
+          ` : `
           ${(selMonths.length ? (rowAmtOf(i) - rowPaidOf(i)) > 0.5 : invoiceStatus(i) !== 'Paid') ? `<button class="btn ghost sm" onclick="recordPaymentUI(${i.id})" title="Record a payment toward the balance" style="color:var(--green)">💵 Pay</button>` : ''}
           ${i.customerId && !isViewerRole() ? `<button class="btn ghost sm" onclick="showInvoiceHistory(${i.customerId})" title="See all invoices for this customer">📜</button>` : ''}
           ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="printInvoicePDF(${i.id})" title="Export invoice as PDF (filename = customer name)">⬇ Export</button>`}
@@ -9264,7 +9429,7 @@ PAGES.invoices = (main) => {
           ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="editInvoiceQuick(${i.id})" title="Edit coach/sport">✏️</button>`}
           ${currentRole() === 'admin' && (i.category || 'Membership') === 'Membership' && i.customerId ? `<button class="btn ghost sm" onclick="regenerateInvoice(${i.id})" title="Regenerate from current enrollment (e.g. if duration changed)" style="color:var(--blue)">🔄</button>` : ''}
           ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="editInvoicePayments(${i.id})" title="View / edit payments (date, method)">💳</button>`}
-          ${isViewerRole() ? '' : `<button class="btn ghost sm" onclick="deleteInvoice(${i.id})" title="Delete">🗑</button>`}
+          <button class="btn ghost sm" onclick="deleteInvoice(${i.id})" title="${t('Delete (archive — recoverable by an admin)', 'حذف (أرشفة — يمكن للمشرف الاسترجاع)')}">🗑</button>`}
         </td>
       </tr>`;
     }).join('') : `<tr><td colspan="10" class="empty"><div class="empty-icon">📄</div>No invoices match</td></tr>`;
@@ -9335,6 +9500,7 @@ PAGES.invoices = (main) => {
         <button class="btn ghost" id="member-statement-btn" title="Generate a printable statement of all a member's invoices">📄 Member Statement</button>
         ${isViewerRole() ? '' : '<button class="btn ghost" id="export-inv">📥 Export</button>'}
         <button class="btn ghost" onclick="navigate('dupinvoices')" title="Review duplicate invoices side by side before deleting">🔍 Find duplicates</button>
+        <button class="btn ${filter.archived ? 'primary' : 'ghost'}" id="inv-archived-toggle" title="${t('Show deleted (archived) invoices — an admin can restore or permanently delete them', 'عرض الفواتير المحذوفة — يمكن للمشرف الاسترجاع أو الحذف النهائي')}">🗑 ${filter.archived ? t('Back to active', 'العودة للنشطة') : t('Archived', 'المؤرشفة')}${filter.archived ? '' : (() => { const n = (state.invoices || []).filter(x => x.deleted).length; return n ? ` (${n})` : ''; })()}</button>
         <button class="btn primary" id="add-inv">+ New Invoice</button>
       </div>
     </div>
@@ -9442,6 +9608,7 @@ PAGES.invoices = (main) => {
   $('#inv-coach').addEventListener('change', e => { filter.coach = e.target.value; pg.page = 1; refresh(); });
   $('#inv-category').addEventListener('change', e => { filter.category = e.target.value; pg.page = 1; refresh(); });
   $('#add-inv').addEventListener('click', addInvoice);
+  $('#inv-archived-toggle')?.addEventListener('click', () => { filter.archived = !filter.archived; pg.page = 1; saveFilter('invoices', filter); PAGES.invoices(main); });
   $('#inv-merge-clear').addEventListener('click', () => { selected.clear(); refresh(); });
   $('#inv-merge-go').addEventListener('click', () => mergeSelectedInvoices());
   $('#inv-delete-sel')?.addEventListener('click', () => deleteSelectedInvoices());
@@ -9978,16 +10145,27 @@ window._miGen = (id) => {
 window._miOpen = (invId) => { if (typeof printInvoicePDF === 'function') printInvoicePDF(invId); };
 
 PAGES.missinginvoices = (main) => {
-  if (!window._miMonth) window._miMonth = (TODAY || '').slice(0, 7);
   // Month list = every billing month present in invoices, plus the current month.
   const monthSet = new Set([(TODAY || '').slice(0, 7)]);
   for (const i of (state.invoices || [])) { if (!i.deleted) { for (const mm of invoiceMonths(i)) if (mm) monthSet.add(mm); } }
-  const months = [...monthSet].sort().reverse();
-  const ym = window._miMonth;
-  const rows = computeMissingInvoices(ym);
+  const months = [...monthSet].filter(Boolean).sort().reverse();
+  // Multi-month selector: [] = ALL months; otherwise the ticked months.
+  if (!Array.isArray(window._miMonths)) window._miMonths = [(TODAY || '').slice(0, 7)].filter(Boolean);
+  const selMonths = window._miMonths.length ? window._miMonths.slice().sort().reverse() : months;
+  const multi = selMonths.length !== 1;
+
+  // Aggregate the per-month missing-invoice checks, tagging each row with its month.
+  const rows = [];
+  for (const mm of selMonths) { for (const r of computeMissingInvoices(mm)) rows.push(Object.assign({ _ym: mm }, r)); }
+  rows.sort((a, b) => (b._ym || '').localeCompare(a._ym || '')
+    || (a.kind === b.kind ? String(a.m.name || '').localeCompare(String(b.m.name || '')) : (a.kind === 'missing' ? -1 : 1)));
   const missingCount = rows.filter(r => r.kind === 'missing').length;
   const mismatchCount = rows.filter(r => r.kind === 'mismatch').length;
   const missingValue = rows.filter(r => r.kind === 'missing').reduce((s, r) => s + r.expected, 0);
+  const colspan = multi ? 7 : 6;
+  const scopeLabel = window._miMonths.length
+    ? (window._miMonths.length === 1 ? fmtMonth(selMonths[0]) : `${window._miMonths.length} ${t('months', 'أشهر')}`)
+    : t('All months', 'كل الأشهر');
 
   const rowHtml = rows.length ? rows.map(r => {
     const m = r.m;
@@ -9999,24 +10177,23 @@ PAGES.missinginvoices = (main) => {
       : `<button class="btn ghost sm" onclick="_miOpen(${r.invId})">📄 ${t('Open invoice', 'فتح الفاتورة')}</button>`;
     return `<tr>
       <td><div class="font-bold">${escapeHtml(m.name || '—')}</div><div class="text-mute" style="font-size:11px">${escapeHtml(m.nameArabic || '')}</div></td>
+      ${multi ? `<td class="text-mute" style="font-size:12px;white-space:nowrap">${fmtMonth(r._ym)}</td>` : ''}
       <td>${badge}</td>
       <td class="text-mute" style="font-size:12px">${r.reason}</td>
       <td class="text-right num">${fmt(r.expected)}</td>
       <td class="text-right num">${r.billed ? fmt(r.billed) : '—'}</td>
       <td class="text-right">${action}</td>
     </tr>`;
-  }).join('') : `<tr><td colspan="6" class="text-mute" style="text-align:center;padding:18px">✅ ${t('Every active member has an accurate invoice for this month', 'كل عضو نشط لديه فاتورة دقيقة لهذا الشهر')}</td></tr>`;
+  }).join('') : `<tr><td colspan="${colspan}" class="text-mute" style="text-align:center;padding:18px">✅ ${t('Every active member has an accurate invoice for the selected month(s)', 'كل عضو نشط لديه فاتورة دقيقة للأشهر المحددة')}</td></tr>`;
 
   main.innerHTML = `
     <div class="topbar">
       <div>
         <h1>🧩 ${t('Missing Invoices', 'الفواتير الناقصة')}</h1>
-        <div class="subtitle">${t('Members who renewed or updated this month with no invoice — or whose invoice amount looks wrong', 'الأعضاء الذين جدّدوا أو حدّثوا هذا الشهر بدون فاتورة — أو فاتورتهم بمبلغ غير صحيح')}</div>
+        <div class="subtitle">${t('Members who renewed or updated with no invoice — or whose invoice amount looks wrong', 'الأعضاء الذين جدّدوا أو حدّثوا بدون فاتورة — أو فاتورتهم بمبلغ غير صحيح')}</div>
       </div>
       <div class="topbar-actions">
-        <select id="mi-month" class="btn ghost">
-          ${months.map(mm => `<option value="${mm}" ${mm === ym ? 'selected' : ''}>${fmtMonth(mm)}</option>`).join('')}
-        </select>
+        ${monthMultiHTML('mi-month', months, window._miMonths)}
       </div>
     </div>
 
@@ -10032,7 +10209,7 @@ PAGES.missinginvoices = (main) => {
         <div class="kpi-sub">${t('billed ≠ expected', 'المفوتر ≠ المتوقع')}</div>
       </div>
       <div class="kpi">
-        <div class="kpi-label">📅 ${fmtMonth(ym)}</div>
+        <div class="kpi-label">📅 ${escapeHtml(scopeLabel)}</div>
         <div class="kpi-value num">${rows.length}</div>
         <div class="kpi-sub">${t('members to review', 'عضو للمراجعة')}</div>
       </div>
@@ -10043,6 +10220,7 @@ PAGES.missinginvoices = (main) => {
         <table>
           <thead><tr>
             <th>${t('Member', 'العضو')}</th>
+            ${multi ? `<th>${t('Month', 'الشهر')}</th>` : ''}
             <th>${t('Issue', 'المشكلة')}</th>
             <th>${t('Reason', 'السبب')}</th>
             <th class="text-right">${t('Expected', 'المتوقع')}</th>
@@ -10054,8 +10232,7 @@ PAGES.missinginvoices = (main) => {
       </div>
     </div>`;
 
-  const sel = main.querySelector('#mi-month');
-  if (sel) sel.addEventListener('change', () => { window._miMonth = sel.value; PAGES.missinginvoices(main); });
+  bindMonthMulti('mi-month', (mSel) => { window._miMonths = mSel; PAGES.missinginvoices(main); });
 };
 
 // ── Member Commission report (admin): per member, per sport ───────────────────
@@ -10954,7 +11131,8 @@ window.editInvoiceQuick = function(id) {
 };
 
 window.deleteInvoice = function(id) {
-  if (currentRole() !== 'admin') { toast('Only admins can delete invoices', 'error'); return; }
+  const _role = currentRole();
+  if (_role !== 'admin' && _role !== 'receptionist') { toast('You do not have permission to delete invoices', 'error'); return; }
   const inv = state.invoices.find(i => i.id === id);
   if (!inv) { toast('Invoice not found', 'error'); return; }
   const cust = customerInfo(inv);
@@ -10977,48 +11155,73 @@ window.deleteInvoice = function(id) {
   const coachSummary = coachImpact.size
     ? '<div style="margin-top:6px">• Coach commission deducted:</div>' + [...coachImpact.values()].map(c => `<div style="margin-left:14px">— ${escapeHtml(c.name)} (${c.rate}%): <b style="color:var(--red)">−${fmt(c.commission)} QAR</b> <span class="text-mute" style="font-size:10px">on ${fmt(c.lineRevenue)} revenue</span></div>`).join('')
     : '';
+  const _afterDelete = () => {
+    save(); closeModal();
+    if (typeof window._invoicesRefresh === 'function' && state.route === 'invoices') window._invoicesRefresh();
+    else render();
+  };
+  const _isAdmin = currentRole() === 'admin';
   showModal({
-    title: '⚠️ Delete invoice?',
+    title: '🗑 ' + t('Delete invoice?', 'حذف الفاتورة؟'),
     body: `
-      <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.30);border-radius:8px;padding:12px;margin-bottom:12px;font-size:13px;line-height:1.6">
-        <div style="font-weight:800;color:var(--red);margin-bottom:6px">⚠️ This cannot be undone</div>
-        <div>You're about to permanently delete <b>${escapeHtml(inv.ref || '#' + inv.id)}</b>${cust.name ? ` for <b>${escapeHtml(cust.name)}</b>` : ''}.</div>
+      <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.30);border-radius:8px;padding:12px;margin-bottom:12px;font-size:13px;line-height:1.6">
+        <div>${t('This ARCHIVES', 'هذا يؤرشف')} <b>${escapeHtml(inv.ref || '#' + inv.id)}</b>${cust.name ? ` ${t('for', 'لـ')} <b>${escapeHtml(cust.name)}</b>` : ''} — ${t('it is removed from all lists and totals but an admin can restore it from the “🗑 Archived” view.', 'تُزال من كل القوائم والإجماليات لكن يمكن للمشرف استرجاعها من عرض «المؤرشفة».')}</div>
       </div>
       <div style="font-size:13px;line-height:1.8">
         <div>• Date: <b>${inv.date ? fmtDate(inv.date) : '—'}</b> · Category: <b>${escapeHtml(inv.category || 'Membership')}</b></div>
-        <div>• Total: <b>${fmt(inv.amount || 0)} QAR</b> · Paid: <b style="color:var(--green)">${fmt(paid)}</b> · Balance: <b style="color:var(--accent-2)">${fmt(bal)}</b></div>
-        <div>• Line items: <b>${items.length}</b></div>
+        <div>• Total: <b>${fmt(invoiceTotal(inv))} QAR</b> · Paid: <b style="color:var(--green)">${fmt(paid)}</b> · Balance: <b style="color:var(--accent-2)">${fmt(bal)}</b></div>
         ${lineSummary}
-        <div>• Payments removed: <b style="color:var(--red)">${(inv.payments || []).length || (paid > 0 ? 1 : 0)} row${(inv.payments || []).length === 1 ? '' : 's'}</b> · ${fmt(paid)} QAR</div>
         ${coachSummary}
         ${linkedSale ? `<div style="color:var(--accent-2);margin-top:6px">⚠️ Linked to sale #${linkedSale.id} — the sale record stays, but its invoice link breaks.</div>` : ''}
       </div>
-      <div class="text-mute" style="font-size:11px;margin-top:10px">Club Revenue Summary, Coach Performance, and the Team page will update automatically once the invoice is gone — they read live from invoice line items.</div>
+      ${_isAdmin ? `<div class="text-mute" style="font-size:11px;margin-top:10px">${t('As an admin you can also delete it PERMANENTLY (cannot be undone).', 'كمشرف يمكنك أيضاً حذفها نهائياً (لا يمكن التراجع).')}</div>` : ''}
     `,
     actions: [
-      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
-      { label: '🗑 Delete permanently', class: 'btn primary', style: 'background:var(--red);border-color:var(--red);color:#fff', onclick: () => {
-        // Break any sale → invoice link cleanly so the sale row doesn't display a dangling ref.
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      ..._isAdmin ? [{ label: '🗑 ' + t('Delete permanently', 'حذف نهائي'), class: 'btn ghost', onclick: () => {
+        if (!confirm(`${t('Permanently delete', 'حذف نهائي لـ')} ${inv.ref || '#' + id}? ${t('This cannot be undone.', 'لا يمكن التراجع.')}`)) return;
         if (linkedSale) delete linkedSale.invoiceId;
-        // SOFT-DELETE (tombstone): mark deleted instead of removing from the array.
-        // A removed record leaves no trace, so a stale device merging its old copy
-        // back in would RESURRECT it. A tombstone always wins the merge over a stale
-        // "alive" copy, so deletions can't come back. Every list filters out `deleted`.
+        state.invoices = state.invoices.filter(i => i.id !== id);   // HARD remove
+        if (typeof audit === 'function') audit('invoice.purge', 'invoice:' + id, `Permanently deleted ${inv.ref || '#' + id} for ${cust.name || 'customer'} — ${fmt(invoiceTotal(inv))} QAR`);
+        _afterDelete(); toast(`✓ ${t('Invoice permanently deleted', 'تم الحذف النهائي للفاتورة')}`);
+      } }] : [],
+      { label: '🗑 ' + t('Delete (archive)', 'حذف (أرشفة)'), class: 'btn primary', onclick: () => {
+        if (linkedSale) delete linkedSale.invoiceId;
+        // SOFT-DELETE tombstone: mark deleted (recoverable, and merge-safe against a
+        // stale device that still has the "alive" copy). Every list filters `deleted`.
         const _inv = state.invoices.find(i => i.id === id);
-        if (_inv) { _inv.deleted = true; _inv.deletedAt = new Date().toISOString(); }
-        if (typeof audit === 'function') audit('invoice.delete', 'invoice:' + id, `Deleted ${inv.ref || '#' + id} for ${cust.name || 'customer'} — ${fmt(inv.amount || 0)} QAR, ${fmt(paid)} paid`);
-        save(); closeModal();
-        // Refresh the invoices table in place if we're on that screen (keeps the
-        // current filters + pagination); otherwise fall back to a full render.
-        if (typeof window._invoicesRefresh === 'function' && state.route === 'invoices') {
-          window._invoicesRefresh();
-        } else {
-          render();
-        }
-        toast(`✓ Invoice ${inv.ref || '#' + id} deleted`);
+        if (_inv) { _inv.deleted = true; _inv.deletedAt = new Date().toISOString(); _inv.deletedBy = currentUserName(); }
+        if (typeof audit === 'function') audit('invoice.delete', 'invoice:' + id, `Archived ${inv.ref || '#' + id} for ${cust.name || 'customer'} — ${fmt(invoiceTotal(inv))} QAR, ${fmt(paid)} paid`);
+        _afterDelete(); toast(`✓ ${t('Invoice archived', 'تمت أرشفة الفاتورة')} · ${inv.ref || '#' + id}`);
       }},
     ],
   });
+};
+// Restore a soft-deleted invoice (admin only).
+window.restoreInvoice = function(id) {
+  if (currentRole() !== 'admin') { toast('Only admins can restore invoices', 'error'); return; }
+  const inv = (state.invoices || []).find(i => i.id === id);
+  if (!inv) { toast('Invoice not found', 'error'); return; }
+  delete inv.deleted; delete inv.deletedAt; delete inv.deletedBy;
+  if (typeof audit === 'function') audit('invoice.restore', 'invoice:' + id, `Restored ${inv.ref || '#' + id}`);
+  save();
+  if (typeof window._invoicesRefresh === 'function' && state.route === 'invoices') window._invoicesRefresh();
+  else render();
+  toast(`↩ ${t('Invoice restored', 'تم استرجاع الفاتورة')} · ${inv.ref || '#' + id}`);
+};
+// Permanently remove a soft-deleted invoice from the archive (admin only).
+window.hardDeleteInvoice = function(id) {
+  if (currentRole() !== 'admin') { toast('Only admins can permanently delete invoices', 'error'); return; }
+  const inv = (state.invoices || []).find(i => i.id === id);
+  if (!inv) { toast('Invoice not found', 'error'); return; }
+  if (!confirm(`${t('Permanently delete', 'حذف نهائي لـ')} ${inv.ref || '#' + id}? ${t('This cannot be undone.', 'لا يمكن التراجع.')}`)) return;
+  const linkedSale = (state.sales || []).find(s => s.invoiceId === id); if (linkedSale) delete linkedSale.invoiceId;
+  state.invoices = state.invoices.filter(i => i.id !== id);
+  if (typeof audit === 'function') audit('invoice.purge', 'invoice:' + id, `Permanently deleted ${inv.ref || '#' + id}`);
+  save();
+  if (typeof window._invoicesRefresh === 'function' && state.route === 'invoices') window._invoicesRefresh();
+  else render();
+  toast(`🗑 ${t('Invoice permanently deleted', 'تم الحذف النهائي للفاتورة')}`);
 };
 
 // Regenerate an invoice from the customer's CURRENT enrollment state.
@@ -13116,7 +13319,10 @@ PAGES.expenses = (main) => {
     if (syncBankCommission()) save();
     // Cash collections (owner taking cash out) are tracked on their own Cash
     // Collection screen — they are NOT real expenses, so keep them off this page.
-    const realExpenses = state.expenses.filter(e => (e.category || '') !== CASH_COLLECTION_CATEGORY);
+    // Reception (viewer role) does not see Rent-category expenses at all.
+    const _hideRent = isViewerRole();
+    const realExpenses = state.expenses.filter(e => (e.category || '') !== CASH_COLLECTION_CATEGORY
+      && !(_hideRent && /^rent$/i.test(String(e.category || '').trim())));
     const allRows = realExpenses.filter(e => {
       if (filter.search && !e.description.toLowerCase().includes(filter.search.toLowerCase())) return false;
       if (filter.months.length && !filter.months.includes(e.month)) return false;
@@ -13158,7 +13364,10 @@ PAGES.expenses = (main) => {
     `).join('') : `<tr><td colspan="6" class="empty"><div class="empty-icon">💸</div>No expenses match</td></tr>`;
     const footEl = $('#exp-tfoot');
     if (footEl) {
-      footEl.innerHTML = `<tr style="border-top:2px solid var(--border);font-weight:800">
+      // Reception sees only the count in the footer — never the total sum.
+      footEl.innerHTML = isViewerRole()
+        ? `<tr style="border-top:2px solid var(--border);font-weight:800"><td colspan="6">${allRows.length} ${allRows.length === 1 ? 'entry' : 'entries'}</td></tr>`
+        : `<tr style="border-top:2px solid var(--border);font-weight:800">
         <td colspan="4">${anyFilter ? 'Filtered total' : 'Total'} · ${allRows.length} ${allRows.length === 1 ? 'entry' : 'entries'}</td>
         <td class="text-right num" style="color:var(--red)">${fmt(total)}</td>
         <td></td>
@@ -13168,7 +13377,10 @@ PAGES.expenses = (main) => {
         <td></td>
       </tr>` : ''}`;
     }
-    $('#exp-count').textContent = `${allRows.length} entries · ${fmtMoney(total)}${anyFilter ? ` of ${fmtMoney(grandTotal)} total` : ''}${topStr ? ' · ' + topStr : ''}`;
+    // Reception must not see the expense TOTAL / per-category sums — only the count.
+    $('#exp-count').textContent = isViewerRole()
+      ? `${allRows.length} ${allRows.length === 1 ? 'entry' : 'entries'}`
+      : `${allRows.length} entries · ${fmtMoney(total)}${anyFilter ? ` of ${fmtMoney(grandTotal)} total` : ''}${topStr ? ' · ' + topStr : ''}`;
     $('#exp-pagination').innerHTML = paginationBar(pg, allRows.length, 'exp');
     bindPagination('exp', pg, allRows.length, refresh);
   }
@@ -13180,7 +13392,7 @@ PAGES.expenses = (main) => {
         <div class="subtitle"><span id="exp-count">Loading...</span></div>
       </div>
       <div class="topbar-actions">
-        <button class="btn ghost" id="exp-pdf">📄 ${t('Export PDF', 'تصدير PDF')}</button>
+        ${currentRole() === 'receptionist' ? '' : `<button class="btn ghost" id="exp-pdf">📄 ${t('Export PDF', 'تصدير PDF')}</button>`}
         <button class="btn primary" id="add-exp">+ New Expense</button>
       </div>
     </div>
@@ -13193,7 +13405,7 @@ PAGES.expenses = (main) => {
             <span id="exp-cat-label">All categories</span><span style="opacity:.6">▾</span>
           </button>
           <div id="exp-cat-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:190px;max-height:320px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
-            ${EXP_CATS.filter(c => c !== CASH_COLLECTION_CATEGORY).map(c => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="exp-cat-cb" value="${escapeHtml(c)}" /> ${escapeHtml(c)}</label>`).join('')}
+            ${EXP_CATS.filter(c => c !== CASH_COLLECTION_CATEGORY && !(isViewerRole() && /^rent$/i.test(String(c).trim()))).map(c => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="exp-cat-cb" value="${escapeHtml(c)}" /> ${escapeHtml(c)}</label>`).join('')}
           </div>
         </div>
         <div style="position:relative">
@@ -13768,12 +13980,20 @@ window.markPaid = function(coachId, monthKey) {
         <input type="checkbox" id="settle-pending" style="margin-top:2px;flex-shrink:0">
         <span><b>${t('Settle pending in full now', 'تسوية المعلّق بالكامل الآن')}</b> — ${t('also pay the', 'ادفع أيضاً')} <b style="color:var(--accent-2)">${fmt(pay.commissionPending)} QAR</b> ${t('pending (classes not yet attended), mark it PAID, and don’t carry it to next month.', 'المعلّق (حصص لم تُحضر بعد)، وضعه كمدفوع، ولا يُرحّل للشهر القادم.')}<br><span class="text-mute">${t('Net becomes', 'يصبح الصافي')} <b>${fmt(pay.net + pay.commissionPending)} QAR</b>.</span></span>
       </label>` : ''}
-      <div class="field"><label>Paid date</label><input id="paid-date" type="date" value="${cur.paidDate}" /></div>
+      <div class="form-row">
+        <div class="field"><label>Paid date</label><input id="paid-date" type="date" value="${cur.paidDate}" /></div>
+        <div class="field"><label>${t('Paid via', 'طريقة الدفع')}</label><select id="paid-method">
+          ${[['cash', t('Cash', 'نقداً')], ['transfer', t('Bank transfer', 'تحويل بنكي')], ['card', t('Card', 'بطاقة')]].map(([v, l]) => `<option value="${v}" ${((cur.payMethod || 'cash') === v) ? 'selected' : ''}>${l}</option>`).join('')}
+        </select></div>
+      </div>
+      <div class="text-mute" style="font-size:11px;margin-top:-6px">${t('Marking paid records this payout as a Salary expense (money out) — it appears on the Expenses screen and in Reconciliation.', 'تسجيل الدفع يضيفه كمصروف راتب (خروج نقدي) — يظهر في شاشة المصروفات والتسوية.')}</div>
     `,
     actions: [
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
       ...(existing ? [{ label: 'Mark unpaid', class: 'btn ghost', onclick: () => {
         state.salaries = state.salaries.filter(s => s.id !== existing.id);
+        // Also remove the auto-created Salary expense for this payout, if any.
+        state.expenses = (state.expenses || []).filter(e => !(e._salaryAutoExpense && String(e.salaryId) === String(existing.id)));
         audit('salary.unpaid', `coach:${coachId}`,
           `Marked ${c.name} unpaid for ${fmtMonth(monthKey)}`,
           { coachId, month: monthKey, coachName: c.name });
@@ -13781,12 +14001,14 @@ window.markPaid = function(coachId, monthKey) {
       }}] : []),
       { label: existing ? 'Update' : '💰 Mark Paid', class: 'btn primary', onclick: () => {
         const paidDate = $('#paid-date').value || TODAY;
+        const payMethod = ($('#paid-method') && $('#paid-method').value) || 'cash';
         const settle = !!document.getElementById('settle-pending')?.checked;
         const pendingPaid = settle ? (pay.commissionPending || 0) : 0;
         const gross = pay.gross + pendingPaid;
         const net = pay.net + pendingPaid;
+        let salaryId;
         if (existing) {
-          existing.paidDate = paidDate;
+          existing.paidDate = paidDate; existing.payMethod = payMethod; salaryId = existing.id;
         } else {
           // Settle the pending IN FULL first (marks the active memberships so their
           // remainder is neither carried forward nor trued-up later), then snapshot.
@@ -13794,10 +14016,11 @@ window.markPaid = function(coachId, monthKey) {
           if (settle && pendingPaid > 0 && typeof settleCoachPendingCommission === 'function') {
             settledCount = settleCoachPendingCommission(coachId, monthKey);
           }
+          salaryId = nextId(state.salaries);
           state.salaries.push({
-            id: nextId(state.salaries),
+            id: salaryId,
             coachId, month: monthKey, kind: 'paid',
-            paidDate,
+            paidDate, payMethod,
             // Snapshot the computed values so audits later show what was paid
             snapshotGross: gross, snapshotNet: net,
             snapshotFixed: pay.fixed, snapshotCommission: pay.commissionAmount + pendingPaid,
@@ -13805,6 +14028,19 @@ window.markPaid = function(coachId, monthKey) {
             settledPending: pendingPaid || undefined,       // pending commission paid out early
             settledSubs: settledCount || undefined,
           });
+        }
+        // Record (or update) the payout as a Salary EXPENSE — money out that shows on
+        // the Expenses screen, in Cash Flow and Reconciliation. Flagged
+        // _salaryAutoExpense so computeMonthlyPay does NOT re-count it against the
+        // coach's pay (avoids double-counting).
+        if (net > 0) {
+          const linked = (state.expenses || []).find(e => e._salaryAutoExpense && String(e.salaryId) === String(salaryId));
+          const desc = `Coach salary — ${c.name} · ${fmtMonth(monthKey)}${pendingPaid > 0 ? ' (incl. pending settled)' : ''}`;
+          if (linked) { linked.amount = net; linked.date = paidDate; linked.month = monthKey; linked.method = payMethod; linked.description = desc; }
+          else {
+            if (!Array.isArray(state.expenses)) state.expenses = [];
+            state.expenses.push({ id: nextId(state.expenses), date: paidDate, month: monthKey, amount: net, category: 'Salary', method: payMethod, description: desc, coachId, coachName: c.name, _salaryAutoExpense: true, salaryId });
+          }
         }
         audit(settle && pendingPaid > 0 ? 'salary.paid_full' : 'salary.paid', `coach:${coachId}`,
           `${existing ? 'Updated payment for' : 'Paid'} ${c.name} · ${fmt(net)} QAR for ${fmtMonth(monthKey)}${pendingPaid > 0 ? ` (incl. ${fmt(pendingPaid)} pending settled)` : ''}`,
@@ -14067,9 +14303,9 @@ window.showRevenueDetail = function(coachId, monthKey) {
               </tr></thead>
               <tbody>
                 ${pendingLines.map(p => `<tr>
-                  <td style="padding:6px 8px;border-top:1px solid var(--border)">${escapeHtml(p.memberName)}</td>
+                  <td style="padding:6px 8px;border-top:1px solid var(--border)">${escapeHtml(p.memberName)}${p.status === 'Frozen' ? ' <span class="badge blue" style="font-size:9px">❄️ Frozen</span>' : ''}</td>
                   <td style="padding:6px 8px;border-top:1px solid var(--border)">${escapeHtml(p.sport || '—')}</td>
-                  <td style="padding:6px 8px;border-top:1px solid var(--border);text-align:right">${p.classes}${p.total ? ' / ' + p.total : ''}</td>
+                  <td style="padding:6px 8px;border-top:1px solid var(--border);text-align:right">${p.classes != null ? p.classes + (p.total ? ' / ' + p.total : '') : (p.status === 'Frozen' ? '❄️ frozen' : '—')}</td>
                   <td style="padding:6px 8px;border-top:1px solid var(--border);text-align:right;font-family:monospace">${fmt(p.amountBase * pay.commissionRate / 100)}</td>
                 </tr>`).join('')}
               </tbody>
@@ -14248,11 +14484,11 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
         <thead><tr><th>Member</th><th>Sport</th><th>Start</th><th>End</th><th>Classes left</th><th style="text-align:right">Pending (QAR)</th></tr></thead>
         <tbody>
           ${pendingLines.map(p => `<tr>
-            <td>${escapeHtml(p.memberName)}</td>
+            <td>${escapeHtml(p.memberName)}${p.status === 'Frozen' ? ' <span style="font-size:10px;color:#2563eb;font-weight:700">❄️ Frozen</span>' : ''}</td>
             <td>${escapeHtml(p.sport || '—')}</td>
             <td style="font-size:11px">${p.start ? fmtDate(p.start) : '—'}</td>
-            <td style="font-size:11px">${p.end ? fmtDate(p.end) : '—'}</td>
-            <td>${p.classes}${p.total ? ' / ' + p.total : ''}</td>
+            <td style="font-size:11px">${p.end ? fmtDate(p.end) : (p.status === 'Frozen' ? '<span style="color:#2563eb">paused</span>' : '—')}</td>
+            <td>${p.classes != null ? p.classes + (p.total ? ' / ' + p.total : '') : (p.status === 'Frozen' ? '❄️ frozen' : '—')}</td>
             <td class="num">${fmt(p.amountBase * pay.commissionRate / 100)}</td>
           </tr>`).join('')}
           <tr style="background:#fef3c7;font-weight:700"><td colspan="5">Total pending</td><td class="num">${fmt(pay.commissionPending)}</td></tr>
@@ -15810,6 +16046,8 @@ PAGES.settings = (main, section) => {
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn primary" id="backup-btn">💾 Backup all data (1 JSON file)</button>
         <button class="btn ghost" id="restore-btn">📂 Restore from backup</button>
+        <button class="btn ghost" id="autobackup-btn" title="Rolling automatic snapshots kept on this device — roll back to an earlier point">🛟 ${t('Auto-backups (this device)', 'النسخ التلقائية (هذا الجهاز)')}</button>
+        ${isCloudStorage() ? `<button class="btn ghost" id="synccheck-btn" title="Compare this device's data against the cloud and flag anything not yet synced">🔍 ${t('Verify against cloud', 'التحقق من السحابة')}</button>` : ''}
         <button class="btn ghost" id="fixnames-btn" title="Correct member English names to Title Case (anas madni → Anas Madni)">Aa Fix name capitalisation</button>
         <input type="file" id="restore-file" accept=".json" style="display:none" />
       </div>
@@ -16040,6 +16278,8 @@ PAGES.settings = (main, section) => {
   });
 
   $('#backup-btn').addEventListener('click', () => window.downloadBackup());
+  $('#autobackup-btn')?.addEventListener('click', () => window.showLocalBackupsUI());
+  $('#synccheck-btn')?.addEventListener('click', () => window.runSyncCheck());
   $('#fixnames-btn')?.addEventListener('click', () => window.fixNameCapitalization());
 
   // ── Multi-document migration (one-click) ──────────────────────────────────

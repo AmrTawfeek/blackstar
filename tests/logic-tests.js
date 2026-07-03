@@ -122,8 +122,12 @@ ${seed}
   eq(daysInMonth('2026-02'), 28, 'daysInMonth Feb 2026');
   eq(daysInMonth('2024-02'), 29, 'daysInMonth Feb 2024 leap');
   eq(daysInMonth('2026-04'), 30, 'daysInMonth Apr');
-  eq(nextId([{id:3},{id:7},{id:2}]), 8, 'nextId max+1');
-  eq(nextId([]), 1, 'nextId empty -> 1');
+  // nextId is now COLLISION-SAFE (time-based unique, above the max) rather than a
+  // plain max+1, so two devices creating at once can't pick the same id.
+  ok(nextId([{id:3},{id:7},{id:2}]) > 7, 'nextId returns an id above the current max');
+  ok(Number.isSafeInteger(nextId([{id:3}])), 'nextId returns a safe integer');
+  (() => { const a = nextId([{id:5}]), b = nextId([{id:5}]); ok(a !== b, 'nextId is unique across back-to-back calls (no collision)'); })();
+  ok(nextId([]) >= 1, 'nextId on empty list still returns a positive id');
   eq(pctChangeStr(0,100), '∞', 'pct from zero -> ∞');
   eq(pctChangeStr(0,0), '—', 'pct 0->0 -> dash');
   eq(pctChangeStr(100,150), '50.0', 'pct +50');
@@ -1510,7 +1514,101 @@ ${seed}
     ok(memberAccountStatus({ phone: '55123456' }) === 'Not Created', 'onboarding #6: unknown member → Not Created');
     ok(memberAccountStatus({ phone: '55123456', portalAccount: { status: 'Invitation Sent' } }) === 'Invitation Sent', 'onboarding #6: tracked status wins');
     ok(ROUTES.onboarding && ROLE_ALLOWED.receptionist.includes('onboarding'), 'onboarding #6: reception can access the onboarding screen');
+    ok(ROLE_ALLOWED.receptionist.includes('expenses'), 'reception: CAN access the Expenses screen');
+    ok(!ROLE_ALLOWED.receptionist.includes('dashboard') && !ROLE_ALLOWED.receptionist.includes('salaries'), 'reception: still blocked from Dashboard + Salaries (least-privilege)');
+    // Staff screen (formerly "Team")
+    eq(ROUTES.coaches.label, 'Staff', 'menu: Team screen relabelled to Staff');
+    ok(!ROLE_ALLOWED.coach.includes('coaches') && !ROLE_ALLOWED.receptionist.includes('coaches') && !ROLE_ALLOWED.student.includes('coaches'), 'Staff screen is admin-only (coach/reception/student blocked)');
     state.user = savedUser; state.session = savedSession;
+  })();
+  // ── commissionLineItems: a flat sport-less invoice line that bundles several
+  //     enrolled sports (under different coaches) is expanded per-sport so EVERY
+  //     coach is credited and attendance is honoured (frozen-member fix). ──
+  (() => {
+    const inv = { id: 7777, ref: 'INV-FLAT', customerId: 7777, category: 'Membership', amount: 1175,
+      lineItems: [{ sport: null, coachId: 1, price: 1175 }] };   // one flat lump under coach 1
+    const mem = { id: 7777, name: 'FlatFam', enrollments: [
+      { sport: 'Kick Boxing', coachId: 1, classes: 8, price: 375 },
+      { sport: 'Swimming', coachId: 3, classes: 8, price: 375 },
+      { sport: 'Karate', coachId: 3, classes: 8, price: 375 } ] };
+    const eff = commissionLineItems(inv, mem);
+    eq(eff.length, 3, 'flat line expands into one line per enrolled sport');
+    const coaches = eff.map(l => l.coachId).sort();
+    eq(coaches, [1, 3, 3], 'expanded lines carry each sport’s OWN coach (not all under coach 1)');
+    ok(Math.abs(eff.reduce((s, l) => s + l.price, 0) - 1175) < 0.5, 'expanded line prices re-sum to the invoice total (revenue unchanged)');
+    // A genuinely per-sport invoice is returned untouched.
+    const inv2 = { id: 7778, category: 'Membership', lineItems: [{ sport: 'Boxing', coachId: 2, price: 500 }] };
+    eq(commissionLineItems(inv2, mem).length, 1, 'a real per-sport invoice is left as-is');
+  })();
+  // ── DATA-LOSS REGRESSION: a locally-added record must SURVIVE a remote sync that
+  //    does not yet include it (its cloud write hasn't echoed). Reproduces the
+  //    "add an expense, it vanishes minutes later" bug. Fix: the sync base only
+  //    tracks CONFIRMED remote data, so a fresh local add is never seen as a remote
+  //    delete. ──
+  (() => {
+    const savedExp = state.expenses;
+    const mkRemote = (exp) => { const r = {}; for (const k of MERGE_COLLECTIONS) r[k] = state[k]; r.expenses = exp; return r; };
+    // Confirmed base: one expense already on the cloud.
+    state.expenses = [{ id: 'E-old', amount: 100, month: '2026-07' }];
+    snapshotSyncBase(state);
+    // User adds a NEW expense locally — not yet written to the cloud.
+    state.expenses = state.expenses.concat([{ id: 'E-new', amount: 250, month: '2026-07' }]);
+    // A remote snapshot arrives (from some OTHER change) that still lacks E-new.
+    mergeRemoteIntoState(mkRemote([{ id: 'E-old', amount: 100, month: '2026-07' }]));
+    ok((state.expenses || []).some(e => e.id === 'E-new'), 'DATA-LOSS FIX: a locally-added expense survives a remote sync that does not yet include it');
+    ok((state.expenses || []).some(e => e.id === 'E-old'), 'existing confirmed expense still present after the merge');
+    // The sync base must track the CONFIRMED remote only — it must NOT absorb the
+    // still-unconfirmed local add (the exact bug: an optimistic base made the NEXT
+    // sync delete the record).
+    ok(!(_syncBase.expenses || []).some(e => e.id === 'E-new'), 'sync base excludes the unconfirmed local add (tracks confirmed remote only)');
+    // …so a SECOND remote sync (still before E-new echoes) must ALSO keep it — this is
+    // the actual "add expense, gone 5 minutes later" reproduction.
+    mergeRemoteIntoState(mkRemote([{ id: 'E-old', amount: 100, month: '2026-07' }]));
+    ok((state.expenses || []).some(e => e.id === 'E-new'), 'DATA-LOSS FIX: E-new survives a SECOND remote sync too (the "gone minutes later" case)');
+    // A GENUINE remote delete is still honored (E-old was in the base, cloud dropped it).
+    snapshotSyncBase(state);   // now both E-old + E-new are confirmed
+    mergeRemoteIntoState(mkRemote([{ id: 'E-new', amount: 250, month: '2026-07' }]));
+    ok(!(state.expenses || []).some(e => e.id === 'E-old'), 'genuine remote delete is still honored (E-old removed)');
+    state.expenses = savedExp; snapshotSyncBase(state);
+  })();
+  // ── CREATE-AUDIT for invoices & expenses (revenue-stream traceability). ──
+  (() => {
+    const savedInv = state.invoices, savedExp = state.expenses, savedLog = state.auditLog, savedKnown = window.__knownRecIds;
+    state.invoices = [{ id: 5001, ref: 'INV5001', amount: 300, customerId: 1, category: 'Membership' }];
+    state.expenses = [{ id: 'x1', amount: 100, category: 'Rent' }];
+    _seedKnownRecIds();                       // baseline — existing records are NOT "new"
+    state.auditLog = [];
+    _auditNewRecords();
+    eq(state.auditLog.length, 0, 'create-audit: baseline records are not logged as new');
+    // Now CREATE a new invoice + expense locally.
+    state.invoices.push({ id: 5002, ref: 'INV5002', amount: 750, customerId: 1, category: 'Membership' });
+    state.expenses.push({ id: 'x2', amount: 250, category: 'Equipment' });
+    _auditNewRecords();
+    ok(state.auditLog.some(a => a.action === 'invoice.create' && a.recId === '5002'), 'create-audit: a NEW invoice gets an invoice.create entry');
+    ok(state.auditLog.some(a => a.action === 'expense.create' && a.recId === 'x2'), 'create-audit: a NEW expense gets an expense.create entry');
+    const n1 = state.auditLog.length;
+    _auditNewRecords();                        // idempotent — no duplicate entries
+    eq(state.auditLog.length, n1, 'create-audit: re-running does NOT duplicate entries');
+    // A record that ARRIVED from the cloud (marked known by the merge) is NOT audited here.
+    window.__knownRecIds.invoices.add('5003');
+    state.invoices.push({ id: 5003, ref: 'INV5003', amount: 999, customerId: 1, category: 'Membership' });
+    _auditNewRecords();
+    ok(!state.auditLog.some(a => a.recId === '5003'), 'create-audit: a cloud-arrived invoice is NOT attributed to this device');
+    state.invoices = savedInv; state.expenses = savedExp; state.auditLog = savedLog; window.__knownRecIds = savedKnown;
+  })();
+  // ── Salary payment recorded as a Salary EXPENSE must NOT double-reduce the coach's
+  //    computed pay (auto-expense is money-out only; manual salary expenses still count). ──
+  (() => {
+    const savedC = state.coaches, savedM = state.members, savedI = state.invoices, savedE = state.expenses;
+    state.coaches = [{ id: 61, name: 'PayTest', rate: 30, fixedSalary: 2000, active: 'Y', role: 'coach' }];
+    state.members = []; state.invoices = [];
+    state.expenses = [{ id: 'auto1', _salaryAutoExpense: true, category: 'Salary', coachId: 61, month: '2026-07', amount: 2000, salaryId: 99 }];
+    eq(Math.round(computeMonthlyPay(61, '2026-07').expensePaid), 0, 'salary: the auto-created Salary expense is NOT counted against the coach’s pay');
+    eq(Math.round(computeMonthlyPay(61, '2026-07').net), 2000, 'salary: net stays the full gross (no double reduction)');
+    state.expenses.push({ id: 'man1', category: 'Salary', coachId: 61, month: '2026-07', amount: 500 });
+    eq(Math.round(computeMonthlyPay(61, '2026-07').expensePaid), 500, 'salary: a MANUAL salary expense still counts as already-paid');
+    eq(Math.round(computeMonthlyPay(61, '2026-07').net), 1500, 'salary: net reflects the manual salary expense (2000 − 500)');
+    state.coaches = savedC; state.members = savedM; state.invoices = savedI; state.expenses = savedE;
   })();
   // ── "Kenan" data-integrity bugs: a sport ADDED to a member left the invoice
   //     amount stale (Football hidden from Due) + the line had no linked subscription

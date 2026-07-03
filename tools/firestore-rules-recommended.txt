@@ -16,7 +16,11 @@ These rules:
   • require sign-in for any access (no anonymous reads of your club data);
   • let any signed-in STAFF account (real email) read AND write — every record;
   • let MEMBER accounts (logins on the blackstars.com / members.blackstars.qa
-    domains) only READ, so a member can view info via the app but never change data.
+    domains) READ ONLY the portal collections — members, schedule, advices, posts,
+    swimGroups. Every FINANCIAL / operational collection (invoices/revenue, expenses,
+    salaries, cashCounts, sales, coaches' pay, families, membershipTransfers, notes,
+    rentals, trials, drivers, products) and the AUDIT LOG are DENIED to members;
+  • make the audit trail append-only (no update/delete by anyone).
 
   ┌──────────────────────────────────────────────────────────────────────────┐
   rules_version = '2';
@@ -32,30 +36,30 @@ These rules:
       function isStaff() {
         return request.auth != null && !isMember();
       }
+      // Collections a MEMBER portal login may read. Everything else is staff-only.
+      function memberReadable(collection) {
+        return collection in ['members', 'schedule', 'advices', 'posts', 'swimGroups'];
+      }
 
       // Club parent document (settings, schema, camp schedule, …).
       match /clubs/{clubId} {
-        allow read:  if request.auth != null;   // staff + members can read
-        allow write: if isStaff();              // only staff can write
+        allow read:  if request.auth != null;   // staff + members can read the meta doc
+        allow write: if isStaff();               // only staff can write
 
-        // AUDIT TRAIL is IMMUTABLE: staff may CREATE entries, everyone signed-in
-        // may READ, but NOBODY may update or delete. This MUST come before the
-        // generic rule below (and the generic rule excludes 'auditLog') — Firestore
-        // grants if ANY matching rule allows, so a broad allow-write would otherwise
-        // re-permit deletes.
+        // AUDIT TRAIL is IMMUTABLE: STAFF may CREATE + READ entries, but NOBODY may
+        // update or delete, and MEMBERS may not read it at all. This MUST come before
+        // the generic rule below — Firestore grants if ANY matching rule allows.
         match /auditLog/{docId} {
-          allow read:   if request.auth != null;
+          allow read:   if isStaff();
           allow create: if isStaff();
           allow update, delete: if false;
         }
 
-        // EVERY OTHER per-record subcollection: members, coaches, invoices, expenses,
-        // salaries, sales, advices, trials, rentals, rentalCustomers, schedule,
-        // swimGroups, membershipTransfers, cashCounts, families, notes, products,
-        // drivers — and any future one. {collection} matches the subcollection name;
-        // {docId} matches the record id.
+        // EVERY OTHER per-record subcollection. Staff read/write. Members read ONLY
+        // the portal collections (memberReadable) — the club's financial/operational
+        // data is never exposed to a member login.
         match /{collection}/{docId} {
-          allow read:  if request.auth != null;
+          allow read:  if isStaff() || (isMember() && memberReadable(collection));
           allow write: if isStaff() && collection != 'auditLog';
         }
       }
@@ -73,12 +77,20 @@ NOTES
 • "Staff" means any signed-in account whose email is NOT on the member domains —
   i.e. your admin, coach and receptionist logins. All of them can write concurrently;
   the app writes per-record with field-level merge, so simultaneous edits don't clash.
-• Members read access is still all-or-nothing here (any member login can read all
-  member records). The multi-document layout now makes a stricter, member-scoped
-  rule POSSIBLE — e.g. linking a member's auth uid to their member document and
-  using `allow read: if isStaff() || request.auth.uid == resource.data.uid` on the
-  members subcollection. Tell me if you want that built.
+• Members now see ONLY the portal collections. Your invoices/revenue, expenses,
+  salaries, cash, product sales, coach pay, families, transfers, notes and the audit
+  log are all hidden from a member login at the server (not just in the app UI).
+  The app's loader also skips those collections for member logins, so a member's
+  browser never even downloads them.
+• RESIDUAL (needs a later step): a member can still read the `members` collection
+  (the portal must find the signed-in member's OWN record). So the member roster
+  (names / phones / expiry) is visible to any member login, but no money data is.
+  Closing this needs member-scoped reads via Firebase Auth CUSTOM CLAIMS (put the
+  member's id in the auth token, then `allow read: if isStaff() ||
+  request.auth.uid == resource.data.uid` on the members subcollection). Ask to build
+  that when you want per-member roster isolation too.
 • Members changing their PASSWORD does not touch Firestore — Firebase Auth handles
   that — so read-only rules don't block the password change.
-• The old single-writer lock document (clubs/blackstars_session) is no longer used
-  and can be deleted from Firestore; these rules simply ignore it.
+• IMPORTANT: staff logins must NOT use an @blackstars.com or @members.blackstars.qa
+  email (those are treated as MEMBER = read-only). Use @blackstars.qa or a personal
+  email for staff. Member logins are <mobile>@blackstars.com by design.

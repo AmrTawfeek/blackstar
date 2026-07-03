@@ -49,6 +49,14 @@
     'posts',
   ];
   const isCollectionKey = k => COLLECTIONS.indexOf(k) !== -1;
+  // Collections a MEMBER (portal login on a member domain) is allowed to READ.
+  // Everything else — invoices/revenue, expenses, salaries, cash counts, product
+  // sales, coach pay, families, transfers, notes, audit, … — is NEVER fetched to a
+  // member's browser and is denied server-side by the Firestore rules. (members is
+  // included because the portal must find the signed-in member's OWN record; per-
+  // record isolation of the roster needs auth custom claims — a later step.)
+  const MEMBER_READABLE = new Set(['members', 'schedule', 'advices', 'posts', 'swimGroups']);
+  const _isMemberEmail = em => typeof em === 'string' && /@(blackstars[.]com|members[.]blackstars[.]qa)$/i.test(em);
   const DEVICE_ONLY = ['user', 'route', 'session'];
   const MAX_BATCH_OPS = 400;   // Firestore hard limit is 500 ops/batch.
 
@@ -341,15 +349,23 @@
 
       async load() {
         try {
+          // MEMBER SCOPE: a member-domain login only reads the portal collections;
+          // the club's financials/operational data are never fetched (and are denied
+          // by the rules). Staff read everything (memberScope = false → unchanged).
+          const memberScope = (() => { try { return _isMemberEmail((auth.currentUser && auth.currentUser.email) || ''); } catch (_) { return false; } })();
+          const readCols = memberScope ? COLLECTIONS.filter(c => MEMBER_READABLE.has(c)) : COLLECTIONS;
           const parentSnap = await parentRef().get({ source: 'server' });
           const parent = parentSnap.exists ? (parentSnap.data() || {}) : null;
-          const colResults = await Promise.all(COLLECTIONS.map(name =>
+          const colResults = await Promise.all(readCols.map(name =>
             colRef(name).get({ source: 'server' })
               .then(qs => { const arr = []; qs.forEach(d => arr.push(d.data())); return [name, arr]; })
               .catch(e => { console.warn('[Storage:firebase] read ' + name + ' failed:', (e && e.code) || e); return [name, null]; })
           ));
           const assembled = {}; let anySubData = false, anyReadFail = false;
           for (const [name, arr] of colResults) { if (arr === null) { anyReadFail = true; continue; } assembled[name] = arr; if (arr.length) anySubData = true; }
+          // Collections a member is not allowed to read are present as empty arrays,
+          // so the app has a consistent shape (and never shows stale local copies).
+          if (memberScope) for (const name of COLLECTIONS) if (!(name in assembled)) assembled[name] = [];
 
           // A partial/failed SERVER read → don't trust it, block writes (read-only).
           if (anyReadFail) {
@@ -392,6 +408,21 @@
         try { localBackend.save(state); } catch (e) { console.warn('[Storage:firebase] local safety-net save failed:', e); }
         if (writeInFlight) { pendingAfterWrite = state; return; }
         _flushWrite(state);
+      },
+
+      // PURE server read for a sync-check / discrepancy diff: reads the authoritative
+      // cloud copy with NO side effects (does not touch the write base, live maps or
+      // local cache), so it can be safely compared against the in-memory state.
+      async readCloud() {
+        const parentSnap = await parentRef().get({ source: 'server' });
+        const parent = parentSnap.exists ? (parentSnap.data() || {}) : null;
+        const colResults = await Promise.all(COLLECTIONS.map(name =>
+          colRef(name).get({ source: 'server' }).then(qs => { const arr = []; qs.forEach(d => arr.push(d.data())); return [name, arr]; })
+        ));
+        const result = {};
+        if (parent) for (const k of Object.keys(parent)) { if (!isCollectionKey(k)) result[k] = parent[k]; }
+        for (const [name, arr] of colResults) result[name] = arr;
+        return result;
       },
 
       onRemoteUpdate(callback) {
@@ -482,19 +513,98 @@
     };
   }
 
+  // ─── LOCAL AUTO-BACKUP RING (IndexedDB) ─────────────────────────────────────
+  // A rolling history of full-state snapshots kept on THIS device, independent of
+  // the cloud. Even if a sync bug or a bad edit ever loses data, the admin can roll
+  // back to a recent snapshot. Snapshots are taken: on load (baseline), throttled
+  // while working, and on tab close — and pruned to a useful window. All operations
+  // are wrapped so a backup failure can NEVER block or break a normal save.
+  const LocalBackups = (function () {
+    const DBNAME = 'blackstars-backups', STORE = 'snaps';
+    const SNAP_THROTTLE_MS = 12 * 60 * 1000;   // at most one auto-snapshot every 12 min
+    let _db = null, _lastSnapAt = 0, _lastHash = '';
+    const available = () => { try { return typeof indexedDB !== 'undefined' && !!indexedDB; } catch (_) { return false; } };
+    function open() {
+      return new Promise((res, rej) => {
+        if (_db) return res(_db);
+        const r = indexedDB.open(DBNAME, 1);
+        r.onupgradeneeded = () => { const db = r.result; if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'ts' }); };
+        r.onsuccess = () => { _db = r.result; res(_db); };
+        r.onerror = () => rej(r.error);
+      });
+    }
+    const _tx = (mode) => open().then(db => db.transaction(STORE, mode).objectStore(STORE));
+    function put(rec) { return _tx('readwrite').then(os => new Promise((res, rej) => { const rq = os.put(rec); rq.onsuccess = () => res(); rq.onerror = () => rej(rq.error); })); }
+    function getAll() { return _tx('readonly').then(os => new Promise((res, rej) => { const rq = os.getAll(); rq.onsuccess = () => res(rq.result || []); rq.onerror = () => rej(rq.error); })); }
+    function del(ts) { return _tx('readwrite').then(os => new Promise((res) => { const rq = os.delete(ts); rq.onsuccess = () => res(); rq.onerror = () => res(); })); }
+    async function prune() {
+      try {
+        const all = (await getAll()).sort((a, b) => b.ts - a.ts);
+        const now = Date.now(); const keep = new Set(); const seenDay = new Set();
+        for (const s of all) {
+          const ageH = (now - s.ts) / 3600000, day = new Date(s.ts).toISOString().slice(0, 10);
+          if (ageH <= 48) keep.add(s.ts);                                   // everything from the last 48h
+          else if (!seenDay.has(day) && (now - s.ts) / 86400000 <= 21) { seenDay.add(day); keep.add(s.ts); }  // then 1/day for 21 days
+        }
+        for (const s of all) if (!keep.has(s.ts)) await del(s.ts);
+      } catch (_) {}
+    }
+    return {
+      available,
+      // Take a snapshot now. `force` bypasses the throttle (used on unload / manual).
+      async snapshot(state, reason, force) {
+        if (!available() || !state) return null;
+        try {
+          const now = Date.now();
+          if (!force && now - _lastSnapAt < SNAP_THROTTLE_MS) return null;
+          const json = JSON.stringify(state);
+          if (!json || json.length < 2) return null;
+          // Skip if identical to the last snapshot (no churn when nothing changed).
+          let hash = 0; for (let i = 0; i < json.length; i += 997) hash = (hash * 31 + json.charCodeAt(i)) | 0;
+          const sig = json.length + ':' + hash;
+          if (!force && sig === _lastHash) return null;
+          _lastSnapAt = now; _lastHash = sig;
+          const counts = {};
+          for (const k of COLLECTIONS) counts[k] = Array.isArray(state[k]) ? state[k].length : 0;
+          await put({ ts: now, at: new Date(now).toISOString(), reason: reason || 'auto', appVersion: state.__appVersion || state.appVersion || '', bytes: json.length, counts, data: json });
+          prune();   // fire-and-forget
+          return now;
+        } catch (e) { console.warn('[backups] snapshot failed (non-fatal):', e); return null; }
+      },
+      async list() { try { return (await getAll()).sort((a, b) => b.ts - a.ts).map(({ data, ...meta }) => meta); } catch (_) { return []; } },
+      async get(ts) { try { return (await getAll()).find(x => x.ts === ts) || null; } catch (_) { return null; } },
+    };
+  })();
+
   // ─── Public API ──────────────────────────────────────────────────────────────
   window.Storage = {
     init() { activeBackend = buildFirebaseBackend() || localBackend; console.log(`[Storage] Active backend: ${activeBackend.name}`); return activeBackend.name; },
     backendName() { return activeBackend?.name || 'none'; },
     isCloud() { return !!activeBackend?.isCloud; },
-    async load() { if (!activeBackend) this.init(); return await activeBackend.load(); },
+    async load() {
+      if (!activeBackend) this.init();
+      const data = await activeBackend.load();
+      try { if (data) LocalBackups.snapshot(data, 'load', true); } catch (_) {}   // baseline snapshot of loaded data
+      return data;
+    },
     save(state) {
       if (!activeBackend) this.init();
       pendingState = state;
+      try { LocalBackups.snapshot(state, 'save'); } catch (_) {}   // throttled + deduped + non-blocking
       if (activeBackend.isCloud) { clearTimeout(saveTimer); saveTimer = setTimeout(() => { activeBackend.save(pendingState); pendingState = null; }, SAVE_THROTTLE_MS); }
       else activeBackend.save(state);
     },
     saveNow(state) { clearTimeout(saveTimer); activeBackend.save(state); pendingState = null; },
+    // Flush any throttled-but-not-yet-written save immediately (used on tab close so
+    // an in-flight change can never be lost). Safe to call anytime.
+    flushPending() { try { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; } if (pendingState && activeBackend) { activeBackend.save(pendingState); pendingState = null; } } catch (e) { console.warn('[Storage] flushPending failed:', e); } },
+    // Local auto-backup ring (IndexedDB) — independent recovery history on this device.
+    snapshotBackup(state, reason, force) { return LocalBackups.snapshot(state, reason, force); },
+    listBackups() { return LocalBackups.list(); },
+    getBackup(ts) { return LocalBackups.get(ts); },
+    backupsAvailable() { return LocalBackups.available(); },
+    // Pure server read for a discrepancy check (cloud only; null offline).
+    async readCloud() { if (!activeBackend) this.init(); return activeBackend.readCloud ? await activeBackend.readCloud() : null; },
     onRemoteUpdate(cb) { if (!activeBackend) this.init(); activeBackend.onRemoteUpdate(cb); },
     needsMigration() { if (!activeBackend) this.init(); return activeBackend.needsMigration ? activeBackend.needsMigration() : false; },
     async migrateToMultiDoc(onProgress) { if (!activeBackend) this.init(); if (!activeBackend.migrateToMultiDoc) throw new Error('Migration requires cloud sign-in (Firebase).'); return await activeBackend.migrateToMultiDoc(onProgress); },

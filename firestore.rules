@@ -13,25 +13,32 @@ service cloud.firestore {
     function isStaff() {
       return request.auth != null && !isMember();
     }
+    // Collections a MEMBER portal login may read. Everything else — invoices/
+    // revenue, expenses, salaries, cashCounts, sales, coaches (pay), families,
+    // membershipTransfers, notes, rentals, trials, drivers, products, auditLog — is
+    // denied to members. Staff read/write everything.
+    function memberReadable(collection) {
+      return collection in ['members', 'schedule', 'advices', 'posts', 'swimGroups'];
+    }
 
     match /clubs/{clubId} {
-      allow read:  if request.auth != null;
+      allow read:  if request.auth != null;   // parent meta doc (settings / camp schedule)
       allow write: if isStaff();
 
-      // AUDIT TRAIL is IMMUTABLE (req #8): staff may CREATE audit entries and
-      // everyone signed-in may READ them, but NOBODY may update or delete them.
-      // (Firestore grants if ANY matching rule allows, so this must be declared
-      // BEFORE the generic collection rule AND the generic rule must exclude
-      // 'auditLog' — otherwise the broad allow-write would re-permit deletes.)
+      // AUDIT TRAIL is IMMUTABLE (req #8): STAFF may CREATE + READ audit entries, but
+      // NOBODY may update or delete, and MEMBERS may not read it at all. Declared
+      // BEFORE the generic rule (Firestore grants if ANY rule matches).
       match /auditLog/{docId} {
-        allow read:   if request.auth != null;
+        allow read:   if isStaff();
         allow create: if isStaff();
         allow update, delete: if false;
       }
 
-      // Every OTHER per-record subcollection: staff read/write, members read-only.
+      // Every OTHER per-record subcollection: staff read/write; members read ONLY
+      // the portal collections (memberReadable) — the club's financial/operational
+      // data is never exposed to a member login.
       match /{collection}/{docId} {
-        allow read:  if request.auth != null;
+        allow read:  if isStaff() || (isMember() && memberReadable(collection));
         allow write: if isStaff() && collection != 'auditLog';
       }
     }
