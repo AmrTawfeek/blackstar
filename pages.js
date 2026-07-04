@@ -9512,10 +9512,18 @@ PAGES.invoices = (main) => {
       // shows if it touches ANY of them. A From/To range (on the invoice's date)
       // takes over the month scope so it can span months.
       const _range = !!(filter.from || filter.to);
-      if (!_range && filter.months.length && !filter.months.some(m => invoiceTouchesMonth(i, m))) return false;
-      if (filter.day && i.date !== filter.day) return false;
-      if (filter.from && (!i.date || i.date < filter.from)) return false;
-      if (filter.to && (!i.date || i.date > filter.to)) return false;
+      // A picked exact day or a From/To range takes over the month scope (so a day/
+      // range can find invoices in any month, not just the ticked one).
+      if (!_range && !filter.day && filter.months.length && !filter.months.some(m => invoiceTouchesMonth(i, m))) return false;
+      // Date filters (single day + From/To range) match the INVOICE date OR any
+      // ACTIVITY's start date. An invoice with several activities on different start
+      // dates is returned for each of those dates (and its own date). Walk-in / unlinked
+      // invoices have no activity dates, so they match on the invoice date only.
+      if (filter.day || _range) {
+        const dates = [i.date, ...invoiceActivityStartDates(i)].filter(Boolean);
+        if (filter.day && !dates.includes(filter.day)) return false;
+        if (_range && !dates.some(d => (!filter.from || d >= filter.from) && (!filter.to || d <= filter.to))) return false;
+      }
       if (filter.method !== 'all' && i.method !== filter.method) return false;
       if (filter.sport !== 'all') {
         // "Summer Camp" matches every camp duration variant (Summer Camp · 1 week, …).
@@ -10670,6 +10678,11 @@ PAGES.invoicechecker = (main) => {
   }
   driftRows.sort((a, b) => String(b.inv.month || b.inv.date || '').localeCompare(String(a.inv.month || a.inv.date || '')));
   const scannedCount = (state.invoices || []).filter(i => !i.deleted && inScope(i)).length;
+  // Only a MEMBERSHIP invoice must have a member — a rental / product with no member
+  // link is a legitimate WALK-IN, not a problem. Split the orphans on that line.
+  const orphanReal = orphanRows.filter(o => (o.inv.category || 'Membership') === 'Membership');   // needs review
+  const orphanWalkin = orphanRows.filter(o => (o.inv.category || 'Membership') !== 'Membership');  // walk-in, no action
+  if (window._iiHideWalkin == null) window._iiHideWalkin = false;   // toggle: hide the walk-in section
 
   const tab = window._iiTab || 'missing';
   const tabBtn = (key, label, count) => `<button class="btn ${tab === key ? 'primary' : 'ghost'} sm" onclick="window._iiTab='${key}';render()">${label}${count != null ? ` (${count})` : ''}</button>`;
@@ -10731,14 +10744,34 @@ PAGES.invoicechecker = (main) => {
     </tr></thead><tbody>${driftRowHtml}</tbody></table></div></div>`;
 
   // ── ORPHANS table ──
-  const orphanTable = `<div class="card"><div class="table-wrap"><table><thead><tr>
-      <th>${t('Invoice', 'الفاتورة')}</th><th>${t('Customer (snapshot)', 'الزبون (لقطة)')}</th><th>${t('Issue', 'المشكلة')}</th><th></th>
-    </tr></thead><tbody>${orphanRows.length ? orphanRows.map(f => `<tr>
+  // One table body for a group of orphans, with a Category column.
+  const orphanRowsHtml = (list) => list.map(f => `<tr>
       <td><div class="font-bold">${escapeHtml(f.inv.ref || ('INV' + f.inv.id))}</div><div class="text-mute" style="font-size:11px">${fmtMonth(f.inv.month || String(f.inv.date || '').slice(0, 7))}</div></td>
+      <td><span class="pill" style="background:rgba(120,120,140,.12);font-size:10px;font-weight:700">${escapeHtml(f.inv.category || 'Membership')}</span></td>
       <td>${escapeHtml(f.inv.customerName || '—')}<div class="text-mute" style="font-size:11px">${escapeHtml(f.inv.customerPhone || '')}</div></td>
       <td class="text-mute" style="font-size:12px">${f.flags.map(x => escapeHtml(x.text)).join('<br>')}</td>
       <td class="text-right"><button class="btn ghost sm" onclick="_icOpen(${f.inv.id})">📄 ${t('Open', 'فتح')}</button></td>
-    </tr>`).join('') : `<tr><td colspan="4" class="text-mute" style="text-align:center;padding:18px">✅ ${t('No orphan invoices — every invoice links to a valid member', 'لا فواتير يتيمة — كل فاتورة مرتبطة بعضو صالح')}</td></tr>`}</tbody></table></div></div>`;
+    </tr>`).join('');
+  const orphanHead = `<thead><tr><th>${t('Invoice', 'الفاتورة')}</th><th>${t('Category', 'الفئة')}</th><th>${t('Customer (snapshot)', 'الزبون (لقطة)')}</th><th>${t('Issue', 'المشكلة')}</th><th></th></tr></thead>`;
+  const orphanTable = (orphanReal.length || orphanWalkin.length) ? `
+    ${orphanWalkin.length ? `<div style="display:flex;justify-content:flex-end;margin-bottom:10px">
+      <button class="btn ghost sm" onclick="window._iiHideWalkin=!window._iiHideWalkin;render()">${window._iiHideWalkin ? '👁 ' + t('Show walk-in', 'إظهار الزبائن العابرين') : '🙈 ' + t('Hide walk-in', 'إخفاء الزبائن العابرين')} (${orphanWalkin.length})</button>
+    </div>` : ''}
+    ${orphanReal.length ? `<div class="card" style="margin-bottom:14px;border:1px solid var(--red)">
+      <div class="card-header"><div>
+        <div class="card-title" style="color:var(--red)">⚠ ${t('Needs review — membership with no valid member', 'تحتاج مراجعة — اشتراك بلا عضو صالح')} (${orphanReal.length})</div>
+        <div class="card-subtitle">${t('A Membership invoice must link to a member (its member was archived, or the link is broken)', 'فاتورة الاشتراك يجب أن ترتبط بعضو (تم أرشفة عضوها أو الارتباط مكسور)')}</div>
+      </div></div>
+      <div class="table-wrap"><table>${orphanHead}<tbody>${orphanRowsHtml(orphanReal)}</tbody></table></div>
+    </div>` : ''}
+    ${orphanWalkin.length && !window._iiHideWalkin ? `<div class="card" style="border:1px solid var(--green)">
+      <div class="card-header"><div>
+        <div class="card-title" style="color:var(--green)">✅ ${t('Walk-in invoices — no action needed', 'فواتير زبائن عابرين — لا حاجة لإجراء')} (${orphanWalkin.length})</div>
+        <div class="card-subtitle">${t('Rentals & product sales for a walk-in customer legitimately have no member link', 'إيجارات ومبيعات منتجات لزبون عابر لا ترتبط بعضو بشكل طبيعي')}</div>
+      </div></div>
+      <div class="table-wrap"><table>${orphanHead}<tbody>${orphanRowsHtml(orphanWalkin)}</tbody></table></div>
+    </div>` : ''}`
+    : `<div class="card"><div class="text-mute" style="text-align:center;padding:18px">✅ ${t('No orphan invoices — every invoice links to a valid member', 'لا فواتير يتيمة — كل فاتورة مرتبطة بعضو صالح')}</div></div>`;
 
   const activeContent = tab === 'data' ? dataTable : tab === 'orphan' ? orphanTable : missTable;
 
@@ -10756,14 +10789,14 @@ PAGES.invoicechecker = (main) => {
     <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
       <div class="kpi" style="border-color:var(--red);background:rgba(239,68,68,.06)"><div class="kpi-label" style="color:var(--red)">🧩 ${t('Missing invoices', 'فواتير ناقصة')}</div><div class="kpi-value num" style="color:var(--red)">${missNoInv}</div><div class="kpi-sub">+ ${missMismatch} ${t('amount mismatch', 'مبلغ غير مطابق')}</div></div>
       <div class="kpi" style="border-color:var(--accent-2);background:rgba(245,158,11,.06)"><div class="kpi-label" style="color:var(--accent-2)">📇 ${t('Corrupted / drift', 'مُحرّفة')}</div><div class="kpi-value num" style="color:var(--accent-2)">${driftRows.length}</div><div class="kpi-sub">${t('name/phone/QID/amount', 'الاسم/الهاتف/الرقم/المبلغ')}</div></div>
-      <div class="kpi"><div class="kpi-label" style="color:var(--red)">⚠ ${t('Orphan invoices', 'فواتير يتيمة')}</div><div class="kpi-value num" style="color:var(--red)">${orphanRows.length}</div><div class="kpi-sub">${t('no member link', 'بدون ارتباط بعضو')}</div></div>
+      <div class="kpi"><div class="kpi-label" style="color:var(--red)">⚠ ${t('Orphan invoices', 'فواتير يتيمة')}</div><div class="kpi-value num" style="color:var(--red)">${orphanReal.length}</div><div class="kpi-sub">${t('membership, no member', 'اشتراك بلا عضو')}${orphanWalkin.length ? ` · +${orphanWalkin.length} ${t('walk-in ok', 'زبون عابر')}` : ''}</div></div>
       <div class="kpi"><div class="kpi-label">📅 ${escapeHtml(scopeLabel)}</div><div class="kpi-value num">${scannedCount}</div><div class="kpi-sub">${t('invoices scanned', 'فاتورة مفحوصة')}</div></div>
     </div>
 
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
       ${tabBtn('missing', '🧩 ' + t('Missing', 'ناقصة'), missNoInv + missMismatch)}
       ${tabBtn('data', '📇 ' + t('Corrupted / drift', 'مُحرّفة'), driftRows.length)}
-      ${tabBtn('orphan', '⚠ ' + t('Orphans', 'يتيمة'), orphanRows.length)}
+      ${tabBtn('orphan', '⚠ ' + t('Orphans', 'يتيمة'), orphanReal.length)}
       ${tab === 'data' && driftRows.length ? `<button class="btn ghost sm" id="ic-fixall" style="margin-inline-start:auto">🔄 ${t('Update all', 'تحديث الكل')} (${driftRows.length})</button>` : ''}
     </div>
 
@@ -13097,7 +13130,7 @@ PAGES.cashinhand = (main) => {
           <td class="text-right num" style="${d == null ? 'color:var(--text-mute)' : d >= 0 ? 'color:var(--green)' : 'color:var(--red)'}">${d == null ? '—' : (d >= 0 ? '+' : '−') + fmtMoney(Math.abs(d))}</td>
           <td class="text-mute">${c.by ? escapeHtml(c.by) : '—'}</td>
           <td class="text-mute">${c.note ? escapeHtml(c.note) : '—'}</td>
-          <td class="text-right"><button class="btn ghost sm" onclick="window.deleteCashCount('${c.id}')" title="${t('Delete this entry', 'حذف هذا السجل')}">🗑</button></td>
+          <td class="text-right" style="white-space:nowrap">${currentRole() === 'admin' ? `<button class="btn ghost sm" onclick="window.openCashCountDialog('${c.id}')" title="${t('Edit this entry', 'تعديل هذا السجل')}">✏️</button> ` : ''}<button class="btn ghost sm" onclick="window.deleteCashCount('${c.id}')" title="${t('Delete this entry', 'حذف هذا السجل')}">🗑</button></td>
         </tr>`;
       }).join('')}
       </tbody></table></div>` : `<div class="text-mute" style="font-size:13px;padding:8px">${t('No entries yet.', 'لا توجد سجلات بعد.')}</div>`}
@@ -13120,38 +13153,45 @@ PAGES.cashinhand = (main) => {
   $('#cih-quick')?.addEventListener('keydown', e => { if (e.key === 'Enter') quickSave(); });
 };
 
-window.openCashCountDialog = function() {
+window.openCashCountDialog = function(existingId) {
   if (currentRole() !== 'admin') { toast('Admins only', 'error'); return; }
+  // When an id is passed, EDIT that existing count instead of creating a new one.
+  const ex = existingId ? (state.cashCounts || []).find(c => c.id === existingId) : null;
   showModal({
-    title: '🧮 ' + t('Record cash count', 'تسجيل جرد النقد'),
+    title: (ex ? '✏️ ' + t('Edit cash count', 'تعديل جرد النقد') : '🧮 ' + t('Record cash count', 'تسجيل جرد النقد')),
     body: `
       <div class="field"><label>${t('Amount counted (QAR)', 'المبلغ المعدود (ريال)')} <span style="color:var(--accent)">*</span></label>
-        <input id="cih-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" /></div>
+        <input id="cih-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" value="${ex ? (Number(ex.amount) || 0) : ''}" /></div>
       <div class="field"><label>${t('Date', 'التاريخ')}</label>
-        <input id="cih-date" type="date" value="${TODAY}" /></div>
+        <input id="cih-date" type="date" value="${ex ? (ex.date || TODAY) : TODAY}" /></div>
       <div class="field"><label>${t('Counted by', 'الجرد بواسطة')}</label>
-        <input id="cih-by" type="text" placeholder="${t('Your name (optional)', 'اسمك (اختياري)')}" /></div>
+        <input id="cih-by" type="text" placeholder="${t('Your name (optional)', 'اسمك (اختياري)')}" value="${ex ? escapeHtml(ex.by || '') : ''}" /></div>
       <div class="field"><label>${t('Note', 'ملاحظة')}</label>
-        <input id="cih-note" type="text" placeholder="${t('e.g. end of day, after bank deposit…', 'مثال: نهاية اليوم، بعد الإيداع البنكي…')}" /></div>
+        <input id="cih-note" type="text" placeholder="${t('e.g. end of day, after bank deposit…', 'مثال: نهاية اليوم، بعد الإيداع البنكي…')}" value="${ex ? escapeHtml(ex.note || '') : ''}" /></div>
     `,
     actions: [
       { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
-      { label: t('Save count', 'حفظ الجرد'), class: 'btn primary', onclick: () => {
+      { label: (ex ? t('Save changes', 'حفظ التعديلات') : t('Save count', 'حفظ الجرد')), class: 'btn primary', onclick: () => {
         const amount = parseFloat(document.getElementById('cih-amount').value);
         if (isNaN(amount) || amount < 0) { toast('Enter a valid amount', 'error'); return; }
-        const entry = {
-          id: 'cc_' + Date.now(),
-          amount,
-          date: document.getElementById('cih-date').value || TODAY,
-          by: (document.getElementById('cih-by').value || '').trim(),
-          note: (document.getElementById('cih-note').value || '').trim(),
-          createdAt: new Date().toISOString(),
-        };
-        if (!Array.isArray(state.cashCounts)) state.cashCounts = [];
-        state.cashCounts.push(entry);
-        if (typeof audit === 'function') audit('cash.count', 'cashinhand', `Recorded cash count ${fmt(amount)} QAR`);
-        save(); closeModal(); render();
-        toast(`✓ ${t('Cash count recorded', 'تم تسجيل الجرد')}: ${fmt(amount)} QAR`);
+        const date = document.getElementById('cih-date').value || TODAY;
+        const by = (document.getElementById('cih-by').value || '').trim();
+        const note = (document.getElementById('cih-note').value || '').trim();
+        if (ex) {
+          const before = Number(ex.amount) || 0;
+          ex.amount = amount; ex.date = date; ex.by = by; ex.note = note;
+          if (typeof stampUpdate === 'function') stampUpdate(ex);
+          if (typeof audit === 'function') audit('cash.count_edit', 'cashinhand', `Edited cash count → ${fmt(amount)} QAR (was ${fmt(before)}) on ${fmtDate(date)}`);
+          save(); closeModal(); render();
+          toast(`✓ ${t('Cash count updated', 'تم تحديث الجرد')}: ${fmt(amount)} QAR`);
+        } else {
+          const entry = { id: 'cc_' + Date.now(), amount, date, by, note, createdAt: new Date().toISOString() };
+          if (!Array.isArray(state.cashCounts)) state.cashCounts = [];
+          state.cashCounts.push(entry);
+          if (typeof audit === 'function') audit('cash.count', 'cashinhand', `Recorded cash count ${fmt(amount)} QAR`);
+          save(); closeModal(); render();
+          toast(`✓ ${t('Cash count recorded', 'تم تسجيل الجرد')}: ${fmt(amount)} QAR`);
+        }
       }},
     ],
   });
