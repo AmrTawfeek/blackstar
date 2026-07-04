@@ -32,10 +32,26 @@ These rules:
       // admin) use the SAME domain with a NAMED local part (receptionist@…, test@…),
       // so we match ONLY a digit local part — otherwise staff would be denied the
       // club's financial/operational data (0 invoices, etc.).
+      // A digit-only email the admin MAPPED to a staff role (coach/admin/receptionist)
+      // in settings.userRoles is NOT a member — e.g. a coach onboarded as
+      // <mobile>@blackstars.com. `.get(k, default)` guards a missing settings/map/entry.
+      function _userRoles() {
+        return get(/databases/$(database)/documents/clubs/blackstars).data
+          .get('settings', {}).get('userRoles', {});
+      }
+      function _mappedRole() {
+        return (request.auth != null && request.auth.token.email != null
+                && (request.auth.token.email.lower() in _userRoles()))
+          ? _userRoles()[request.auth.token.email.lower()].get('role', '') : '';
+      }
+      function isMappedStaff() {
+        return _mappedRole() in ['coach', 'admin', 'receptionist'];
+      }
       function isMember() {
         return request.auth != null
           && request.auth.token.email != null
-          && request.auth.token.email.matches('^[0-9]+@(blackstars[.]com|members[.]blackstars[.]qa)$');
+          && request.auth.token.email.matches('^[0-9]+@(blackstars[.]com|members[.]blackstars[.]qa)$')
+          && !isMappedStaff();
       }
       function isStaff() {
         return request.auth != null && !isMember();

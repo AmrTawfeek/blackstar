@@ -1691,10 +1691,14 @@ ${seed}
     // the actual "add expense, gone 5 minutes later" reproduction.
     mergeRemoteIntoState(mkRemote([{ id: 'E-old', amount: 100, month: '2026-07' }]));
     ok((state.expenses || []).some(e => e.id === 'E-new'), 'DATA-LOSS FIX: E-new survives a SECOND remote sync too (the "gone minutes later" case)');
-    // A GENUINE remote delete is still honored (E-old was in the base, cloud dropped it).
+    // Two-strikes delete confirmation: a SINGLE absence must NOT delete a confirmed
+    // record (guards against a stale/partial snapshot silently dropping a paid salary)…
     snapshotSyncBase(state);   // now both E-old + E-new are confirmed
     mergeRemoteIntoState(mkRemote([{ id: 'E-new', amount: 250, month: '2026-07' }]));
-    ok(!(state.expenses || []).some(e => e.id === 'E-old'), 'genuine remote delete is still honored (E-old removed)');
+    ok((state.expenses || []).some(e => e.id === 'E-old'), 'a single stale-snapshot absence does NOT delete a confirmed record');
+    // …but a SECOND consecutive absence IS a genuine delete → honored.
+    mergeRemoteIntoState(mkRemote([{ id: 'E-new', amount: 250, month: '2026-07' }]));
+    ok(!(state.expenses || []).some(e => e.id === 'E-old'), 'genuine remote delete is honored after 2 consecutive absences (E-old removed)');
     state.expenses = savedExp; snapshotSyncBase(state);
   })();
   // ── CREATE-AUDIT for invoices & expenses (revenue-stream traceability). ──
@@ -2971,9 +2975,12 @@ ${seed}
     // New record on each device → all survive
     var r3 = _mergeCollection([{ id: 1, v: 'a' }], [{ id: 1, v: 'a' }, { id: 2, v: 'nl' }], [{ id: 1, v: 'a' }, { id: 3, v: 'nr' }]);
     eq(idsOf(r3.merged), '1:a,2:nl,3:nr', 'merge: new records on both → all kept');
-    // Remote deleted an untouched record → honor delete
-    var r4 = _mergeCollection([{ id: 1, v: 'a' }, { id: 2, v: 'a' }], [{ id: 1, v: 'a' }, { id: 2, v: 'a' }], [{ id: 1, v: 'a' }]);
-    eq(idsOf(r4.merged), '1:a', 'merge: remote delete of untouched record honored');
+    // Remote deleted an untouched record → two-strikes: KEPT on the 1st absence (a stale
+    // snapshot must not delete a confirmed record), honored on the 2nd consecutive absence.
+    var r4a = _mergeCollection([{ id: 1, v: 'a' }, { id: 2, v: 'a' }], [{ id: 1, v: 'a' }, { id: 2, v: 'a' }], [{ id: 1, v: 'a' }], 'delk');
+    eq(idsOf(r4a.merged), '1:a,2:a', 'merge: 1st absence keeps the confirmed record (anti stale-snapshot)');
+    var r4 = _mergeCollection([{ id: 1, v: 'a' }, { id: 2, v: 'a' }], [{ id: 1, v: 'a' }, { id: 2, v: 'a' }], [{ id: 1, v: 'a' }], 'delk');
+    eq(idsOf(r4.merged), '1:a', 'merge: remote delete honored after 2 consecutive absences');
     // Remote deleted a record local EDITED → keep it (no silent loss)
     var r5 = _mergeCollection([{ id: 1, v: 'a' }, { id: 2, v: 'a' }], [{ id: 1, v: 'a' }, { id: 2, v: 'E' }], [{ id: 1, v: 'a' }]);
     eq(idsOf(r5.merged), '1:a,2:E', 'merge: delete-vs-edit → edited record kept (no loss)');

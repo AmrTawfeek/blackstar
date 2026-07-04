@@ -248,6 +248,8 @@
     const _seeded = {}; let _metaSeeded = false;
     const _unsubs = [];
     let writeInFlight = false, pendingAfterWrite = null, lastWriteFailed = false, needsMigrationFlag = false;
+    let _confirmWaiters = [], _lastFlushResult = { ok: true };   // write-through confirmation
+    function _resolveConfirmWaiters(res) { const w = _confirmWaiters; _confirmWaiters = []; for (const r of w) { try { r(res); } catch (_) {} } }
 
     function pickMeta(state) {
       const meta = {};
@@ -275,7 +277,15 @@
           const now = _stable(rec);
           if (prevStr === now) continue;
           if (prevStr === undefined) { ops.push({ kind: 'set', name, id, data: rec }); continue; }
-          ops.push({ kind: 'set', name, id, data: fieldDelta(JSON.parse(prevStr), rec) });
+          const prev = JSON.parse(prevStr);
+          const delta = fieldDelta(prev, rec);
+          // If the delta touches a LIST field, Firestore's merge would REPLACE the
+          // list and could drop a concurrent add. Route those records through a
+          // transaction that element-merges the list against the live cloud value.
+          const arrayFields = Object.keys(delta).filter(k => Array.isArray(delta[k]));
+          const canMerge = typeof window !== 'undefined' && typeof window._mergeArrayById === 'function';
+          if (arrayFields.length && canMerge) ops.push({ kind: 'txnset', name, id, data: delta, base: prev, cur: rec, arrayFields });
+          else ops.push({ kind: 'set', name, id, data: delta });
         }
         for (const id of baseMap.keys()) { if (!curIdx.has(id)) ops.push({ kind: 'del', name, id }); }
       }
@@ -285,17 +295,20 @@
       if (ops.length === 0 && !metaChanged) {
         writeInFlight = false;
         if (pendingAfterWrite) { const n = pendingAfterWrite; pendingAfterWrite = null; _flushWrite(n); }
+        else _resolveConfirmWaiters({ ok: true, noop: true });   // nothing to write → already persisted
         return;
       }
-      const batches = chunk(ops, MAX_BATCH_OPS); if (batches.length === 0) batches.push([]);
+      const batchOps = ops.filter(o => o.kind !== 'txnset');   // field-level sets + deletes
+      const txnOps = ops.filter(o => o.kind === 'txnset');     // list-changing records → transactions
+      const batches = chunk(batchOps, MAX_BATCH_OPS); if (batches.length === 0) batches.push([]);
       // ── SAVE VISIBILITY: summarise EXACTLY what is being written to Firestore. ──
       const perCol = {}; let nSet = 0, nDel = 0;
-      for (const op of ops) { perCol[op.name] = (perCol[op.name] || 0) + 1; if (op.kind === 'set') nSet++; else nDel++; }
+      for (const op of ops) { perCol[op.name] = (perCol[op.name] || 0) + 1; if (op.kind === 'del') nDel++; else nSet++; }
       const writeSummary = {
-        at: new Date().toISOString(), path: PARENT, records: ops.length, sets: nSet, deletes: nDel, metaChanged, byCollection: perCol,
-        docs: ops.map(o => ({ doc: PARENT + '/' + o.name + '/' + o.id, kind: o.kind, fields: o.kind === 'set' ? Object.keys(o.data) : undefined, data: o.kind === 'set' ? o.data : undefined })),
+        at: new Date().toISOString(), path: PARENT, records: ops.length, sets: nSet, deletes: nDel, listMerges: txnOps.length, metaChanged, byCollection: perCol,
+        docs: ops.map(o => ({ doc: PARENT + '/' + o.name + '/' + o.id, kind: o.kind, fields: o.kind !== 'del' ? Object.keys(o.data) : undefined, data: o.kind !== 'del' ? o.data : undefined })),
       };
-      console.log(`%c[Storage] ⤴ writing ${ops.length} doc(s)${metaChanged ? ' + settings' : ''} to Firestore (${PARENT})`, 'color:#5b8def;font-weight:600', perCol);
+      console.log(`%c[Storage] ⤴ writing ${ops.length} doc(s)${txnOps.length ? ' (' + txnOps.length + ' list-merge)' : ''}${metaChanged ? ' + settings' : ''} to Firestore (${PARENT})`, 'color:#5b8def;font-weight:600', perCol);
       try {
         if (typeof window !== 'undefined') {
           window.__lastCloudWrite = writeSummary;   // inspect in devtools to SEE the stored object
@@ -305,24 +318,38 @@
           if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'saving', records: ops.length });
         }
       } catch (_) {}
-      const commits = batches.map((group, bi) => {
+      const batchCommits = batches.map((group, bi) => {
         const batch = db.batch();
         for (const op of group) {
           const ref = colRef(op.name).doc(op.id);
-          if (op.kind === 'set') batch.set(ref, op.data, { merge: true });
-          else batch.delete(ref);
+          if (op.kind === 'del') batch.delete(ref);
+          else batch.set(ref, op.data, { merge: true });
         }
         if (bi === 0 && metaChanged) batch.set(parentRef(), meta, { merge: true });
         return batch.commit();
       });
-      Promise.all(commits)
+      // Each list-changing record: a TRANSACTION that re-reads the live cloud record and
+      // element-merges its list(s) (window._mergeArrayById), so a concurrent add/edit on
+      // another device is preserved instead of being overwritten by Firestore's whole-array
+      // replace. Retries automatically on contention. Non-list fields stay field-level.
+      const txnCommits = txnOps.map(op => {
+        const ref = colRef(op.name).doc(op.id);
+        return db.runTransaction(async t => {
+          const snap = await t.get(ref);
+          const cloud = snap.exists ? (snap.data() || {}) : {};
+          const merged = { ...op.data };
+          for (const f of op.arrayFields) merged[f] = window._mergeArrayById(op.base[f], op.cur[f], cloud[f]);
+          t.set(ref, merged, { merge: true });
+        });
+      });
+      Promise.all([...batchCommits, ...txnCommits])
         .then(() => {
-          lastWriteFailed = false; setBaseFromState(state);
+          lastWriteFailed = false; setBaseFromState(state); _lastFlushResult = { ok: true, records: ops.length };
           console.log(`%c[Storage] ✅ stored in Firestore — ${nSet} written, ${nDel} deleted${metaChanged ? ', settings updated' : ''} @ ${new Date().toLocaleTimeString()}`, 'color:#16a34a;font-weight:700');
           try { if (typeof window !== 'undefined') { const L = window.__cloudWriteLog; if (L && L.length) L[L.length - 1].ok = true; if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'saved', records: ops.length, at: Date.now() }); } } catch (_) {}
         })
         .catch(e => {
-          lastWriteFailed = true;
+          lastWriteFailed = true; _lastFlushResult = { ok: false, error: (e && e.code) || String(e) };
           console.error('[Storage] ❌ save FAILED (kept locally, will retry on next change):', (e && e.code) || e, e);
           try {
             if (typeof window !== 'undefined') {
@@ -332,7 +359,13 @@
             }
           } catch (_) {}
         })
-        .finally(() => { writeInFlight = false; if (pendingAfterWrite) { const n = pendingAfterWrite; pendingAfterWrite = null; _flushWrite(n); } });
+        .finally(() => {
+          writeInFlight = false;
+          // If more was queued while this wrote, flush that next — confirmation waiters
+          // resolve only once the WHOLE chain drains (their state is fully persisted).
+          if (pendingAfterWrite) { const n = pendingAfterWrite; pendingAfterWrite = null; _flushWrite(n); }
+          else _resolveConfirmWaiters(_lastFlushResult);
+        });
     }
 
     function assembleLive() {
@@ -354,13 +387,22 @@
 
       async load() {
         try {
-          // MEMBER SCOPE: a member-domain login only reads the portal collections;
-          // the club's financials/operational data are never fetched (and are denied
-          // by the rules). Staff read everything (memberScope = false → unchanged).
-          const memberScope = (() => { try { return _isMemberEmail((auth.currentUser && auth.currentUser.email) || ''); } catch (_) { return false; } })();
-          const readCols = memberScope ? COLLECTIONS.filter(c => MEMBER_READABLE.has(c)) : COLLECTIONS;
+          // Read the parent meta doc FIRST — it carries settings.userRoles, which lets
+          // us tell a real member from a STAFF login that merely LOOKS like one. A coach
+          // onboarded as <mobile>@blackstars.com has an all-digit email (the member
+          // pattern), but the admin mapped it to role 'coach' — such an account must NOT
+          // be member-scoped, or the coaches/invoices it needs never load.
           const parentSnap = await parentRef().get({ source: 'server' });
           const parent = parentSnap.exists ? (parentSnap.data() || {}) : null;
+          // MEMBER SCOPE: a member-domain login reads only the portal collections; the
+          // club's financials/operational data are never fetched (and are denied by the
+          // rules). A digit-email that the roles map assigns a STAFF role (coach / admin
+          // / receptionist) is treated as staff and reads everything (UI scopes the view).
+          const _email = (() => { try { return ((auth.currentUser && auth.currentUser.email) || '').toLowerCase(); } catch (_) { return ''; } })();
+          const _roleEntry = (parent && parent.settings && parent.settings.userRoles) ? parent.settings.userRoles[_email] : null;
+          const _mappedStaff = !!(_roleEntry && ['coach', 'admin', 'receptionist'].indexOf(_roleEntry.role) !== -1);
+          const memberScope = _isMemberEmail(_email) && !_mappedStaff;
+          const readCols = memberScope ? COLLECTIONS.filter(c => MEMBER_READABLE.has(c)) : COLLECTIONS;
           const colResults = await Promise.all(readCols.map(name =>
             colRef(name).get({ source: 'server' })
               .then(qs => { const arr = []; qs.forEach(d => arr.push(d.data())); return [name, arr]; })
@@ -413,6 +455,21 @@
         try { localBackend.save(state); } catch (e) { console.warn('[Storage:firebase] local safety-net save failed:', e); }
         if (writeInFlight) { pendingAfterWrite = state; return; }
         _flushWrite(state);
+      },
+      // WRITE-THROUGH: persist `state` and return a Promise that resolves ONLY when the
+      // CLOUD write is confirmed — { ok:true } on success, { ok:false, error } on failure.
+      // Lets the app hold a critical action (payment/member/invoice) until it's really saved.
+      saveConfirmed(state) {
+        if (state) {
+          if (blockEmptyWrite(state)) return Promise.resolve({ ok: false, blocked: 'empty-guard' });
+          try { localBackend.save(state); } catch (e) { console.warn('[Storage:firebase] local safety-net save failed:', e); }
+        }
+        return new Promise(resolve => {
+          if (!state && !writeInFlight) { resolve({ ok: true, noop: true }); return; }
+          _confirmWaiters.push(resolve);
+          if (writeInFlight) { if (state) pendingAfterWrite = state; }
+          else _flushWrite(state);
+        });
       },
 
       // PURE server read for a sync-check / discrepancy diff: reads the authoritative
@@ -600,6 +657,19 @@
       else activeBackend.save(state);
     },
     saveNow(state) { clearTimeout(saveTimer); activeBackend.save(state); pendingState = null; },
+    // WRITE-THROUGH confirm: flush the latest queued state NOW and resolve once the cloud
+    // has acknowledged it. Resolves { ok:true } (incl. offline/local = instantly durable)
+    // or { ok:false, error } so the caller can hold the action + offer a retry.
+    saveAndConfirm() {
+      if (!activeBackend) this.init();
+      clearTimeout(saveTimer); saveTimer = null;
+      const s = pendingState; pendingState = null;
+      if (s) { try { LocalBackups.snapshot(s, 'save'); } catch (_) {} }
+      if (!activeBackend) return Promise.resolve({ ok: true, offline: true });
+      if (!activeBackend.isCloud) { if (s) { try { activeBackend.save(s); } catch (_) {} } return Promise.resolve({ ok: true, local: true }); }
+      if (activeBackend.saveConfirmed) return activeBackend.saveConfirmed(s);
+      if (s) activeBackend.save(s); return Promise.resolve({ ok: true });
+    },
     // Flush any throttled-but-not-yet-written save immediately (used on tab close so
     // an in-flight change can never be lost). Safe to call anytime.
     flushPending() { try { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; } if (pendingState && activeBackend) { activeBackend.save(pendingState); pendingState = null; } } catch (e) { console.warn('[Storage] flushPending failed:', e); } },

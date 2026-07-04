@@ -898,11 +898,26 @@ window._filterByStatus = function(status) {
 };
 
 PAGES.members = (main) => {
-  let filter = loadFilter('members', { search: '', status: 'all', sports: [], coach: 'all', nationality: 'all', incomplete: 'all', balance: 'all', expiry: 'all' });
+  let filter = loadFilter('members', { search: '', status: 'all', sports: [], coach: 'all', nationality: 'all', incomplete: 'all', balance: 'all', expiry: 'all', enrollMonths: [] });
   if (!Array.isArray(filter.sports)) filter.sports = filter.sport && filter.sport !== 'all' ? [filter.sport] : [];  // migrate old single-sport filter
   if (!Array.isArray(filter.statuses)) filter.statuses = (filter.status && filter.status !== 'all') ? [filter.status] : [];
   if (!Array.isArray(filter.coaches)) filter.coaches = (filter.coach && filter.coach !== 'all') ? [String(filter.coach)] : [];
   if (!Array.isArray(filter.nationalities)) filter.nationalities = (filter.nationality && filter.nationality !== 'all') ? [filter.nationality] : [];
+  if (!Array.isArray(filter.enrollMonths)) filter.enrollMonths = [];
+  // The month(s) a member ENROLLED = their membership/sport START date(s). A member
+  // with several sports/renewals can have several enrollment months.
+  function memberEnrollMonths(m) {
+    const set = new Set();
+    for (const s of (m.subscriptions || [])) { const d = String(s.start || '').slice(0, 7); if (/^\d{4}-\d{2}$/.test(d)) set.add(d); }
+    for (const e of (m.enrollments || [])) { const d = String(e.start || '').slice(0, 7); if (/^\d{4}-\d{2}$/.test(d)) set.add(d); }
+    if (!set.size) { for (const d of [m.startDate, m.joinDate]) { const mm = String(d || '').slice(0, 7); if (/^\d{4}-\d{2}$/.test(mm)) { set.add(mm); break; } } }
+    return set;
+  }
+  const enrollMonthOptions = (() => {
+    const s = new Set();
+    for (const m of (state.members || [])) { if (m.deleted) continue; for (const mo of memberEnrollMonths(m)) s.add(mo); }
+    return Array.from(s).sort().reverse();
+  })();
   const pg = makePager(10);
   const selected = new Set();   // member ids ticked for bulk actions (persists across pages)
   // List (table) vs Grid (cards) view — persisted.
@@ -1108,6 +1123,12 @@ PAGES.members = (main) => {
         const sports = new Set([m.sport, ...((m.enrollments||[]).map(e=>e.sport))].filter(Boolean));
         if (!f.sports.some(sp => sports.has(sp))) return false;
       }
+      // Enrollment-month filter (multi-select): keep members who STARTED a membership
+      // (any subscription/enrollment start date) in ANY selected month.
+      if (f.enrollMonths && f.enrollMonths.length) {
+        const em = memberEnrollMonths(m);
+        if (!f.enrollMonths.some(mo => em.has(mo))) return false;
+      }
       // Coach filter (multi-select): match the legacy primary coach OR any enrollment coach
       if (f.coaches && f.coaches.length) {
         const want = f.coaches.map(Number);
@@ -1184,11 +1205,11 @@ PAGES.members = (main) => {
     // "Filters hiding rows" banner — same helper as the Enrolled report. The
     // baseline is the default (unfiltered) view; we clamp so the Archived view
     // (a different set, not a subset) never shows a negative count.
-    const DEFAULT_F = { search: '', statuses: [], sports: [], coaches: [], nationalities: [], incomplete: 'all', balance: 'all', expiry: 'all' };
+    const DEFAULT_F = { search: '', statuses: [], sports: [], coaches: [], nationalities: [], incomplete: 'all', balance: 'all', expiry: 'all', enrollMonths: [] };
     const baseline = applyFilter(DEFAULT_F).length;
     const anyFilterActive = filter.search || (filter.statuses && filter.statuses.length) || (filter.sports && filter.sports.length) ||
       (filter.coaches && filter.coaches.length) || (filter.nationalities && filter.nationalities.length) || filter.incomplete !== 'all' ||
-      (filter.balance && filter.balance !== 'all') || (filter.expiry && filter.expiry !== 'all');
+      (filter.balance && filter.balance !== 'all') || (filter.expiry && filter.expiry !== 'all') || (filter.enrollMonths && filter.enrollMonths.length);
     const hiddenByFilters = Math.max(0, baseline - allRows.length);
     const banner = $('#members-filter-banner');
     if (banner) {
@@ -1208,8 +1229,8 @@ PAGES.members = (main) => {
           const fi = $('#filter-incomplete'); if (fi) fi.value = 'all';
           const fb = $('#filter-balance'); if (fb) fb.value = 'all';
           const fe = $('#filter-expiry'); if (fe) fe.value = 'all';
-          $$('.filter-status-cb, .filter-sport-cb, .filter-coach-cb, .filter-nat-cb').forEach(cb => { cb.checked = false; });
-          const labs = { 'filter-status-label': 'All status', 'filter-sport-label': 'All sports', 'filter-coach-label': 'All coaches', 'filter-nat-label': '🌍 All nationalities' };
+          $$('.filter-status-cb, .filter-sport-cb, .filter-coach-cb, .filter-nat-cb, .filter-emonth-cb').forEach(cb => { cb.checked = false; });
+          const labs = { 'filter-status-label': 'All status', 'filter-sport-label': 'All sports', 'filter-coach-label': 'All coaches', 'filter-nat-label': '🌍 All nationalities', 'filter-emonth-label': t('All enroll months', 'كل أشهر التسجيل') };
           Object.entries(labs).forEach(([id, txt]) => { const el = $('#' + id); if (el) el.textContent = txt; });
           refresh();
         });
@@ -1392,6 +1413,16 @@ PAGES.members = (main) => {
           </div>
         </div>
         <div style="position:relative">
+          <button type="button" id="filter-emonth-btn" class="btn ghost" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="${t('Filter by enrollment month (membership start date)', 'تصفية حسب شهر التسجيل (تاريخ بدء الاشتراك)')}">
+            <span id="filter-emonth-label">📅 ${filter.enrollMonths && filter.enrollMonths.length ? (filter.enrollMonths.length === 1 ? fmtMonth(filter.enrollMonths[0]) : filter.enrollMonths.length + ' ' + t('months', 'أشهر')) : t('All enroll months', 'كل أشهر التسجيل')}</span>
+            <span style="opacity:.6">▾</span>
+          </button>
+          <div id="filter-emonth-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            <div style="display:flex;justify-content:space-between;padding:2px 6px 6px;border-bottom:1px solid var(--border);margin-bottom:4px"><button type="button" class="mfilter-all" data-cb="filter-emonth-cb" data-group="enrollMonths" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">All</button><button type="button" class="mfilter-none" data-cb="filter-emonth-cb" data-group="enrollMonths" style="background:none;border:none;color:var(--text-mute);font-size:12px;cursor:pointer">Clear</button></div>
+            ${enrollMonthOptions.length ? enrollMonthOptions.map(mo => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-emonth-cb" value="${mo}" ${(filter.enrollMonths || []).includes(mo) ? 'checked' : ''} /> ${fmtMonth(mo)}</label>`).join('') : `<div class="text-mute" style="padding:6px;font-size:12px">${t('No enrollment dates', 'لا تواريخ تسجيل')}</div>`}
+          </div>
+        </div>
+        <div style="position:relative">
           <button type="button" id="filter-coach-btn" class="btn ghost" style="min-width:140px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more coaches">
             <span id="filter-coach-label">${filter.coaches && filter.coaches.length ? (filter.coaches.length === 1 ? escapeHtml(coachName(parseInt(filter.coaches[0]))) : filter.coaches.length + ' coaches') : 'All coaches'}</span>
             <span style="opacity:.6">▾</span>
@@ -1481,7 +1512,7 @@ PAGES.members = (main) => {
       filter[key] = $$('.' + cbClass).filter(x => x.checked).map(x => x.value);
       const n = filter[key].length;
       const lab = $('#' + labelId);
-      if (lab) lab.textContent = (labelId === 'filter-nat-label' ? '🌍 ' : '') + (n === 0 ? allText : (n === 1 ? oneFmt(filter[key][0]) : n + ' ' + (key === 'statuses' ? 'statuses' : key === 'coaches' ? 'coaches' : key === 'nationalities' ? 'nationalities' : 'selected')));
+      if (lab) lab.textContent = (labelId === 'filter-nat-label' ? '🌍 ' : labelId === 'filter-emonth-label' ? '📅 ' : '') + (n === 0 ? allText : (n === 1 ? oneFmt(filter[key][0]) : n + ' ' + (key === 'statuses' ? 'statuses' : key === 'coaches' ? 'coaches' : key === 'nationalities' ? 'nationalities' : key === 'enrollMonths' ? 'months' : 'selected')));
       pg.page = 1; refreshAndSave();
     };
     $$('.' + cbClass).forEach(cb => cb.addEventListener('change', apply));
@@ -1493,6 +1524,7 @@ PAGES.members = (main) => {
   }
   wireMultiFilter('statuses', 'filter-status-cb', 'filter-status-btn', 'filter-status-menu', 'filter-status-label', 'All status', v => v);
   wireMultiFilter('sports', 'filter-sport-cb', 'filter-sport-btn', 'filter-sport-menu', 'filter-sport-label', 'All sports', v => v);
+  wireMultiFilter('enrollMonths', 'filter-emonth-cb', 'filter-emonth-btn', 'filter-emonth-menu', 'filter-emonth-label', t('All enroll months', 'كل أشهر التسجيل'), v => fmtMonth(v));
   wireMultiFilter('coaches', 'filter-coach-cb', 'filter-coach-btn', 'filter-coach-menu', 'filter-coach-label', 'All coaches', v => coachName(parseInt(v)));
   wireMultiFilter('nationalities', 'filter-nat-cb', 'filter-nat-btn', 'filter-nat-menu', 'filter-nat-label', 'All nationalities', v => v);
   $('#filter-incomplete').addEventListener('change', e => { filter.incomplete = e.target.value; pg.page = 1; refreshAndSave(); });
@@ -3705,17 +3737,22 @@ function showMemberForm(m) {
           .filter(iv => iv.customerId === data.id && iv._upgradeDue)
           .map(iv => ({ u: iv._upgradeDue, bal: invoiceBalance(iv) }));
         (state.invoices || []).forEach(iv => { if (iv._upgradeDue) delete iv._upgradeDue; });   // transient flag, never persist
-        save();
-        closeModal();
-        render();
-        if (_upgrades.length) {
-          const u = _upgrades[0].u;
-          const totalDue = _upgrades.reduce((s, x) => s + x.bal, 0);
-          toast(t(`⬆ ${u.sport} upgraded to ${fmt(u.to)} · paid ${fmt(u.paid)} so far · ${fmt(totalDue)} now due`,
-            `⬆ تم ترقية ${u.sport} إلى ${fmt(u.to)} · المدفوع ${fmt(u.paid)} · المستحق الآن ${fmt(totalDue)}`), 'info');
-        } else {
-          toast(t('Member updated', 'تم تحديث العضو'), 'success');
-        }
+        const _finishOk = () => {
+          closeModal();
+          render();
+          if (_upgrades.length) {
+            const u = _upgrades[0].u;
+            const totalDue = _upgrades.reduce((s, x) => s + x.bal, 0);
+            toast(t(`⬆ ${u.sport} upgraded to ${fmt(u.to)} · paid ${fmt(u.paid)} so far · ${fmt(totalDue)} now due`,
+              `⬆ تم ترقية ${u.sport} إلى ${fmt(u.to)} · المدفوع ${fmt(u.paid)} · المستحق الآن ${fmt(totalDue)}`), 'info');
+          } else {
+            toast(t('Member updated', 'تم تحديث العضو'), 'success');
+          }
+        };
+        // Write-through: WAIT for the cloud to confirm before closing; on failure keep the
+        // form open + warn (data is safe locally + retries) so no edit is silently unsynced.
+        if (typeof withCloudConfirm === 'function') withCloudConfirm({ onOk: _finishOk, onFail: () => render() });
+        else { save(); _finishOk(); }
       }},
     ],
   });
@@ -5564,7 +5601,10 @@ window.editMemberPricing = function(memberId) {
       if (typeof sportListWithDuration === 'function') inv.sport = sportListWithDuration(inv.lineItems) || inv.lineItems.map(x => x.sport).join(', ');
     }
     if (typeof audit === 'function') audit('member.update', 'member:' + m.id, 'edit pricing & payment (safe ledger)');
-    save();
+    // Write-through: confirm the payment/pricing change reached the cloud; warn if not.
+    if (typeof saveConfirmed === 'function') {
+      saveConfirmed().then(r => { if (r && !r.ok) { try { toast('⚠ ' + t('Payment saved on this device but NOT yet in the cloud — check your connection', 'الدفعة محفوظة على هذا الجهاز لكن لم تصل السحابة — تحقق من الاتصال'), 'error'); } catch (_) {} } });
+    } else save();
   }
 };
 
@@ -10614,6 +10654,78 @@ window._icFix = function (invId) {
   render();
 };
 
+// Re-point an orphan invoice (its member was archived / the link broke — e.g. a
+// duplicate member was deleted) to an ACTIVE member. Updates customerId + refreshes
+// the name/phone/QID snapshot from that member, audited.
+window._icRelink = function (invId) {
+  const inv = (state.invoices || []).find(i => i.id === invId);
+  if (!inv) return;
+  const snapName = inv.customerName || '';
+  const snapPhone = inv.customerPhone || '';
+  showModal({
+    title: '🔗 ' + t('Link invoice to a member', 'ربط الفاتورة بعضو'),
+    body: `
+      <div style="font-size:13px;line-height:1.6">
+        <div class="text-mute" style="margin-bottom:10px">${t('Invoice', 'الفاتورة')} <b>${escapeHtml(inv.ref || ('INV' + inv.id))}</b>${snapName ? ' · ' + t('was', 'كان') + ' “<b>' + escapeHtml(snapName) + '</b>”' : ''}${snapPhone ? ' · ' + escapeHtml(snapPhone) : ''}</div>
+        <div class="field" style="position:relative;margin:0">
+          <label>${t('Search the ACTIVE member to link to (name / mobile / QID)', 'ابحث عن العضو النشط للربط (الاسم / الجوال / الهوية)')}</label>
+          <input id="ic-relink-search" autocomplete="off" placeholder="${t('Type a name, mobile or QID…', 'اكتب اسماً أو جوالاً أو هوية…')}" value="${escapeHtml(snapName)}" />
+          <input type="hidden" id="ic-relink-id" value="" />
+          <div id="ic-relink-results" style="position:absolute;left:0;right:0;z-index:60;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:2px;max-height:240px;overflow:auto;display:none;box-shadow:0 8px 24px rgba(0,0,0,.18)"></div>
+        </div>
+        <div id="ic-relink-picked" style="font-size:12px;margin-top:8px;min-height:16px"></div>
+        <div class="text-mute" style="font-size:11px;margin-top:8px">${t('The invoice keeps all its amounts, payments and sport lines — only its owner changes.', 'تحتفظ الفاتورة بكل المبالغ والدفعات وبنود الرياضات — يتغيّر مالكها فقط.')}</div>
+      </div>`,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: '🔗 ' + t('Link', 'ربط'), class: 'btn primary', onclick: () => {
+        const id = parseInt((document.getElementById('ic-relink-id') || {}).value);
+        if (!id) { toast(t('Pick a member first', 'اختر عضواً أولاً'), 'error'); return; }
+        const m = (state.members || []).find(x => x.id === id);
+        if (!m) { toast(t('Member not found', 'العضو غير موجود'), 'error'); return; }
+        if (m.deleted) { toast(t('That member is archived — pick an active one', 'هذا العضو مؤرشف — اختر عضواً نشطاً'), 'error'); return; }
+        const old = inv.customerId;
+        inv.customerId = m.id;
+        inv.customerName = m.name;
+        if (m.nameArabic) inv.customerNameArabic = m.nameArabic;
+        if (m.phone) inv.customerPhone = m.phone;
+        if (m.qid) inv.customerQid = m.qid;
+        if (typeof stampUpdate === 'function') stampUpdate(inv);
+        if (typeof audit === 'function') audit('invoice.relink', 'invoice:' + inv.id, `Re-linked ${inv.ref || '#' + inv.id} → ${m.name} (id ${m.id}, was member ${old})`, { from: old, to: m.id, name: m.name });
+        save(); closeModal(); render();
+        toast('🔗 ' + (inv.ref || ('INV' + inv.id)) + ' → ' + m.name);
+      } },
+    ],
+  });
+  setTimeout(() => {
+    const search = document.getElementById('ic-relink-search');
+    const hidden = document.getElementById('ic-relink-id');
+    const res = document.getElementById('ic-relink-results');
+    const picked = document.getElementById('ic-relink-picked');
+    if (!search) return;
+    const renderResults = (q) => {
+      q = (q || '').trim();
+      if (!q) { res.style.display = 'none'; res.innerHTML = ''; return; }
+      const matches = (state.members || []).filter(m => !m.deleted)
+        .filter(m => searchMatchesFields(q, [m.name, m.nameArabic, m.phone, m.phone2, m.qid], [m.phone, m.phone2]))
+        .slice(0, 15);
+      res.innerHTML = matches.length
+        ? matches.map(m => `<div class="ic-mopt" data-id="${m.id}" style="padding:8px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border)">${escapeHtml(m.name)}<span style="color:var(--text-mute);font-size:11px"> · ${escapeHtml(m.phone || '—')}${m.qid ? ' · ' + escapeHtml(m.qid) : ''}</span></div>`).join('')
+        : `<div style="padding:8px 10px;color:var(--text-mute);font-size:12px">${t('No active member matches', 'لا يوجد عضو نشط مطابق')}</div>`;
+      res.style.display = 'block';
+      res.querySelectorAll('.ic-mopt').forEach(opt => opt.addEventListener('click', () => {
+        const m = (state.members || []).find(x => x.id === parseInt(opt.dataset.id));
+        hidden.value = opt.dataset.id;
+        search.value = m ? m.name : '';
+        picked.innerHTML = m ? '<span style="color:var(--green)">✓ ' + t('Will link to', 'سيُربط بـ') + ' <b>' + escapeHtml(m.name) + '</b> · id ' + m.id + '</span>' : '';
+        res.style.display = 'none';
+      }));
+    };
+    search.addEventListener('input', e => { hidden.value = ''; picked.innerHTML = ''; renderResults(e.target.value); });
+    renderResults(search.value);   // pre-search on the snapshot name to surface the duplicate
+  }, 0);
+};
+
 // Fix every currently-flagged fixable invoice in one go.
 window._icFixAll = function () {
   const ids = Array.isArray(window._icFixableIds) ? window._icFixableIds.slice() : [];
@@ -10753,12 +10865,12 @@ PAGES.invoicechecker = (main) => {
 
   // ── ORPHANS table ──
   // One table body for a group of orphans, with a Category column.
-  const orphanRowsHtml = (list) => list.map(f => `<tr>
+  const orphanRowsHtml = (list, canLink) => list.map(f => `<tr>
       <td><div class="font-bold">${escapeHtml(f.inv.ref || ('INV' + f.inv.id))}</div><div class="text-mute" style="font-size:11px">${fmtMonth(f.inv.month || String(f.inv.date || '').slice(0, 7))}</div></td>
       <td><span class="pill" style="background:rgba(120,120,140,.12);font-size:10px;font-weight:700">${escapeHtml(f.inv.category || 'Membership')}</span></td>
       <td>${escapeHtml(f.inv.customerName || '—')}<div class="text-mute" style="font-size:11px">${escapeHtml(f.inv.customerPhone || '')}</div></td>
       <td class="text-mute" style="font-size:12px">${f.flags.map(x => escapeHtml(x.text)).join('<br>')}</td>
-      <td class="text-right"><button class="btn ghost sm" onclick="_icOpen(${f.inv.id})">📄 ${t('Open', 'فتح')}</button></td>
+      <td class="text-right" style="white-space:nowrap">${canLink ? `<button class="btn primary sm" onclick="_icRelink(${f.inv.id})" title="${t('Link this invoice to an active member (e.g. the surviving duplicate)', 'ربط هذه الفاتورة بعضو نشط (مثلاً النسخة الباقية)')}">🔗 ${t('Link', 'ربط')}</button> ` : ''}<button class="btn ghost sm" onclick="_icOpen(${f.inv.id})">📄 ${t('Open', 'فتح')}</button></td>
     </tr>`).join('');
   const orphanHead = `<thead><tr><th>${t('Invoice', 'الفاتورة')}</th><th>${t('Category', 'الفئة')}</th><th>${t('Customer (snapshot)', 'الزبون (لقطة)')}</th><th>${t('Issue', 'المشكلة')}</th><th></th></tr></thead>`;
   const orphanTable = (orphanReal.length || orphanWalkin.length) ? `
@@ -10770,14 +10882,14 @@ PAGES.invoicechecker = (main) => {
         <div class="card-title" style="color:var(--red)">⚠ ${t('Needs review — membership with no valid member', 'تحتاج مراجعة — اشتراك بلا عضو صالح')} (${orphanReal.length})</div>
         <div class="card-subtitle">${t('A Membership invoice must link to a member (its member was archived, or the link is broken)', 'فاتورة الاشتراك يجب أن ترتبط بعضو (تم أرشفة عضوها أو الارتباط مكسور)')}</div>
       </div></div>
-      <div class="table-wrap"><table>${orphanHead}<tbody>${orphanRowsHtml(orphanReal)}</tbody></table></div>
+      <div class="table-wrap"><table>${orphanHead}<tbody>${orphanRowsHtml(orphanReal, true)}</tbody></table></div>
     </div>` : ''}
     ${orphanWalkin.length && !window._iiHideWalkin ? `<div class="card" style="border:1px solid var(--green)">
       <div class="card-header"><div>
         <div class="card-title" style="color:var(--green)">✅ ${t('Walk-in invoices — no action needed', 'فواتير زبائن عابرين — لا حاجة لإجراء')} (${orphanWalkin.length})</div>
         <div class="card-subtitle">${t('Rentals & product sales for a walk-in customer legitimately have no member link', 'إيجارات ومبيعات منتجات لزبون عابر لا ترتبط بعضو بشكل طبيعي')}</div>
       </div></div>
-      <div class="table-wrap"><table>${orphanHead}<tbody>${orphanRowsHtml(orphanWalkin)}</tbody></table></div>
+      <div class="table-wrap"><table>${orphanHead}<tbody>${orphanRowsHtml(orphanWalkin, false)}</tbody></table></div>
     </div>` : ''}`
     : `<div class="card"><div class="text-mute" style="text-align:center;padding:18px">✅ ${t('No orphan invoices — every invoice links to a valid member', 'لا فواتير يتيمة — كل فاتورة مرتبطة بعضو صالح')}</div></div>`;
 
@@ -14674,8 +14786,11 @@ function _salEnsureRec(coachId, monthKey, target, settle) {
   let rec = _salPaidRec(coachId, monthKey);
   if (rec) {
     if (!Array.isArray(rec.payments)) {
-      rec.payments = (rec.paidDate != null)
-        ? [{ id: 'p' + nextId(state.salaries), amount: (rec.snapshotNet != null ? Number(rec.snapshotNet) : 0), date: rec.paidDate, method: rec.payMethod || 'cash' }]
+      // Migrate a legacy record. Only seed a prior payment when snapshotNet is a real
+      // POSITIVE amount; a negative snapshotNet (over-advanced) was never a cash payout,
+      // so seeding it would leave the new full payment short → stuck "partial".
+      rec.payments = (rec.paidDate != null && Number(rec.snapshotNet) > 0.005)
+        ? [{ id: 'p' + nextId(state.salaries), amount: Number(rec.snapshotNet), date: rec.paidDate, method: rec.payMethod || 'cash' }]
         : [];
     }
     if (target != null && !isNaN(target)) rec.target = target;
@@ -14703,6 +14818,17 @@ function _salEnsureRec(coachId, monthKey, target, settle) {
   return rec;
 }
 
+// When "Settle pending in full" is ticked, raise the Agreed payout + the first payment
+// amount to net + pending (and back to net when unticked). Without this, ticking settle
+// would settle the pending but only pay the net — silently UNDER-paying the coach.
+window._salToggleSettle = function(checked, net, pending) {
+  const tgt = document.getElementById('sp-target');
+  const amt = document.getElementById('sp-add-amt');
+  const val = Math.round((Number(net) || 0) + (checked ? (Number(pending) || 0) : 0));
+  if (tgt) tgt.value = val;
+  if (amt) amt.value = val > 0 ? val : '';
+};
+
 window._salAddPay = function(coachId, monthKey) {
   const amount = parseFloat(($('#sp-add-amt') || {}).value);
   if (isNaN(amount) || amount <= 0) { toast(t('Enter a payment amount', 'أدخل مبلغ الدفعة'), 'error'); return; }
@@ -14726,8 +14852,12 @@ window._salAddPay = function(coachId, monthKey) {
     coachId, coachName: c ? c.name : '', _salaryAutoExpense: true, salaryId: rec.id, salaryPaymentId: payId,
   });
   audit('salary.payment', `coach:${coachId}`, `Paid ${c ? c.name : ''} ${fmt(amount)} QAR (${method}) toward ${fmtMonth(monthKey)} salary`, { coachId, month: monthKey, amount, method, date });
-  save(); render();
-  markPaid(coachId, monthKey);   // re-open the modal with the new payment listed
+  render();
+  // Write-through: WAIT for the cloud to confirm the payment before re-opening the manager,
+  // so the money is provably saved (or the user is warned to retry).
+  if (typeof withCloudConfirm === 'function') {
+    withCloudConfirm({ okMsg: t('Payment saved to cloud', 'تم حفظ الدفعة في السحابة') }).finally(() => markPaid(coachId, monthKey));
+  } else { save(); markPaid(coachId, monthKey); }
 };
 
 window._salDelPay = function(coachId, monthKey, payId) {
@@ -14782,7 +14912,7 @@ window.markPaid = function(coachId, monthKey) {
 
       ${!rec && pay.basis === 'attendance' && pay.commissionPending > 0 ? `
       <label style="display:flex;gap:9px;align-items:flex-start;padding:11px;background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.30);border-radius:8px;margin-bottom:14px;cursor:pointer;font-size:12px;line-height:1.5">
-        <input type="checkbox" id="sp-settle" style="margin-top:2px;flex-shrink:0">
+        <input type="checkbox" id="sp-settle" onchange="window._salToggleSettle && window._salToggleSettle(this.checked, ${pay.net}, ${pay.commissionPending})" style="margin-top:2px;flex-shrink:0">
         <span><b>${t('Settle pending in full now', 'تسوية المعلّق بالكامل الآن')}</b> — ${t('also settle the', 'سوِّ أيضاً')} <b style="color:var(--accent-2)">${fmt(pay.commissionPending)} QAR</b> ${t('pending (classes not yet attended) so it is not carried to next month. Tick this before adding the first payment; the agreed amount below then defaults to', 'المعلّق (حصص لم تُحضر بعد) حتى لا يُرحّل. فعّله قبل إضافة أول دفعة؛ عندها يصبح المبلغ المتفق عليه أدناه', )} <b>${fmt(pay.net + pay.commissionPending)} QAR</b>.</span>
       </label>` : ''}
 
@@ -17558,7 +17688,11 @@ PAGES.attendance = (main) => {
       name: m.name, memberId: m.id, mobile: m.phone || '', sport, date: _markISO,
       old: _prevMark, new: next || 'cleared',
     });
-    save();
+    // Write-through: confirm the mark reached the cloud; if not, warn loudly (the mark
+    // is safe locally + auto-retries, but the marker must KNOW it isn't synced yet).
+    if (typeof saveConfirmed === 'function') {
+      saveConfirmed().then(r => { if (r && !r.ok) { try { toast('⚠ ' + t('Attendance saved on this device but NOT yet in the cloud — check your connection', 'الحضور محفوظ على هذا الجهاز لكن لم يصل السحابة بعد — تحقق من الاتصال'), 'error'); } catch (_) {} } });
+    } else save();
     refresh();
   }
   function markCell(memberId, sport, day, current) {
@@ -21758,6 +21892,187 @@ PAGES.coachhome = (main) => {
 
   const goAdv = main.querySelector('#ch-go-advice');
   if (goAdv) goAdv.addEventListener('click', () => navigate('advice'));
+};
+
+// Shared "account not linked to a coach" notice for the coach-only pages.
+function _coachUnlinkedHtml(title) {
+  const em = escapeHtml((state.user && (state.user.email || state.user.username)) || '');
+  return `<div class="topbar"><div><h1>${escapeHtml(title)}</h1></div></div>
+    <div class="card" style="border:1px solid rgba(242,96,96,.35);background:rgba(242,96,96,.05)">
+      <div style="font-size:14px;font-weight:700;color:var(--red);margin-bottom:6px">⚠ ${t('Your login isn’t linked to a coach profile yet', 'حسابك غير مرتبط بملف مدرب بعد')}</div>
+      <div style="font-size:13px;line-height:1.7">${t('Ask an admin: Settings → Users &amp; Roles → your email → set Role = Coach and pick your coach profile.', 'اطلب من المشرف: الإعدادات ← المستخدمون والصلاحيات ← بريدك ← اضبط الدور = مدرب واختر ملفك.')} ${em ? '<b>' + em + '</b>' : ''}</div>
+    </div>`;
+}
+
+// ─── Coach: My Salary (READ-ONLY commission breakdown) ──────────────────────
+// The coach's own earned pay per month — gross / commission / pending / net +
+// per-member breakdown + monthly history. No pay actions (admin records payment).
+PAGES.coachsalary = (main) => {
+  const coachId = (typeof effectiveCoachId === 'function') ? effectiveCoachId() : null;
+  const coach = state.coaches.find(c => c.id === coachId);
+  if (!coach) { main.innerHTML = _coachUnlinkedHtml('💰 ' + t('My Salary', 'راتبي')); return; }
+
+  const months = availableMonths({ includeFuture: false }).slice().sort().reverse();
+  if (!(window._csMonth && months.includes(window._csMonth))) window._csMonth = months[0] || (typeof currentMonth === 'function' ? currentMonth() : '');
+  const sel = window._csMonth;
+  const pay = computeMonthlyPay(coach.id, sel) || {};
+  const rate = pay.commissionRate || coach.rate || 0;
+  const lines = (pay.attendanceLines && pay.attendanceLines.lines) ? pay.attendanceLines.lines : [];
+  const pend = (pay.attendanceLines && pay.attendanceLines.pendingLines) ? pay.attendanceLines.pendingLines : [];
+  const hist = months.map(mo => ({ mo, p: computeMonthlyPay(coach.id, mo) }))
+    .filter(r => r.p && (r.p.gross > 0 || r.p.commissionBase > 0 || r.p.commissionPending > 0 || r.mo === sel));
+  const badge = pay.paidStatus === 'paid'
+    ? `<span class="badge active">${t('Paid', 'مدفوع')}${pay.paidDate ? ' ' + fmtDate(pay.paidDate) : ''}</span>`
+    : pay.paidStatus === 'partial'
+      ? `<span class="badge" style="background:rgba(245,158,11,.16);color:#b45309;font-weight:700">🟠 ${t('Partial', 'جزئي')} ${fmt(pay.paidTotal || 0)}/${fmt(pay.paidTarget || 0)}</span>`
+      : `<span class="badge">${t('Pending', 'قيد الدفع')}</span>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div style="display:flex;align-items:center;gap:12px">
+        ${(typeof coachAvatarHtml === 'function') ? coachAvatarHtml(coach, 44) : ''}
+        <div><h1 style="margin:0">💰 ${t('My Salary', 'راتبي')}</h1>
+          <div class="subtitle">${escapeHtml(coach.name)}${rate ? ' · ' + rate + '% ' + t('commission', 'عمولة') : ''}${coach.fixedSalary ? ' · ' + t('Fixed', 'ثابت') + ' ' + fmt(coach.fixedSalary) : ''}</div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <select id="cs-month" class="input">${months.map(m => `<option value="${m}" ${m === sel ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}</select>
+        <button class="btn ghost" onclick="downloadRevenueDetailPDF(${coach.id}, '${sel}')" title="${t('Download this month as PDF', 'تنزيل هذا الشهر PDF')}">⬇ ${t('Payslip PDF', 'قسيمة PDF')}</button>
+      </div>
+    </div>
+    <div class="text-mute" style="font-size:12px;margin:-4px 0 12px">👁 ${t('Read-only — your earned pay. Payment is recorded by the admin.', 'للعرض فقط — ما استحققته. يسجّل المشرف الدفع.')}</div>
+
+    <div class="kpi-grid" style="margin-bottom:16px">
+      <div class="kpi"><div class="kpi-icon">💵</div><div class="kpi-label">${t('Gross', 'الإجمالي')} · ${fmtMonth(sel)}</div><div class="kpi-value num">${fmt(pay.gross || 0)}</div><div class="kpi-delta flat">${t('Fixed', 'ثابت')} ${fmt(pay.fixed || 0)} + ${t('commission', 'عمولة')} ${fmt(pay.commissionAmount || 0)}</div></div>
+      <div class="kpi"><div class="kpi-icon">⏳</div><div class="kpi-label">${t('Pending commission', 'عمولة معلّقة')}</div><div class="kpi-value num" style="color:var(--accent-2)">${fmt(pay.commissionPending || 0)}</div><div class="kpi-delta flat">${t('paid as attended', 'تُدفع عند الحضور')}</div></div>
+      <div class="kpi"><div class="kpi-icon">🧾</div><div class="kpi-label">${t('Net this month', 'الصافي هذا الشهر')}</div><div class="kpi-value num" style="color:${(pay.net || 0) < 0 ? 'var(--red)' : 'var(--green)'}">${fmt(pay.net || 0)}</div><div class="kpi-delta flat">${badge}</div></div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><div><div class="card-title">👥 ${t('Commission by member', 'العمولة حسب العضو')} · ${fmtMonth(sel)}</div><div class="card-subtitle">${t('Members whose attended classes earned your commission', 'الأعضاء الذين أكسبتك حصصهم عمولة')}</div></div></div>
+      ${lines.length ? `<div style="overflow:auto"><table class="data-table" style="width:100%"><thead><tr>
+          <th>${t('Member', 'العضو')}</th><th>${t('Sport', 'الرياضة')}</th><th class="text-right">${t('Classes', 'الحصص')}</th><th class="text-right">${t('Base', 'الأساس')}</th><th class="text-right">${t('Commission', 'العمولة')} (${rate}%)</th>
+        </tr></thead><tbody>
+        ${lines.map(l => `<tr>
+          <td>${escapeHtml(l.memberName || '—')}${l.kind === 'switch' ? ' <span class="badge" style="font-size:9px;background:rgba(245,158,11,.15);color:var(--accent-2)">SWITCH</span>' : ''}</td>
+          <td class="text-mute">${escapeHtml(l.sport || '—')}</td>
+          <td class="text-right num">${l.classes != null ? l.classes : '—'}</td>
+          <td class="text-right num">${fmt(l.amountBase || 0)}</td>
+          <td class="text-right num" style="font-weight:600;color:var(--green)">${fmt((l.amountBase || 0) * rate / 100)}</td>
+        </tr>`).join('')}
+        </tbody></table></div>` : `<div class="text-mute" style="font-size:13px">${t('No commission-earning attendance this month.', 'لا حضور مكسِب للعمولة هذا الشهر.')}</div>`}
+    </div>
+
+    ${pend.length ? `<div class="card" style="margin-bottom:16px;border:1px solid rgba(245,158,11,.35)">
+      <div class="card-header"><div><div class="card-title">⏳ ${t('Pending — paid but not yet attended', 'معلّق — مدفوع ولم يُحضر بعد')}</div><div class="card-subtitle">${t('You earn these as the member attends, or when their membership ends', 'تكسبها عند حضور العضو أو عند انتهاء اشتراكه')}</div></div></div>
+      <div style="overflow:auto"><table class="data-table" style="width:100%"><thead><tr>
+        <th>${t('Member', 'العضو')}</th><th>${t('Sport', 'الرياضة')}</th><th class="text-right">${t('Classes left', 'حصص متبقية')}</th><th class="text-right">${t('Pending', 'معلّق')}</th>
+      </tr></thead><tbody>
+      ${pend.map(p => `<tr>
+        <td>${escapeHtml(p.memberName || '—')}${p.status === 'Frozen' ? ' <span class="badge blue" style="font-size:9px">❄️</span>' : ''}</td>
+        <td class="text-mute">${escapeHtml(p.sport || '—')}</td>
+        <td class="text-right num">${p.classes != null ? p.classes + (p.total ? ' / ' + p.total : '') : '—'}</td>
+        <td class="text-right num" style="color:var(--accent-2)">${fmt((p.amountBase || 0) * rate / 100)}</td>
+      </tr>`).join('')}
+      </tbody></table></div>
+    </div>` : ''}
+
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">📅 ${t('Monthly history', 'السجل الشهري')}</div></div></div>
+      ${hist.length ? `<div style="overflow:auto"><table class="data-table" style="width:100%"><thead><tr>
+          <th>${t('Month', 'الشهر')}</th><th class="text-right">${t('Gross', 'الإجمالي')}</th><th class="text-right">${t('Commission', 'العمولة')}</th><th class="text-right">${t('Pending', 'معلّق')}</th><th class="text-right">${t('Net', 'الصافي')}</th><th>${t('Status', 'الحالة')}</th>
+        </tr></thead><tbody>
+        ${hist.map(({ mo, p }) => `<tr style="${mo === sel ? 'background:rgba(91,141,239,.06)' : ''}">
+          <td><button class="btn ghost sm" onclick="window._csMonth='${mo}';render()">${fmtMonth(mo)}</button></td>
+          <td class="text-right num">${fmt(p.gross || 0)}</td>
+          <td class="text-right num">${fmt(p.commissionAmount || 0)}</td>
+          <td class="text-right num" style="color:var(--accent-2)">${p.commissionPending ? fmt(p.commissionPending) : '—'}</td>
+          <td class="text-right num" style="color:${(p.net || 0) < 0 ? 'var(--red)' : 'var(--text)'}">${fmt(p.net || 0)}</td>
+          <td>${p.paidStatus === 'paid' ? `<span class="badge active">${t('Paid', 'مدفوع')}</span>` : p.paidStatus === 'partial' ? `<span class="badge" style="background:rgba(245,158,11,.16);color:#b45309">🟠</span>` : `<span class="badge">${t('Pending', 'معلّق')}</span>`}</td>
+        </tr>`).join('')}
+        </tbody></table></div>` : `<div class="text-mute" style="font-size:13px">${t('No pay history yet.', 'لا سجل رواتب بعد.')}</div>`}
+    </div>
+  `;
+  const msel = main.querySelector('#cs-month');
+  if (msel) msel.addEventListener('change', e => { window._csMonth = e.target.value; render(); });
+};
+
+// ─── Coach: Attendance Report (READ-ONLY) ───────────────────────────────────
+// The coach's own students' attendance, scoped to THEIR sports. Read-only —
+// marking still happens on the Attendance screen (locked to today for coaches).
+PAGES.coachattendance = (main) => {
+  const coachId = (typeof effectiveCoachId === 'function') ? effectiveCoachId() : null;
+  const coach = state.coaches.find(c => c.id === coachId);
+  if (!coach) { main.innerHTML = _coachUnlinkedHtml('📋 ' + t('Attendance Report', 'تقرير الحضور')); return; }
+
+  const months = availableMonths({ includeFuture: false }).slice().sort().reverse();
+  if (!(window._caMonth === 'all' || (window._caMonth && months.includes(window._caMonth)))) window._caMonth = months[0] || 'all';
+  const sel = window._caMonth;
+  const students = coachStudents(coach.id).filter(s => !s.deleted).slice();
+
+  const rows = students.map(s => {
+    const mem = state.members.find(x => x.id === s.id) || {};
+    const da = mem.dailyAttendance || {};
+    const mks = sel === 'all' ? Object.keys(da) : [sel];
+    let y = 0, n = 0, last = null;
+    for (const mk of mks) {
+      for (const sp of (s.sports || [])) {
+        const dd = (da[mk] || {})[sp] || {};
+        for (const d in dd) {
+          if (dd[d] === 'Y') { y++; const dt = mk + '-' + String(d).padStart(2, '0'); if (!last || dt > last) last = dt; }
+          else if (dd[d] === 'N') n++;
+        }
+      }
+    }
+    const marked = y + n;
+    const rate = marked ? Math.round(y / marked * 100) : null;
+    return { name: s.name, sports: s.sports || [], y, n, marked, rate, last };
+  }).sort((a, b) => (b.y - a.y) || (a.name || '').localeCompare(b.name || ''));
+
+  const totY = rows.reduce((s, r) => s + r.y, 0), totMarked = rows.reduce((s, r) => s + r.marked, 0);
+  const overall = totMarked ? Math.round(totY / totMarked * 100) : null;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div style="display:flex;align-items:center;gap:12px">
+        ${(typeof coachAvatarHtml === 'function') ? coachAvatarHtml(coach, 44) : ''}
+        <div><h1 style="margin:0">📋 ${t('Attendance Report', 'تقرير الحضور')}</h1>
+          <div class="subtitle">${escapeHtml(coach.name)} · ${t('your students', 'طلابك')}${(coach.sports || []).length ? ' · ' + (coach.sports || []).join(' · ') : ''}</div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <select id="ca-month" class="input">
+          <option value="all" ${sel === 'all' ? 'selected' : ''}>${t('All months', 'كل الأشهر')}</option>
+          ${months.map(m => `<option value="${m}" ${m === sel ? 'selected' : ''}>${fmtMonth(m)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="text-mute" style="font-size:12px;margin:-4px 0 12px">👁 ${t('Read-only. Mark attendance from the Attendance screen.', 'للعرض فقط. سجّل الحضور من شاشة الحضور.')}</div>
+
+    <div class="kpi-grid" style="margin-bottom:16px">
+      <div class="kpi"><div class="kpi-icon">👥</div><div class="kpi-label">${t('My students', 'طلابي')}</div><div class="kpi-value num">${rows.length}</div></div>
+      <div class="kpi"><div class="kpi-icon">✅</div><div class="kpi-label">${t('Classes attended', 'حصص حضروها')} · ${sel === 'all' ? t('all', 'الكل') : fmtMonth(sel)}</div><div class="kpi-value num">${totY}</div></div>
+      <div class="kpi"><div class="kpi-icon">📊</div><div class="kpi-label">${t('Attendance rate', 'نسبة الحضور')}</div><div class="kpi-value num">${overall == null ? '—' : overall + '%'}</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">📋 ${t('Per student', 'لكل طالب')}</div><div class="card-subtitle">${sel === 'all' ? t('All months', 'كل الأشهر') : fmtMonth(sel)} · ${t('⚠ = low attendance', '⚠ = حضور منخفض')}</div></div></div>
+      ${rows.length ? `<div style="overflow:auto"><table class="data-table" style="width:100%"><thead><tr>
+          <th>${t('Student', 'الطالب')}</th><th>${t('Sports', 'الرياضات')}</th><th class="text-right">${t('Attended', 'حضر')}</th><th class="text-right">${t('Marked', 'مُسجّل')}</th><th class="text-right">${t('Rate', 'النسبة')}</th><th>${t('Last attended', 'آخر حضور')}</th>
+        </tr></thead><tbody>
+        ${rows.map(r => { const atRisk = r.marked >= 2 && r.rate != null && r.rate < 50; return `<tr${atRisk ? ' style="background:rgba(239,68,68,.06)"' : ''}>
+          <td>${escapeHtml(r.name || '—')}${atRisk ? ' <span class="badge expired" style="font-size:9px">⚠</span>' : ''}</td>
+          <td class="text-mute">${escapeHtml(r.sports.join(', ') || '—')}</td>
+          <td class="text-right num" style="color:var(--green);font-weight:600">${r.y}</td>
+          <td class="text-right num">${r.marked || '—'}</td>
+          <td class="text-right num" style="${r.rate == null ? '' : r.rate >= 75 ? 'color:var(--green)' : r.rate >= 50 ? 'color:var(--accent-2)' : 'color:var(--red);font-weight:600'}">${r.rate == null ? '—' : r.rate + '%'}</td>
+          <td class="text-mute">${r.last ? fmtDate(r.last) : '—'}</td>
+        </tr>`; }).join('')}
+        </tbody></table></div>` : `<div class="text-mute" style="font-size:13px">${t('No students assigned to you yet.', 'لا طلاب مسندون إليك بعد.')}</div>`}
+    </div>
+  `;
+  const casel = main.querySelector('#ca-month');
+  if (casel) casel.addEventListener('change', e => { window._caMonth = e.target.value; render(); });
 };
 
 PAGES.advice = (main) => {
