@@ -14248,13 +14248,17 @@ PAGES.salaries = (main) => {
       const grossNegative = p.gross < 0;
       const netColor = netNegative ? 'var(--red)' : 'var(--green)';
       const grossColor = grossNegative ? 'var(--red)' : 'var(--text)';
+      // Carry-forward: net < 0 means over-advanced → offer to roll it into next month.
+      const canCarry = p.net < -0.005 && !(p.carriedOut > 0.005);
+      const carryInNote  = p.carriedIn  > 0.005 ? `<div style="color:#2563eb;margin-top:2px">↩ ${fmt(p.carriedIn)} carried in (over-advance from a prior month)</div>` : '';
+      const carryOutNote = p.carriedOut > 0.005 ? `<div style="color:#6b7280;margin-top:2px">↩ ${fmt(p.carriedOut)} over-advance carried forward · settled at 0</div>` : '';
       return `
         <tr>
           <td>
             <div class="font-bold">${escapeHtml(p.name)}${netNegative ? ' <span class="badge" style="background:rgba(242,96,96,.15);color:var(--red);font-size:9px;padding:1px 6px" title="Net pay is negative — admin should reconcile">⚠️ NEGATIVE</span>' : ''}</div>
             <div class="text-mute" style="font-size:10px">${isStaff ? '👔 Staff' : '🥋 Coach'} · ${p.uptoDate ? 'up to ' + fmtDate(p.uptoDate) : fmtMonth(p.month)}</div>
           </td>
-          <td class="text-mute" style="font-size:11px">${breakdownStr}${pendingNote}</td>
+          <td class="text-mute" style="font-size:11px">${breakdownStr}${pendingNote}${carryInNote}${carryOutNote}</td>
           <td class="text-right num font-bold" style="color:${grossColor}">${fmt(p.gross)}</td>
           <td class="text-right num" style="color:${(p.basis === 'attendance' && p.commissionPending > 0) ? 'var(--accent-2)' : 'var(--text-mute)'}" title="${(p.basis === 'attendance' && p.commissionPending > 0) ? 'Remainder on active memberships — paid as attended or trued-up at expiry' : 'No pending commission'}">${(p.basis === 'attendance' && p.commissionPending > 0) ? '⏳ ' + fmt(p.commissionPending) : '—'}</td>
           <td class="text-right">
@@ -14268,12 +14272,18 @@ PAGES.salaries = (main) => {
               ? `<span class="badge active">Paid ${fmtDate(p.paidDate)}</span>`
               : p.paidStatus === 'partial'
                 ? `<span class="badge" style="background:rgba(245,158,11,.16);color:#b45309;font-weight:700" title="Paid ${fmt(p.paidTotal)} of ${fmt(p.paidTarget)} — ${fmt(p.paidRemaining)} remaining">🟠 Partial · ${fmt(p.paidTotal)}/${fmt(p.paidTarget)}</span>`
-                : '<span class="badge">Pending</span>'}
+                : p.carriedOut > 0.005
+                  ? `<span class="badge" style="background:rgba(107,114,128,.15);color:#6b7280;font-weight:700" title="Over-advance carried to next month — this month is settled at 0">↩ Carried fwd</span>`
+                  : '<span class="badge">Pending</span>'}
           </td>
           <td class="text-right" style="white-space:nowrap">
-            <button class="btn ${p.paidStatus === 'paid' ? 'ghost' : 'primary'} sm" onclick="markPaid(${p.coachId}, '${p.month}')" title="${p.paidStatus === 'paid' ? 'Manage payments' : p.paidStatus === 'partial' ? 'Pay the remaining ' + fmt(p.paidRemaining) : 'Record payment(s)'}">
+            ${canCarry
+              ? `<button class="btn primary sm" onclick="carrySalaryForward(${p.coachId}, '${p.month}')" title="Carry the ${fmt(-p.net)} over-advance to next month as an opening advance and settle this month at 0">↩ Carry ${fmt(-p.net)}</button>`
+              : p.carriedOut > 0.005
+                ? `<button class="btn ghost sm" onclick="undoSalaryCarry(${p.coachId}, '${p.month}')" title="Undo the carry-forward — restores this month's negative net and removes next month's opening advance">↩ Undo carry</button>`
+                : `<button class="btn ${p.paidStatus === 'paid' ? 'ghost' : 'primary'} sm" onclick="markPaid(${p.coachId}, '${p.month}')" title="${p.paidStatus === 'paid' ? 'Manage payments' : p.paidStatus === 'partial' ? 'Pay the remaining ' + fmt(p.paidRemaining) : 'Record payment(s)'}">
               ${p.paidStatus === 'paid' ? '✓' : p.paidStatus === 'partial' ? '💵 ' + fmt(p.paidRemaining) : '💰 Pay'}
-            </button>
+            </button>`}
             <button class="btn ghost sm" onclick="showPayslip(${p.coachId}, '${p.month}')" title="Pay slip (PDF summary)">📄</button>
             <button class="btn ghost sm" onclick="showRevenueDetail(${p.coachId}, '${p.month}')" title="Revenue detail report (every member + sport)">📊</button>
             <button class="btn ghost sm" onclick="downloadRevenueDetailPDF(${p.coachId}, '${p.month}')" title="Download coach report as PDF (Coach-Month-Year.pdf)">⬇️</button>
@@ -14495,6 +14505,82 @@ window.recordAdvance = function(coachId, monthKey) {
         }
         save(); closeModal(); render();
         toast(amt > 0 ? `Advance saved (${fmt(amt)} QAR)` : 'Advance removed');
+      }},
+    ],
+  });
+};
+
+// YYYY-MM + 1 month (used by the salary carry-forward).
+function nextMonthKey(ym) {
+  const [y, m] = String(ym).split('-').map(Number);
+  const d = new Date(y, m, 1);   // m is 1-12; as a 0-indexed month it IS next month
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+}
+
+// Carry a month's NEGATIVE net (an over-advance the club already paid) FORWARD:
+// settle this month at 0 and open next month with that amount as an advance. Stored
+// as one reversible 'carry' record; computeMonthlyPay credits the source month and
+// debits the target month, so the club's real cash total is unchanged.
+window.carrySalaryForward = function(coachId, monthKey) {
+  const c = state.coaches.find(x => x.id === coachId);
+  if (!c) return;
+  const pay = computeMonthlyPay(coachId, monthKey);
+  const excess = Math.round(-pay.net * 100) / 100;
+  if (excess <= 0.005) { toast('Net pay is not negative — nothing to carry', 'error'); return; }
+  const next = nextMonthKey(monthKey);
+  showModal({
+    title: `↩ Carry over-advance · ${escapeHtml(c.name)}`,
+    body: `
+      <div style="font-size:13px;line-height:1.7">
+        <p>${escapeHtml(c.name)} received <b>${fmt(pay.advance)}</b> in advance for <b>${fmtMonth(monthKey)}</b> but earned only <b>${fmt(pay.gross)}</b> — a net of <b style="color:var(--red)">${fmt(pay.net)}</b>.</p>
+        <p style="margin-top:6px">This will:</p>
+        <ul style="margin:4px 0 0 18px">
+          <li>Settle <b>${fmtMonth(monthKey)}</b> at <b>0</b> (no longer negative).</li>
+          <li>Add <b>${fmt(excess)} QAR</b> as an opening <b>advance in ${fmtMonth(next)}</b>, recovered from next month's earned commission.</li>
+        </ul>
+        <p class="text-mute" style="font-size:12px;margin-top:10px">Reversible any time via “Undo carry”.</p>
+      </div>`,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      { label: `↩ Carry ${fmt(excess)} to ${fmtMonth(next)}`, class: 'btn primary', onclick: () => {
+        state.salaries.push({
+          id: nextId(state.salaries),
+          coachId, kind: 'carry', fromMonth: monthKey, month: next,
+          amount: excess, note: `Over-advance carried from ${fmtMonth(monthKey)}`,
+          createdAt: new Date().toISOString(),
+        });
+        audit('salary.carry', `coach:${coachId}`,
+          `Carried over-advance ${fmt(excess)} QAR from ${fmtMonth(monthKey)} to ${fmtMonth(next)} for ${c.name}`,
+          { coachId, fromMonth: monthKey, month: next, amount: excess });
+        save(); closeModal(); render();
+        toast(`Carried ${fmt(excess)} QAR to ${fmtMonth(next)}`);
+      }},
+    ],
+  });
+};
+
+// Undo a carry-forward made OUT of `monthKey` (restores its negative net and removes
+// the opening advance it created in the later month).
+window.undoSalaryCarry = function(coachId, monthKey) {
+  const c = state.coaches.find(x => x.id === coachId);
+  if (!c) return;
+  const gone = (state.salaries || []).filter(s => s.coachId === coachId && s.kind === 'carry' && s.fromMonth === monthKey);
+  if (!gone.length) { toast('No carry-forward to undo', 'error'); return; }
+  const total = gone.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0);
+  const targets = [...new Set(gone.map(s => s.month))].map(fmtMonth).join(', ');
+  showModal({
+    title: `↩ Undo carry-forward · ${escapeHtml(c.name)}`,
+    body: `<div style="font-size:13px;line-height:1.6">Remove the <b>${fmt(total)} QAR</b> over-advance carried from <b>${fmtMonth(monthKey)}</b> to <b>${targets}</b>? ${fmtMonth(monthKey)} returns to its negative net and the opening advance in ${targets} is removed.</div>`,
+    actions: [
+      { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
+      { label: 'Undo carry', class: 'btn primary', onclick: () => {
+        const ids = new Set(gone.map(s => s.id));
+        state.salaries = state.salaries.filter(s => !ids.has(s.id));
+        audit('salary.carry_undo', `coach:${coachId}`,
+          `Undid carry-forward ${fmt(total)} QAR from ${fmtMonth(monthKey)} for ${c.name}`,
+          { coachId, fromMonth: monthKey, amount: total });
+        save(); closeModal(); render();
+        toast('Carry-forward undone');
       }},
     ],
   });
