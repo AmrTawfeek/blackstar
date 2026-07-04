@@ -14048,6 +14048,14 @@ window._expCatChanged = function() {
   if (!c || !row) return;
   row.style.display = (typeof isSalaryCategory === 'function' && isSalaryCategory(c.value)) ? '' : 'none';
 };
+// Keep "Affects month" in sync with the payment date UNTIL the user overrides it
+// manually (then data-touched='1' locks it).
+window._expDateChanged = function() {
+  const d = document.getElementById('f-date');
+  const m = document.getElementById('f-month');
+  if (!d || !m || m.dataset.touched === '1') return;
+  if (d.value) m.value = d.value.slice(0, 7);
+};
 // A registered coach and a free-text name are mutually exclusive.
 window._expCoachChanged = function() {
   const sel = document.getElementById('f-coach');
@@ -14096,7 +14104,7 @@ function showExpenseForm(id) {
         </div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Date <span style="color:var(--accent)">*</span></label><input id="f-date" type="date" value="${cur.date || TODAY}" /></div>
+        <div class="field"><label>Date <span style="color:var(--accent)">*</span></label><input id="f-date" type="date" value="${cur.date || TODAY}" oninput="window._expDateChanged && window._expDateChanged()" /></div>
         <div class="field"><label>Payment method <span style="color:var(--accent)">*</span></label>
           <select id="f-method">
             <option value="" ${!cur.method ? 'selected' : ''}>— pick a method —</option>
@@ -14105,6 +14113,11 @@ function showExpenseForm(id) {
             <option value="transfer" ${cur.method === 'transfer' ? 'selected' : ''}>Bank transfer</option>
           </select>
         </div>
+      </div>
+      <div class="field">
+        <label>${t('Affects month', 'يؤثر على شهر')} <span class="text-mute" style="font-size:10px">(${t('accounting month', 'شهر المحاسبة')})</span></label>
+        <input id="f-month" type="month" value="${escapeHtml(cur.month || String(cur.date || TODAY).slice(0, 7))}" data-touched="${e && e.month && e.month !== String(cur.date || '').slice(0, 7) ? '1' : '0'}" onchange="this.dataset.touched='1'" />
+        <div class="text-mute" style="font-size:10px;margin-top:3px">${t('Defaults to the payment date’s month. Override to book the expense in a different month — e.g. pay in July but count it as June.', 'يأخذ شهر تاريخ الدفع افتراضياً. عدّله لتسجيل المصروف في شهر مختلف — مثلاً تدفع في يوليو ويُحتسب على يونيو.')}</div>
       </div>
     `,
     actions: [
@@ -14133,10 +14146,14 @@ function showExpenseForm(id) {
           else if (cn) salaryCoachName = cn;
         }
 
+        // Accounting month: defaults to the payment date's month, but the admin can
+        // book the expense in a different month (e.g. pay in July, count as June).
+        const monthEl = $('#f-month');
+        const affectsMonth = (monthEl && /^\d{4}-\d{2}$/.test(monthEl.value)) ? monthEl.value : date.slice(0, 7);
         const data = {
           date, description: desc, amount: amt,
           category, method,
-          month: date.slice(0, 7),
+          month: affectsMonth,
         };
         if (salaryCoachId != null) data.coachId = salaryCoachId;
         if (salaryCoachName) data.coachName = salaryCoachName;
@@ -14605,9 +14622,11 @@ window._salAddPay = function(coachId, monthKey) {
   const payId = 'p' + nextId(state.salaries);
   rec.payments.push({ id: payId, amount, date, method });
   // Each payment = its OWN Salary expense (money out) — mentions method + date.
+  // The accounting month is the SALARY month (monthKey), NOT the payment date: paying
+  // June salaries on 4 July books the expense in JUNE. The `date` keeps the real payout day.
   if (!Array.isArray(state.expenses)) state.expenses = [];
   state.expenses.push({
-    id: nextId(state.expenses), date, month: String(date || '').slice(0, 7) || monthKey, amount,
+    id: nextId(state.expenses), date, month: monthKey, amount,
     category: 'Salary', method,
     description: `Coach salary — ${c ? c.name : ''} · ${fmtMonth(monthKey)} · payment ${rec.payments.length} (${method})`,
     coachId, coachName: c ? c.name : '', _salaryAutoExpense: true, salaryId: rec.id, salaryPaymentId: payId,
