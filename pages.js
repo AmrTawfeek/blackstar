@@ -4060,7 +4060,7 @@ window.viewCoach = function(id) {
     title: `Coach: ${escapeHtml(c.name)}`,
     body: `
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px">
-        <div class="avatar" style="width:64px;height:64px;font-size:24px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(c.name)}</div>
+        ${(typeof coachAvatarHtml === 'function') ? coachAvatarHtml(c, 64) : `<div class="avatar" style="width:64px;height:64px;font-size:24px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(c.name)}</div>`}
         <div style="flex:1">
           <div style="font-size:18px;font-weight:700">${escapeHtml(c.name)}</div>
           <div class="text-dim">${(c.sports || []).join(' · ')}</div>
@@ -4308,6 +4308,13 @@ window.editCoach = function(id, defaultRole) {
         <div class="field"><label>QID <span class="text-mute" style="font-size:10px">(optional)</span></label><input id="c-qid" value="${escapeHtml(c.qid || '')}" placeholder="288…" /></div>
         <div class="field"><label>Birthdate <span class="text-mute" style="font-size:10px">(optional)</span></label><input id="c-bdate" type="date" value="${c.birthdate || ''}" /></div>
       </div>
+      <div class="field"><label>Gender <span class="text-mute" style="font-size:10px">(for avatar)</span></label>
+        <select id="c-gender">
+          <option value="" ${!c.gender ? 'selected' : ''}>—</option>
+          <option value="Male" ${c.gender === 'Male' ? 'selected' : ''}>♂ Male</option>
+          <option value="Female" ${c.gender === 'Female' ? 'selected' : ''}>♀ Female</option>
+        </select>
+      </div>
 
       <div style="margin:14px 0 6px;font-size:11px;color:var(--blue);text-transform:uppercase;letter-spacing:.6px;font-weight:600">💰 Pay configuration</div>
       <div class="form-row">
@@ -4361,6 +4368,7 @@ window.editCoach = function(id, defaultRole) {
         const sports = $$('.coach-sport').filter(x => x.checked).map(x => x.value);
         const activeVal = $('#c-active').value;
         const qid = $('#c-qid').value.trim() || null;
+        const gender = $('#c-gender').value || null;
 
         if (fixedSalary === 0 && rate === 0) {
           if (!confirm('Both fixed salary AND commission % are 0. This person will earn nothing. Save anyway?')) return;
@@ -4369,12 +4377,12 @@ window.editCoach = function(id, defaultRole) {
           state.coaches.push({
             id: nextId(state.coaches),
             name, rate, fixedSalary, role: roleVal, sports, active: activeVal,
-            phone, email: email || null, qid, birthdate: birthdate || null,
+            phone, email: email || null, qid, birthdate: birthdate || null, gender,
           });
         } else {
           Object.assign(c, {
             name, rate, fixedSalary, role: roleVal, sports, active: activeVal,
-            phone, email: email || null, qid, birthdate: birthdate || null,
+            phone, email: email || null, qid, birthdate: birthdate || null, gender,
           });
         }
         save(); closeModal(); render();
@@ -14752,7 +14760,9 @@ window.markPaid = function(coachId, monthKey) {
   const payments = salaryPayments(rec);
   const paidTotal = pay.paidTotal;
   const target = rec ? salaryTarget(rec, pay.net) : pay.net;
-  const remaining = Math.max(0, target - paidTotal);
+  // Match computeMonthlyPay: a sub-1-QAR gap (rounded payment vs fractional target) is settled.
+  const _remRaw = target - paidTotal;
+  const remaining = _remRaw > 0.5 ? _remRaw : 0;
   const methodLabel = m => ({ cash: t('Cash', 'نقداً'), transfer: t('Bank transfer', 'تحويل بنكي'), card: t('Card', 'بطاقة') }[m] || m);
   const statusColor = pay.paidStatus === 'paid' ? 'var(--green,#12724a)' : pay.paidStatus === 'partial' ? '#f59e0b' : 'var(--text-mute,#64748b)';
   const statusLabel = pay.paidStatus === 'paid' ? t('Fully paid', 'مدفوع بالكامل') : pay.paidStatus === 'partial' ? t('Partially paid', 'مدفوع جزئياً') : t('Not paid yet', 'غير مدفوع بعد');
@@ -21524,8 +21534,20 @@ PAGES.coachhome = (main) => {
   const coachId = (typeof effectiveCoachId === 'function') ? effectiveCoachId() : null;
   const coach = state.coaches.find(c => c.id === coachId);
   if (!coach) {
+    const em = escapeHtml((state.user && (state.user.email || state.user.username)) || '');
     main.innerHTML = `<div class="topbar"><div><h1>🧑‍🏫 ${t('My Dashboard', 'لوحة المدرب')}</h1></div></div>
-      <div class="card"><div class="text-mute" style="font-size:13px">${t('No coach profile is linked to this account yet. Ask an admin to map your account to a coach in Users & Roles.', 'لا يوجد ملف مدرب مرتبط بهذا الحساب بعد. اطلب من المشرف ربط حسابك بمدرب من المستخدمين والصلاحيات.')}</div></div>`;
+      <div class="card" style="border:1px solid rgba(242,96,96,.35);background:rgba(242,96,96,.05)">
+        <div style="font-size:14px;font-weight:700;color:var(--red);margin-bottom:6px">⚠ ${t('Your login isn’t linked to a coach profile yet', 'حسابك غير مرتبط بملف مدرب بعد')}</div>
+        <div style="font-size:13px;line-height:1.7">
+          ${t('That’s why you see no students or classes. An admin can fix it in seconds:', 'لهذا لا ترى طلاباً أو حصصاً. يمكن للمشرف إصلاحها في ثوانٍ:')}
+          <ol style="margin:6px 0 0 18px">
+            <li>${t('Settings → Users &amp; Roles', 'الإعدادات ← المستخدمون والصلاحيات')}</li>
+            <li>${t('Open the entry for', 'افتح إدخال')} <b>${em || t('your email', 'بريدك')}</b></li>
+            <li>${t('Set Role = Coach and pick “Which coach” = your coach profile.', 'اضبط الدور = مدرب واختر «أي مدرب» = ملفك.')}</li>
+          </ol>
+          <div class="text-mute" style="margin-top:8px;font-size:12px">${t('Tip: if your coach profile’s email matches your login email, the link happens automatically.', 'ملاحظة: إذا تطابق بريد ملف المدرب مع بريد دخولك يتم الربط تلقائياً.')}</div>
+        </div>
+      </div>`;
     return;
   }
 
@@ -21602,17 +21624,20 @@ PAGES.coachhome = (main) => {
     .sort((a, b) => (a.slot || 0) - (b.slot || 0))
     .map(c => {
       const expected = roster.filter(r => (r.sports || []).includes(c.sport) && r.status !== 'Expired');
-      return { c, expected };
+      // Most active attendee for this class (by classes attended) — shown on hover.
+      const top = (typeof topActiveMembersForClass === 'function') ? (topActiveMembersForClass(c.sport, coach.id, 1)[0] || null) : null;
+      return { c, expected, top };
     });
   const todayCard = `
     <div class="card" style="margin-bottom:16px">
       <div class="card-header"><div><div class="card-title">📅 ${t('Today\u2019s classes', 'حصص اليوم')} (${todayClasses.length})</div><div class="card-subtitle">${DAY_LABEL[todayKey]} · ${t('who\u2019s expected to attend', 'من المتوقع حضوره')}</div></div></div>
-      ${todayClasses.length ? todayClasses.map(({ c, expected }) => `
-        <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+      ${todayClasses.length ? todayClasses.map(({ c, expected, top }) => `
+        <div title="${top ? escapeHtml(t('Most active: ', 'الأكثر حضوراً: ') + top.name + ' — ' + top.attended + ' ' + t('classes attended', 'حصة حضرها')) : ''}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
             <div style="font-weight:700">${escapeHtml(c.sport)} <span class="text-mute" style="font-weight:400;font-size:12px">· ${SLOT_LABEL[c.slot] || ''}</span></div>
             <span class="badge" style="background:rgba(91,141,239,.12);color:var(--blue)">${expected.length} ${t('expected', 'متوقع')}</span>
           </div>
+          ${top ? `<div style="margin-top:6px;font-size:12px"><span class="badge" style="background:rgba(245,158,11,.14);color:#b45309;font-weight:700" title="${escapeHtml(t('Highest attendance in this class', 'الأعلى حضوراً في هذه الحصة'))}">⭐ ${t('Most active', 'الأكثر حضوراً')}: ${escapeHtml(top.name)} · ${top.attended}</span></div>` : ''}
           ${expected.length ? `<div style="margin-top:6px;font-size:12px" class="text-mute">${expected.map(r => escapeHtml(r.name)).join(' · ')}</div>` : `<div style="margin-top:6px;font-size:12px" class="text-mute">${t('No active students enrolled in this class yet.', 'لا يوجد طلاب نشطون في هذه الحصة بعد.')}</div>`}
         </div>`).join('') : `<div class="text-mute" style="font-size:13px">${t('You have no classes scheduled for today.', 'لا توجد حصص مجدولة لك اليوم.')}</div>`}
     </div>`;
@@ -21631,9 +21656,12 @@ PAGES.coachhome = (main) => {
 
   main.innerHTML = `
     <div class="topbar">
-      <div>
-        <h1>🧑‍🏫 ${escapeHtml(coach.name)}</h1>
-        <div class="subtitle">${t('Your students, salary and advice', 'طلابك وراتبك ونصائحك')} · ${coach.rate ? coach.rate + '% ' + t('commission', 'عمولة') : ''}${coach.fixedSalary ? (coach.rate ? ' · ' : '') + t('Fixed', 'ثابت') + ' ' + fmt(coach.fixedSalary) : ''}</div>
+      <div style="display:flex;align-items:center;gap:12px">
+        ${(typeof coachAvatarHtml === 'function') ? coachAvatarHtml(coach, 44) : ''}
+        <div>
+          <h1 style="margin:0">${escapeHtml(coach.name)}</h1>
+          <div class="subtitle">${t('Your students, salary and advice', 'طلابك وراتبك ونصائحك')} · ${coach.rate ? coach.rate + '% ' + t('commission', 'عمولة') : ''}${coach.fixedSalary ? (coach.rate ? ' · ' : '') + t('Fixed', 'ثابت') + ' ' + fmt(coach.fixedSalary) : ''}</div>
+        </div>
       </div>
       <div class="topbar-actions">
         <button class="btn ghost" onclick="window._coachSignInSheet(${coach.id})" title="${t('Printable blank attendance sheet', 'ورقة حضور فارغة للطباعة')}">🖨 ${t('Sign-in sheet', 'ورقة الحضور')}</button>
