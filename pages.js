@@ -20390,7 +20390,9 @@ window.deleteSubscription = function(memberId, sid) {
       }
     }
   }
-  // Remove the subscription + any matching renewal entry.
+  // TOMBSTONE the row so the sync merge can NEVER resurrect it (v6.303.0), then remove
+  // the subscription + any matching renewal entry.
+  try { if (typeof window._tombstoneEl === 'function') window._tombstoneEl(sub); } catch (_) {}
   m.subscriptions = m.subscriptions.filter(s => (s._sid || s._rid) !== sid);
   if (sub._rid && Array.isArray(m.renewals)) m.renewals = m.renewals.filter(r => r._rid !== sub._rid);
   // Recompute the member's expiry from whatever subscriptions remain (latest end).
@@ -20398,9 +20400,12 @@ window.deleteSubscription = function(memberId, sid) {
   if (ends.length) m.expiryDate = ends[ends.length - 1];
   else m.expiryDate = m.expiryDate;   // leave as-is if nothing left to derive from
   if (typeof audit === 'function') audit('member.subscription.delete', 'member:' + memberId, `Deleted subscription ${label} (0 attended)`);
-  save();
   render();
-  toast(`Deleted subscription: ${label}`);
+  // WRITE-THROUGH: only say "Deleted" once the CLOUD confirms the removal persisted — a
+  // success message must mean it's really saved, not just changed on this screen.
+  if (typeof withCloudConfirm === 'function') {
+    withCloudConfirm({ okMsg: `🗑 ${t('Deleted', 'تم الحذف')}: ${label}`, onFail: () => { try { render(); } catch (_) {} } });
+  } else { save(); toast(`Deleted subscription: ${label}`); }
 };
 
 // Remove every attendance mark for `sport` whose date falls inside [start,end] from a
