@@ -1035,6 +1035,20 @@ PAGES.members = (main) => {
         opts: () => ['Active', 'Expired', 'Frozen', 'Completed', 'Withdrawn'],
         sortVal: m => memberStatus(m).toLowerCase(), getVal: m => memberStatus(m),
         cell: m => `<span class="badge ${m.deleted ? 'pending' : memberStatus(m).toLowerCase()}">${m.deleted ? '📦 Archived' : memberStatus(m)}</span>` },
+      // Invoice-health light (v6.304.0) — read-only; June-kick-off scoped. Sort brings
+      // 🔴 conflicts to the top so reception can work through them. getVal feeds search
+      // (type "conflict" to surface them) + CSV export; never throws (health is guarded).
+      { key: 'invoiceHealth', label: 'Invoice', def: true, filter: null,
+        sortVal: m => { const s = (window.memberInvoiceHealth ? window.memberInvoiceHealth(m) : {}).status; return s === 'red' ? 0 : s === 'noinv' ? 1 : s === 'green' ? 2 : 3; },
+        getVal: m => { const s = (window.memberInvoiceHealth ? window.memberInvoiceHealth(m) : {}).status; return s === 'red' ? 'invoice conflict' : s === 'noinv' ? 'no invoice' : s === 'green' ? 'invoice ok' : ''; },
+        cell: m => {
+          const h = (window.memberInvoiceHealth ? window.memberInvoiceHealth(m) : { status: 'na' }) || { status: 'na' };
+          if (h.status === 'na') return dash;
+          const map = { green: ['var(--green)', 'rgba(16,163,74,.12)', '🧾 ✓'], red: ['var(--red)', 'rgba(220,38,38,.12)', '🧾 !'], noinv: ['var(--accent-2)', 'rgba(245,158,11,.14)', '🧾 —'] };
+          const cfg = map[h.status]; if (!cfg) return dash;
+          const title = h.status === 'green' ? t('Invoice matches membership', 'الفاتورة مطابقة للعضوية') : (h.reasons || []).join(' · ');
+          return `<button onclick="event.stopPropagation();window.showMemberInvoiceHealth && window.showMemberInvoiceHealth(${m.id})" title="${escapeHtml(title)}" style="background:${cfg[1]};color:${cfg[0]};border:1px solid ${cfg[0]};border-radius:8px;padding:3px 9px;font-size:11px;font-weight:800;cursor:pointer;white-space:nowrap">${cfg[2]}</button>`;
+        } },
     ];
   }
   function isColVisible(c) {
@@ -10572,6 +10586,70 @@ function _icAmountIssue(inv) {
   if (Math.abs(lineSum - amount) > 0.5) return { lineSum, amount };
   return null;
 }
+
+// ── MEMBER INVOICE HEALTH (v6.304.0) ────────────────────────────────────────
+// A per-member light for the Members screen so reception can spot at a glance whether
+// a member's membership invoice matches their current sports & prices. READ-ONLY — it
+// never mutates data. Scoped to the 1-Jun-2026 kick-off: older/legacy members return
+// 'na' (blank) and are left completely alone. Checks: every current sport is on the
+// invoice, each sport's line price == the profile (enrollment) price, and the invoice
+// total == the line-item sum. Returns { status:'green'|'red'|'noinv'|'na', reasons[], invId }.
+const _INV_KICKOFF = '2026-06-01';
+window.memberInvoiceHealth = function (m) {
+  try {
+    if (!m || m.deleted) return { status: 'na' };
+    const starts = [];
+    (m.subscriptions || []).forEach(s => { if (s && s.start) starts.push(s.start); });
+    (m.enrollments || []).forEach(e => { if (e && e.start) starts.push(e.start); });
+    [m.startDate, m.firstRegistration, m.joinDate].forEach(d => { if (d) starts.push(d); });
+    const latest = starts.sort().pop() || '';
+    if (latest < _INV_KICKOFF) return { status: 'na' };   // pre-kick-off → not checked
+
+    const enr = (m.enrollments || []).filter(e => e && e.sport);
+    const sportPrice = new Map();
+    for (const e of enr) sportPrice.set(e.sport, (sportPrice.get(e.sport) || 0) + (Number(e.price) || 0));
+
+    const invs = (state.invoices || []).filter(i => i && !i.deleted && String(i.customerId) === String(m.id)
+      && (i.category || 'Membership') === 'Membership' && !i.switchCredit && (Number(i.amount) || 0) >= 0);
+    if (!invs.length) return { status: enr.length ? 'noinv' : 'na', reasons: [t('No invoice for this member', 'لا توجد فاتورة لهذا العضو')], invId: null };
+
+    const iv = invs.slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))[0];
+    const lines = (Array.isArray(iv.lineItems) && iv.lineItems.length) ? iv.lineItems : [{ sport: iv.sport, price: iv.amount }];
+    const invSport = new Map();
+    for (const l of lines) { if (!l || !l.sport) continue; invSport.set(l.sport, (invSport.get(l.sport) || 0) + (Number(l.price) || 0)); }
+
+    const reasons = [];
+    for (const [sp, pr] of sportPrice) {
+      if (!invSport.has(sp)) reasons.push(`${t('Sport not on invoice', 'رياضة غير مفوترة')}: ${escapeHtml(sp)}`);
+      else if (Math.abs(pr - invSport.get(sp)) > 0.5) reasons.push(`${escapeHtml(sp)}: ${t('invoice', 'الفاتورة')} ${fmt(invSport.get(sp))} ≠ ${t('profile price', 'سعر الملف')} ${fmt(pr)}`);
+    }
+    for (const [sp] of invSport) { if (!sportPrice.has(sp)) reasons.push(`${t('Invoice bills a removed sport', 'الفاتورة تحوي رياضة محذوفة')}: ${escapeHtml(sp)}`); }
+    const lineSum = lines.reduce((s, l) => s + (Number(l && l.price) || 0), 0);
+    if (Math.abs(lineSum - (Number(iv.amount) || 0)) > 0.5) reasons.push(`${t('Total', 'الإجمالي')} ${fmt(iv.amount)} ≠ ${t('line-items', 'مجموع البنود')} ${fmt(lineSum)}`);
+
+    return { status: reasons.length ? 'red' : 'green', reasons, invId: iv.id };
+  } catch (_) { return { status: 'na' }; }
+};
+window.showMemberInvoiceHealth = function (id) {
+  const m = (state.members || []).find(x => x.id === id); if (!m) return;
+  const h = window.memberInvoiceHealth(m) || { status: 'na' };
+  const head = h.status === 'green'
+    ? `<div style="color:var(--green);font-weight:800;font-size:16px">🟢 ${t('Invoice matches the membership', 'الفاتورة مطابقة للعضوية')}</div>`
+    : h.status === 'noinv'
+      ? `<div style="color:var(--accent-2);font-weight:800;font-size:16px">🟡 ${t('No invoice yet for this member', 'لا توجد فاتورة لهذا العضو بعد')}</div>`
+      : `<div style="color:var(--red);font-weight:800;font-size:16px">🔴 ${t('This invoice needs attention', 'هذه الفاتورة تحتاج مراجعة')}</div>`;
+  const list = (h.reasons && h.reasons.length)
+    ? `<ul style="margin:12px 0 0;padding-inline-start:18px;line-height:1.8;font-size:13px">${h.reasons.map(r => `<li>${r}</li>`).join('')}</ul>`
+    : `<div class="text-mute" style="margin-top:10px;font-size:12px">${t('Sports, prices and total all match the invoice.', 'الرياضات والأسعار والإجمالي كلها مطابقة للفاتورة.')}</div>`;
+  showModal({
+    title: '🧾 ' + escapeHtml(m.name),
+    body: `<div style="font-size:14px">${head}${list}</div>`,
+    actions: [
+      { label: t('Open member', 'فتح العضو'), class: 'btn ghost', onclick: () => { closeModal(); try { viewMember(m.id); } catch (_) {} } },
+      { label: t('Close', 'إغلاق'), class: 'btn primary', onclick: () => closeModal() },
+    ],
+  });
+};
 
 // PREVIEW then APPROVE / REJECT — show exactly what a sync would change (old → new),
 // including the invoice-total + balance impact, BEFORE touching the invoice. Nothing
