@@ -217,6 +217,12 @@
         storageBucket: cfg.storageBucket, messagingSenderId: cfg.messagingSenderId, appId: cfg.appId,
       });
       db = window.firebase.firestore();
+      // CRITICAL: Firestore REJECTS any write containing an `undefined` field value
+      // ("invalid-argument" — e.g. a salary paid record with settledPending: undefined),
+      // which silently killed whole saves. Ignore undefined props so a stray undefined
+      // field is simply omitted instead of failing the entire write. Must run before any
+      // other Firestore call.
+      try { db.settings({ ignoreUndefinedProperties: true }); } catch (e) { console.warn('[Storage:firebase] settings(ignoreUndefinedProperties) failed:', e); }
       auth = window.firebase.auth();
       // ── LOCAL EMULATOR support (test the cloud path before deployment). Only when
       // firebase-config.js sets useEmulator:true; production is untouched. ──
@@ -250,10 +256,32 @@
     let writeInFlight = false, pendingAfterWrite = null, lastWriteFailed = false, needsMigrationFlag = false;
     let _confirmWaiters = [], _lastFlushResult = { ok: true };   // write-through confirmation
     function _resolveConfirmWaiters(res) { const w = _confirmWaiters; _confirmWaiters = []; for (const r of w) { try { r(res); } catch (_) {} } }
+    // ── AUTO-RETRY ENGINE ──────────────────────────────────────────────────────
+    // A cloud write that fails must never sit lost until the user happens to make
+    // another change. On failure we re-flush the LATEST state automatically with
+    // backoff (base is NOT advanced on failure, so the same delta is re-sent), and
+    // keep retrying until it lands. `retryNow()` lets the UI force an immediate try.
+    let _retryTimer = null, _retryAttempt = 0, _lastState = null;
+    const RETRY_DELAYS = [2000, 5000, 15000, 30000, 60000];   // ms; last value repeats
+    function _clearRetry() { if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; } _retryAttempt = 0; }
+    function _scheduleRetry() {
+      if (_retryTimer || !_lastState) return;                  // already scheduled / nothing to send
+      const delay = RETRY_DELAYS[Math.min(_retryAttempt, RETRY_DELAYS.length - 1)];
+      _retryAttempt++;
+      console.warn(`[Storage] ↻ auto-retry #${_retryAttempt} in ${Math.round(delay / 1000)}s`);
+      _retryTimer = setTimeout(() => {
+        _retryTimer = null;
+        if (writeInFlight) return;                             // a fresh write is running; its result drives status
+        if (_lastState) _flushWrite(_lastState);
+      }, delay);
+    }
 
     function pickMeta(state) {
       const meta = {};
-      for (const k of Object.keys(state || {})) { if (isCollectionKey(k) || DEVICE_ONLY.indexOf(k) !== -1) continue; meta[k] = state[k]; }
+      // `_updatedAt` is a storage-managed touch field, NOT app state — exclude it so the
+      // shared parent doc's change-detection ignores it (see _flushWrite). Otherwise the
+      // parent would be re-written on every save (write hotspot for many concurrent users).
+      for (const k of Object.keys(state || {})) { if (isCollectionKey(k) || k === '_updatedAt' || DEVICE_ONLY.indexOf(k) !== -1) continue; meta[k] = state[k]; }
       return meta;
     }
     function setBaseFromState(state) {
@@ -268,6 +296,7 @@
 
     function _flushWrite(state) {
       writeInFlight = true;
+      _lastState = state;   // remember the newest state so auto-retry re-sends the same delta
       const ops = [];
       for (const name of COLLECTIONS) {
         const baseMap = _base[name] || new Map();
@@ -289,8 +318,14 @@
         }
         for (const id of baseMap.keys()) { if (!curIdx.has(id)) ops.push({ kind: 'del', name, id }); }
       }
-      const meta = pickMeta(state); meta._updatedAt = Date.now();
+      // Compare meta WITHOUT the always-changing _updatedAt so the shared parent doc
+      // (clubs/blackstars) is written ONLY when a real settings/version/meta field
+      // changes — not on every attendance mark or payment. Writing that one shared doc
+      // on every save would, with many simultaneous users, exceed Firestore's ~1
+      // write/sec/document soft limit → contention, latency and failed writes.
+      const meta = pickMeta(state);
       const metaStr = _stable(meta); const metaChanged = metaStr !== _baseMeta;
+      if (metaChanged) meta._updatedAt = Date.now();   // stamp only on a real change
 
       if (ops.length === 0 && !metaChanged) {
         writeInFlight = false;
@@ -298,6 +333,23 @@
         else _resolveConfirmWaiters({ ok: true, noop: true });   // nothing to write → already persisted
         return;
       }
+      // DOC-SIZE SAFETY NET: Firestore hard-rejects any document ≥ 1 MiB, which turns a
+      // runaway field into "every write to this record fails" (what the duplicate bloat
+      // did). Warn LOUDLY the moment a record approaches the limit, naming it, so it's
+      // caught and cleaned long before it starts failing. Non-destructive (never blocks
+      // the write). Uses the full record when we have it (new set / txnset), else the delta.
+      try {
+        const SIZE_WARN = 900 * 1024;   // ~88% of the 1 MiB limit
+        for (const op of ops) {
+          if (op.kind === 'del') continue;
+          const full = op.cur || op.data;   // op.cur = full record (txnset); op.data = full (new) or delta
+          const sz = _stable(full).length;
+          if (sz >= SIZE_WARN) {
+            console.error(`[Storage] ⚠ LARGE DOCUMENT ${op.name}/${op.id} ≈ ${(sz / 1024).toFixed(0)} KB — approaching Firestore's 1024 KB per-document limit; writes will start failing if it grows further.`);
+            if (typeof window !== 'undefined' && typeof window.__onOversizeRecord === 'function') { try { window.__onOversizeRecord({ collection: op.name, id: op.id, bytes: sz }); } catch (_) {} }
+          }
+        }
+      } catch (_) {}
       const batchOps = ops.filter(o => o.kind !== 'txnset');   // field-level sets + deletes
       const txnOps = ops.filter(o => o.kind === 'txnset');     // list-changing records → transactions
       const batches = chunk(batchOps, MAX_BATCH_OPS); if (batches.length === 0) batches.push([]);
@@ -344,7 +396,7 @@
       });
       Promise.all([...batchCommits, ...txnCommits])
         .then(() => {
-          lastWriteFailed = false; setBaseFromState(state); _lastFlushResult = { ok: true, records: ops.length };
+          lastWriteFailed = false; _clearRetry(); setBaseFromState(state); _lastFlushResult = { ok: true, records: ops.length };
           console.log(`%c[Storage] ✅ stored in Firestore — ${nSet} written, ${nDel} deleted${metaChanged ? ', settings updated' : ''} @ ${new Date().toLocaleTimeString()}`, 'color:#16a34a;font-weight:700');
           try { if (typeof window !== 'undefined') { const L = window.__cloudWriteLog; if (L && L.length) L[L.length - 1].ok = true; if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'saved', records: ops.length, at: Date.now() }); } } catch (_) {}
         })
@@ -364,7 +416,11 @@
           // If more was queued while this wrote, flush that next — confirmation waiters
           // resolve only once the WHOLE chain drains (their state is fully persisted).
           if (pendingAfterWrite) { const n = pendingAfterWrite; pendingAfterWrite = null; _flushWrite(n); }
-          else _resolveConfirmWaiters(_lastFlushResult);
+          else {
+            _resolveConfirmWaiters(_lastFlushResult);
+            // Chain drained on a FAILURE → keep trying automatically until it lands.
+            if (_lastFlushResult && _lastFlushResult.ok === false) _scheduleRetry();
+          }
         });
     }
 
@@ -470,6 +526,18 @@
           if (writeInFlight) { if (state) pendingAfterWrite = state; }
           else _flushWrite(state);
         });
+      },
+
+      // Is there a change that failed to reach the cloud and is only on this device?
+      hasUnsaved() { return !!lastWriteFailed; },
+      // Force an immediate retry of the last failed/queued write; resolves with the
+      // cloud result ({ ok:true } once it lands, { ok:false, error } if it fails again).
+      retryNow() {
+        if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
+        _retryAttempt = 0;
+        if (writeInFlight) return new Promise(resolve => _confirmWaiters.push(resolve));   // ride the in-flight write
+        if (!_lastState || !lastWriteFailed) return Promise.resolve({ ok: true, noop: true });
+        return new Promise(resolve => { _confirmWaiters.push(resolve); _flushWrite(_lastState); });
       },
 
       // PURE server read for a sync-check / discrepancy diff: reads the authoritative
@@ -673,6 +741,19 @@
     // Flush any throttled-but-not-yet-written save immediately (used on tab close so
     // an in-flight change can never be lost). Safe to call anytime.
     flushPending() { try { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; } if (pendingState && activeBackend) { activeBackend.save(pendingState); pendingState = null; } } catch (e) { console.warn('[Storage] flushPending failed:', e); } },
+    // TRUE while a change is saved on THIS device but not yet confirmed in the cloud.
+    // Drives the "Retry now" banner and the leave-page guard. Local backend = always saved.
+    hasUnsavedCloud() { try { return !!(activeBackend && activeBackend.isCloud && activeBackend.hasUnsaved && activeBackend.hasUnsaved()); } catch (_) { return false; } },
+    // Force an immediate retry of a failed cloud write (from the "Retry now" button).
+    retryNow() {
+      try {
+        if (!activeBackend) this.init();
+        // Make sure the freshest throttled state is queued before we push it.
+        if (saveTimer && pendingState) { clearTimeout(saveTimer); saveTimer = null; activeBackend.save(pendingState); pendingState = null; }
+        if (activeBackend.retryNow) return activeBackend.retryNow();
+      } catch (e) { return Promise.resolve({ ok: false, error: String(e) }); }
+      return Promise.resolve({ ok: true, noop: true });
+    },
     // Local auto-backup ring (IndexedDB) — independent recovery history on this device.
     snapshotBackup(state, reason, force) { return LocalBackups.snapshot(state, reason, force); },
     listBackups() { return LocalBackups.list(); },

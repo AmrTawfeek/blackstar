@@ -11540,6 +11540,147 @@ window.fixNameCapitalization = function() {
   toast(`Fixed ${changes.length} name${changes.length === 1 ? '' : 's'}`);
 };
 
+// ── Duplicate-subscription cleanup (v6.295.0) ─────────────────────────────────
+// The v6.288 element-merge keyed subscription rows by CONTENT (it didn't know `_sid`
+// is their stable id), so an edited subscription got CLONED on each concurrent sync
+// → a member card showing the same sport row many times ("infinite duplicates").
+// Root cause fixed in _elKey; this repairs rows already saved. SAFE: attendance is
+// stored in dailyAttendance (keyed by sport+day), NOT on these rows — collapsing a
+// duplicate never loses a mark. Keeps ONE row per (sport+start+end+coach+classes+
+// validity+price). Reviewed before it runs; a backup is taken first.
+window._scanDuplicateSubs = function () {
+  // Group by `_sid` — a UNIQUE per-row id, so same-`_sid` rows are ALWAYS the same
+  // subscription cloned (never a legit twin, which gets its own `_sid`). This matches
+  // the save-time backstop (_dedupeSubsGuard) exactly, so the tool can never merge a
+  // genuine family/twin row. Rows without a `_sid` are left alone.
+  const report = [];
+  for (const m of (state.members || [])) {
+    const subs = Array.isArray(m.subscriptions) ? m.subscriptions : [];
+    if (subs.length < 2) continue;
+    const groups = new Map();
+    for (const s of subs) { const k = s && s._sid; if (k == null) continue; let a = groups.get(k); if (!a) { a = []; groups.set(k, a); } a.push(s); }
+    let removed = 0; const dupGroups = [];
+    for (const [, arr] of groups) {
+      if (arr.length < 2) continue;
+      // Keep the "richest" row (most attended), drop the rest — the survivor's identity
+      // is irrelevant since attendance is windowed from dailyAttendance, not the row.
+      const keep = arr.slice().sort((a, b) => (b.attendedClasses || 0) - (a.attendedClasses || 0))[0];
+      const drop = arr.filter(s => s !== keep);
+      removed += drop.length;
+      dupGroups.push({ activity: keep.activity, start: keep.start, end: keep.end, count: arr.length, drop });
+    }
+    if (removed > 0) report.push({ m, groups: dupGroups, removed });
+  }
+  report.sort((a, b) => b.removed - a.removed);
+  return report;
+};
+window.showFixDuplicateSubsUI = function () {
+  const report = window._scanDuplicateSubs();
+  const totalRows = report.reduce((s, r) => s + r.removed, 0);
+  if (!report.length) { toast('✓ ' + t('No duplicate subscriptions found', 'لا توجد اشتراكات مكررة'), 'success'); return; }
+  const rows = report.slice(0, 200).map(r => `
+    <tr>
+      <td>${escapeHtml(r.m.name || ('#' + r.m.id))}</td>
+      <td class="text-right">${(r.m.subscriptions || []).length}</td>
+      <td class="text-right" style="color:var(--red);font-weight:700">−${r.removed}</td>
+      <td style="font-size:11px;color:var(--text-mute)">${r.groups.map(g => `${escapeHtml(g.activity || '—')} ×${g.count}`).join(', ')}</td>
+    </tr>`).join('');
+  showModal({
+    title: '🧹 ' + t('Fix duplicate subscriptions', 'إصلاح الاشتراكات المكررة'),
+    body: `
+      <div style="font-size:13px;line-height:1.55;margin-bottom:10px">
+        ${t('Found', 'وُجد')} <b>${totalRows}</b> ${t('duplicate subscription row(s) across', 'صف اشتراك مكرر لدى')} <b>${report.length}</b> ${t('member(s)', 'عضو')}.
+        ${t('Each set of identical rows (same sport, dates, coach, classes & price) collapses to ONE.', 'كل مجموعة صفوف متطابقة (نفس الرياضة والتواريخ والمدرب والحصص والسعر) تُدمج في صف واحد.')}
+        <div style="margin-top:6px;color:var(--green)">✓ ${t('Attendance is kept safe — it is stored separately, not on these rows.', 'الحضور محفوظ — يُخزَّن بشكل منفصل وليس على هذه الصفوف.')}</div>
+        <div style="margin-top:3px;color:var(--accent-2)">⚠ ${t('A full backup downloads automatically before anything changes.', 'يتم تنزيل نسخة احتياطية كاملة تلقائياً قبل أي تغيير.')}</div>
+      </div>
+      <div class="table-wrap" style="max-height:340px;overflow:auto">
+        <table><thead><tr><th>${t('Member', 'العضو')}</th><th class="text-right">${t('Subs', 'الاشتراكات')}</th><th class="text-right">${t('Remove', 'حذف')}</th><th>${t('Duplicates', 'المكرر')}</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      </div>
+      ${report.length > 200 ? `<div class="text-mute" style="font-size:11px;margin-top:6px">…${t('and', 'و')} ${report.length - 200} ${t('more members', 'عضو آخر')}</div>` : ''}
+    `,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: () => closeModal() },
+      { label: `🧹 ${t('Collapse', 'دمج')} ${totalRows} ${t('duplicate row(s)', 'صف مكرر')}`, class: 'btn primary', onclick: () => window._applyFixDuplicateSubs() },
+    ],
+  });
+};
+window._applyFixDuplicateSubs = function () {
+  try { if (typeof window.downloadBackup === 'function') window.downloadBackup(); } catch (_) {}   // safety copy first
+  const report = window._scanDuplicateSubs();
+  let members = 0, rows = 0;
+  for (const r of report) {
+    const dropSet = new Set();
+    for (const g of r.groups) for (const s of g.drop) dropSet.add(s);
+    if (!dropSet.size) continue;
+    r.m.subscriptions = (r.m.subscriptions || []).filter(s => !dropSet.has(s));
+    if (typeof stampUpdate === 'function') stampUpdate(r.m);
+    members++; rows += dropSet.size;
+  }
+  if (typeof audit === 'function') audit('members.dedupe_subs', 'members', `Collapsed ${rows} duplicate subscription row(s) across ${members} member(s)`, { rows, members });
+  closeModal();
+  const okMsg = t(`Removed ${rows} duplicate row(s) across ${members} member(s) · saved`, `تم حذف ${rows} صف مكرر لدى ${members} عضو · حُفظ`);
+  if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg, onOk: () => render(), onFail: () => render() });
+  else { save(); render(); toast(okMsg); }
+};
+
+// ── DATA HEALTH CHECK (v6.299.0) ──────────────────────────────────────────────
+// A one-glance, always-available integrity check so stability is VERIFIABLE, not a
+// matter of trust: it looks for the exact things that ever caused trouble —
+// duplicate subscription rows, records approaching Firestore's 1 MB per-document
+// limit, and total data size vs the browser's local cache — and offers a one-click,
+// loss-free repair (the same _sid-safe dedupe that runs automatically on save/load).
+function _byteLen(o) { const s = typeof o === 'string' ? o : JSON.stringify(o); try { return new TextEncoder().encode(s).length; } catch (_) { return s.length; } }
+window._dataHealthCheck = function () {
+  let dupRows = 0, dupMembers = 0;
+  for (const m of (state.members || [])) {
+    const subs = m.subscriptions || []; if (subs.length < 2) continue;
+    const seen = new Set(); let d = 0;
+    for (const s of subs) { const k = s && s._sid; if (k == null) continue; if (seen.has(k)) d++; else seen.add(k); }
+    if (d > 0) { dupRows += d; dupMembers++; }
+  }
+  const oversized = [];
+  const scan = (coll, arr, nameOf) => { for (const r of (arr || [])) { const b = _byteLen(r); if (b >= 800 * 1024) oversized.push({ coll, name: nameOf(r), kb: Math.round(b / 1024) }); } };
+  scan('members', state.members, r => r.name || ('#' + r.id));
+  scan('invoices', state.invoices, r => r.ref || ('#' + r.id));
+  const totalBytes = _byteLen(state);
+  const LS_LIMIT = 5 * 1024 * 1024;   // browser localStorage safety-net cache ceiling
+  const healthy = dupRows === 0 && oversized.length === 0 && totalBytes < LS_LIMIT * 0.9;
+  return { healthy, dupRows, dupMembers, oversized, totalMB: totalBytes / 1048576, cachePct: Math.round(totalBytes / LS_LIMIT * 100) };
+};
+window.showDataHealthUI = function () {
+  const h = window._dataHealthCheck();
+  const green = h.healthy;
+  const chip = (okTxt, badTxt, ok) => `<span style="font-weight:800;color:${ok ? 'var(--green)' : 'var(--red)'}">${ok ? '✓ ' + okTxt : '⚠ ' + badTxt}</span>`;
+  const overList = h.oversized.length ? h.oversized.map(o => `${escapeHtml(String(o.name))} (${o.kb} KB)`).join(', ') : '';
+  const body = `
+    <div style="font-size:14px;line-height:1.6">
+      <div style="text-align:center;padding:14px;border-radius:12px;margin-bottom:14px;background:${green ? 'rgba(16,163,74,.10)' : 'rgba(220,38,38,.10)'};border:1px solid ${green ? 'rgba(16,163,74,.35)' : 'rgba(220,38,38,.35)'}">
+        <div style="font-size:30px">${green ? '🟢' : '🔴'}</div>
+        <div style="font-size:18px;font-weight:800;color:${green ? 'var(--green)' : 'var(--red)'}">${green ? t('Data is healthy', 'البيانات سليمة') : t('Needs a quick repair', 'تحتاج إصلاحاً سريعاً')}</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:7px 0">${t('Duplicate subscription rows', 'صفوف اشتراك مكررة')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), `${h.dupRows} ${t('across', 'لدى')} ${h.dupMembers} ${t('members', 'عضو')}`, h.dupRows === 0)}</td></tr>
+        <tr><td style="padding:7px 0">${t('Records near the 1 MB limit', 'سجلات قرب حد 1 ميغابايت')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), overList, h.oversized.length === 0)}</td></tr>
+        <tr><td style="padding:7px 0">${t('Total data size', 'حجم البيانات')}</td><td style="text-align:right"><b>${h.totalMB.toFixed(2)} MB</b> <span class="text-mute">(${h.cachePct}% ${t('of local cache', 'من الذاكرة المحلية')})</span></td></tr>
+      </table>
+      ${green
+        ? `<div class="text-mute" style="font-size:12px;margin-top:12px">${t('Everything is clean. This check + an automatic repair also run on every save and on load, so it stays this way.', 'كل شيء نظيف. يتم هذا الفحص والإصلاح التلقائي عند كل حفظ وعند التحميل، لذا يبقى كذلك.')}</div>`
+        : `<div class="text-mute" style="font-size:12px;margin-top:12px">${t('One click cleans this up safely — attendance and money are never touched, and a backup is taken first.', 'نقرة واحدة تنظّف هذا بأمان — لا يُمَس الحضور ولا المال، وتُؤخذ نسخة احتياطية أولاً.')}</div>`}
+    </div>`;
+  showModal({
+    title: '🩺 ' + t('Data Health Check', 'فحص سلامة البيانات'),
+    body,
+    actions: green
+      ? [{ label: t('Close', 'إغلاق'), class: 'btn primary', onclick: () => closeModal() }]
+      : [
+        { label: t('Close', 'إغلاق'), class: 'btn ghost', onclick: () => closeModal() },
+        { label: '🔧 ' + t('Repair now', 'أصلح الآن'), class: 'btn primary', onclick: () => { closeModal(); if (h.dupRows > 0) window._applyFixDuplicateSubs(); else { save(); toast(t('Saved', 'تم الحفظ')); } } },
+      ],
+  });
+};
+
 window.recordPaymentUI = function(id) {
   const inv = state.invoices.find(i => i.id === id);
   if (!inv) return;
@@ -14810,8 +14951,9 @@ function _salEnsureRec(coachId, monthKey, target, settle) {
     snapshotGross: (pay ? pay.gross : 0) + pendingPaid,
     snapshotNet: net,
     snapshotCommissionBase: pay ? pay.commissionBase : 0,
-    settledPending: pendingPaid || undefined,
-    settledSubs: settledCount || undefined,
+    // Omit these entirely when 0 — NEVER store `undefined` (Firestore rejects it).
+    ...(pendingPaid ? { settledPending: pendingPaid } : {}),
+    ...(settledCount ? { settledSubs: settledCount } : {}),
   };
   if (!Array.isArray(state.salaries)) state.salaries = [];
   state.salaries.push(rec);
@@ -14875,7 +15017,7 @@ window._salSetTarget = function(coachId, monthKey) {
   const el = $('#sp-target');
   if (!rec || !el) return;   // no record yet → the value is just the default for the first payment
   const v = parseFloat(el.value);
-  rec.target = isNaN(v) ? undefined : v;
+  if (isNaN(v)) delete rec.target; else rec.target = v;   // never store undefined (Firestore rejects it)
   audit('salary.target', `coach:${coachId}`, `Set agreed payout for ${fmtMonth(monthKey)} to ${fmt(rec.target || 0)} QAR`, { coachId, month: monthKey, target: rec.target });
   save(); render();
   markPaid(coachId, monthKey);
@@ -16981,6 +17123,8 @@ PAGES.settings = (main, section) => {
         <button class="btn ghost" id="autobackup-btn" title="Rolling automatic snapshots kept on this device — roll back to an earlier point">🛟 ${t('Auto-backups (this device)', 'النسخ التلقائية (هذا الجهاز)')}</button>
         ${isCloudStorage() ? `<button class="btn ghost" id="synccheck-btn" title="Compare this device's data against the cloud and flag anything not yet synced">🔍 ${t('Verify against cloud', 'التحقق من السحابة')}</button>` : ''}
         <button class="btn ghost" id="fixnames-btn" title="Correct member English names to Title Case (anas madni → Anas Madni)">Aa Fix name capitalisation</button>
+        <button class="btn ghost" id="datahealth-btn" title="One-glance data integrity check — duplicates, oversized records, storage size — with one-click safe repair">🩺 ${t('Data Health Check', 'فحص سلامة البيانات')}</button>
+        <button class="btn ghost" id="fixdupsubs-btn" title="Find & remove duplicate subscription rows on member cards (attendance is kept safe)">🧹 ${t('Fix duplicate subscriptions', 'إصلاح الاشتراكات المكررة')}</button>
         <input type="file" id="restore-file" accept=".json" style="display:none" />
       </div>
       <div class="text-mute mt-3" style="font-size:12px">
@@ -17221,6 +17365,8 @@ PAGES.settings = (main, section) => {
   $('#autobackup-btn')?.addEventListener('click', () => window.showLocalBackupsUI());
   $('#synccheck-btn')?.addEventListener('click', () => window.runSyncCheck());
   $('#fixnames-btn')?.addEventListener('click', () => window.fixNameCapitalization());
+  $('#datahealth-btn')?.addEventListener('click', () => window.showDataHealthUI());
+  $('#fixdupsubs-btn')?.addEventListener('click', () => window.showFixDuplicateSubsUI());
 
   // ── Multi-document migration (one-click) ──────────────────────────────────
   (function setupMigration() {
