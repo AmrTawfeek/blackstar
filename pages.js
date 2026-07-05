@@ -11633,12 +11633,29 @@ window._applyFixDuplicateSubs = function () {
 // loss-free repair (the same _sid-safe dedupe that runs automatically on save/load).
 function _byteLen(o) { const s = typeof o === 'string' ? o : JSON.stringify(o); try { return new TextEncoder().encode(s).length; } catch (_) { return s.length; } }
 window._dataHealthCheck = function () {
-  let dupRows = 0, dupMembers = 0;
+  let dupRows = 0, dupMembers = 0;      // duplicate subscription rows (by _sid)
+  let dupEnr = 0, dupEnrMembers = 0;    // duplicate enrollment rows (exact content)
+  const enrKey = (typeof _enrKey === 'function') ? _enrKey : (e => JSON.stringify(e));
   for (const m of (state.members || [])) {
-    const subs = m.subscriptions || []; if (subs.length < 2) continue;
+    const subs = m.subscriptions || [];
+    if (subs.length >= 2) {
+      const seen = new Set(); let d = 0;
+      for (const s of subs) { const k = s && s._sid; if (k == null) continue; if (seen.has(k)) d++; else seen.add(k); }
+      if (d > 0) { dupRows += d; dupMembers++; }
+    }
+    const enr = m.enrollments || [];
+    if (enr.length >= 2) {
+      const seen = new Set(); let d = 0;
+      for (const e of enr) { const k = enrKey(e); if (seen.has(k)) d++; else seen.add(k); }
+      if (d > 0) { dupEnr += d; dupEnrMembers++; }
+    }
+  }
+  let dupLi = 0, dupLiInv = 0;   // duplicate invoice line-items (the merge-doubling)
+  for (const inv of (state.invoices || [])) {
+    const li = inv.lineItems || []; if (li.length < 2) continue;
     const seen = new Set(); let d = 0;
-    for (const s of subs) { const k = s && s._sid; if (k == null) continue; if (seen.has(k)) d++; else seen.add(k); }
-    if (d > 0) { dupRows += d; dupMembers++; }
+    for (const l of li) { const k = enrKey(l); if (seen.has(k)) d++; else seen.add(k); }
+    if (d > 0) { dupLi += d; dupLiInv++; }
   }
   const oversized = [];
   const scan = (coll, arr, nameOf) => { for (const r of (arr || [])) { const b = _byteLen(r); if (b >= 800 * 1024) oversized.push({ coll, name: nameOf(r), kb: Math.round(b / 1024) }); } };
@@ -11646,8 +11663,8 @@ window._dataHealthCheck = function () {
   scan('invoices', state.invoices, r => r.ref || ('#' + r.id));
   const totalBytes = _byteLen(state);
   const LS_LIMIT = 5 * 1024 * 1024;   // browser localStorage safety-net cache ceiling
-  const healthy = dupRows === 0 && oversized.length === 0 && totalBytes < LS_LIMIT * 0.9;
-  return { healthy, dupRows, dupMembers, oversized, totalMB: totalBytes / 1048576, cachePct: Math.round(totalBytes / LS_LIMIT * 100) };
+  const healthy = dupRows === 0 && dupEnr === 0 && dupLi === 0 && oversized.length === 0 && totalBytes < LS_LIMIT * 0.9;
+  return { healthy, dupRows, dupMembers, dupEnr, dupEnrMembers, dupLi, dupLiInv, oversized, totalMB: totalBytes / 1048576, cachePct: Math.round(totalBytes / LS_LIMIT * 100) };
 };
 window.showDataHealthUI = function () {
   const h = window._dataHealthCheck();
@@ -11662,6 +11679,8 @@ window.showDataHealthUI = function () {
       </div>
       <table style="width:100%;border-collapse:collapse">
         <tr><td style="padding:7px 0">${t('Duplicate subscription rows', 'صفوف اشتراك مكررة')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), `${h.dupRows} ${t('across', 'لدى')} ${h.dupMembers} ${t('members', 'عضو')}`, h.dupRows === 0)}</td></tr>
+        <tr><td style="padding:7px 0">${t('Duplicate enrollment rows', 'صفوف تسجيل مكررة')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), `${h.dupEnr} ${t('across', 'لدى')} ${h.dupEnrMembers} ${t('members', 'عضو')}`, h.dupEnr === 0)}</td></tr>
+        <tr><td style="padding:7px 0">${t('Duplicate invoice line-items', 'بنود فاتورة مكررة')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), `${h.dupLi} ${t('across', 'لدى')} ${h.dupLiInv} ${t('invoices', 'فاتورة')}`, h.dupLi === 0)}</td></tr>
         <tr><td style="padding:7px 0">${t('Records near the 1 MB limit', 'سجلات قرب حد 1 ميغابايت')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), overList, h.oversized.length === 0)}</td></tr>
         <tr><td style="padding:7px 0">${t('Total data size', 'حجم البيانات')}</td><td style="text-align:right"><b>${h.totalMB.toFixed(2)} MB</b> <span class="text-mute">(${h.cachePct}% ${t('of local cache', 'من الذاكرة المحلية')})</span></td></tr>
       </table>
@@ -11676,9 +11695,19 @@ window.showDataHealthUI = function () {
       ? [{ label: t('Close', 'إغلاق'), class: 'btn primary', onclick: () => closeModal() }]
       : [
         { label: t('Close', 'إغلاق'), class: 'btn ghost', onclick: () => closeModal() },
-        { label: '🔧 ' + t('Repair now', 'أصلح الآن'), class: 'btn primary', onclick: () => { closeModal(); if (h.dupRows > 0) window._applyFixDuplicateSubs(); else { save(); toast(t('Saved', 'تم الحفظ')); } } },
+        { label: '🔧 ' + t('Repair now', 'أصلح الآن'), class: 'btn primary', onclick: () => { closeModal(); window._applyDataRepair(); } },
       ],
   });
+};
+// One-click repair for the health panel: backup first, then run the full guard
+// (subscriptions by _sid + enrollments by content) and save with cloud confirmation.
+window._applyDataRepair = function () {
+  try { if (typeof window.downloadBackup === 'function') window.downloadBackup(); } catch (_) {}   // safety copy first
+  const n = (typeof _dedupeSubsGuard === 'function') ? _dedupeSubsGuard() : 0;
+  if (typeof audit === 'function') audit('data.repair', 'members', `Collapsed ${n} duplicate subscription/enrollment row(s)`, { rows: n });
+  const okMsg = t(`Cleaned ${n} duplicate row(s) · saved`, `تم تنظيف ${n} صف مكرر · حُفظ`);
+  if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg, onOk: () => render(), onFail: () => render() });
+  else { save(); render(); toast(okMsg); }
 };
 
 window.recordPaymentUI = function(id) {
