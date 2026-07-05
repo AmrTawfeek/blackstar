@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//// LOCAL EMULATOR CONFIG — for testing the full cloud path on your own machine.
+// LOCAL EMULATOR CONFIG — for testing the full cloud path on your own machine.
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // To test locally:  rename this file to  firebase-config.js  (back up the real

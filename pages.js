@@ -11645,8 +11645,9 @@ window._dataHealthCheck = function () {
     }
     const enr = m.enrollments || [];
     if (enr.length >= 2) {
+      // Enrollments are ONE-PER-SPORT — flag any repeated sport (matches _dedupeSubsGuard).
       const seen = new Set(); let d = 0;
-      for (const e of enr) { const k = enrKey(e); if (seen.has(k)) d++; else seen.add(k); }
+      for (const e of enr) { const sp = e && e.sport; if (sp == null) continue; if (seen.has(sp)) d++; else seen.add(sp); }
       if (d > 0) { dupEnr += d; dupEnrMembers++; }
     }
   }
