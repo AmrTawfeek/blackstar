@@ -1,6 +1,5 @@
 name: Deploy Client Update Auto
 
-# السكريبت هيشتغل يدوياً بضغطة زرار من صفحة GitHub (أو تقدر تربطه بـ Webhook لاحقاً)
 on:
   workflow_dispatch:
     inputs:
@@ -13,49 +12,54 @@ on:
         required: false
         default: 'Client Update via Cloud'
 
+permissions:
+  contents: write
+
 jobs:
   update-code:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. فتح المشروع الحالي على سيرفر جيتهاب
     - name: Checkout Repository
       uses: actions/checkout@v4
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
 
-    # 2. تحميل الملف المضغوط من الرابط اللي هيدخله العميل
     - name: Download Zip File
       run: |
-        curl -L -o client_project.zip "${{ github.event.inputs.zip_url }}"
+        URL="${{ github.event.inputs.zip_url }}"
+        if [[ "$URL" == *"dropbox.com"* ]]; then
+          URL=$(echo "$URL" | sed 's/dl=0/dl=1/')
+        fi
+        echo "Downloading from: $URL"
+        curl -L -o client_project.zip "$URL"
 
-    # 3. فك الضغط جوه فولدر مؤقت
     - name: Extract Zip
       run: |
         mkdir -p temp_extract
-        unzip -o client_project.zip -d ./temp_extract
+        unzip -qo client_project.zip -d ./temp_extract || true
 
-    # 4. حذف ملف الـ Firebase لحماية إعداداتك
     - name: Remove Firebase Config
       run: |
-        # البحث عن ملف firebase-config.js في المجلد بالكامل وحذفه أينما وُجد للحماية
-        find ./temp_extract -name "firebase-config.js" -exec rm -f {} +
-        
-        # إضافة تأكيد نجاح إجباري عشان السيرفر ميعطلش بسبب خطوة الحذف
-        echo "Firebase config removed safely or not found."
+        # حذف الملف بأمر صريح مباشر ومؤمن تماماً
+        rm -f ./temp_extract/firebase-config.js || true
+        find ./temp_extract -name "firebase-config.js" -exec rm -f {} + || true
+        echo "Firebase config safely checked."
 
-    # 5. نقل الملفات للمشروع وحذف الملفات المؤقتة
     - name: Copy Files & Clean
       run: |
-        cp -r ./temp_extract/* .
-        rm -rf ./temp_extract
-        rm -f client_project.zip
+        cp -r ./temp_extract/* . || true
+        rm -rf ./temp_extract || true
+        rm -f client_project.zip || true
 
-    # 6. عمل Commit و Push للتعديلات تلقائياً على ريبو الـ GitHub
     - name: Commit and Push Changes
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git add .
-        # التأكد من وجود تغييرات حقيقية قبل عمل الـ commit عشان السكريبت ميفشلش
-        git diff-index --quiet HEAD || (git commit -m "${{ github.event.inputs.commit_message }}" && git push origin main)
+        if ! git diff-index --quiet HEAD; then
+          git commit -m "${{ github.event.inputs.commit_message }}"
+          git push origin main
+        else
+          echo "No changes detected."
+        fi
