@@ -2193,8 +2193,9 @@ function viewMember(id) {
           <div style="margin-top:16px">
             <h3 style="font-size:13px;font-weight:600;margin-bottom:4px">🧹 Manage sport history</h3>
             <div class="text-mute" style="font-size:11px;margin-bottom:8px;line-height:1.5">
-              Remove a sport entered by mistake or no longer wanted. This lists sports that are <b>no longer active</b> (switched away)
-              <b>and active sports with no attendance yet</b> (safe to undo). Removing one deletes its subscription records and its
+              Remove a sport entered by mistake or no longer wanted — including a sport the member was <b>switched away from</b>
+              (past history). This lists sports that are <b>no longer active</b> (switched away) <b>and active sports with no attendance yet</b>
+              (safe to undo). Removing one deletes its subscription records, its <b>attendance for that period</b>, and its
               share of the linked invoice — so <b>Paid drops</b> and coach commission is reversed. This is a correction, not a refund;
               for a member who already attended, use <b style="color:var(--accent-2)">↩ Withdraw</b> on the active sport instead.
             </div>
@@ -5097,7 +5098,11 @@ window.deleteMemberSport = function(memberId, sport) {
       paidRemoved += invoicePaid(inv);
     } else {
       invoicesShrunk++;
-      const propPaid = (inv.amount || 0) > 0 ? invoicePaid(inv) * (removedAmt / (inv.amount || 1)) : 0;
+      // Prorate paid by the invoice's TRUE gross (sum of line items), NOT the stored
+      // header amount — which can be stale (e.g. 325 while the lines total 650). Using
+      // the header would wildly mis-prorate and could wipe the surviving sport's paid.
+      const grossAmt = items.reduce((s, li) => s + (Number(li.price) || 0), 0) || (inv.amount || 0);
+      const propPaid = grossAmt > 0 ? invoicePaid(inv) * (removedAmt / grossAmt) : 0;
       paidRemoved += propPaid;
     }
     previewInvs.push(inv.ref || ('#' + inv.id));
@@ -5154,6 +5159,12 @@ window.deleteMemberSport = function(memberId, sport) {
         m.subscriptions = (m.subscriptions || []).filter(s => (s.activity || '') !== sport);
         // 3) Strip standalone renewal records pointing at this sport (legacy data)
         if (Array.isArray(m.renewals)) m.renewals = m.renewals.filter(r => (r.activity || r.sport || '') !== sport);
+        // 3b) Remove ALL attendance recorded for this sport across the member's history.
+        //     Deleting a sport must also erase its classes (the confirmation dialog above
+        //     says it does) — otherwise orphan attendance marks linger and the coach keeps
+        //     commission for a sport that no longer exists. Reports recompute live.
+        const removedAtt = (typeof _clearSportAttendanceWindow === 'function')
+          ? _clearSportAttendanceWindow(m, sport, null, null) : 0;
         // 4) Fix up invoices: drop matching line items, prorate payments, delete if empty
         const before = state.invoices.length;
         state.invoices = state.invoices.filter(inv => {
@@ -5167,7 +5178,10 @@ window.deleteMemberSport = function(memberId, sport) {
           if (remaining.length === items.length) return true;  // not relevant to this sport
           // Shrink the invoice — prorate the paid amount + payments log.
           const removedAmt = items.reduce((s, li) => s + ((li.sport === sport ? (Number(li.price) || 0) : 0)), 0);
-          const oldAmount = inv.amount || items.reduce((s, li) => s + (Number(li.price) || 0), 0);
+          // Base proration on the line-items gross, NOT the stored header amount, which
+          // can be out of sync (stale) — otherwise the ratio breaks and can zero the
+          // surviving sport's payments. Setting inv.amount below also self-heals the header.
+          const oldAmount = items.reduce((s, li) => s + (Number(li.price) || 0), 0) || inv.amount || 0;
           const newAmount = Math.max(0, oldAmount - removedAmt);
           const factor = oldAmount > 0 ? (newAmount / oldAmount) : 0;
           inv.lineItems = remaining;
@@ -5185,9 +5199,10 @@ window.deleteMemberSport = function(memberId, sport) {
         });
         // 5) If member's headline sport is the one being deleted, fall back to the next enrolment.
         if (m.sport === sport) m.sport = (m.enrollments[0]?.sport) || '';
-        if (typeof audit === 'function') audit('member.sport.delete', 'member:' + m.id, `Deleted sport "${sport}" — removed ${revenueRemoved.toFixed(2)} QAR revenue, ${invoicesDeleted} invoices dropped, ${invoicesShrunk} shrunk`);
+        if (typeof stampUpdate === 'function') stampUpdate(m);
+        if (typeof audit === 'function') audit('member.sport.delete', 'member:' + m.id, `Deleted sport "${sport}" — removed ${revenueRemoved.toFixed(2)} QAR revenue, ${removedAtt} attendance mark(s), ${invoicesDeleted} invoices dropped, ${invoicesShrunk} shrunk`);
         save(); closeModal(); render();
-        toast(`✓ ${sport} removed from history`);
+        toast(`✓ ${sport} removed from history${removedAtt ? ' · ' + removedAtt + ' attendance removed' : ''}`);
       }},
     ],
   });
