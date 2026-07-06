@@ -2160,6 +2160,15 @@ function viewMember(id) {
             sportInfo.set(li.sport, info);
           }
         }
+        // Include sports that exist ONLY as an ENROLLMENT — no subscription and no
+        // invoice line (e.g. a sport the member was switched away from, or a leftover/
+        // orphan enrollment like an old MMA after a MMA→Boxing switch). Without this,
+        // such a sport is invisible here and there is NO way to delete it, even though
+        // it still shows on the member card + attendance screen. Now EVERY sport the
+        // member has is listed and removable.
+        for (const e of (m.enrollments || [])) {
+          if (e && e.sport && !sportInfo.has(e.sport)) sportInfo.set(e.sport, { subs: 0, paid: 0 });
+        }
         // Build the removable list:
         //   • OBSOLETE sports (no active enrollment) — switched away / mistakes.
         //   • ACTIVE sports that have ZERO attendance — entered by mistake or a
@@ -5108,7 +5117,12 @@ window.deleteMemberSport = function(memberId, sport) {
     previewInvs.push(inv.ref || ('#' + inv.id));
   }
 
-  if (!subsTotal && !invoicesAffected) {
+  // A sport can exist ONLY as an enrollment (no subscription, no invoice line) — e.g. a
+  // leftover MMA after a MMA→Boxing switch. Treat that enrollment as removable history
+  // too, so the delete proceeds (step 1 below strips the enrollment). Without this the
+  // function bailed with "No history found" and the orphan sport was undeletable.
+  const hasEnrollment = (m.enrollments || []).some(e => (e.sport || '') === sport);
+  if (!subsTotal && !invoicesAffected && !hasEnrollment) {
     toast(`No history found for "${sport}" on this member`, 'error');
     return;
   }
