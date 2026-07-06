@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تحديث مشروع BlackStars CRM</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+</head>
+<body class="bg-base-200 min-h-screen flex items-center justify-center p-4">
+
+    <div class="card w-full max-w-md bg-base-100 shadow-xl">
+        <div class="card-body">
+            <h2 class="card-title text-2xl font-bold text-primary mb-4 text-center justify-center">بوابة رفع تحديثات العميل 🚀</h2>
+            <p class="text-sm text-base-content/70 text-center mb-6">يرجى إدخال البيانات المطلوبة لبدء التحديث التلقائي.</p>
+
+            <form id="uploadForm" class="space-y-4">
+                <!-- خانة كود الأمان (Token) -->
+                <div class="form-control">
+                    <label class="label"><span class="label-text font-semibold">كود أمان الوصول (GitHub Token):</span></label>
+                    <input type="password" id="githubToken" placeholder="ghp_xxxxxxxxxxxx" class="input input-bordered w-full" required />
+                    <span class="text-xs text-base-content/50 mt-1">يتم إدخاله أول مرة فقط ويحفظ بأمان في متصفحك.</span>
+                </div>
+
+                <!-- رابط الملف المباشر -->
+                <div class="form-control">
+                    <label class="label"><span class="label-text font-semibold">رابط الملف المضغوط (Direct ZIP Link):</span></label>
+                    <input type="url" id="zipUrl" placeholder="https://example.com/project.zip" class="input input-bordered w-full" required />
+                </div>
+
+                <!-- رسالة الـ Commit -->
+                <div class="form-control">
+                    <label class="label"><span class="label-text font-semibold">وصف التحديث (Commit Message):</span></label>
+                    <input type="text" id="commitMsg" placeholder="مثال: تعديل شاشة تسجيل الدخول بواسطة Claude" class="input input-bordered w-full" required />
+                </div>
+
+                <!-- زر الإرسال -->
+                <div class="form-control mt-6">
+                    <button type="submit" id="submitBtn" class="btn btn-primary w-full text-lg">بدء التحديث التلقائي ⚡</button>
+                </div>
+            </form>
+
+            <div id="statusMessage" class="mt-4 hidden alert"></div>
+        </div>
+    </div>
+
+    <script>
+        // إعدادات المستودع الخاصة بك (آمنة تماماً لأنها علنية بالفعل)
+        const OWNER = "AmrTawfeek";
+        const REPO = "blackstar";
+        const WORKFLOW_ID = "deploy-client-update.yml"; 
+
+        // استرجاع التوكن تلقائياً لو كان محفوظ قبل كده في المتصفح
+        const savedToken = localStorage.getItem('gh_client_token');
+        if (savedToken) {
+            document.getElementById('githubToken').value = savedToken;
+        }
+
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const token = document.getElementById('githubToken').value.trim();
+            const zipUrl = document.getElementById('zipUrl').value.trim();
+            const commitMsg = document.getElementById('commitMsg').value.trim();
+            const btn = document.getElementById('submitBtn');
+            const status = document.getElementById('statusMessage');
+
+            // حفظ التوكن في متصفح العميل عشان ميكتبوش كل مرة
+            localStorage.setItem('gh_client_token', token);
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading loading-spinner"></span> جاري تشغيل السيرفر...';
+            status.className = "mt-4 hidden alert";
+
+            try {
+                const response = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/${WORKFLOW_ID}/dispatches`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Accept': 'application/vnd.github+json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        ref: 'main',
+                        inputs: {
+                            zip_url: zipUrl,
+                            commit_message: commitMsg
+                        }
+                    })
+                });
+
+                if (response.status === 204) {
+                    status.classList.remove('hidden');
+                    status.classList.add('alert-success');
+                    status.innerText = "🎯 تم إرسال التحديث بنجاح! السيرفر يعمل الآن في الخلفية لتحديث الكود ورفعه.";
+                    document.getElementById('zipUrl').value = '';
+                    document.getElementById('commitMsg').value = '';
+                } else {
+                    throw new Error('فشل في الاتصال. تأكد من صحة كود الأمان (Token).');
+                }
+
+            } catch (error) {
+                status.classList.remove('hidden');
+                status.classList.add('alert-error');
+                status.innerText = `❌ خطأ: ${error.message}`;
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'بدء التحديث التلقائي ⚡';
+            }
+        });
+    </script>
+</body>
+</html>
