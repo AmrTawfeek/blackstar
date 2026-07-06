@@ -14,14 +14,25 @@
             <h2 class="card-title text-2xl font-bold text-primary mb-4 text-center justify-center">بوابة رفع تحديثات العميل 🚀</h2>
             <p class="text-sm text-base-content/70 text-center mb-6">يرجى إدخال البيانات المطلوبة لبدء التحديث التلقائي.</p>
 
-            <form id="uploadForm" class="space-y-4">
-                <!-- خانة كود الأمان (Token) -->
-                <div class="form-control">
+            <!-- القالب الذكي للـ Token -->
+            <div id="tokenSection" class="mb-4">
+                <!-- حالة 1: لو مش محفوظ (الخانة العادية) -->
+                <div id="tokenInputContainer" class="form-control">
                     <label class="label"><span class="label-text font-semibold">كود أمان الوصول (GitHub Token):</span></label>
-                    <input type="password" id="githubToken" placeholder="ghp_xxxxxxxxxxxx" class="input input-bordered w-full" required />
+                    <input type="password" id="githubToken" placeholder="ghp_xxxxxxxxxxxx" class="input input-bordered w-full" />
                     <span class="text-xs text-base-content/50 mt-1">يتم إدخاله أول مرة فقط ويحفظ بأمان في متصفحك.</span>
                 </div>
 
+                <!-- حالة 2: لو محفوظ (شريط النجاح وعلامة الـ X) -->
+                <div id="tokenSavedContainer" class="hidden flex items-center justify-between alert alert-success p-3 rounded-lg text-sm font-semibold">
+                    <div class="flex items-center gap-2">
+                        <span>🔑 كود الأمان محفوظ ونشط</span>
+                    </div>
+                    <button type="button" id="clearTokenBtn" class="btn btn-circle btn-xs btn-ghost text-error" title="مسح وتغيير الكود">✕</button>
+                </div>
+            </div>
+
+            <form id="uploadForm" class="space-y-4">
                 <!-- رابط الملف المباشر -->
                 <div class="form-control">
                     <label class="label"><span class="label-text font-semibold">رابط الملف المضغوط (Direct ZIP Link):</span></label>
@@ -45,28 +56,57 @@
     </div>
 
     <script>
-        // إعدادات المستودع الخاصة بك (آمنة تماماً لأنها علنية بالفعل)
         const OWNER = "AmrTawfeek";
         const REPO = "blackstar";
         const WORKFLOW_ID = "deploy-client-update.yml"; 
 
-        // استرجاع التوكن تلقائياً لو كان محفوظ قبل كده في المتصفح
-        const savedToken = localStorage.getItem('gh_client_token');
-        if (savedToken) {
-            document.getElementById('githubToken').value = savedToken;
+        const tokenInputContainer = document.getElementById('tokenInputContainer');
+        const tokenSavedContainer = document.getElementById('tokenSavedContainer');
+        const githubTokenInput = document.getElementById('githubToken');
+        const clearTokenBtn = document.getElementById('clearTokenBtn');
+
+        // دالة لتحديث شكل الشاشة بناءً على وجود التوكن
+        function checkTokenStatus() {
+            const savedToken = localStorage.getItem('gh_client_token');
+            if (savedToken) {
+                tokenInputContainer.classList.add('hidden');
+                tokenSavedContainer.classList.remove('hidden');
+                githubTokenInput.removeAttribute('required');
+                githubTokenInput.value = savedToken;
+            } else {
+                tokenInputContainer.classList.remove('hidden');
+                tokenSavedContainer.classList.add('hidden');
+                githubTokenInput.setAttribute('required', '');
+                githubTokenInput.value = '';
+            }
         }
+
+        // تشغيل الفحص أول ما الصفحة تفتح
+        checkTokenStatus();
+
+        // زرار الـ X لمسح التوكن وتغييره
+        clearTokenBtn.addEventListener('click', () => {
+            localStorage.removeItem('gh_client_token');
+            checkTokenStatus();
+        });
 
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            const token = document.getElementById('githubToken').value.trim();
+            const token = githubTokenInput.value.trim();
             const zipUrl = document.getElementById('zipUrl').value.trim();
             const commitMsg = document.getElementById('commitMsg').value.trim();
             const btn = document.getElementById('submitBtn');
             const status = document.getElementById('statusMessage');
 
-            // حفظ التوكن في متصفح العميل عشان ميكتبوش كل مرة
+            if (!token) {
+                alert('الرجاء إدخال كود الأمان أولاً!');
+                return;
+            }
+
+            // حفظ التوكن فوراً وتحديث الـ UI
             localStorage.setItem('gh_client_token', token);
+            checkTokenStatus();
 
             btn.disabled = true;
             btn.innerHTML = '<span class="loading loading-spinner"></span> جاري تشغيل السيرفر...';
