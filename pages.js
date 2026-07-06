@@ -9576,7 +9576,12 @@ PAGES.invoices = (main) => {
       const _range = !!(filter.from || filter.to);
       // A picked exact day or a From/To range takes over the month scope (so a day/
       // range can find invoices in any month, not just the ticked one).
-      if (!_range && !filter.day && filter.months.length && !filter.months.some(m => invoiceTouchesMonth(i, m))) return false;
+      // v6.305.0: also SHOW an invoice under a month when a PAYMENT (installment) was
+      // recorded that month — e.g. a June camp paid off on 4 July shows under July too,
+      // so reception can track the payment. LIST-ONLY: revenue stays on the sport's start
+      // month (invoiceMonthShares is untouched); this never moves a QAR of revenue.
+      const _paidInMonth = (inv, ym) => (inv.payments || []).some(p => p && String((p.month || p.date || '')).slice(0, 7) === ym);
+      if (!_range && !filter.day && filter.months.length && !filter.months.some(m => invoiceTouchesMonth(i, m) || _paidInMonth(i, m))) return false;
       // Date filters (single day + From/To range) match the INVOICE date OR any
       // ACTIVITY's start date. An invoice with several activities on different start
       // dates is returned for each of those dates (and its own date). Walk-in / unlinked
@@ -9741,6 +9746,7 @@ PAGES.invoices = (main) => {
         <button class="btn ghost" id="generate-latest-inv" title="Pick a member: re-prints their invoice for this month if one exists, otherwise creates it from their latest enrollment">⚡ Generate latest invoice</button>
         <button class="btn ghost" id="member-statement-btn" title="Generate a printable statement of all a member's invoices">📄 Member Statement</button>
         ${isViewerRole() ? '' : '<button class="btn ghost" id="export-inv">📥 Export</button>'}
+        ${isViewerRole() ? '' : `<button class="btn ghost" id="export-inv-detailed" title="${t('Export the filtered invoices WITH full payment history — one row per payment (date, amount, method, who entered it)', 'تصدير الفواتير مع سجل الدفعات الكامل — صف لكل دفعة (التاريخ، المبلغ، الطريقة، من أدخلها)')}">📄 ${t('Export Detailed', 'تصدير تفصيلي')}</button>`}
         <button class="btn ghost" onclick="navigate('dupinvoices')" title="Review duplicate invoices side by side before deleting">🔍 Find duplicates</button>
         <button class="btn ${filter.archived ? 'primary' : 'ghost'}" id="inv-archived-toggle" title="${t('Show deleted (archived) invoices — an admin can restore or permanently delete them', 'عرض الفواتير المحذوفة — يمكن للمشرف الاسترجاع أو الحذف النهائي')}">🗑 ${filter.archived ? t('Back to active', 'العودة للنشطة') : t('Archived', 'المؤرشفة')}${filter.archived ? '' : (() => { const n = (state.invoices || []).filter(x => x.deleted).length; return n ? ` (${n})` : ''; })()}</button>
         <button class="btn primary" id="add-inv">+ New Invoice</button>
@@ -9999,6 +10005,42 @@ PAGES.invoices = (main) => {
     rows.push(['', '', '', '', '', '', '', '', '', '', 'TOTAL', sumTotal, sumPaid, sumDue]);
     downloadFile(`invoices-${TODAY}.csv`, rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n'), 'text/csv');
     toast(`Exported ${all.length} invoice${all.length === 1 ? '' : 's'}`);
+  });
+  // Export DETAILED (v6.305.0): the SAME filtered invoices, but one row PER PAYMENT so the
+  // full payment history is exported (date, amount, method, who entered it). Read-only.
+  $('#export-inv-detailed')?.addEventListener('click', () => {
+    const all = applyFilter().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    if (!all.length) { toast('No invoices to export', 'error'); return; }
+    const rows = [['Ref', 'Invoice Date', 'Revenue Month', 'Category', 'Customer', 'Mobile', 'QID', 'Activity', 'Coach', 'Line Items', 'Invoice Total', 'Payment #', 'Payment Date', 'Payment Month', 'Payment Amount', 'Method', 'Entered By']];
+    let grandPaid = 0;
+    for (const i of all) {
+      const cust = customerInfo(i);
+      const total = (typeof invoiceTotal === 'function') ? invoiceTotal(i) : (Number(i.amount) || 0);
+      const lineDesc = (Array.isArray(i.lineItems) && i.lineItems.length) ? i.lineItems.map(li => `${li.sport || ''} ${fmt(Number(li.price) || 0)}`).join(' | ') : (i.sport || '');
+      const pays = (Array.isArray(i.payments) && i.payments.length) ? i.payments : [];
+      const head = [i.ref || `#${i.id}`, i.date || '', i.month || '', i.category || 'Membership', cust.name || '', cust.phone || '', cust.qid || '', i.sport || '', i.coach || ''];
+      if (!pays.length) {
+        rows.push([...head, lineDesc, total, '0', '', '', '', '', '(no payment recorded)']);
+        continue;
+      }
+      pays.forEach((p, idx) => {
+        const amt = Number(p.amount) || 0; grandPaid += amt;
+        rows.push([
+          ...head,
+          idx === 0 ? lineDesc : '',
+          idx === 0 ? total : '',
+          String(idx + 1),
+          p.date || '',
+          (p.month || String(p.date || '').slice(0, 7)) || '',
+          amt,
+          p.method || '',
+          p.enteredBy || p.enteredByName || p.by || '',
+        ]);
+      });
+    }
+    rows.push(['', '', '', '', '', '', '', '', '', '', '', '', '', 'TOTAL PAID', grandPaid, '', '']);
+    downloadFile(`invoices-detailed-${TODAY}.csv`, rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n'), 'text/csv');
+    toast(`Exported ${all.length} invoice${all.length === 1 ? '' : 's'} with payment history`);
   });
   // Expose this page's in-place refresh so actions like delete can update the
   // table WITHOUT a full re-render — keeping the current filters and page.
