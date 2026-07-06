@@ -5167,6 +5167,13 @@ window.deleteMemberSport = function(memberId, sport) {
     actions: [
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
       { label: attendedClasses > 0 ? `🗑 Delete anyway (${attendedClasses} attended)` : '🗑 Delete permanently', class: 'btn primary', style: 'background:var(--red);border-color:var(--red);color:#fff', onclick: () => {
+        // 0) TOMBSTONE what we're about to remove so a concurrent/stale sync merge can't
+        //    resurrect it (enrollments are content-keyed → scoped per-member; v6.308.0).
+        const _enrScope = 'members:' + m.id + ':enrollments';
+        const _subScope = 'members:' + m.id + ':subscriptions';
+        const _rmEnr = (m.enrollments || []).filter(e => (e.sport || '') === sport);
+        const _rmSub = (m.subscriptions || []).filter(s => (s.activity || '') === sport);
+        try { if (typeof window._tombstoneEl === 'function') { _rmEnr.forEach(e => window._tombstoneEl(e, _enrScope)); _rmSub.forEach(s => window._tombstoneEl(s, _subScope)); } } catch (_) {}
         // 1) Strip enrolment
         m.enrollments = (m.enrollments || []).filter(e => (e.sport || '') !== sport);
         // 2) Strip matching subscription rows
@@ -10677,14 +10684,23 @@ window.memberInvoiceHealth = function (m) {
     if (latest < _INV_KICKOFF) return { status: 'na' };   // pre-kick-off → not checked
 
     const enr = (m.enrollments || []).filter(e => e && e.sport);
-    const sportPrice = new Map();
-    for (const e of enr) sportPrice.set(e.sport, (sportPrice.get(e.sport) || 0) + (Number(e.price) || 0));
+    // CURRENT membership only: a renewal or sport-switch leaves the OLD period's enrollment
+    // behind (e.g. an expired 1-week Summer Camp @400 sitting next to the active 1-month @1400).
+    // Take the LATEST enrollment per sport (by start date), NOT the sum — otherwise old + new
+    // double-count and the invoice looks wrong (invoice 400 vs "profile" 1800).
+    const sportPrice = new Map(), _spStart = new Map();
+    for (const e of enr) {
+      const st = String(e.start || '');
+      if (!sportPrice.has(e.sport) || st >= (_spStart.get(e.sport) || '')) { sportPrice.set(e.sport, Number(e.price) || 0); _spStart.set(e.sport, st); }
+    }
 
     const invs = (state.invoices || []).filter(i => i && !i.deleted && String(i.customerId) === String(m.id)
       && (i.category || 'Membership') === 'Membership' && !i.switchCredit && (Number(i.amount) || 0) >= 0);
     if (!invs.length) return { status: enr.length ? 'noinv' : 'na', reasons: [t('No invoice for this member', 'لا توجد فاتورة لهذا العضو')], invId: null };
 
-    const iv = invs.slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))[0];
+    // The CURRENT membership invoice = the most RECENT one (a renewal supersedes the old period's
+    // invoice), so check that, not the earliest.
+    const iv = invs.slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || ''))).pop();
     const lines = (Array.isArray(iv.lineItems) && iv.lineItems.length) ? iv.lineItems : [{ sport: iv.sport, price: iv.amount }];
     const invSport = new Map();
     for (const l of lines) { if (!l || !l.sport) continue; invSport.set(l.sport, (invSport.get(l.sport) || 0) + (Number(l.price) || 0)); }

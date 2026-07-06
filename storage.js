@@ -390,7 +390,7 @@
           const snap = await t.get(ref);
           const cloud = snap.exists ? (snap.data() || {}) : {};
           const merged = { ...op.data };
-          for (const f of op.arrayFields) merged[f] = window._mergeArrayById(op.base[f], op.cur[f], cloud[f]);
+          for (const f of op.arrayFields) merged[f] = window._mergeArrayById(op.base[f], op.cur[f], cloud[f], op.name + ':' + op.id + ':' + f);
           t.set(ref, merged, { merge: true });
         });
       });
