@@ -38,8 +38,11 @@ jobs:
     # 4. حذف ملف الـ Firebase لحماية إعداداتك
     - name: Remove Firebase Config
       run: |
-        rm -f ./temp_extract/firebase-config.js
-        # لو الملف جوه فولدر فرعي، عدل المسار هنا (مثلاً ./temp_extract/src/...)
+        # البحث عن ملف firebase-config.js في المجلد بالكامل وحذفه أينما وُجد للحماية
+        find ./temp_extract -name "firebase-config.js" -exec rm -f {} +
+        
+        # إضافة تأكيد نجاح إجباري عشان السيرفر ميعطلش بسبب خطوة الحذف
+        echo "Firebase config removed safely or not found."
 
     # 5. نقل الملفات للمشروع وحذف الملفات المؤقتة
     - name: Copy Files & Clean
