@@ -136,7 +136,9 @@
                     document.getElementById('zipUrl').value = '';
                     document.getElementById('commitMsg').value = '';
                 } else {
-                    throw new Error('فشل في الاتصال. تأكد من صحة كود الأمان (Token).');
+                    // هنا سيقوم السيرفر بقراءة الرسالة القادمة من GitHub بدقة لتعرف سبب المشكلة
+                    const errorData = await response.json().catch(() => ({ message: 'غير معروف' }));
+                    throw new Error(`كود الاستجابة ${response.status} - الرسالة: ${errorData.message}`);
                 }
 
             } catch (error) {
