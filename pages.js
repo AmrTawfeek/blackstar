@@ -11864,6 +11864,30 @@ window._applyFixDuplicateSubs = function () {
 // limit, and total data size vs the browser's local cache — and offers a one-click,
 // loss-free repair (the same _sid-safe dedupe that runs automatically on save/load).
 function _byteLen(o) { const s = typeof o === 'string' ? o : JSON.stringify(o); try { return new TextEncoder().encode(s).length; } catch (_) { return s.length; } }
+// Find invoices that were PAID more than their total because a payment was recorded TWICE
+// (same amount + date + method). Returns, per invoice, exactly which duplicate rows to drop so
+// paid comes back down to the total — never removing a legit distinct payment. Money-safe: the
+// real payment is kept; only the exact-duplicate copy is removed.
+window._scanDuplicatePayments = function () {
+  const N = x => Number(x) || 0;
+  const out = [];
+  for (const inv of (state.invoices || [])) {
+    if (inv.deleted || !Array.isArray(inv.payments) || inv.payments.length < 2) continue;
+    const lineSum = (inv.lineItems && inv.lineItems.length) ? inv.lineItems.reduce((s, l) => s + N(l.price), 0) : N(inv.amount);
+    const paid = inv.payments.reduce((s, p) => s + N(p.amount), 0);
+    if (paid - lineSum <= 0.5) continue;   // not overpaid → leave alone
+    const keyOf = p => N(p.amount) + '|' + (p.date || '') + '|' + String(p.method || '').toLowerCase();
+    const seen = new Set(); const removeIdx = []; let running = paid;
+    for (let i = 0; i < inv.payments.length; i++) {
+      if (running - lineSum <= 0.5) break;                 // paid is corrected → stop
+      const k = keyOf(inv.payments[i]);
+      if (seen.has(k)) { removeIdx.push(i); running -= N(inv.payments[i].amount); }  // an exact duplicate
+      else seen.add(k);
+    }
+    if (removeIdx.length) out.push({ invId: inv.id, ref: inv.ref || ('#' + inv.id), customer: inv.customerName || (customerInfo ? (customerInfo(inv) || {}).name : '') || String(inv.customerId || ''), total: lineSum, paidBefore: paid, paidAfter: running, removeIdx });
+  }
+  return out;
+};
 window._dataHealthCheck = function () {
   let dupRows = 0, dupMembers = 0;      // duplicate subscription rows (by _sid)
   let dupEnr = 0, dupEnrMembers = 0;    // duplicate enrollment rows (exact content)
@@ -11894,10 +11918,13 @@ window._dataHealthCheck = function () {
   const scan = (coll, arr, nameOf) => { for (const r of (arr || [])) { const b = _byteLen(r); if (b >= 800 * 1024) oversized.push({ coll, name: nameOf(r), kb: Math.round(b / 1024) }); } };
   scan('members', state.members, r => r.name || ('#' + r.id));
   scan('invoices', state.invoices, r => r.ref || ('#' + r.id));
+  // Duplicate payments (a payment recorded twice → invoice over-collected).
+  let dupPay = 0, dupPayInv = 0, dupPayAmt = 0;
+  try { const dl = window._scanDuplicatePayments(); dupPayInv = dl.length; for (const x of dl) { dupPay += x.removeIdx.length; dupPayAmt += (x.paidBefore - x.paidAfter); } } catch (_) {}
   const totalBytes = _byteLen(state);
   const LS_LIMIT = 5 * 1024 * 1024;   // browser localStorage safety-net cache ceiling
-  const healthy = dupRows === 0 && dupEnr === 0 && dupLi === 0 && oversized.length === 0 && totalBytes < LS_LIMIT * 0.9;
-  return { healthy, dupRows, dupMembers, dupEnr, dupEnrMembers, dupLi, dupLiInv, oversized, totalMB: totalBytes / 1048576, cachePct: Math.round(totalBytes / LS_LIMIT * 100) };
+  const healthy = dupRows === 0 && dupEnr === 0 && dupLi === 0 && dupPay === 0 && oversized.length === 0 && totalBytes < LS_LIMIT * 0.9;
+  return { healthy, dupRows, dupMembers, dupEnr, dupEnrMembers, dupLi, dupLiInv, dupPay, dupPayInv, dupPayAmt, oversized, totalMB: totalBytes / 1048576, cachePct: Math.round(totalBytes / LS_LIMIT * 100) };
 };
 window.showDataHealthUI = function () {
   const h = window._dataHealthCheck();
@@ -11914,6 +11941,7 @@ window.showDataHealthUI = function () {
         <tr><td style="padding:7px 0">${t('Duplicate subscription rows', 'صفوف اشتراك مكررة')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), `${h.dupRows} ${t('across', 'لدى')} ${h.dupMembers} ${t('members', 'عضو')}`, h.dupRows === 0)}</td></tr>
         <tr><td style="padding:7px 0">${t('Duplicate enrollment rows', 'صفوف تسجيل مكررة')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), `${h.dupEnr} ${t('across', 'لدى')} ${h.dupEnrMembers} ${t('members', 'عضو')}`, h.dupEnr === 0)}</td></tr>
         <tr><td style="padding:7px 0">${t('Duplicate invoice line-items', 'بنود فاتورة مكررة')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), `${h.dupLi} ${t('across', 'لدى')} ${h.dupLiInv} ${t('invoices', 'فاتورة')}`, h.dupLi === 0)}</td></tr>
+        <tr><td style="padding:7px 0">${t('Duplicate payments (over-collected)', 'دفعات مكررة (تحصيل زائد)')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), `${h.dupPay} · ${fmt(h.dupPayAmt || 0)} QAR ${t('across', 'لدى')} ${h.dupPayInv} ${t('invoices', 'فاتورة')}`, (h.dupPay || 0) === 0)}</td></tr>
         <tr><td style="padding:7px 0">${t('Records near the 1 MB limit', 'سجلات قرب حد 1 ميغابايت')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), overList, h.oversized.length === 0)}</td></tr>
         <tr><td style="padding:7px 0">${t('Total data size', 'حجم البيانات')}</td><td style="text-align:right"><b>${h.totalMB.toFixed(2)} MB</b> <span class="text-mute">(${h.cachePct}% ${t('of local cache', 'من الذاكرة المحلية')})</span></td></tr>
       </table>
@@ -11928,7 +11956,8 @@ window.showDataHealthUI = function () {
       ? [{ label: t('Close', 'إغلاق'), class: 'btn primary', onclick: () => closeModal() }]
       : [
         { label: t('Close', 'إغلاق'), class: 'btn ghost', onclick: () => closeModal() },
-        { label: '🔧 ' + t('Repair now', 'أصلح الآن'), class: 'btn primary', onclick: () => { closeModal(); window._applyDataRepair(); } },
+        ...((h.dupRows || h.dupEnr || h.dupLi) ? [{ label: '🔧 ' + t('Repair duplicates', 'إصلاح المكررات'), class: 'btn primary', onclick: () => { closeModal(); window._applyDataRepair(); } }] : []),
+        ...((h.dupPay || 0) > 0 ? [{ label: '🧾 ' + t('Fix duplicate payments', 'إصلاح الدفعات المكررة'), class: 'btn primary', style: 'background:var(--accent-2);border-color:var(--accent-2)', onclick: () => { closeModal(); window.showFixDuplicatePaymentsUI(); } }] : []),
       ],
   });
 };
@@ -11939,6 +11968,59 @@ window._applyDataRepair = function () {
   const n = (typeof _dedupeSubsGuard === 'function') ? _dedupeSubsGuard() : 0;
   if (typeof audit === 'function') audit('data.repair', 'members', `Collapsed ${n} duplicate subscription/enrollment row(s)`, { rows: n });
   const okMsg = t(`Cleaned ${n} duplicate row(s) · saved`, `تم تنظيف ${n} صف مكرر · حُفظ`);
+  if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg, onOk: () => render(), onFail: () => render() });
+  else { save(); render(); toast(okMsg); }
+};
+
+// Preview → confirm → remove duplicate payments (money-affecting, so it's a SEPARATE explicit
+// action from the no-money "Repair duplicates"). Shows exactly what changes per invoice first.
+window.showFixDuplicatePaymentsUI = function () {
+  if (currentRole() !== 'admin') { toast(t('Admins only', 'المدراء فقط'), 'error'); return; }
+  const list = window._scanDuplicatePayments();
+  if (!list.length) { toast(t('No duplicate payments found', 'لا توجد دفعات مكررة'), 'info'); return; }
+  const totalDup = list.reduce((s, x) => s + (x.paidBefore - x.paidAfter), 0);
+  const rows = list.map(x => `<tr>
+      <td>${escapeHtml(String(x.ref))}</td>
+      <td>${escapeHtml(String(x.customer || ''))}</td>
+      <td class="text-right num">${fmt(x.total)}</td>
+      <td class="text-right num" style="color:var(--red)">${fmt(x.paidBefore)}</td>
+      <td class="text-right num" style="color:var(--green)">${fmt(x.paidAfter)}</td>
+      <td class="text-right num">−${fmt(x.paidBefore - x.paidAfter)}</td></tr>`).join('');
+  showModal({
+    title: '🧾 ' + t('Fix duplicate payments', 'إصلاح الدفعات المكررة'),
+    body: `<div style="font-size:13px;line-height:1.6">
+      <div style="background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.4);border-radius:8px;padding:11px;margin-bottom:12px">
+        ${t('Found', 'وُجد')} <b>${list.length}</b> ${t('invoice(s) where a payment was recorded TWICE', 'فاتورة سُجّلت فيها الدفعة مرتين')} — <b>${fmt(totalDup)} QAR</b> ${t('of over-collection that never actually came in. Removing the duplicate row corrects “collected”; the real payment is kept.', 'من التحصيل الزائد الذي لم يُستلم فعلياً. حذف الصف المكرر يصحّح المُحصّل؛ الدفعة الحقيقية تبقى.')}
+        ${t('A backup is downloaded first.', 'يتم تنزيل نسخة احتياطية أولاً.')}
+      </div>
+      <div class="table-wrap"><table><thead><tr>
+        <th>${t('Invoice', 'الفاتورة')}</th><th>${t('Customer', 'الزبون')}</th>
+        <th class="text-right">${t('Total', 'الإجمالي')}</th><th class="text-right">${t('Paid now', 'المدفوع الآن')}</th>
+        <th class="text-right">→ ${t('Paid', 'المدفوع')}</th><th class="text-right">${t('Removed', 'محذوف')}</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>
+    </div>`,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: () => closeModal() },
+      { label: `🗑 ${t('Remove', 'إزالة')} ${list.length} ${t('duplicate payment(s)', 'دفعة مكررة')}`, class: 'btn primary', style: 'background:var(--red);border-color:var(--red);color:#fff', onclick: () => { window._applyDuplicatePaymentFix(list); } },
+    ],
+  });
+};
+window._applyDuplicatePaymentFix = function (list) {
+  if (currentRole() !== 'admin') return;
+  try { if (typeof window.downloadBackup === 'function') window.downloadBackup(); } catch (_) {}   // safety copy first
+  const N = x => Number(x) || 0; let removed = 0, amt = 0, invN = 0;
+  for (const x of (list || [])) {
+    const inv = (state.invoices || []).find(i => i.id === x.invId);
+    if (!inv || !Array.isArray(inv.payments)) continue;
+    let hit = false;
+    for (const i of x.removeIdx.slice().sort((a, b) => b - a)) {   // descending so indexes stay valid
+      if (inv.payments[i]) { amt += N(inv.payments[i].amount); inv.payments.splice(i, 1); removed++; hit = true; }
+    }
+    if (hit) { inv.amountPaid = inv.payments.reduce((s, p) => s + N(p.amount), 0); invN++; if (typeof stampUpdate === 'function') stampUpdate(inv); }
+  }
+  if (typeof audit === 'function') audit('invoice.payment.dedupe', 'invoices', `Removed ${removed} duplicate payment(s) totalling ${amt.toFixed(2)} QAR across ${invN} invoice(s)`, { removed, amt, invoices: invN });
+  closeModal();
+  const okMsg = t(`Removed ${removed} duplicate payment(s) · ${fmt(amt)} QAR corrected · saved`, `أُزيلت ${removed} دفعة مكررة · صُحّح ${fmt(amt)} · حُفظ`);
   if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg, onOk: () => render(), onFail: () => render() });
   else { save(); render(); toast(okMsg); }
 };
@@ -20473,7 +20555,14 @@ window.addRenewal = function(memberId) {
   document.getElementById('rn-validity')?.addEventListener('change', recalcRnExpiry);
   document.getElementById('rn-classes')?.addEventListener('input', recalcRnExpiry);
   document.getElementById('rn-act')?.addEventListener('change', recalcRnExpiry);
-  document.getElementById('rn-end')?.addEventListener('input', () => { _rnAutoSet = false; recalcRnExpiry(); });
+  document.getElementById('rn-end')?.addEventListener('input', () => {
+    _rnAutoSet = false;
+    // If the expiry (end) is moved BEFORE the start, pull the start DOWN to the end so the
+    // period is never inverted — the start date becomes the same as the end date.
+    const sEl = document.getElementById('rn-start'), eEl = document.getElementById('rn-end');
+    if (sEl && eEl && sEl.value && eEl.value && eEl.value < sEl.value) { sEl.value = eEl.value; }
+    recalcRnExpiry();
+  });
   recalcRnExpiry();
 
   // Post-expiry attendance deduction:
