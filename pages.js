@@ -353,9 +353,9 @@ PAGES.dashboard = (main) => {
       </div>
       <div class="kpi orange">
         <div class="kpi-icon">💸</div>
-        <div class="kpi-label">${t('Total Expenses','إجمالي المصروفات')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
+        <div class="kpi-label" title="${t('Accrual view — operating expenses PLUS all coach pay EARNED this month (fixed salaries + commission), whether paid yet or not. This differs from the Expenses screen, which shows cash actually PAID OUT; coach commission earned but not yet paid is the main gap.', 'عرض الاستحقاق — مصروفات التشغيل + كامل أجور المدربين المستحقة هذا الشهر (رواتب ثابتة + عمولة)، سواء دُفعت أم لا. يختلف عن شاشة المصروفات التي تعرض النقد المدفوع فعلياً؛ الفرق الأساسي هو عمولة المدربين المستحقة غير المدفوعة.')}">${t('Total Expenses','إجمالي المصروفات')} (${fmtMonth(s.currMonth).split(' ')[0]})</div>
         <div class="kpi-value num">${fmt(s.currExpenses + s.currSalaries)} <span style="font-size:13px;color:var(--text-dim);font-weight:500">QAR</span></div>
-        <div class="kpi-delta flat">${t('Ops + payroll','تشغيل + رواتب')}</div>
+        <div class="kpi-delta flat">${t('Ops', 'تشغيل')} ${fmt(s.currExpenses)} · ${t('payroll earned', 'رواتب مستحقة')} ${fmt(s.currSalaries)}</div>
       </div>
       <div class="kpi ${s.currProfit >= 0 ? 'green' : 'red'}">
         <div class="kpi-icon">${s.currProfit >= 0 ? '📈' : '📉'}</div>
