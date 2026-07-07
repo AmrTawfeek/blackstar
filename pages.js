@@ -913,6 +913,17 @@ PAGES.members = (main) => {
     if (!set.size) { for (const d of [m.startDate, m.joinDate]) { const mm = String(d || '').slice(0, 7); if (/^\d{4}-\d{2}$/.test(mm)) { set.add(mm); break; } } }
     return set;
   }
+  // Day-level enrollment dates (every sport's start), for the From–To date-range filter.
+  function memberEnrollDates(m) {
+    const arr = [];
+    for (const s of (m.subscriptions || [])) { const d = String(s.start || '').slice(0, 10); if (/^\d{4}-\d{2}-\d{2}$/.test(d)) arr.push(d); }
+    for (const e of (m.enrollments || [])) { const d = String(e.start || '').slice(0, 10); if (/^\d{4}-\d{2}-\d{2}$/.test(d)) arr.push(d); }
+    if (!arr.length) { for (const d of [m.startDate, m.joinDate]) { const dd = String(d || '').slice(0, 10); if (/^\d{4}-\d{2}-\d{2}$/.test(dd)) { arr.push(dd); break; } } }
+    return arr;
+  }
+  // DB record-creation date (the day the member was added to the system). Only present on
+  // records created since createdAt stamping began (~June 2026); older members return ''.
+  function memberCreatedDate(m) { const c = m && m.createdAt ? String(m.createdAt).slice(0, 10) : ''; return /^\d{4}-\d{2}-\d{2}$/.test(c) ? c : ''; }
   const enrollMonthOptions = (() => {
     const s = new Set();
     for (const m of (state.members || [])) { if (m.deleted) continue; for (const mo of memberEnrollMonths(m)) s.add(mo); }
@@ -1002,6 +1013,12 @@ PAGES.members = (main) => {
       { key: 'joinDate', label: 'Joined', def: false, filter: 'date',
         sortVal: m => (m.joinDate || ''), getVal: m => m.joinDate || '',
         cell: m => m.joinDate ? fmtDate(m.joinDate) : dash },
+      { key: 'created', label: 'Created', def: false, filter: 'date',
+        sortVal: m => (m.createdAt || ''),
+        getVal: m => (m.createdAt ? String(m.createdAt).slice(0, 10) : '') + (m.createdByName ? ' ' + m.createdByName : ''),
+        cell: m => m.createdAt
+          ? `${fmtDate(String(m.createdAt).slice(0, 10))}${m.createdByName ? `<div class="text-mute" style="font-size:10px">${escapeHtml(m.createdByName)}</div>` : ''}`
+          : dash },
       { key: 'level', label: 'Level', def: false, filter: 'select',
         opts: () => distinct(state.members.map(x => x.level)),
         sortVal: m => (m.level || '').toLowerCase(), getVal: m => m.level || '',
@@ -1169,8 +1186,24 @@ PAGES.members = (main) => {
       }
       // Balance / expiry quick filters.
       if (f.balance === 'due' && !(memberOutstanding(m.id) > 0.5)) return false;
-      if (f.expiry === 'soon') { const d = m.expiryDate ? daysUntil(m.expiryDate) : null; if (!(d != null && d >= 0 && d <= 7)) return false; }
+      // "To expire within N days" — an ACTIVE membership whose expiry is between today and
+      // N days out (frozen memberships are paused, not counting down, so exclude them).
+      if (f.expiry === 'd3' || f.expiry === 'd7' || f.expiry === 'd30' || f.expiry === 'soon') {
+        const within = f.expiry === 'd3' ? 3 : f.expiry === 'd30' ? 30 : 7;   // 'soon' = legacy ≤7
+        const d = m.expiryDate ? daysUntil(m.expiryDate) : null;
+        if (!(d != null && d >= 0 && d <= within && memberStatus(m) !== 'Frozen')) return false;
+      }
       if (f.expiry === 'expired') { if (memberStatus(m) !== 'Expired') return false; }
+      // From–To date range — filter by ENROLLMENT date (any sport start) or DB record-CREATED
+      // date, per the basis toggle. A member with no matching date (e.g. no createdAt when the
+      // basis is "created") is excluded while a range is set.
+      if (f.dateFrom || f.dateTo) {
+        const from = f.dateFrom || '0000-00-00', to = f.dateTo || '9999-99-99';
+        const dates = (f.dateBasis === 'created')
+          ? (memberCreatedDate(m) ? [memberCreatedDate(m)] : [])
+          : memberEnrollDates(m);
+        if (!dates.some(d => d >= from && d <= to)) return false;
+      }
       return true;
     });
   }
@@ -1219,11 +1252,12 @@ PAGES.members = (main) => {
     // "Filters hiding rows" banner — same helper as the Enrolled report. The
     // baseline is the default (unfiltered) view; we clamp so the Archived view
     // (a different set, not a subset) never shows a negative count.
-    const DEFAULT_F = { search: '', statuses: [], sports: [], coaches: [], nationalities: [], incomplete: 'all', balance: 'all', expiry: 'all', enrollMonths: [] };
+    const DEFAULT_F = { search: '', statuses: [], sports: [], coaches: [], nationalities: [], incomplete: 'all', balance: 'all', expiry: 'all', enrollMonths: [], dateFrom: '', dateTo: '', dateBasis: 'enrolled' };
     const baseline = applyFilter(DEFAULT_F).length;
     const anyFilterActive = filter.search || (filter.statuses && filter.statuses.length) || (filter.sports && filter.sports.length) ||
       (filter.coaches && filter.coaches.length) || (filter.nationalities && filter.nationalities.length) || filter.incomplete !== 'all' ||
-      (filter.balance && filter.balance !== 'all') || (filter.expiry && filter.expiry !== 'all') || (filter.enrollMonths && filter.enrollMonths.length);
+      (filter.balance && filter.balance !== 'all') || (filter.expiry && filter.expiry !== 'all') || (filter.enrollMonths && filter.enrollMonths.length) ||
+      filter.dateFrom || filter.dateTo;
     const hiddenByFilters = Math.max(0, baseline - allRows.length);
     const banner = $('#members-filter-banner');
     if (banner) {
@@ -1243,6 +1277,9 @@ PAGES.members = (main) => {
           const fi = $('#filter-incomplete'); if (fi) fi.value = 'all';
           const fb = $('#filter-balance'); if (fb) fb.value = 'all';
           const fe = $('#filter-expiry'); if (fe) fe.value = 'all';
+          const df = $('#filter-date-from'); if (df) df.value = '';
+          const dt2 = $('#filter-date-to'); if (dt2) dt2.value = '';
+          const db2 = $('#filter-date-basis'); if (db2) db2.value = 'enrolled';
           $$('.filter-status-cb, .filter-sport-cb, .filter-coach-cb, .filter-nat-cb, .filter-emonth-cb').forEach(cb => { cb.checked = false; });
           const labs = { 'filter-status-label': 'All status', 'filter-sport-label': 'All sports', 'filter-coach-label': 'All coaches', 'filter-nat-label': '🌍 All nationalities', 'filter-emonth-label': t('All enroll months', 'كل أشهر التسجيل') };
           Object.entries(labs).forEach(([id, txt]) => { const el = $('#' + id); if (el) el.textContent = txt; });
@@ -1478,9 +1515,21 @@ PAGES.members = (main) => {
         </select>
         <select id="filter-expiry" class="btn ghost" title="${t('Filter by membership expiry', 'تصفية حسب انتهاء العضوية')}">
           <option value="all" ${filter.expiry === 'all' || !filter.expiry ? 'selected' : ''}>⏳ ${t('Any expiry', 'أي انتهاء')}</option>
-          <option value="soon" ${filter.expiry === 'soon' ? 'selected' : ''}>⏰ ${t('Expiring ≤ 7 days', 'ينتهي خلال ٧ أيام')}</option>
+          <option value="d3" ${filter.expiry === 'd3' ? 'selected' : ''}>⏰ ${t('To expire ≤ 3 days', 'ينتهي خلال ٣ أيام')}</option>
+          <option value="d7" ${filter.expiry === 'd7' || filter.expiry === 'soon' ? 'selected' : ''}>⏰ ${t('To expire ≤ 7 days', 'ينتهي خلال ٧ أيام')}</option>
+          <option value="d30" ${filter.expiry === 'd30' ? 'selected' : ''}>⏰ ${t('To expire ≤ 30 days', 'ينتهي خلال ٣٠ يوماً')}</option>
           <option value="expired" ${filter.expiry === 'expired' ? 'selected' : ''}>⛔ ${t('Expired', 'منتهٍ')}</option>
         </select>
+        <span class="btn ghost" style="display:inline-flex;align-items:center;gap:6px;padding:4px 8px" title="${t('Filter by a date range — enrollment date or the date the record was created', 'تصفية حسب نطاق تاريخ — تاريخ التسجيل أو تاريخ إنشاء السجل')}">
+          <select id="filter-date-basis" style="border:none;background:transparent;font-size:12.5px;cursor:pointer;color:var(--text);outline:none">
+            <option value="enrolled" ${filter.dateBasis !== 'created' ? 'selected' : ''}>📅 ${t('Enrolled', 'التسجيل')}</option>
+            <option value="created" ${filter.dateBasis === 'created' ? 'selected' : ''}>🗂 ${t('Created', 'الإنشاء')}</option>
+          </select>
+          <input type="date" id="filter-date-from" value="${filter.dateFrom || ''}" title="${t('From', 'من')}" style="border:none;background:transparent;font-size:12px;color:var(--text);width:118px;outline:none" />
+          <span class="text-mute" style="font-size:12px">→</span>
+          <input type="date" id="filter-date-to" value="${filter.dateTo || ''}" title="${t('To', 'إلى')}" style="border:none;background:transparent;font-size:12px;color:var(--text);width:118px;outline:none" />
+          ${(filter.dateFrom || filter.dateTo) ? `<button type="button" id="filter-date-clear" title="${t('Clear dates', 'مسح التواريخ')}" style="border:none;background:transparent;cursor:pointer;color:var(--text-mute);font-size:13px;padding:0 2px">✕</button>` : ''}
+        </span>
         <button type="button" id="filter-dupnames" class="btn ${filter.dupNames ? 'primary' : 'ghost'}" title="Find members whose names are the same or very similar (likely duplicates)">🔁 ${filter.dupNames ? 'Similar names ✓' : 'Similar names'}</button>
       </div>
       ${filter.dupNames && dupNameInfo ? `<div class="text-mute" style="font-size:12px;padding:0 2px 10px">${t('Showing members with same / near-identical names', 'عرض الأعضاء ذوي الأسماء المتطابقة أو المتشابهة')} · ${dupNameInfo.groupCount} ${t('groups', 'مجموعة')} · ${dupNameInfo.ids.size} ${t('members', 'عضو')}. ${t('Open each to compare and merge/archive duplicates.', 'افتح كل عضو للمقارنة ودمج/أرشفة المكررين.')}</div>` : ''}
@@ -1544,6 +1593,10 @@ PAGES.members = (main) => {
   $('#filter-incomplete').addEventListener('change', e => { filter.incomplete = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#filter-balance')?.addEventListener('change', e => { filter.balance = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#filter-expiry')?.addEventListener('change', e => { filter.expiry = e.target.value; pg.page = 1; refreshAndSave(); });
+  $('#filter-date-basis')?.addEventListener('change', e => { filter.dateBasis = e.target.value; if (filter.dateFrom || filter.dateTo) { pg.page = 1; refreshAndSave(); } else { saveFilter('members', filter); } });
+  $('#filter-date-from')?.addEventListener('change', e => { filter.dateFrom = e.target.value; pg.page = 1; refreshAndSave(); });
+  $('#filter-date-to')?.addEventListener('change', e => { filter.dateTo = e.target.value; pg.page = 1; refreshAndSave(); });
+  $('#filter-date-clear')?.addEventListener('click', () => { filter.dateFrom = ''; filter.dateTo = ''; pg.page = 1; refreshAndSave(); });
   $('#filter-dupnames')?.addEventListener('click', () => { filter.dupNames = !filter.dupNames; pg.page = 1; refreshAndSave(); });
   $('#add-member').addEventListener('click', () => addMember());
   $('#export-members')?.addEventListener('click', () => exportMembersChoice());   // hidden for viewer/reception role
@@ -10713,6 +10766,20 @@ window.memberInvoiceHealth = function (m) {
     for (const [sp] of invSport) { if (!sportPrice.has(sp)) reasons.push(`${t('Invoice bills a removed sport', 'الفاتورة تحوي رياضة محذوفة')}: ${escapeHtml(sp)}`); }
     const lineSum = lines.reduce((s, l) => s + (Number(l && l.price) || 0), 0);
     if (Math.abs(lineSum - (Number(iv.amount) || 0)) > 0.5) reasons.push(`${t('Total', 'الإجمالي')} ${fmt(iv.amount)} ≠ ${t('line-items', 'مجموع البنود')} ${fmt(lineSum)}`);
+
+    // Does the invoice actually COVER the current membership period? A renewal creates a NEW
+    // subscription period; if no invoice falls in that period's window (nor is linked to it),
+    // the renewal is UNINVOICED — so an OLD expired-period invoice that merely matches on price
+    // must NOT read as green (e.g. member renewed 4 Jul but the only invoice is the 30 May one).
+    const _shift = (iso, days) => { const d = new Date(String(iso || '') + 'T00:00:00Z'); if (isNaN(d)) return String(iso || ''); d.setUTCDate(d.getUTCDate() + days); return d.toISOString().slice(0, 10); };
+    const subsCur = (m.subscriptions || []).filter(s => s && s.start);
+    const curSub = subsCur.length ? subsCur.slice().sort((a, b) => String(a.start).localeCompare(String(b.start))).pop() : null;
+    if (curSub && String(curSub.start || '') >= _INV_KICKOFF) {
+      const winFrom = _shift(curSub.start, -14), winTo = curSub.end || '9999-12-31';
+      const covered = invs.some(i => { const d = String(i.date || ''); return d && d >= winFrom && d <= winTo; })
+        || (curSub.invoiceNumber && invs.some(i => (i.ref || i.invoiceNumber) === curSub.invoiceNumber));
+      if (!covered) reasons.push(`${t('Current renewal not invoiced', 'التجديد الحالي غير مفوتر')} (${fmtDate(curSub.start)}${curSub.end ? ' → ' + fmtDate(curSub.end) : ''})`);
+    }
 
     return { status: reasons.length ? 'red' : 'green', reasons, invId: iv.id };
   } catch (_) { return { status: 'na' }; }
