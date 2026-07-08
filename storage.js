@@ -112,6 +112,16 @@
     if (cur.id != null) delta.id = cur.id;
     return delta;
   }
+  // A PLAIN nested map (e.g. member.dailyAttendance) — an object we own key-by-key.
+  // Deliberately EXCLUDES arrays, null, Dates, and Firestore sentinels (FieldValue.delete(),
+  // Timestamp, …) whose prototype is not Object.prototype, so those never get treated as a
+  // mergeable map. Used to route concurrent map edits through the same transaction merge as
+  // lists, so a second device's freshly-added keys are never dropped by merge:true. (v6.320)
+  function _isPlainMap(v) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+    const p = Object.getPrototypeOf(v);
+    return p === Object.prototype || p === null;
+  }
 
   // ─── Data-loss guard (hardened — preserved from the single-doc build) ───────
   // In multi-document mode a "wipe" save would issue deletes for every record, so
@@ -312,8 +322,17 @@
           // list and could drop a concurrent add. Route those records through a
           // transaction that element-merges the list against the live cloud value.
           const arrayFields = Object.keys(delta).filter(k => Array.isArray(delta[k]));
-          const canMerge = typeof window !== 'undefined' && typeof window._mergeArrayById === 'function';
-          if (arrayFields.length && canMerge) ops.push({ kind: 'txnset', name, id, data: delta, base: prev, cur: rec, arrayFields });
+          // SAME hazard for a nested MAP field (member.dailyAttendance): two devices marking
+          // the same day each write their whole view of the map and merge:true lets the last
+          // writer win, silently dropping the other device's freshly-added cells. Route those
+          // records through the SAME transaction so the map is deep-merged against live cloud
+          // and no device's keys are lost. (v6.320 — fixes concurrent attendance loss.)
+          const mapFields = Object.keys(delta).filter(k => k !== 'id' && _isPlainMap(delta[k]));
+          const canMergeArr = typeof window !== 'undefined' && typeof window._mergeArrayById === 'function';
+          const canMergeMap = typeof window !== 'undefined' && typeof window._mergeRecord === 'function';
+          const useArr = arrayFields.length && canMergeArr;
+          const useMap = mapFields.length && canMergeMap;
+          if (useArr || useMap) ops.push({ kind: 'txnset', name, id, data: delta, base: prev, cur: rec, arrayFields: useArr ? arrayFields : [], mapFields: useMap ? mapFields : [] });
           else ops.push({ kind: 'set', name, id, data: delta });
         }
         for (const id of baseMap.keys()) { if (!curIdx.has(id)) ops.push({ kind: 'del', name, id }); }
@@ -391,6 +410,10 @@
           const cloud = snap.exists ? (snap.data() || {}) : {};
           const merged = { ...op.data };
           for (const f of op.arrayFields) merged[f] = window._mergeArrayById(op.base[f], op.cur[f], cloud[f], op.name + ':' + op.id + ':' + f);
+          // Nested map (dailyAttendance …): 3-way deep-merge my current view against the LIVE
+          // cloud copy so another device's just-added keys survive, mine survive, and I win a
+          // true same-key conflict — exactly the array policy, applied key-by-key. (v6.320)
+          for (const f of (op.mapFields || [])) merged[f] = window._mergeRecord(op.base[f], op.cur[f], cloud[f], op.name + ':' + op.id + ':' + f);
           t.set(ref, merged, { merge: true });
         });
       });

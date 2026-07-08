@@ -409,6 +409,23 @@ PAGES.dashboard = (main) => {
         ${cells}
         <div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span class="text-mute">${t('Payment records','سجلات الدفع')}</span><span class="num font-bold">${paymentRows.toLocaleString()}</span></div>
       </div>
+      ${(() => {
+        const cp = state.settings && state.settings.dataCheckpoint;
+        let line;
+        if (!cp) line = `<span class="text-mute">${t('Set a checkpoint to prove nothing gets lost during the day.','اضبط نقطة تحقق لإثبات عدم فقد أي بيانات خلال اليوم.')}</span>`;
+        else {
+          const cur = window._safetyCounts ? window._safetyCounts() : {};
+          let drops = 0; for (const k of Object.keys(cp.counts || {})) if ((cur[k] || 0) < (cp.counts[k] || 0)) drops++;
+          const ago = window._safetyTimeAgo ? window._safetyTimeAgo(cp.at) : '';
+          line = drops
+            ? `<span style="color:var(--red);font-weight:700">⚠ ${drops} ${t('record type(s) decreased since','نوع سجل انخفض منذ')} ${escapeHtml(ago)}</span>`
+            : `<span style="color:var(--green);font-weight:700">✓ ${t('Nothing lost since','لم يُفقد شيء منذ')} ${escapeHtml(ago)}</span>`;
+        }
+        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;border-top:1px solid var(--border);margin-top:8px;padding-top:10px">
+          <div style="font-size:12px">${line}</div>
+          <button class="btn primary" style="font-size:12px;padding:6px 14px" onclick="window.showDataSafety && window.showDataSafety()">🛡 ${t('Verify data safety','تحقق من سلامة البيانات')}</button>
+        </div>`;
+      })()}
     </div>`;
     })()}
 
@@ -11855,6 +11872,134 @@ window._applyFixDuplicateSubs = function () {
   const okMsg = t(`Removed ${rows} duplicate row(s) across ${members} member(s) · saved`, `تم حذف ${rows} صف مكرر لدى ${members} عضو · حُفظ`);
   if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg, onOk: () => render(), onFail: () => render() });
   else { save(); render(); toast(okMsg); }
+};
+
+// ── DATA SAFETY (v6.319.0) ────────────────────────────────────────────────────
+// A self-serve "is my data safe?" experience. The owner has felt uneasy about data
+// loss, so this makes safety something you can PROVE in one click, any time:
+//   1) a CHECKPOINT — snapshot the record counts now; later I show that nothing
+//      dropped since then ("0 records lost since 9:00 AM").
+//   2) live counts vs that checkpoint, per record type, with any decrease flagged.
+//   3) cloud-save status (is everything pushed?) + duplicate health — all folded
+//      into ONE green verdict: "✓ Your data is safe."
+// Counts only — no content is stored in the checkpoint, so it's tiny and private.
+window._safetyCounts = function () {
+  const c = {}; const alive = a => Array.isArray(a) ? a.filter(x => x && !x.deleted).length : 0;
+  c.members = alive(state.members);
+  c.invoices = alive(state.invoices);
+  c.coaches = alive(state.coaches);
+  c.expenses = alive(state.expenses);
+  c.salaries = alive(state.salaries);
+  c.families = alive(state.families);
+  c.rentals = alive(state.rentals);
+  c.trials = alive(state.trials);
+  c.sales = alive(state.sales);
+  // Payment records across all invoices (money rows — the thing that must never silently drop).
+  c.payments = (state.invoices || []).reduce((s, i) => s + (Array.isArray(i.payments) ? i.payments.length : 0), 0);
+  // Attendance marks (the highest-churn, most-synced data).
+  let y = 0;
+  for (const m of (state.members || [])) {
+    const d = m && m.dailyAttendance; if (!d || typeof d !== 'object') continue;
+    for (const ym of Object.keys(d)) { const mo = d[ym]; if (!mo || typeof mo !== 'object') continue;
+      for (const sp of Object.keys(mo)) { const days = mo[sp]; if (!days || typeof days !== 'object') continue;
+        for (const k of Object.keys(days)) if (days[k] === 'Y' || days[k] === true) y++; } }
+  }
+  c.attendance = y;
+  return c;
+};
+window._SAFETY_LABELS = function () {
+  return { members: t('Members', 'الأعضاء'), invoices: t('Invoices', 'الفواتير'), payments: t('Payment records', 'سجلات الدفع'), attendance: t('Attendance marks', 'علامات الحضور'), coaches: t('Staff', 'الطاقم'), expenses: t('Expenses', 'المصروفات'), salaries: t('Salaries', 'الرواتب'), families: t('Families', 'العائلات'), rentals: t('Rentals', 'الإيجارات'), trials: t('Trials', 'التجارب'), sales: t('Product sales', 'مبيعات المنتجات') };
+};
+window._setDataCheckpoint = function (reopen) {
+  if (!state.settings) state.settings = {};
+  state.settings.dataCheckpoint = { at: Date.now(), by: (state.user && state.user.name) || currentRole() || '', counts: window._safetyCounts() };
+  try { if (typeof audit === 'function') audit('data.checkpoint.set', 'Set a data-safety checkpoint'); } catch (_) {}
+  save();
+  toast(t('📌 Checkpoint set — I will track that nothing is lost from here.', '📌 تم ضبط نقطة التحقق — سأتابع ألا تُفقد أي بيانات من الآن.'), 'success');
+  if (reopen !== false) { closeModal(); window.showDataSafety(); }
+};
+window._safetyTimeAgo = function (ms) {
+  const now = Date.now(); const d = Math.max(0, now - ms); const mins = Math.round(d / 60000);
+  if (mins < 1) return t('just now', 'الآن');
+  if (mins < 60) return mins + ' ' + t('min ago', 'دقيقة مضت');
+  const hrs = Math.round(mins / 60); if (hrs < 24) return hrs + ' ' + t('hr ago', 'ساعة مضت');
+  const days = Math.round(hrs / 24); return days + ' ' + t('day(s) ago', 'يوم مضى');
+};
+window.showDataSafety = function () {
+  const cur = window._safetyCounts();
+  const labels = window._SAFETY_LABELS();
+  const cp = state.settings && state.settings.dataCheckpoint;
+  const isCloud = !!(window.Storage && window.Storage.isCloud && window.Storage.isCloud());
+  const unsaved = !!(window.Storage && window.Storage.hasUnsavedCloud && window.Storage.hasUnsavedCloud());
+  const lastWrite = window.__lastCloudWrite && window.__lastCloudWrite.at;
+
+  // Per-type comparison vs checkpoint.
+  const keys = Object.keys(labels);
+  let drops = 0, gains = 0; const dropList = [];
+  const rows = keys.map(k => {
+    const now = cur[k] || 0; const then = cp ? (cp.counts[k] || 0) : null;
+    const delta = then == null ? null : now - then;
+    if (delta != null && delta < 0) { drops++; dropList.push(labels[k] + ' (' + delta + ')'); }
+    if (delta != null && delta > 0) gains++;
+    return { label: labels[k], now, then, delta };
+  });
+
+  // Verdict — data-loss is the question: did any record type DECREASE since the checkpoint?
+  const h = (typeof window._dataHealthCheck === 'function') ? window._dataHealthCheck() : { healthy: true };
+  let verdict, vColor, vBg, vBorder;
+  if (!cp) { verdict = t('Set a checkpoint to start tracking your data', 'اضبط نقطة تحقق لبدء متابعة بياناتك'); vColor = 'var(--text)'; vBg = 'var(--surface-2)'; vBorder = 'var(--border)'; }
+  else if (drops > 0) { verdict = '⚠ ' + t('Some records decreased since the checkpoint — please review below', 'انخفضت بعض السجلات منذ نقطة التحقق — راجع الأسفل'); vColor = 'var(--red)'; vBg = 'rgba(239,68,68,.10)'; vBorder = 'var(--red)'; }
+  else { verdict = '✓ ' + t('Your data is safe — nothing lost', 'بياناتك آمنة — لم يُفقد شيء'); vColor = 'var(--green)'; vBg = 'rgba(16,185,129,.12)'; vBorder = 'var(--green)'; }
+
+  const rowsHtml = rows.map(r => {
+    const deltaCell = r.delta == null ? '<span class="text-mute">—</span>'
+      : r.delta < 0 ? `<span style="color:var(--red);font-weight:700">▼ ${r.delta}</span>`
+      : r.delta > 0 ? `<span style="color:var(--green)">▲ +${r.delta}</span>`
+      : `<span style="color:var(--text-mute)">✓ 0</span>`;
+    return `<tr>
+      <td style="padding:6px 8px">${escapeHtml(r.label)}</td>
+      <td style="padding:6px 8px;text-align:right" class="num text-mute">${r.then == null ? '—' : r.then.toLocaleString()}</td>
+      <td style="padding:6px 8px;text-align:right" class="num font-bold">${r.now.toLocaleString()}</td>
+      <td style="padding:6px 8px;text-align:right">${deltaCell}</td>
+    </tr>`;
+  }).join('');
+
+  // Cloud line.
+  let cloudLine;
+  if (!isCloud) cloudLine = `<span class="text-mute">☁ ${t('Cloud sync is off on this device — data is saved locally only.', 'المزامنة السحابية متوقفة على هذا الجهاز — البيانات محفوظة محلياً فقط.')}</span>`;
+  else if (unsaved) cloudLine = `<span style="color:var(--accent-2);font-weight:600">⏳ ${t('Saving your latest changes to the cloud…', 'جارٍ حفظ آخر تغييراتك في السحابة…')}</span>`;
+  else cloudLine = `<span style="color:var(--green)">☁ ${t('Everything is saved to the cloud', 'كل شيء محفوظ في السحابة')}${lastWrite ? ' · ' + window._safetyTimeAgo(lastWrite) : ''}</span>`;
+
+  const dupNote = (!h.healthy && h.dupPay) ? `<div style="margin-top:8px;font-size:12px;color:var(--text-mute)">🧾 ${h.dupPay} ${t('duplicate payment(s) found — use Data Health to clean them (money-safe).', 'دفعات مكرّرة — استخدم فحص سلامة البيانات لإزالتها (آمن مالياً).')}</div>` : '';
+
+  const body = `
+    <div style="padding:14px 16px;border-radius:10px;background:${vBg};border:1px solid ${vBorder};color:${vColor};font-weight:700;font-size:15px">${verdict}</div>
+    <div style="font-size:12.5px;margin:12px 2px 6px">${cp
+      ? t('Since your checkpoint', 'منذ نقطة التحقق') + ' — <b>' + escapeHtml(window._safetyTimeAgo(cp.at)) + '</b>' + (cp.by ? ' · ' + escapeHtml(cp.by) : '')
+      : t('No checkpoint yet. Set one now (e.g. every morning), then come back any time to confirm nothing was lost.', 'لا توجد نقطة تحقق بعد. اضبط واحدة الآن (مثلاً كل صباح)، ثم عد في أي وقت للتأكد من عدم فقد أي شيء.')}</div>
+    <div class="table-wrap"><table style="width:100%;font-size:12.5px">
+      <thead><tr>
+        <th style="text-align:left;padding:6px 8px">${t('Record type', 'نوع السجل')}</th>
+        <th style="text-align:right;padding:6px 8px">${t('At checkpoint', 'عند نقطة التحقق')}</th>
+        <th style="text-align:right;padding:6px 8px">${t('Now', 'الآن')}</th>
+        <th style="text-align:right;padding:6px 8px">${t('Change', 'التغيير')}</th>
+      </tr></thead><tbody>${rowsHtml}</tbody></table></div>
+    <div style="margin-top:12px;padding:10px 12px;border-radius:8px;background:var(--surface-2);font-size:12.5px">${cloudLine}${dupNote}</div>
+    ${drops > 0 ? `<div style="margin-top:10px;padding:10px 12px;border-radius:8px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.35);font-size:12px">
+      <b style="color:var(--red)">${t('Decreased:', 'انخفض:')}</b> ${escapeHtml(dropList.join(' · '))}.
+      <div class="text-mute" style="margin-top:4px">${t('If you deleted these on purpose, this is expected. If not, do NOT close the app — press “Verify against cloud” to compare with the safe cloud copy.', 'إذا حذفتها عمداً فهذا متوقّع. إن لم يكن كذلك، لا تُغلق التطبيق — اضغط «تحقق مقابل السحابة» للمقارنة مع النسخة السحابية الآمنة.')}</div></div>` : ''}
+    <div class="text-mute" style="margin-top:10px;font-size:11px">${t('“Change” counts every record type. A green ✓0 or ▲ means nothing was lost. Only a red ▼ needs a look.', '«التغيير» يحصي كل نوع سجل. العلامة الخضراء ✓0 أو ▲ تعني عدم فقد شيء. العلامة الحمراء ▼ فقط تحتاج مراجعة.')}</div>`;
+
+  showModal({
+    title: '🛡 ' + t('Data Safety', 'سلامة البيانات'),
+    wide: true,
+    body,
+    actions: [
+      { label: '📌 ' + (cp ? t('Update checkpoint', 'تحديث نقطة التحقق') : t('Set checkpoint now', 'اضبط نقطة التحقق الآن')), class: 'btn primary', onclick: () => window._setDataCheckpoint(true) },
+      ...(isCloud ? [{ label: '🔍 ' + t('Verify against cloud', 'تحقق مقابل السحابة'), class: 'btn', onclick: () => { closeModal(); if (typeof window.runSyncCheck === 'function') window.runSyncCheck(); } }] : []),
+      { label: t('Close', 'إغلاق'), class: 'btn', onclick: () => closeModal() },
+    ],
+  });
 };
 
 // ── DATA HEALTH CHECK (v6.299.0) ──────────────────────────────────────────────
