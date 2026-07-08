@@ -386,7 +386,7 @@
           window.__cloudWriteLog = (window.__cloudWriteLog || []);
           window.__cloudWriteLog.push({ at: writeSummary.at, records: ops.length, metaChanged, ok: null });
           if (window.__cloudWriteLog.length > 50) window.__cloudWriteLog.shift();
-          if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'saving', records: ops.length });
+          if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'saving', records: ops.length, byCollection: perCol });
         }
       } catch (_) {}
       const batchCommits = batches.map((group, bi) => {
@@ -421,7 +421,7 @@
         .then(() => {
           lastWriteFailed = false; _clearRetry(); setBaseFromState(state); _lastFlushResult = { ok: true, records: ops.length };
           console.log(`%c[Storage] ✅ stored in Firestore — ${nSet} written, ${nDel} deleted${metaChanged ? ', settings updated' : ''} @ ${new Date().toLocaleTimeString()}`, 'color:#16a34a;font-weight:700');
-          try { if (typeof window !== 'undefined') { const L = window.__cloudWriteLog; if (L && L.length) L[L.length - 1].ok = true; if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'saved', records: ops.length, at: Date.now() }); } } catch (_) {}
+          try { if (typeof window !== 'undefined') { const L = window.__cloudWriteLog; if (L && L.length) L[L.length - 1].ok = true; if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'saved', records: ops.length, at: Date.now(), byCollection: perCol }); } } catch (_) {}
         })
         .catch(e => {
           lastWriteFailed = true; _lastFlushResult = { ok: false, error: (e && e.code) || String(e) };
