@@ -3601,26 +3601,33 @@ function showMemberForm(m) {
                 const familyTotal = (fam && fam.familyTotal > 0) ? fam.familyTotal : (memberPaidTotal(src.id) || totalPay);
                 const share = splitSiblingPayment(sibs, familyTotal);
                 if (typeof audit === 'function') audit('member.sibling_split', 'family:' + famId, `Split ${fmt(familyTotal)} across ${sibs.length} siblings = ${fmt(share)} each`);
-                save();
                 closeModal();
                 render();
-                toast(`Sibling added · family payment ${fmt(familyTotal)} split across ${sibs.length} = ${fmt(share)} each`);
+                if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg: `${t('Sibling added & saved to cloud', 'تمت إضافة الأخ/الأخت وحُفظ في السحابة')} · family payment ${fmt(familyTotal)} split across ${sibs.length} = ${fmt(share)} each` });
+                else { save(); toast(`Sibling added · family payment ${fmt(familyTotal)} split across ${sibs.length} = ${fmt(share)} each`); }
                 return;
               }
             }
 
-            save();
+            // WRITE-THROUGH: the member + invoice must be CONFIRMED in Firebase before we
+            // say "added" — otherwise a throttled/failed write shows false success and the
+            // record vanishes on the next full reload. Wait for the cloud ack; on failure
+            // warn loudly + keep it local for auto-retry (never a silent false success).
             closeModal();
             render();
-            toast(`Member added · ${enrollments.length} sport${enrollments.length !== 1 ? 's' : ''} · invoice ${ref}` + (invoiceBalance(newInv) > 0.001 ? ` · ${fmt(paidNow)} paid, ${fmt(invoiceBalance(newInv))} due` : ''));
-            showNewMemberInvoiceModal(newInv.id, data.name);
+            const _okNewMemberInv = () => {
+              toast(`✓ ${t('Member added & saved to cloud', 'تمت إضافة العضو وحُفظ في السحابة')} · ${enrollments.length} sport${enrollments.length !== 1 ? 's' : ''} · invoice ${ref}` + (invoiceBalance(newInv) > 0.001 ? ` · ${fmt(paidNow)} paid, ${fmt(invoiceBalance(newInv))} due` : ''), 'success');
+              showNewMemberInvoiceModal(newInv.id, data.name);
+            };
+            if (typeof withCloudConfirm === 'function') withCloudConfirm({ onOk: _okNewMemberInv });
+            else { save(); _okNewMemberInv(); }
             return;
           }
 
-          save();
           closeModal();
           render();
-          toast('Member added');
+          if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg: t('Member added & saved to cloud', 'تمت إضافة العضو وحُفظ في السحابة') });
+          else { save(); toast('Member added'); }
           return;
         }
 
@@ -14909,7 +14916,7 @@ function showExpenseForm(id) {
         if (salaryCoachName) data.coachName = salaryCoachName;
         if (isNew) {
           state.expenses.push({ id: nextId(state.expenses), ...data });
-          toast('Expense added');
+          var _expMsg = t('Expense added & saved to cloud', 'أُضيف المصروف وحُفظ في السحابة');
         } else {
           // Preserve any legacy fields like `classification` from older data
           Object.assign(e, data);
@@ -14918,11 +14925,13 @@ function showExpenseForm(id) {
           // If the admin edited the auto Bank Commission row, lock it as overridden so
           // it won't be recomputed from card payments on the next refresh.
           if (e.autoBankCommission) e.edited = true;
-          toast('Expense updated');
+          var _expMsg = t('Expense updated & saved to cloud', 'حُدّث المصروف وحُفظ في السحابة');
         }
-        save();
         closeModal();
         render();
+        // Write-through: confirm the money change reached Firebase before saying "saved".
+        if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg: _expMsg });
+        else { save(); toast(_expMsg); }
       }},
     ],
   });

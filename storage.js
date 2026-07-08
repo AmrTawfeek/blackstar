@@ -766,7 +766,10 @@
     flushPending() { try { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; } if (pendingState && activeBackend) { activeBackend.save(pendingState); pendingState = null; } } catch (e) { console.warn('[Storage] flushPending failed:', e); } },
     // TRUE while a change is saved on THIS device but not yet confirmed in the cloud.
     // Drives the "Retry now" banner and the leave-page guard. Local backend = always saved.
-    hasUnsavedCloud() { try { return !!(activeBackend && activeBackend.isCloud && activeBackend.hasUnsaved && activeBackend.hasUnsaved()); } catch (_) { return false; } },
+    // Also TRUE while a write is still in the throttle window (`pendingState` set but not yet
+    // handed to Firestore) — so a reload/close during those ~1.5s is BLOCKED and the write is
+    // flushed first, closing the "add → reload fast → record gone" gap. (v6.322)
+    hasUnsavedCloud() { try { return !!(activeBackend && activeBackend.isCloud && ((activeBackend.hasUnsaved && activeBackend.hasUnsaved()) || pendingState)); } catch (_) { return false; } },
     // Force an immediate retry of a failed cloud write (from the "Retry now" button).
     retryNow() {
       try {
