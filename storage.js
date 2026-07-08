@@ -335,7 +335,24 @@
           if (useArr || useMap) ops.push({ kind: 'txnset', name, id, data: delta, base: prev, cur: rec, arrayFields: useArr ? arrayFields : [], mapFields: useMap ? mapFields : [] });
           else ops.push({ kind: 'set', name, id, data: delta });
         }
-        for (const id of baseMap.keys()) { if (!curIdx.has(id)) ops.push({ kind: 'del', name, id }); }
+        // DELETE-op SAFETY (v6.324 architecture review): a record vanishing from local
+        // state becomes a cloud DELETE, and the old catastrophic guard covered ONLY
+        // members/invoices. Generalize to EVERY collection: (a) if this collection is
+        // absent from `state` (undefined — "not loaded", e.g. a partial/derived state was
+        // passed) NEVER emit deletes; (b) if a large share of a sizeable collection
+        // disappeared at once, treat it as a partial/corrupt state and SKIP the deletes
+        // (loudly), unless an explicit clear/restore set __allowEmptySave. Genuine small
+        // deletes still propagate. This makes "disappearance ≠ silent mass wipe".
+        var _stateHas = state && (name in state) && state[name] != null;
+        var _allowWipe = (typeof window !== 'undefined' && window.__allowEmptySave);
+        if (_stateHas || _allowWipe) {
+          var delIds = []; baseMap.forEach(function (_v, id) { if (!curIdx.has(id)) delIds.push(id); });
+          var baseN = baseMap.size, massDrop = baseN >= 8 && curIdx.size < baseN * 0.5;
+          if (delIds.length && massDrop && !_allowWipe) {
+            console.error('[Storage] ⛔ BLOCKED ' + delIds.length + ' deletes in "' + name + '" (' + baseN + '→' + curIdx.size + ') — looks like a partial/corrupt state, not a real bulk delete. Skipped to protect data.');
+            try { if (typeof window !== 'undefined' && typeof window.__onCloudWriteBlocked === 'function') window.__onCloudWriteBlocked(baseN, 'suspicious bulk delete in ' + name + ' (' + baseN + '→' + curIdx.size + ') — skipped'); } catch (_) {}
+          } else { for (var di = 0; di < delIds.length; di++) ops.push({ kind: 'del', name, id: delIds[di] }); }
+        }
       }
       // Compare meta WITHOUT the always-changing _updatedAt so the shared parent doc
       // (clubs/blackstars) is written ONLY when a real settings/version/meta field
@@ -530,7 +547,16 @@
       },
 
       save(state) {
-        if (blockEmptyWrite(state)) return;
+        if (blockEmptyWrite(state)) {
+          // A blocked save (cloud-read-not-confirmed, or a suspicious empty/corrupt state)
+          // used to return SILENTLY: no cloud write, no local cache, and hasUnsavedCloud()
+          // stayed false — so the reload guard + banner never fired and a whole session
+          // could be lost on refresh. Now flag it UNSAVED so the leave-page guard blocks and
+          // the persistent error banner shows — the user is warned, never silently dropped.
+          lastWriteFailed = true;
+          try { if (typeof window !== 'undefined' && typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'error' }); } catch (_) {}
+          return;
+        }
         try { localBackend.save(state); } catch (e) { console.warn('[Storage:firebase] local safety-net save failed:', e); }
         if (writeInFlight) { pendingAfterWrite = state; return; }
         _flushWrite(state);
