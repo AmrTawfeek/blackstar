@@ -9798,7 +9798,12 @@ PAGES.invoices = (main) => {
     // COLLECTED in a given month. Show collected + outstanding too so the figures
     // are unambiguous and reconcile with the Dashboard.
     const collected = allRows.reduce((s, r) => s + rowPaidOf(r), 0);
-    const outstanding = selMonths.length ? Math.max(0, total - collected) : allRows.reduce((s, r) => s + invoiceBalance(r), 0);
+    // "Due" = the SUM of each displayed invoice's OWN remaining balance (invoiceBalance is
+    // already clamped at 0). The old month-filtered path used max(0, total − collected) — a
+    // NET subtraction that (a) mismatched "charged in-window" vs "paid in-window" and (b) let
+    // over-paid invoices cancel other members' real dues, under-reporting the true outstanding
+    // (e.g. 5,950 vs the real ~17k, disagreeing with the Due Payment screen). (v6.325)
+    const outstanding = allRows.reduce((s, r) => s + invoiceBalance(r), 0);
     $('#inv-count').textContent = isViewerRole()
       ? `${allRows.length} invoices`
       : `${allRows.length} invoices · ${fmtMoney(total)} charged · ${fmtMoney(collected)} collected${outstanding > 0.5 ? ` · ${fmtMoney(outstanding)} due` : ''}`;
