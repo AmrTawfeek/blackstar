@@ -1482,7 +1482,7 @@ ${seed}
   ok(EXP_CATS.includes('Cash collected by owner'), 'expenses: reserved category "Cash collected by owner" is always present in EXP_CATS');
   ok(RESERVED_EXPENSE_CATEGORIES.includes('Cash collected by owner'), 'expenses: "Cash collected by owner" is reserved (admin cannot delete it from settings)');
   // ── Batch 1 permission rules (consolidated requirements #2, #9) ──
-  ok(!ROLE_ALLOWED.receptionist.includes('coaches'), 'role #9: receptionist has NO Team/coach roster (least-privilege)');
+  ok(ROLE_ALLOWED.receptionist.includes('coaches') && ROLE_ALLOWED.receptionist.includes('sports'), 'receptionist CAN access Staff + Sports (owner request v6.327 — supersedes the old req #9 least-privilege)');
   (() => {
     const savedUser = state.user, savedSession = state.session;
     const asRole = (r) => { state.user = { role: r }; state.session = null; };
@@ -1531,7 +1531,7 @@ ${seed}
     ok(!ROLE_ALLOWED.receptionist.includes('dashboard') && !ROLE_ALLOWED.receptionist.includes('salaries'), 'reception: still blocked from Dashboard + Salaries (least-privilege)');
     // Staff screen (formerly "Team")
     eq(ROUTES.coaches.label, 'Staff', 'menu: Team screen relabelled to Staff');
-    ok(!ROLE_ALLOWED.coach.includes('coaches') && !ROLE_ALLOWED.receptionist.includes('coaches') && !ROLE_ALLOWED.student.includes('coaches'), 'Staff screen is admin-only (coach/reception/student blocked)');
+    ok(!ROLE_ALLOWED.coach.includes('coaches') && !ROLE_ALLOWED.student.includes('coaches'), 'Staff screen blocked for coach + student (receptionist now allowed per owner request v6.327)');
     state.user = savedUser; state.session = savedSession;
   })();
   // ── commissionLineItems: a flat sport-less invoice line that bundles several

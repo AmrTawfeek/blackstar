@@ -9708,8 +9708,16 @@ PAGES.invoices = (main) => {
       if (filter.sport !== 'all') {
         // "Summer Camp" matches every camp duration variant (Summer Camp · 1 week, …).
         if (filter.sport === SUMMER_CAMP) {
-          if (!_isCampActivity(i.sport)) return false;
-        } else if (i.sport !== filter.sport) return false;
+          if (!_isCampActivity(i.sport) && !(i.lineItems || []).some(li => _isCampActivity(li.sport))) return false;
+        } else {
+          // Match if the invoice INVOLVES the selected sport — its (possibly combined)
+          // activity string names it, OR any line-item is for it. So picking "Swimming"
+          // shows a member whose invoice activity is "Swimming, Gymnastic". (v6.325)
+          const _sp = filter.sport;
+          const _inAct = String(i.sport || '').split(/\s*,\s*/).indexOf(_sp) !== -1;
+          const _inLines = Array.isArray(i.lineItems) && i.lineItems.some(li => li.sport === _sp);
+          if (!_inAct && !_inLines) return false;
+        }
       }
       if (filter.coach !== 'all' && i.coach !== filter.coach) return false;
       if (filter.category !== 'all' && (i.category || 'Membership') !== filter.category) return false;
@@ -9843,14 +9851,11 @@ PAGES.invoices = (main) => {
   }
 
   // Build unique sport + coach options from data
-  // Collapse all "Summer Camp · <duration>" variants into a single "Summer Camp"
-  // entry so the activity filter isn't cluttered with one row per camp duration.
-  const _rawActivities = [...new Set(state.invoices.map(i => i.sport).filter(Boolean))];
-  const _hasCamp = _rawActivities.some(_isCampActivity);
-  const sportsInInvoices = [
-    ...(_hasCamp ? [SUMMER_CAMP] : []),
-    ..._rawActivities.filter(s => !_isCampActivity(s)),
-  ].sort();
+  // The activity filter lists the MAIN sports only (the admin-managed SPORTS list) — NOT the
+  // combined "Swimming, Gymnastic" strings that multi-sport members produce, nor per-duration
+  // camp variants. Selecting one matches any invoice that INVOLVES that sport (see the filter
+  // predicate above), so a member enrolled in a combo still appears. (v6.325)
+  const sportsInInvoices = (typeof SPORTS !== 'undefined' && SPORTS.length ? SPORTS.slice() : DEFAULT_SPORTS.slice());
   const coachesInInvoices = [...new Set(state.invoices.map(i => i.coach).filter(Boolean))].sort();
 
   main.innerHTML = `
