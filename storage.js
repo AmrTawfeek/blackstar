@@ -122,6 +122,28 @@
     const p = Object.getPrototypeOf(v);
     return p === Object.prototype || p === null;
   }
+  // Diff two META objects (the shared parent doc's settings/config). Returns ONLY changed
+  // keys AND — critically — FieldValue.delete() for keys REMOVED (deep, e.g. a deleted
+  // settings.userRoles entry / category / sport). Firestore merge:true never deletes map
+  // keys, so without this a removed user mapping silently REAPPEARS on the next reload.
+  // Also means the parent doc only writes the changed leaves (better multi-admin concurrency
+  // on settings). (v6.330)
+  function _deepMetaDelta(prev, cur, FieldValue) {
+    prev = _isPlainMap(prev) ? prev : {};
+    const out = {};
+    for (const k of Object.keys(cur)) {
+      if (_isPlainMap(cur[k]) && _isPlainMap(prev[k])) {
+        const sub = _deepMetaDelta(prev[k], cur[k], FieldValue);
+        if (Object.keys(sub).length) out[k] = sub;          // include only if it actually changed
+      } else if (_stable(prev[k]) !== _stable(cur[k])) {
+        out[k] = cur[k];
+      }
+    }
+    for (const k of Object.keys(prev)) {
+      if (!(k in cur)) out[k] = FieldValue ? FieldValue.delete() : null;   // removed → delete in the cloud
+    }
+    return out;
+  }
 
   // ─── Data-loss guard (hardened — preserved from the single-doc build) ───────
   // In multi-document mode a "wipe" save would issue deletes for every record, so
@@ -361,7 +383,16 @@
       // write/sec/document soft limit → contention, latency and failed writes.
       const meta = pickMeta(state);
       const metaStr = _stable(meta); const metaChanged = metaStr !== _baseMeta;
-      if (metaChanged) meta._updatedAt = Date.now();   // stamp only on a real change
+      // Write only the CHANGED meta leaves, and FieldValue.delete() for any REMOVED key, so a
+      // deleted settings entry (e.g. a user-role mapping) actually disappears from Firestore
+      // instead of being re-merged back. (v6.330)
+      let metaWrite = meta;
+      if (metaChanged) {
+        const _FV = (typeof window !== 'undefined' && window.firebase && window.firebase.firestore) ? window.firebase.firestore.FieldValue : null;
+        let _baseMetaObj = {}; try { _baseMetaObj = JSON.parse(_baseMeta || '{}'); } catch (_) { _baseMetaObj = {}; }
+        metaWrite = _deepMetaDelta(_baseMetaObj, meta, _FV);
+        metaWrite._updatedAt = Date.now();   // stamp only on a real change
+      }
 
       if (ops.length === 0 && !metaChanged) {
         writeInFlight = false;
@@ -413,7 +444,7 @@
           if (op.kind === 'del') batch.delete(ref);
           else batch.set(ref, op.data, { merge: true });
         }
-        if (bi === 0 && metaChanged) batch.set(parentRef(), meta, { merge: true });
+        if (bi === 0 && metaChanged) batch.set(parentRef(), metaWrite, { merge: true });
         return batch.commit();
       });
       // Each list-changing record: a TRANSACTION that re-reads the live cloud record and

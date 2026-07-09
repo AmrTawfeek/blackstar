@@ -9605,12 +9605,29 @@ window.toggleCoachActive = function(coachId) {
 // `selected` is an array of 'YYYY-MM' (empty = ALL months). Returns HTML; after
 // inserting it, call bindMonthMulti(id, onChange) to wire it — onChange receives
 // the new selected-months array. Used on Invoices, Transactions, etc.
+// Standard month-filter options: a predictable CALENDAR — the current year from January
+// through the CURRENT month, plus every earlier year present in the data as a full Jan–Dec
+// set. Unions in whatever real data months are passed (`extra`) so a month with records is
+// NEVER hidden (incl. any future month a caller intentionally provides). 'YYYY-MM', newest
+// first. This replaces the old "only months that happen to have data" lists. (v6.329)
+function calendarMonths(extra) {
+  const now = String((typeof TODAY !== 'undefined' && TODAY) ? TODAY : '');
+  const curY = parseInt(now.slice(0, 4), 10) || (new Date().getFullYear());
+  const curM = parseInt(now.slice(5, 7), 10) || 12;
+  const ex = Array.isArray(extra) ? extra.filter(Boolean).map(String) : [];
+  let minY = curY;
+  for (const dm of ex) { const y = parseInt(dm.slice(0, 4), 10); if (y && y < minY) minY = y; }
+  const set = new Set();
+  for (let y = curY; y >= minY; y--) { const last = (y === curY) ? curM : 12; for (let m = 1; m <= last; m++) set.add(y + '-' + String(m).padStart(2, '0')); }
+  for (const dm of ex) set.add(dm);   // never hide a real data month
+  return [...set].sort().reverse();
+}
 function monthMultiHTML(id, months, selected) {
   const sel = new Set(selected || []);
   const optStyle = 'display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;font-size:13px;white-space:nowrap;border-radius:6px';
   const label = !sel.size ? t('All months', 'كل الأشهر')
     : (sel.size === 1 ? fmtMonth([...sel][0]) : `${sel.size} ${t('months', 'أشهر')}`);
-  const opts = (months || []).map(m =>
+  const opts = calendarMonths(months).map(m =>
     `<label class="mm-opt" style="${optStyle}"><input type="checkbox" value="${m}" ${sel.has(m) ? 'checked' : ''}/> ${fmtMonth(m)}</label>`
   ).join('');
   return `<div class="month-multi" id="${id}" style="position:relative;display:inline-block">
@@ -14740,6 +14757,7 @@ PAGES.expenses = (main) => {
       </div>
       <div class="topbar-actions">
         ${currentRole() === 'receptionist' ? '' : `<button class="btn ghost" id="exp-pdf">📄 ${t('Export PDF', 'تصدير PDF')}</button>`}
+        ${currentRole() === 'receptionist' ? '' : `<button class="btn ghost" id="exp-xlsx">📊 ${t('Export Excel', 'تصدير Excel')}</button>`}
         <button class="btn primary" id="add-exp">+ New Expense</button>
       </div>
     </div>
@@ -14778,6 +14796,23 @@ PAGES.expenses = (main) => {
   $('#exp-search').addEventListener('input', e => { filter.search = e.target.value; pg.page = 1; refresh(); });
   attachRecentSearch('exp-search', 'expenses');
   $('#exp-pdf')?.addEventListener('click', () => exportExpensesPDF(_exportRows, _exportMeta));
+  // Export the CURRENTLY-FILTERED expenses to a real .xlsx (same rows the screen shows).
+  $('#exp-xlsx')?.addEventListener('click', () => {
+    if (!window.XlsxMini || typeof window.XlsxMini.downloadFile !== 'function') { toast(t('Excel export unavailable', 'تصدير Excel غير متاح'), 'error'); return; }
+    const HEADER = ['Date', 'Month', 'Category', 'Description', 'Method', 'Coach', 'Amount (QAR)'];
+    const rows = (_exportRows || []).map(e => [
+      e.date || '', e.month || '', e.category || 'Others', e.description || '',
+      e.method || '', e.coachName || (typeof coachName === 'function' ? coachName(e.coachId) : '') || '',
+      Math.round((Number(e.amount) || 0) * 100) / 100,
+    ]);
+    const total = (_exportRows || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    rows.push(['', '', '', '', '', 'TOTAL', Math.round(total * 100) / 100]);
+    const tag = (filter.months && filter.months.length) ? filter.months.slice().sort().join('_') : (TODAY || '').slice(0, 7);
+    try {
+      window.XlsxMini.downloadFile(`expenses-${tag}.xlsx`, { sheets: [{ name: 'Expenses', rows: [HEADER, ...rows] }] });
+      toast(t(`Exported ${_exportRows.length} expenses to Excel`, `تم تصدير ${_exportRows.length} مصروف إلى Excel`), 'success');
+    } catch (err) { toast(t('Excel export failed', 'فشل تصدير Excel') + ': ' + (err && err.message || err), 'error'); }
+  });
   bindMonthMulti('exp-month', (months) => { filter.months = months; pg.page = 1; refresh(); });
   // Multi-select category + method dropdowns (checkbox menus).
   function wireExpMulti(key, cbClass, btnId, menuId, labelId, allText, oneFmt) {
@@ -23302,9 +23337,20 @@ window.generateMemberLogins = function() {
 
 function userRolesListHtml() {
   const map = (state.settings && state.settings.userRoles) || {};
-  const emails = Object.keys(map);
+  let emails = Object.keys(map);
   if (!emails.length) return `<div class="text-mute" style="font-size:12px;padding:8px 0">No mappings yet — every signed-in account is currently <b>Admin</b>. Add your admin email plus your coach/member logins below.</div>`;
-  const rows = emails.sort().map(e => {
+  const linkedName = (r) => {
+    if (r.role === 'coach') return coachName(r.coachId) || '';
+    if (r.role === 'student') { const m = state.members.find(x => x.id === r.memberId); return m ? m.name : ''; }
+    return '';
+  };
+  // Search: match email, linked name, or role label (v6.330 UX)
+  const q = String(window._userSearch || '').trim().toLowerCase();
+  if (q) emails = emails.filter(e => e.toLowerCase().includes(q)
+    || String(linkedName(map[e] || {})).toLowerCase().includes(q)
+    || String(ROLE_LABELS[(map[e] || {}).role] || (map[e] || {}).role || '').toLowerCase().includes(q));
+  if (!emails.length) return `<div class="text-mute" style="font-size:12px;padding:8px 0">No accounts match “${escapeHtml(q)}”.</div>`;
+  const rowHtml = (e) => {
     const r = map[e] || {};
     let linked;
     if (r.role === 'coach') linked = escapeHtml(coachName(r.coachId) || '— pick a coach —');
@@ -23321,8 +23367,19 @@ function userRolesListHtml() {
         <button class="btn ghost sm" onclick="toggleUserDisabled('${escapeHtml(e)}')" title="${r.disabled ? 'Restore access' : 'Revoke access (block sign-in)'}">${r.disabled ? '▶' : '⏸'}</button>
         <button class="btn ghost sm" onclick="removeUserRole('${escapeHtml(e)}')" title="Remove mapping">🗑</button>
       </td></tr>`;
+  };
+  // Group by role, ordered by privilege, with a header + count per group (v6.330 UX)
+  const ROLE_ORDER = ['admin', 'receptionist', 'coach', 'student'];
+  const EMOJI = { admin: '👑', receptionist: '🎫', coach: '🥋', student: '🎓' };
+  const groups = {};
+  for (const e of emails) { const role = (map[e] || {}).role || 'student'; (groups[role] = groups[role] || []).push(e); }
+  const orderedRoles = ROLE_ORDER.filter(r => groups[r]).concat(Object.keys(groups).filter(r => ROLE_ORDER.indexOf(r) === -1));
+  const body = orderedRoles.map(role => {
+    const list = groups[role].sort();
+    const hdr = `<tr style="background:var(--surface-2)"><td colspan="4" style="padding:7px 8px;font-weight:700;font-size:12px">${EMOJI[role] || '•'} ${ROLE_LABELS[role] || role} <span class="text-mute" style="font-weight:400">· ${list.length}</span></td></tr>`;
+    return hdr + list.map(rowHtml).join('');
   }).join('');
-  return `<table style="width:100%;border-collapse:collapse"><thead><tr style="text-align:left;font-size:11px;color:var(--text-mute)"><th style="padding:4px 8px">Email</th><th style="padding:4px 8px">Role</th><th style="padding:4px 8px">Linked to</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  return `<table style="width:100%;border-collapse:collapse"><thead><tr style="text-align:left;font-size:11px;color:var(--text-mute)"><th style="padding:4px 8px">Email</th><th style="padding:4px 8px">Role</th><th style="padding:4px 8px">Linked to</th><th></th></tr></thead><tbody>${body}</tbody></table>`;
 }
 window.renderUserRolesList = function() { const elx = document.getElementById('user-roles-list'); if (elx) elx.innerHTML = userRolesListHtml(); const s = document.getElementById('user-roles-summary'); if (s) s.innerHTML = userRolesSummaryHtml(); };
 function userRolesSummaryHtml() {
@@ -23401,6 +23458,10 @@ PAGES.users = (main) => {
           <button class="btn ghost sm" onclick="lookupUserRole()">Check role</button>
         </div>
         <div id="ur-lookup-result" style="font-size:13px;margin-top:8px"></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin:12px 0 6px">
+        <input id="user-search" placeholder="🔎 ${t('Search accounts by email, name or role…', 'ابحث بالبريد أو الاسم أو الدور…')}" value="${escapeHtml(window._userSearch || '')}" style="flex:1;min-width:220px;padding:7px 11px" oninput="window._userSearch=this.value; renderUserRolesList();" />
+        <button class="btn ghost sm" title="${t('Clear search', 'مسح البحث')}" onclick="window._userSearch=''; var s=document.getElementById('user-search'); if(s)s.value=''; renderUserRolesList();">✕</button>
       </div>
       <div id="user-roles-list">${userRolesListHtml()}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">
@@ -23514,7 +23575,10 @@ window.editUserRole = function(email) {
           stampUpdate(entry);   // who/when created-or-changed this account mapping (req #5)
           state.settings.userRoles[e] = entry;
           audit('user.role_map', `user:${e}`, `Mapped ${e} → ${role}${pass ? ' (login created)' : ''}`, { name: e, recordName: e, new: { role, coachId: entry.coachId ?? null, memberId: entry.memberId ?? null } });
-          save(); closeModal(); renderUserRolesList(); toast(`${e} → ${ROLE_LABELS[role] || role}`);
+          closeModal(); renderUserRolesList();
+          // Write-through: confirm the mapping reached Firebase before saying "saved".
+          if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg: `${e} → ${ROLE_LABELS[role] || role} ${t('(saved to cloud)', '(حُفظ في السحابة)')}`, onFail: () => renderUserRolesList() });
+          else { save(); toast(`${e} → ${ROLE_LABELS[role] || role}`); }
         } },
     ],
   });
@@ -23560,7 +23624,13 @@ window.removeUserRole = function(email) {
   if (!confirm(`Remove the role mapping for ${email}? They'll fall back to the default for unmapped accounts.`)) return;
   delete state.settings.userRoles[email];
   audit('user.role_unmap', email, `Removed role mapping for ${email}`);
-  save(); renderUserRolesList(); toast('Mapping removed');
+  renderUserRolesList();
+  // Write-through: the deletion now propagates (FieldValue.delete on the settings map,
+  // v6.330) AND we only report success once Firebase confirms — on failure the user gets a
+  // loud "NOT saved — retry" instead of a silent optimistic toast.
+  if (typeof withCloudConfirm === 'function') {
+    withCloudConfirm({ okMsg: t(`Removed ${email} — confirmed in the cloud`, `تم حذف ${email} — مؤكّد في السحابة`), onFail: () => renderUserRolesList() });
+  } else { save(); toast('Mapping removed'); }
 };
 window.setUnmappedRole = function(v) {
   if (!state.settings) state.settings = {};
