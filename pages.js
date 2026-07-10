@@ -897,6 +897,17 @@ window.runSyncCheck = async function () {
 };
 
 // ─── MEMBERS ──────────────────────────────────────────────────
+// The Members status filter also offers three "expiring within N days" chips alongside the
+// real statuses. They are stored in filter.statuses as exp3 / exp7 / exp30 and OR together
+// with the status chips in the table predicate. (v6.335)
+const EXPIRY_CHIPS = ['exp3', 'exp7', 'exp30'];
+function expiryChipLabel(s) {
+  return ({
+    exp3: '⏰ ' + t('Expiring ≤ 3 days', 'ينتهي خلال ٣ أيام'),
+    exp7: '⏰ ' + t('Expiring ≤ 7 days', 'ينتهي خلال ٧ أيام'),
+    exp30: '⏰ ' + t('Expiring ≤ 30 days', 'ينتهي خلال ٣٠ يوماً'),
+  })[s] || s;
+}
 // Clicking a status chip in the Members header filters the table to that status.
 // Clicking the same chip again clears the filter (toggle). Persists the filter and
 // re-renders the Members page.
@@ -1150,10 +1161,14 @@ PAGES.members = (main) => {
       // user is actively SEARCHING (so a search finds everyone). They get a visual
       // "📦 Archived" indicator in the row either way.
       const wantArchived = (f.statuses || []).includes('Archived');
-      const statusSel = (f.statuses || []).filter(s => s !== 'Archived');
+      // The status filter also carries three "expiring within N days" pseudo-statuses. (v6.335)
+      const _EXPW = { exp3: 3, exp7: 7, exp30: 30 };
+      const _selAll = (f.statuses || []).filter(s => s !== 'Archived');
+      const expSel = _selAll.filter(s => _EXPW[s] != null);
+      const statusSel = _selAll.filter(s => _EXPW[s] == null);
       const isSearching = !!(f.search && f.search.trim());
       if (m.deleted && !wantArchived && !isSearching) return false;
-      if (!m.deleted && wantArchived && statusSel.length === 0 && !isSearching) return false; // only Archived chosen
+      if (!m.deleted && wantArchived && statusSel.length === 0 && expSel.length === 0 && !isSearching) return false; // only Archived chosen
       // Similar-name filter: keep only members flagged as a likely duplicate.
       if (f.dupNames && dupNameInfo && !dupNameInfo.ids.has(m.id)) return false;
       if (f.search) {
@@ -1165,7 +1180,19 @@ PAGES.members = (main) => {
         if (!hit) return false;
       }
       // Status filter (multi-select): for non-archived members, match any chosen status.
-      if (statusSel.length && !m.deleted && !statusSel.includes(memberStatus(m))) return false;
+      // Status chips OR "expiring within N days" chips (multi-select is OR, like the others).
+      // Frozen memberships are paused (not counting down) and withdrawn members are not
+      // renewing, so neither ever matches an expiry chip.
+      if ((statusSel.length || expSel.length) && !m.deleted) {
+        const _st = memberStatus(m);
+        const byStatus = statusSel.length > 0 && statusSel.includes(_st);
+        let byExpiry = false;
+        if (expSel.length && _st !== 'Frozen' && _st !== 'Withdrawn') {
+          const _d = m.expiryDate ? daysUntil(m.expiryDate) : null;
+          if (_d != null && _d >= 0) byExpiry = expSel.some(s => _d <= _EXPW[s]);
+        }
+        if (!byStatus && !byExpiry) return false;
+      }
       // Sport filter (multi-select): keep if the member is in ANY selected sport
       if (f.sports && f.sports.length) {
         const sports = new Set([m.sport, ...((m.enrollments||[]).map(e=>e.sport))].filter(Boolean));
@@ -1462,12 +1489,14 @@ PAGES.members = (main) => {
         <div class="search"><input id="search-input" type="text" placeholder="${t('Search name, phone, QID, email...', 'ابحث بالاسم أو الهاتف أو الهوية أو البريد...')}" value="${escapeHtml(filter.search || '')}" /></div>
         <div style="position:relative">
           <button type="button" id="filter-status-btn" class="btn ghost" style="min-width:120px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more statuses">
-            <span id="filter-status-label">${filter.statuses && filter.statuses.length ? (filter.statuses.length === 1 ? escapeHtml(filter.statuses[0]) : filter.statuses.length + ' statuses') : 'All status'}</span>
+            <span id="filter-status-label">${filter.statuses && filter.statuses.length ? (filter.statuses.length === 1 ? escapeHtml(expiryChipLabel(filter.statuses[0])) : filter.statuses.length + ' filters') : 'All status'}</span>
             <span style="opacity:.6">▾</span>
           </button>
           <div id="filter-status-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:170px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
             <div style="display:flex;justify-content:space-between;padding:2px 6px 6px;border-bottom:1px solid var(--border);margin-bottom:4px"><button type="button" class="mfilter-all" data-cb="filter-status-cb" data-group="statuses" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">All</button><button type="button" class="mfilter-none" data-cb="filter-status-cb" data-group="statuses" style="background:none;border:none;color:var(--text-mute);font-size:12px;cursor:pointer">Clear</button></div>
             ${['Active', 'Completed', 'Frozen', 'Expired', 'Withdrawn', 'Archived'].map(st => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-status-cb" value="${st}" ${(filter.statuses||[]).includes(st) ? 'checked' : ''} /> ${({ Frozen: '❄️ Frozen', Withdrawn: '↩ Withdrawn', Archived: '📦 Archived' }[st] || st)}</label>`).join('')}
+            <div style="border-top:1px solid var(--border);margin:6px 0 4px;padding-top:6px;font-size:11px;color:var(--text-mute);padding-inline-start:6px">${t('Expiring soon', 'ينتهي قريباً')}</div>
+            ${EXPIRY_CHIPS.map(st => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-status-cb" value="${st}" ${(filter.statuses||[]).includes(st) ? 'checked' : ''} /> ${expiryChipLabel(st)}</label>`).join('')}
           </div>
         </div>
         <div style="position:relative">
@@ -9610,36 +9639,48 @@ window.toggleCoachActive = function(coachId) {
 // `selected` is an array of 'YYYY-MM' (empty = ALL months). Returns HTML; after
 // inserting it, call bindMonthMulti(id, onChange) to wire it — onChange receives
 // the new selected-months array. Used on Invoices, Transactions, etc.
-// Standard month-filter options: a predictable CALENDAR — the current year from January
-// through the CURRENT month, plus every earlier year present in the data as a full Jan–Dec
-// set. Unions in whatever real data months are passed (`extra`) so a month with records is
-// NEVER hidden (incl. any future month a caller intentionally provides). 'YYYY-MM', newest
-// first. This replaces the old "only months that happen to have data" lists. (v6.329)
-function calendarMonths(extra) {
-  const now = String((typeof TODAY !== 'undefined' && TODAY) ? TODAY : '');
-  const curY = parseInt(now.slice(0, 4), 10) || (new Date().getFullYear());
-  const curM = parseInt(now.slice(5, 7), 10) || 12;
-  const ex = Array.isArray(extra) ? extra.filter(Boolean).map(String) : [];
-  let minY = curY;
-  for (const dm of ex) { const y = parseInt(dm.slice(0, 4), 10); if (y && y < minY) minY = y; }
-  const set = new Set();
-  for (let y = curY; y >= minY; y--) { const last = (y === curY) ? curM : 12; for (let m = 1; m <= last; m++) set.add(y + '-' + String(m).padStart(2, '0')); }
-  for (const dm of ex) set.add(dm);   // never hide a real data month
-  return [...set].sort().reverse();
+// Month filter = a YEAR dropdown + the months of that year (January → the CURRENT month for
+// the current year; Jan–Dec for past years). Hardened: only well-formed 'YYYY-MM' data months
+// are considered and the year list is clamped to a sane window, so one malformed record can
+// never explode the dropdown (the "Dec 99 … 23,000 options" bug). (v6.334)
+const _MM_OPT_STYLE = 'display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;font-size:13px;white-space:nowrap;border-radius:6px';
+function _mmValidMonths(arr) { return (Array.isArray(arr) ? arr : []).map(String).filter(s => /^\d{4}-\d{2}$/.test(s)); }
+function _mmCurYear() { const n = String((typeof TODAY !== 'undefined' && TODAY) ? TODAY : ''); return parseInt(n.slice(0, 4), 10) || (new Date().getFullYear()); }
+function _mmCurMonth() { const n = String((typeof TODAY !== 'undefined' && TODAY) ? TODAY : ''); return parseInt(n.slice(5, 7), 10) || 12; }
+// Years offered: the current year + any year actually present in the data, clamped to
+// [currentYear-10 … currentYear+1] so junk data can't generate thousands of options.
+function monthFilterYears(dataMonths) {
+  const cy = _mmCurYear(); const s = new Set([cy]);
+  for (const m of _mmValidMonths(dataMonths)) { const y = parseInt(m.slice(0, 4), 10); if (y >= cy - 10 && y <= cy + 1) s.add(y); }
+  return [...s].sort((a, b) => b - a);
+}
+// Months of ONE year, newest first: Jan → Dec, capped at the CURRENT month for the current year.
+function calendarMonths(year) {
+  const cy = _mmCurYear(), cm = _mmCurMonth();
+  const y = parseInt(year, 10) || cy;
+  const last = (y === cy) ? cm : 12;
+  const out = []; for (let m = last; m >= 1; m--) out.push(y + '-' + String(m).padStart(2, '0'));
+  return out;
+}
+function _mmMonthOpts(year, selSet) {
+  return calendarMonths(year).map(m =>
+    `<label class="mm-opt" style="${_MM_OPT_STYLE}"><input type="checkbox" value="${m}" ${selSet.has(m) ? 'checked' : ''}/> ${fmtMonth(m)}</label>`
+  ).join('');
 }
 function monthMultiHTML(id, months, selected) {
-  const sel = new Set(selected || []);
-  const optStyle = 'display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;font-size:13px;white-space:nowrap;border-radius:6px';
+  const sel = new Set(_mmValidMonths(selected));
+  const years = monthFilterYears([].concat(_mmValidMonths(months), [...sel]));
+  // Show the year of the current selection, else the current year.
+  const activeYear = sel.size ? (parseInt([...sel].sort().reverse()[0].slice(0, 4), 10) || _mmCurYear()) : _mmCurYear();
   const label = !sel.size ? t('All months', 'كل الأشهر')
     : (sel.size === 1 ? fmtMonth([...sel][0]) : `${sel.size} ${t('months', 'أشهر')}`);
-  const opts = calendarMonths(months).map(m =>
-    `<label class="mm-opt" style="${optStyle}"><input type="checkbox" value="${m}" ${sel.has(m) ? 'checked' : ''}/> ${fmtMonth(m)}</label>`
-  ).join('');
+  const yearOpts = years.map(y => `<option value="${y}" ${y === activeYear ? 'selected' : ''}>${y}</option>`).join('');
   return `<div class="month-multi" id="${id}" style="position:relative;display:inline-block">
+    <select class="btn ghost mm-year" title="${t('Year', 'السنة')}" style="padding:6px 8px;margin-inline-end:6px">${yearOpts}</select>
     <button type="button" class="btn ghost mm-btn" style="min-width:140px;text-align:start">📅 <span class="mm-label">${label}</span> <span style="opacity:.6">▾</span></button>
     <div class="mm-pop" style="display:none;position:absolute;z-index:60;top:calc(100% + 4px);inset-inline-start:0;background:var(--card,#fff);border:1px solid var(--border);border-radius:8px;padding:6px;min-width:190px;max-height:300px;overflow:auto;box-shadow:0 10px 28px rgba(0,0,0,.28)">
-      <label class="mm-opt mm-all" style="${optStyle};font-weight:700;border-bottom:1px solid var(--border);margin-bottom:4px;padding-bottom:6px;border-radius:0"><input type="checkbox" class="mm-all-cb" ${!sel.size ? 'checked' : ''}/> ${t('All months', 'كل الأشهر')}</label>
-      ${opts}
+      <label class="mm-opt mm-all" style="${_MM_OPT_STYLE};font-weight:700;border-bottom:1px solid var(--border);margin-bottom:4px;padding-bottom:6px;border-radius:0"><input type="checkbox" class="mm-all-cb" ${!sel.size ? 'checked' : ''}/> ${t('All months', 'كل الأشهر')}</label>
+      <div class="mm-months">${_mmMonthOpts(activeYear, sel)}</div>
     </div>
   </div>`;
 }
@@ -9650,6 +9691,8 @@ function bindMonthMulti(id, onChange) {
   const pop = wrap.querySelector('.mm-pop');
   const lbl = wrap.querySelector('.mm-label');
   const allCb = wrap.querySelector('.mm-all-cb');
+  const yearSel = wrap.querySelector('.mm-year');
+  const monthsBox = wrap.querySelector('.mm-months');
   const boxes = () => [...wrap.querySelectorAll('.mm-pop input[type=checkbox]:not(.mm-all-cb)')];
   const current = () => boxes().filter(b => b.checked).map(b => b.value);
   const relabel = () => {
@@ -9658,9 +9701,17 @@ function bindMonthMulti(id, onChange) {
       : (c.length === 1 ? fmtMonth(c[0]) : `${c.length} ${t('months', 'أشهر')}`);
     if (allCb) allCb.checked = !c.length;
   };
+  const bindBoxes = () => { boxes().forEach(b => b.addEventListener('change', () => { relabel(); onChange(current()); })); };
+  bindBoxes();
   btn.addEventListener('click', e => { e.stopPropagation(); pop.style.display = pop.style.display === 'none' ? 'block' : 'none'; });
+  // Changing the YEAR re-lists that year's months and clears the month selection (selection is
+  // scoped to the displayed year), so external "Clear filters" DOM resets keep working.
+  if (yearSel) yearSel.addEventListener('change', e => {
+    e.stopPropagation();
+    if (monthsBox) { monthsBox.innerHTML = _mmMonthOpts(parseInt(yearSel.value, 10), new Set()); bindBoxes(); }
+    relabel(); onChange([]);
+  });
   if (allCb) allCb.addEventListener('change', () => { if (allCb.checked) boxes().forEach(b => { b.checked = false; }); relabel(); onChange(current()); });
-  boxes().forEach(b => b.addEventListener('change', () => { relabel(); onChange(current()); }));
   // Close on outside click; the listener removes itself once this picker leaves the DOM.
   const onDoc = (ev) => {
     if (!document.body.contains(wrap)) { document.removeEventListener('click', onDoc); return; }
@@ -12077,6 +12128,111 @@ window._scanDuplicatePayments = function () {
   }
   return out;
 };
+// ── Invalid invoice dates ─────────────────────────────────────────────────────
+// A pair of legacy invoices arrived from an old import dated 0001-01-01. Such a
+// date poisons every month filter (it forced the year dropdown to be clamped) and
+// hides the invoice from the month it really belongs to. Any date outside
+// 2000 … (this year + 1) counts as corrupt.
+//
+// The replacement is INFERRED, never silently guessed: the member's first
+// registration date, else their earliest valid sport start, else today — and the
+// admin edits each date before applying. (v6.335)
+const _INV_MIN_YEAR = 2000;
+function _isValidInvDate(s) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(s || ''))) return false;
+  const y = parseInt(String(s).slice(0, 4), 10);
+  return !isNaN(new Date(s + 'T00:00:00')) && y >= _INV_MIN_YEAR && y <= _mmCurYear() + 1;
+}
+window._scanInvalidInvoiceDates = function () {
+  const out = [];
+  for (const inv of (state.invoices || [])) {
+    if (inv.deleted || _isValidInvDate(inv.date)) continue;
+    const m = (state.members || []).find(x => String(x.id) === String(inv.customerId));
+    let suggested = '', source = '';
+    if (m && _isValidInvDate(m.firstRegistration)) {
+      suggested = m.firstRegistration; source = t('member’s first registration', 'أول تسجيل للعضو');
+    }
+    if (!suggested && m) {
+      const starts = (m.enrollments || []).map(e => e && e.start).filter(_isValidInvDate).sort();
+      if (starts.length) { suggested = starts[0]; source = t('earliest sport start', 'أقدم بداية رياضة'); }
+    }
+    if (!suggested) { suggested = TODAY; source = t('today — no better source', 'اليوم — لا يوجد مصدر أفضل'); }
+    out.push({
+      id: inv.id, ref: inv.ref || ('#' + inv.id), name: inv.customerName || (m && m.name) || '—',
+      amount: Number(inv.amount) || 0, badDate: String(inv.date || '—'), suggested, source,
+    });
+  }
+  return out;
+};
+window.showFixInvoiceDatesUI = function () {
+  const rows = window._scanInvalidInvoiceDates();
+  if (!rows.length) { toast(t('No invoices with an invalid date.', 'لا توجد فواتير بتاريخ غير صالح.'), 'success'); return; }
+  const body = `
+    <div style="font-size:14px;line-height:1.6">
+      <div class="text-mute" style="font-size:12px;margin-bottom:10px">${t(
+        'These invoices carry an impossible date, so they never appear under a real month. Check each suggested date, then apply. A backup is downloaded first, and only the invoice date/month changes — amounts, payments and line items are untouched.',
+        'تحمل هذه الفواتير تاريخاً مستحيلاً، لذا لا تظهر تحت أي شهر حقيقي. راجع كل تاريخ مقترح ثم طبّق. تُنزَّل نسخة احتياطية أولاً، ويتغير تاريخ/شهر الفاتورة فقط — المبالغ والدفعات والبنود لا تُمَس.')}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <tr style="text-align:left;color:var(--text-mute);font-size:11px">
+          <th style="padding:4px 6px">${t('Invoice', 'الفاتورة')}</th>
+          <th style="padding:4px 6px">${t('Member', 'العضو')}</th>
+          <th style="padding:4px 6px;text-align:right">${t('Amount', 'المبلغ')}</th>
+          <th style="padding:4px 6px">${t('Bad date', 'تاريخ خاطئ')}</th>
+          <th style="padding:4px 6px">${t('Corrected date', 'التاريخ المصحّح')}</th>
+        </tr>
+        ${rows.map(r => `<tr style="border-top:1px solid var(--border)">
+          <td style="padding:6px"><b>${escapeHtml(r.ref)}</b></td>
+          <td style="padding:6px">${escapeHtml(r.name)}</td>
+          <td style="padding:6px;text-align:right">${fmt(r.amount)} QAR</td>
+          <td style="padding:6px;color:var(--red)">${escapeHtml(r.badDate)}</td>
+          <td style="padding:6px">
+            <input type="date" class="fix-inv-date" data-id="${escapeHtml(String(r.id))}" value="${escapeHtml(r.suggested)}" style="font-size:12px" />
+            <div class="text-mute" style="font-size:10px">${escapeHtml(r.source)}</div>
+          </td>
+        </tr>`).join('')}
+      </table>
+    </div>`;
+  showModal({
+    title: '📅 ' + t('Fix invalid invoice dates', 'إصلاح تواريخ الفواتير غير الصالحة'),
+    body,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: () => closeModal() },
+      { label: '✅ ' + t('Apply', 'تطبيق'), class: 'btn primary', onclick: () => window._applyInvoiceDateFix() },
+    ],
+  });
+};
+window._applyInvoiceDateFix = function () {
+  const inputs = Array.from(document.querySelectorAll('.fix-inv-date'));
+  const edits = [];
+  for (const el of inputs) {
+    const v = String(el.value || '');
+    if (!_isValidInvDate(v)) {
+      alert(t('“' + v + '” is not a valid date. Every row needs a real date between 2000 and next year.',
+              '«' + v + '» ليس تاريخاً صالحاً. كل صف يحتاج تاريخاً حقيقياً بين 2000 والعام القادم.'));
+      return;
+    }
+    edits.push({ id: el.getAttribute('data-id'), date: v });
+  }
+  if (!edits.length) { closeModal(); return; }
+  if (typeof assertCloudWritable === 'function' && !assertCloudWritable('fix these invoice dates', 'إصلاح تواريخ هذه الفواتير')) return;
+  try { if (typeof window.downloadBackup === 'function') window.downloadBackup(); } catch (_) {}   // safety copy first
+  const changed = [];
+  for (const e of edits) {
+    const inv = (state.invoices || []).find(i => String(i.id) === String(e.id));
+    if (!inv) continue;
+    const before = inv.date;
+    inv.date = e.date;
+    inv.month = e.date.slice(0, 7);
+    changed.push(`${inv.ref || inv.id}: ${before} → ${e.date}`);
+    if (typeof audit === 'function') audit('invoice.fixDate', 'invoices', `${inv.ref || inv.id} date ${before} → ${e.date}`, { id: inv.id, from: before, to: e.date });
+  }
+  closeModal();
+  const okMsg = t(`Fixed ${changed.length} invoice date(s) · saved`, `تم إصلاح ${changed.length} تاريخ فاتورة · حُفظ`);
+  if (typeof withCloudConfirm === 'function') {
+    withCloudConfirm({ verify: edits.map(e => ({ collection: 'invoices', id: e.id })), okMsg, onOk: () => render(), onFail: () => render() });
+  } else { save(); render(); }
+};
+
 window._dataHealthCheck = function () {
   let dupRows = 0, dupMembers = 0;      // duplicate subscription rows (by _sid)
   let dupEnr = 0, dupEnrMembers = 0;    // duplicate enrollment rows (exact content)
@@ -12110,10 +12266,13 @@ window._dataHealthCheck = function () {
   // Duplicate payments (a payment recorded twice → invoice over-collected).
   let dupPay = 0, dupPayInv = 0, dupPayAmt = 0;
   try { const dl = window._scanDuplicatePayments(); dupPayInv = dl.length; for (const x of dl) { dupPay += x.removeIdx.length; dupPayAmt += (x.paidBefore - x.paidAfter); } } catch (_) {}
+  // Invoices carrying an impossible date (e.g. the 0001-01-01 legacy import rows).
+  let badDates = 0;
+  try { badDates = window._scanInvalidInvoiceDates().length; } catch (_) {}
   const totalBytes = _byteLen(state);
   const LS_LIMIT = 5 * 1024 * 1024;   // browser localStorage safety-net cache ceiling
-  const healthy = dupRows === 0 && dupEnr === 0 && dupLi === 0 && dupPay === 0 && oversized.length === 0 && totalBytes < LS_LIMIT * 0.9;
-  return { healthy, dupRows, dupMembers, dupEnr, dupEnrMembers, dupLi, dupLiInv, dupPay, dupPayInv, dupPayAmt, oversized, totalMB: totalBytes / 1048576, cachePct: Math.round(totalBytes / LS_LIMIT * 100) };
+  const healthy = dupRows === 0 && dupEnr === 0 && dupLi === 0 && dupPay === 0 && badDates === 0 && oversized.length === 0 && totalBytes < LS_LIMIT * 0.9;
+  return { healthy, dupRows, dupMembers, dupEnr, dupEnrMembers, dupLi, dupLiInv, dupPay, dupPayInv, dupPayAmt, badDates, oversized, totalMB: totalBytes / 1048576, cachePct: Math.round(totalBytes / LS_LIMIT * 100) };
 };
 window.showDataHealthUI = function () {
   const h = window._dataHealthCheck();
@@ -12131,6 +12290,7 @@ window.showDataHealthUI = function () {
         <tr><td style="padding:7px 0">${t('Duplicate enrollment rows', 'صفوف تسجيل مكررة')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), `${h.dupEnr} ${t('across', 'لدى')} ${h.dupEnrMembers} ${t('members', 'عضو')}`, h.dupEnr === 0)}</td></tr>
         <tr><td style="padding:7px 0">${t('Duplicate invoice line-items', 'بنود فاتورة مكررة')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), `${h.dupLi} ${t('across', 'لدى')} ${h.dupLiInv} ${t('invoices', 'فاتورة')}`, h.dupLi === 0)}</td></tr>
         <tr><td style="padding:7px 0">${t('Duplicate payments (over-collected)', 'دفعات مكررة (تحصيل زائد)')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), `${h.dupPay} · ${fmt(h.dupPayAmt || 0)} QAR ${t('across', 'لدى')} ${h.dupPayInv} ${t('invoices', 'فاتورة')}`, (h.dupPay || 0) === 0)}</td></tr>
+        <tr><td style="padding:7px 0">${t('Invoices with an invalid date', 'فواتير بتاريخ غير صالح')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), `${h.badDates || 0} ${t('invoices', 'فاتورة')}`, (h.badDates || 0) === 0)}</td></tr>
         <tr><td style="padding:7px 0">${t('Records near the 1 MB limit', 'سجلات قرب حد 1 ميغابايت')}</td><td style="text-align:right">${chip(t('none', 'لا شيء'), overList, h.oversized.length === 0)}</td></tr>
         <tr><td style="padding:7px 0">${t('Total data size', 'حجم البيانات')}</td><td style="text-align:right"><b>${h.totalMB.toFixed(2)} MB</b> <span class="text-mute">(${h.cachePct}% ${t('of local cache', 'من الذاكرة المحلية')})</span></td></tr>
       </table>
@@ -12147,6 +12307,7 @@ window.showDataHealthUI = function () {
         { label: t('Close', 'إغلاق'), class: 'btn ghost', onclick: () => closeModal() },
         ...((h.dupRows || h.dupEnr || h.dupLi) ? [{ label: '🔧 ' + t('Repair duplicates', 'إصلاح المكررات'), class: 'btn primary', onclick: () => { closeModal(); window._applyDataRepair(); } }] : []),
         ...((h.dupPay || 0) > 0 ? [{ label: '🧾 ' + t('Fix duplicate payments', 'إصلاح الدفعات المكررة'), class: 'btn primary', style: 'background:var(--accent-2);border-color:var(--accent-2)', onclick: () => { closeModal(); window.showFixDuplicatePaymentsUI(); } }] : []),
+        ...((h.badDates || 0) > 0 ? [{ label: '📅 ' + t('Fix invoice dates', 'إصلاح تواريخ الفواتير'), class: 'btn primary', style: 'background:var(--accent-2);border-color:var(--accent-2)', onclick: () => { closeModal(); window.showFixInvoiceDatesUI(); } }] : []),
       ],
   });
 };
@@ -12920,6 +13081,24 @@ window.printMemberInvoicePDF = function(memberId) {
   }
 };
 
+// ── Club logo for printed documents ───────────────────────────────────────────
+// The invoice opens as a self-contained blob and is printed, so the mark has to be
+// inline — no external file, no network fetch. This is the Black Stars star emblem
+// drawn as vector art (crisp at any print DPI) in the brand colours.
+//
+// To use the real logo bitmap instead: set CLUB_LOGO_SRC to a base64 data URI
+// (`data:image/png;base64,...`) and clubLogoHTML() will render that in its place.
+// A plain URL will NOT work — the print blob cannot reach the network. (v6.336)
+const CLUB_LOGO_SRC = '';
+const CLUB_LOGO_STAR = 'M32 10 L37.58 24.31 L52.92 25.20 L41.03 34.94 L44.93 49.80 L32 41.50 L19.07 49.80 L22.97 34.94 L11.08 25.20 L26.42 24.31 Z';
+function clubLogoHTML(size = 56) {
+  if (CLUB_LOGO_SRC) return `<img src="${CLUB_LOGO_SRC}" alt="Black Stars Sports Club" width="${size}" height="${size}" style="display:block;object-fit:contain" />`;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 64 64" role="img" aria-label="Black Stars Sports Club" style="display:block">
+    <rect x="0" y="0" width="64" height="64" rx="13" fill="#111111"/>
+    <path d="${CLUB_LOGO_STAR}" fill="#FFC400"/>
+  </svg>`;
+}
+
 window.printInvoicePDF = function(id) {
   const inv = state.invoices.find(x => x.id === id);
   if (!inv) { toast('Invoice not found', 'error'); return; }
@@ -13099,14 +13278,11 @@ window.printInvoicePDF = function(id) {
   .logo {
     width: 56px;
     height: 56px;
-    background: linear-gradient(135deg, #f26060 0%, #f2a33c 100%);
-    border-radius: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 32px;
-    color: #fff;
     flex-shrink: 0;
+    /* the emblem carries its own dark tile — make sure browsers print it rather
+       than helpfully stripping the background to save ink */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
   .brand-info h1 {
     font-size: 22px;
@@ -13388,7 +13564,7 @@ window.printInvoicePDF = function(id) {
 <body>
   <div class="header">
     <div class="brand">
-      <div class="logo">★</div>
+      <div class="logo">${clubLogoHTML(56)}</div>
       <div class="brand-info">
         <h1>Black Stars Sports Club</h1>
         <div dir="rtl" style="font-size:15px;font-weight:700;color:#1a1a1a;margin-top:1px">نادي بلاك ستارز الرياضي</div>
@@ -18395,9 +18571,41 @@ PAGES.attendance = (main) => {
     // Write-through: confirm the mark reached the cloud; if not, warn loudly (the mark
     // is safe locally + auto-retries, but the marker must KNOW it isn't synced yet).
     if (typeof saveConfirmed === 'function') {
-      saveConfirmed().then(r => { if (r && !r.ok) { try { toast('⚠ ' + t('Attendance saved on this device but NOT yet in the cloud — check your connection', 'الحضور محفوظ على هذا الجهاز لكن لم يصل السحابة بعد — تحقق من الاتصال'), 'error'); } catch (_) {} } });
+      const _cell = { id: m.id, sport, mo, day: String(day), iso: _markISO };
+      saveConfirmed().then(r => {
+        if (r && !r.ok) { try { toast('⚠ ' + t('Attendance saved on this device but NOT yet in the cloud — check your connection', 'الحضور محفوظ على هذا الجهاز لكن لم يصل السحابة بعد — تحقق من الاتصال'), 'error'); } catch (_) {} return; }
+        // A present mark is only announced after the SERVER hands the record back with the
+        // 'Y' in place — the name in the toast comes from that server copy, never from
+        // local state or from what was clicked. (v6.336)
+        if (next === 'Y') _announceAttendanceFromCloud(_cell);
+      });
     } else save();
     refresh();
+  }
+  // Re-reads the member straight from the cloud and confirms the 'Y' is really there.
+  // Never trusts local state: both the mark and the displayed name come from the server.
+  async function _announceAttendanceFromCloud(cell) {
+    const S = window.Storage;
+    if (!S || typeof S.fetchDoc !== 'function') return false;
+    let doc = null;
+    try { doc = await S.fetchDoc('members', cell.id); } catch (_) { doc = null; }
+    const mark = doc && doc.dailyAttendance && doc.dailyAttendance[cell.mo]
+      && doc.dailyAttendance[cell.mo][cell.sport] && doc.dailyAttendance[cell.mo][cell.sport][cell.day];
+    if (!doc || mark !== 'Y') {
+      try {
+        toast('⚠ ' + t(
+          `Could NOT confirm the attendance for ${cell.sport} on ${cell.iso} in the cloud — do not assume it saved. Retry.`,
+          `تعذّر تأكيد حضور ${cell.sport} بتاريخ ${cell.iso} في السحابة — لا تفترض أنه حُفظ. أعد المحاولة.`), 'error');
+      } catch (_) {}
+      return false;
+    }
+    const cloudName = doc.name || doc.nameArabic || ('#' + cell.id);   // straight from the server
+    try {
+      toast('☁ ' + t(
+        `Saved in cloud: ${cloudName} — present · ${cell.sport} · ${cell.iso}`,
+        `حُفظ في السحابة: ${cloudName} — حاضر · ${cell.sport} · ${cell.iso}`), 'success');
+    } catch (_) {}
+    return true;
   }
   function markCell(memberId, sport, day, current) {
     const next = current === 'Y' ? 'N' : current === 'N' ? null : 'Y';

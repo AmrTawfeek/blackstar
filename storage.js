@@ -232,6 +232,7 @@
     needsMigration() { return false; },
     async migrateToMultiDoc() { return { migrated: false, reason: 'offline mode (localStorage)' }; },
     async verifyDoc() { return true; },   // local mode: data is durable locally
+    async fetchDoc() { return null; },    // local mode: there is no server to read back from
     cloudWriteBlocked() { return false; },
   };
 
@@ -585,6 +586,15 @@
         try { const snap = await colRef(collection).doc(String(id)).get({ source: 'server' }); return snap.exists; }
         catch (_) { return false; }
       },
+      // Like verifyDoc, but hands back what the SERVER actually holds so the caller can
+      // echo a field (e.g. the member's name) that came from the cloud rather than from
+      // local state. Returns null when the record is absent or unreachable. (v6.336)
+      async fetchDoc(collection, id) {
+        try {
+          const snap = await colRef(collection).doc(String(id)).get({ source: 'server' });
+          return snap.exists ? snap.data() : null;
+        } catch (_) { return null; }
+      },
 
       save(state) {
         if (blockEmptyWrite(state)) {
@@ -815,6 +825,7 @@
     },
     // Confirm a specific record exists on the SERVER (read-back verification). (v6.332)
     verifyDoc(collection, id) { try { return (activeBackend && activeBackend.verifyDoc) ? activeBackend.verifyDoc(collection, id) : Promise.resolve(true); } catch (_) { return Promise.resolve(false); } },
+    fetchDoc(collection, id) { try { return (activeBackend && activeBackend.fetchDoc) ? activeBackend.fetchDoc(collection, id) : Promise.resolve(null); } catch (_) { return Promise.resolve(null); } },
     save(state) {
       if (!activeBackend) this.init();
       pendingState = state;
