@@ -1424,6 +1424,9 @@ PAGES.members = (main) => {
           if (mc.frozen) parts.push(chip(mc.frozen, 'Frozen', 'Frozen', 'var(--blue)', 'rgba(59,130,246,.12)', '❄️'));
           if (mc.completed) parts.push(chip(mc.completed, 'Completed', 'Completed', 'var(--purple)', 'rgba(139,92,246,.12)', ''));
           if (mc.withdrawn) parts.push(chip(mc.withdrawn, 'Withdrawn', 'Withdrawn', 'var(--accent-2)', 'rgba(245,158,11,.12)', '↩'));
+          // Archived members live outside the counts above (they're soft-deleted), so this
+          // chip is the only place their number shows. Clicking it reveals them.
+          if (mc.archived) parts.push(chip(mc.archived, 'Archived', 'Archived', 'var(--text-mute)', 'rgba(120,120,140,.12)', '📦'));
           return parts.join('');
         })()}
         </div>
