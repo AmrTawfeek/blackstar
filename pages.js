@@ -18311,6 +18311,10 @@ function isModalDirty() {
 // Wrapped close: warns the user if the form has unsaved changes
 function tryCloseModal() {
   if (window._modalBypassDirty) { closeModal(); return; }
+  // A "locked" modal must be acknowledged with its own button — backdrop clicks and Esc
+  // do nothing. Used by the attendance confirmation so it can't be dismissed unread.
+  const bd = $('#modal-backdrop');
+  if (bd && bd.dataset.modalLocked === '1') return;
   if (isModalDirty()) {
     if (!confirm('Discard changes? Your edits will be lost.')) return;
   }
@@ -18565,8 +18569,22 @@ PAGES.attendance = (main) => {
     } else save();
     refresh();
   }
-  // Re-reads the member straight from the cloud and confirms the 'Y' is really there.
-  // Never trusts local state: both the mark and the displayed name come from the server.
+  // Sessions left on the subscription that COVERS the marked day, computed from the server
+  // copy of the member. Returns null when the subscription doesn't track a class count.
+  function _sessionsLeftFromDoc(doc, sport, dateISO) {
+    const sub = (typeof subForAttendanceDate === 'function') ? subForAttendanceDate(doc, sport, dateISO) : null;
+    const planned = sub ? (parseInt(sub.totalClasses) || 0) : 0;
+    if (!sub || planned <= 0) return null;
+    // Count present marks only inside this subscription's window, so a renewal resets the tally.
+    const live = (typeof liveAttendanceCount === 'function')
+      ? liveAttendanceCount(doc, sport, sub.start || null, sub.end || null) : { y: 0 };
+    const attended = live.y || 0;
+    return { attended, planned, left: Math.max(0, planned - attended) };
+  }
+  // Re-reads the member straight from the cloud and confirms the 'Y' is really there, then
+  // shows a centred modal the marker must dismiss. Everything on it — English name, Arabic
+  // name, sessions remaining, status — is derived from the SERVER document, never from local
+  // state and never from what was clicked. (v6.340)
   async function _announceAttendanceFromCloud(cell) {
     const S = window.Storage;
     if (!S || typeof S.fetchDoc !== 'function') return false;
@@ -18575,20 +18593,86 @@ PAGES.attendance = (main) => {
     const mark = doc && doc.dailyAttendance && doc.dailyAttendance[cell.mo]
       && doc.dailyAttendance[cell.mo][cell.sport] && doc.dailyAttendance[cell.mo][cell.sport][cell.day];
     if (!doc || mark !== 'Y') {
-      try {
-        toast('⚠ ' + t(
-          `Could NOT confirm the attendance for ${cell.sport} on ${cell.iso} in the cloud — do not assume it saved. Retry.`,
-          `تعذّر تأكيد حضور ${cell.sport} بتاريخ ${cell.iso} في السحابة — لا تفترض أنه حُفظ. أعد المحاولة.`), 'error');
-      } catch (_) {}
+      _attendanceModal({
+        okay: false,
+        title: '⚠ ' + t('NOT saved in the cloud', 'لم يُحفظ في السحابة'),
+        body: `<div style="text-align:center;padding:8px 0">
+            <div style="font-size:46px;line-height:1">⚠️</div>
+            <div style="font-size:16px;font-weight:800;color:var(--red);margin-top:8px">${escapeHtml(t('Could not confirm this attendance on the server', 'تعذّر تأكيد هذا الحضور على الخادم'))}</div>
+            <div style="font-size:13px;color:var(--text-mute);margin-top:8px">${escapeHtml(cell.sport)} · ${escapeHtml(cell.iso)}</div>
+            <div style="font-size:13px;color:var(--text);margin-top:10px">${escapeHtml(t('Do NOT assume it saved. Check your connection and mark it again.', 'لا تفترض أنه حُفظ. تحقق من الاتصال وسجّل الحضور مرة أخرى.'))}</div>
+          </div>`,
+      });
       return false;
     }
-    const cloudName = doc.name || doc.nameArabic || ('#' + cell.id);   // straight from the server
-    try {
-      toast('☁ ' + t(
-        `Saved in cloud: ${cloudName} — present · ${cell.sport} · ${cell.iso}`,
-        `حُفظ في السحابة: ${cloudName} — حاضر · ${cell.sport} · ${cell.iso}`), 'success');
-    } catch (_) {}
+
+    // ── everything below reads ONLY from `doc` (the server copy) ──
+    const nameEn = doc.name || '';
+    const nameAr = doc.nameArabic || '';
+    const shown = nameEn || nameAr || ('#' + cell.id);
+    const status = (typeof memberStatus === 'function') ? memberStatus(doc) : '';
+    const sess = _sessionsLeftFromDoc(doc, cell.sport, cell.iso);
+
+    const statusColor = status === 'Active' ? 'var(--green)'
+      : status === 'Frozen' ? 'var(--blue)'
+      : status === 'Expired' ? 'var(--red)'
+      : status === 'Completed' ? 'var(--purple)' : 'var(--text-mute)';
+    const leftColor = !sess ? 'var(--text-mute)' : sess.left === 0 ? 'var(--red)' : sess.left <= 2 ? 'var(--accent-2)' : 'var(--green)';
+    const leftText = sess
+      ? `<span style="font-size:30px;font-weight:900;color:${leftColor}">${sess.left}</span>
+         <span style="font-size:13px;color:var(--text-mute)"> / ${sess.planned}</span>`
+      : `<span style="font-size:15px;color:var(--text-mute)">${escapeHtml(t('not tracked', 'غير محتسب'))}</span>`;
+    const leftNote = sess && sess.left === 0
+      ? `<div style="font-size:12px;font-weight:700;color:var(--red);margin-top:4px">${escapeHtml(t('No sessions left — needs renewal', 'لا توجد حصص متبقية — يحتاج تجديداً'))}</div>` : '';
+
+    const cellStyle = 'padding:12px;border:1px solid var(--border);border-radius:10px;text-align:center';
+    const labelStyle = 'font-size:11px;color:var(--text-mute);letter-spacing:.4px;text-transform:uppercase';
+
+    _attendanceModal({
+      okay: true,
+      title: '✅ ' + t('Attendance saved in the cloud', 'حُفظ الحضور في السحابة'),
+      body: `<div style="text-align:center">
+          <div style="font-size:46px;line-height:1">✅</div>
+          <div style="font-size:22px;font-weight:900;margin-top:8px;color:var(--text)">${escapeHtml(shown)}</div>
+          ${nameAr ? `<div dir="rtl" style="font-size:18px;font-weight:700;margin-top:2px;color:var(--text)">${escapeHtml(nameAr)}</div>` : ''}
+          <div style="font-size:13px;color:var(--text-mute);margin-top:6px">${escapeHtml(t('marked present', 'تم تسجيله حاضراً'))} · ${escapeHtml(cell.sport)} · ${escapeHtml(cell.iso)}</div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px;text-align:center">
+            <div style="${cellStyle}">
+              <div style="${labelStyle}">${escapeHtml(t('Sessions remaining', 'الحصص المتبقية'))}</div>
+              <div style="margin-top:6px">${leftText}</div>
+              ${leftNote}
+            </div>
+            <div style="${cellStyle}">
+              <div style="${labelStyle}">${escapeHtml(t('Status', 'الحالة'))}</div>
+              <div style="margin-top:8px"><span style="display:inline-block;padding:5px 14px;border-radius:999px;font-size:14px;font-weight:800;color:${statusColor};border:1px solid ${statusColor};background:transparent">${escapeHtml(status || '—')}</span></div>
+            </div>
+          </div>
+
+          <div style="font-size:11px;color:var(--text-mute);margin-top:14px">☁ ${escapeHtml(t('Read back from the server — this record is stored in the cloud.', 'تمت القراءة من الخادم — هذا السجل محفوظ في السحابة.'))}</div>
+        </div>`,
+    });
     return true;
+  }
+  // The attendance confirmation popup: wider than a normal modal, centred, and dismissed only
+  // by the OK button (no backdrop click, no ✕) so a roll-call can't scroll it away unseen.
+  function _attendanceModal({ title, body, okay }) {
+    showModal({
+      title,
+      body,
+      actions: [{ label: t('OK', 'حسناً'), class: okay ? 'btn primary' : 'btn danger', id: 'att-confirm-ok', onclick: () => closeModal() }],
+    });
+    const backdrop = document.getElementById('modal-backdrop');
+    if (backdrop) backdrop.dataset.modalLocked = '1';   // tryCloseModal() refuses Esc + backdrop click
+    const modal = backdrop && backdrop.querySelector('.modal');
+    if (modal) {
+      modal.style.maxWidth = '520px';
+      modal.style.width = 'min(92vw, 520px)';
+      const x = modal.querySelector('#modal-close');
+      if (x) x.style.display = 'none';                  // OK is the only way out
+    }
+    const ok = document.getElementById('att-confirm-ok');
+    if (ok) ok.focus();                                 // Enter/Space dismisses it
   }
   function markCell(memberId, sport, day, current) {
     const next = current === 'Y' ? 'N' : current === 'N' ? null : 'Y';
