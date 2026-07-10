@@ -231,6 +231,8 @@
     isCloud: false,
     needsMigration() { return false; },
     async migrateToMultiDoc() { return { migrated: false, reason: 'offline mode (localStorage)' }; },
+    async verifyDoc() { return true; },   // local mode: data is durable locally
+    cloudWriteBlocked() { return false; },
   };
 
   // ─── Firebase backend (MULTI-DOCUMENT) ──────────────────────────────────────
@@ -544,9 +546,9 @@
           // A partial/failed SERVER read → don't trust it, block writes (read-only).
           if (anyReadFail) {
             loadErrored = true; cloudReadFailed = true;
-            console.warn('[Storage:firebase] SERVER read incomplete — offline copy READ-ONLY (cloud writes blocked).');
+            console.warn('[Storage:firebase] SERVER read incomplete — CLOUD-ONLY mode: refusing to run on a local copy.');
             try { if (typeof window !== 'undefined' && typeof window.__onCloudReadFailed === 'function') window.__onCloudReadFailed(new Error('partial read')); } catch (_) {}
-            return await localBackend.load();
+            return { __cloudUnavailable: true };   // v6.332: NO offline fallback — the app must not run on stale local data
           }
 
           // Legacy single-document back-compat: old doc kept collections INLINE.
@@ -570,11 +572,18 @@
           for (const name of COLLECTIONS) { _live[name] = new Map(); for (const r of (assembled[name] || [])) if (r && r.id != null) _live[name].set(String(r.id), r); }
           return result;
         } catch (e) {
-          console.warn('[Storage:firebase] SERVER load failed — offline copy READ-ONLY (cloud writes blocked):', (e && e.code) || e);
+          console.warn('[Storage:firebase] SERVER load failed — CLOUD-ONLY mode: refusing to run on a local copy:', (e && e.code) || e);
           loadErrored = true; cloudReadFailed = true;
           try { if (typeof window !== 'undefined' && typeof window.__onCloudReadFailed === 'function') window.__onCloudReadFailed(e); } catch (_) {}
-          return await localBackend.load();
+          return { __cloudUnavailable: true };   // v6.332: NO offline fallback
         }
+      },
+      // Read-back verification: confirm a specific record REALLY exists on the SERVER (not the
+      // local cache). Used to gate a "success" message on proof the object is stored in the
+      // cloud and retrievable. (v6.332)
+      async verifyDoc(collection, id) {
+        try { const snap = await colRef(collection).doc(String(id)).get({ source: 'server' }); return snap.exists; }
+        catch (_) { return false; }
       },
 
       save(state) {
@@ -610,6 +619,10 @@
 
       // Is there a change that failed to reach the cloud and is only on this device?
       hasUnsaved() { return !!lastWriteFailed; },
+      // TRUE when the cloud could NOT be confirmed on load (working from the read-only offline
+      // copy) — every write is blocked, so the UI must PREVENT creating records that would be
+      // lost on reload, not just warn. (v6.331)
+      cloudWriteBlocked() { return !!cloudReadFailed; },
       // Force an immediate retry of the last failed/queued write; resolves with the
       // cloud result ({ ok:true } once it lands, { ok:false, error } if it fails again).
       retryNow() {
@@ -794,9 +807,14 @@
     async load() {
       if (!activeBackend) this.init();
       const data = await activeBackend.load();
+      // CLOUD-ONLY (v6.332): the cloud was unreachable — do NOT snapshot/return a usable state;
+      // the app shows a blocking "can't connect" screen and refuses to run on stale local data.
+      if (data && data.__cloudUnavailable) return data;
       try { if (data) LocalBackups.snapshot(data, 'load', true); } catch (_) {}   // baseline snapshot of loaded data
       return data;
     },
+    // Confirm a specific record exists on the SERVER (read-back verification). (v6.332)
+    verifyDoc(collection, id) { try { return (activeBackend && activeBackend.verifyDoc) ? activeBackend.verifyDoc(collection, id) : Promise.resolve(true); } catch (_) { return Promise.resolve(false); } },
     save(state) {
       if (!activeBackend) this.init();
       pendingState = state;
@@ -827,6 +845,10 @@
     // handed to Firestore) — so a reload/close during those ~1.5s is BLOCKED and the write is
     // flushed first, closing the "add → reload fast → record gone" gap. (v6.322)
     hasUnsavedCloud() { try { return !!(activeBackend && activeBackend.isCloud && ((activeBackend.hasUnsaved && activeBackend.hasUnsaved()) || pendingState)); } catch (_) { return false; } },
+    // TRUE when we're on a cloud device but the cloud is NOT writable (offline/read-only). The
+    // UI uses this to BLOCK creating members/invoices that would be lost. Local backend = always
+    // writable (no cloud). (v6.331)
+    cloudWriteBlocked() { try { return !!(activeBackend && activeBackend.isCloud && activeBackend.cloudWriteBlocked && activeBackend.cloudWriteBlocked()); } catch (_) { return false; } },
     // Force an immediate retry of a failed cloud write (from the "Retry now" button).
     retryNow() {
       try {

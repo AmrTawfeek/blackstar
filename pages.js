@@ -3472,6 +3472,9 @@ function showMemberForm(m) {
         };
 
         if (isNew) {
+          // OFFLINE GUARD (v6.331): never create a member (+ invoice + PDF) when the cloud is
+          // unwritable — it would only live in this browser and vanish on refresh.
+          if (typeof assertCloudWritable === 'function' && !assertCloudWritable('add this member', 'إضافة هذا العضو')) return;
           stampUpdate(data);
           state.members.push(data);
           pushRecentMember(data.id);
@@ -3619,14 +3622,16 @@ function showMemberForm(m) {
               toast(`✓ ${t('Member added & saved to cloud', 'تمت إضافة العضو وحُفظ في السحابة')} · ${enrollments.length} sport${enrollments.length !== 1 ? 's' : ''} · invoice ${ref}` + (invoiceBalance(newInv) > 0.001 ? ` · ${fmt(paidNow)} paid, ${fmt(invoiceBalance(newInv))} due` : ''), 'success');
               showNewMemberInvoiceModal(newInv.id, data.name);
             };
-            if (typeof withCloudConfirm === 'function') withCloudConfirm({ onOk: _okNewMemberInv });
+            // verify BOTH the member doc AND the invoice doc are retrievable on the SERVER
+            // before showing success + the printable invoice. (v6.332)
+            if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'members', id: data.id }, { collection: 'invoices', id: newInv.id }], onOk: _okNewMemberInv });
             else { save(); _okNewMemberInv(); }
             return;
           }
 
           closeModal();
           render();
-          if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg: t('Member added & saved to cloud', 'تمت إضافة العضو وحُفظ في السحابة') });
+          if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'members', id: data.id }], okMsg: t('Member added & saved to cloud', 'تمت إضافة العضو وحُفظ في السحابة') });
           else { save(); toast('Member added'); }
           return;
         }
@@ -10367,6 +10372,8 @@ function addInvoice() {
     const method = $('#f-method')?.value;
     const date = $('#f-date')?.value;
     if (!desc || !amt || !date) { toast('Description, amount and date required', 'error'); return; }
+    // OFFLINE GUARD (v6.331): don't create an invoice that can't reach the cloud (it would be lost).
+    if (typeof assertCloudWritable === 'function' && !assertCloudWritable('create this invoice', 'إنشاء هذه الفاتورة')) return;
     const custId = parseInt($('#f-cust')?.value) || null;
     const custMember = custId ? state.members.find(m => m.id === custId) : null;
     // Customer mobile: a linked member's own phone wins; else the typed walk-in mobile.
@@ -10387,8 +10394,9 @@ function addInvoice() {
         }
       }
     }
+    const _miInvId = nextId(state.invoices);
     state.invoices.push({
-      id: nextId(state.invoices),
+      id: _miInvId,
       date,
       description: desc,
       amount: amt,
@@ -10406,10 +10414,12 @@ function addInvoice() {
       customerName: custMember ? custMember.name : null,
       customerPhone,
     });
-    save();
     closeModal();
     render();
-    toast(paidNow < amt ? `Invoice added · ${fmt(paidNow)} paid, ${fmt(amt - paidNow)} balance` : 'Invoice added');
+    // Write-through + SERVER read-back before "added". (v6.332)
+    const _miMsg = paidNow < amt ? `Invoice added · ${fmt(paidNow)} paid, ${fmt(amt - paidNow)} balance` : 'Invoice added & saved to cloud';
+    if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'invoices', id: _miInvId }], okMsg: _miMsg });
+    else { save(); toast(_miMsg); }
   }
 
   function completeUnifiedSale() {
@@ -12272,6 +12282,7 @@ window.recordPaymentUI = function(id) {
     actions: [
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
       { label: '💵 Record payment', class: 'btn primary', onclick: () => {
+        if (typeof assertCloudWritable === 'function' && !assertCloudWritable('record this payment', 'تسجيل هذه الدفعة')) return;
         const date = $('#pay-date').value || TODAY;
         const isSplit = $('#pay-split').checked;
         if (isSplit) {
@@ -12302,11 +12313,13 @@ window.recordPaymentUI = function(id) {
           }
           recordInvoicePayment(inv, pay, { date, method: $('#pay-method').value || 'cash' });
         }
-        save();
         closeModal();
         render();
         const nb = invoiceBalance(inv);
-        toast(nb > 0.001 ? `Payment recorded · ${fmt(nb)} balance remaining` : '✓ Paid in full');
+        // Write-through + SERVER read-back of the invoice before confirming the payment. (v6.332)
+        const _payMsg = nb > 0.001 ? `Payment recorded · ${fmt(nb)} balance remaining` : 'Paid in full — saved to cloud';
+        if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'invoices', id: inv.id }], okMsg: _payMsg });
+        else { save(); toast(nb > 0.001 ? `Payment recorded · ${fmt(nb)} balance remaining` : '✓ Paid in full'); }
       }},
     ],
   });
@@ -16861,10 +16874,12 @@ function completeSale(onDone) {
     createdAt: new Date().toISOString(),
   });
 
-  save();
   closeModal();
-  toast(`Sale complete · ${fmt(total)} QAR · invoice ${ref}` + (balance > 0 ? ` · ${fmt(balance)} balance` : ''), 'success');
   if (onDone) onDone(); else render();
+  // Write-through + SERVER read-back of the sale's invoice before confirming. (v6.332)
+  const _slMsg = `Sale complete · ${fmt(total)} QAR · invoice ${ref}` + (balance > 0 ? ` · ${fmt(balance)} balance` : '');
+  if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'invoices', id: newInv.id }], okMsg: _slMsg });
+  else { save(); toast(_slMsg, 'success'); }
 }
 
 window.viewSaleDetail = function(id) {
@@ -20000,14 +20015,15 @@ window.withdrawSport = function(memberId, sport) {
           }
         }
 
-        save();
         closeModal();
         audit('sport.withdraw', `member:${m.id}`,
           `Withdrew ${m.name} from ${sport} — refunded ${fmt(refund)} QAR`,
           { memberId: m.id, sport, originalPrice: price, usedAmount, refundAmount: refund, attended, totalClasses, invoiceRef: withdrawRef });
         render();
-        toast(`✓ Refund issued: ${fmt(refund)} QAR · ${sport} removed from ${m.name}`);
-        setTimeout(() => viewMember(m.id), 200);
+        // Write-through + SERVER read-back of the member before confirming the refund. (v6.332)
+        const _rfOk = () => { toast(`✓ Refund issued: ${fmt(refund)} QAR · ${sport} removed from ${m.name}`, 'success'); setTimeout(() => viewMember(m.id), 200); };
+        if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'members', id: m.id }], onOk: _rfOk });
+        else { save(); _rfOk(); }
       }},
     ],
   });
@@ -20615,6 +20631,7 @@ window.addRenewal = function(memberId) {
         // 2) Also push to subscriptions[] so it shows up in Subscription History,
         //    counts toward classes, and links to the invoice.
         const ref = nextInvoiceRef();
+        let _rnInvId = null;   // set below if a renewal invoice is created (v6.332 verify)
         if (!m.subscriptions) m.subscriptions = [];
         m.subscriptions.push({
           _sid: 's' + Date.now(),
@@ -20644,7 +20661,7 @@ window.addRenewal = function(memberId) {
             : '';
           const sportLabel = dl ? `${renewedSport} · ${dl}` : renewedSport;
           state.invoices.push({
-            id: nextId(state.invoices),
+            id: (_rnInvId = nextId(state.invoices)),
             date: start,
             description: `${sportLabel} renewal — ${m.name}${classes && renewedSport !== SUMMER_CAMP ? ` · ${classes} classes` : ''}`,
             amount,
@@ -20684,12 +20701,15 @@ window.addRenewal = function(memberId) {
           `Renewed ${renewedSport} for ${m.name || m.nameArabic}`,
           { memberId: m.id, name: m.name, sport: renewedSport, amount, start, end, invoiceRef: ref });
 
-        save();
         closeModal();
         // Clear modal-scoped state so a later renewal doesn't carry over
         window._rnPendingDeduction = 0;
         render();
-        toast(`Renewal recorded — ${renewedSport} (#${m.renewalsBySport[renewedSport]} for this sport) · invoice ${ref}${amount > 0 ? ' · ' + fmt(amount) + ' QAR' : ''}${deductedCount > 0 ? ' · −' + deductedCount + ' post-expiry class' + (deductedCount === 1 ? '' : 'es') : ''}${carried > 0 ? ' · +' + carried + ' carried class' + (carried === 1 ? '' : 'es') : ''}`);
+        // Write-through + SERVER read-back (verify the renewal invoice + the member). (v6.332)
+        const _rnMsg = `Renewal recorded — ${renewedSport} (#${m.renewalsBySport[renewedSport]} for this sport) · invoice ${ref}${amount > 0 ? ' · ' + fmt(amount) + ' QAR' : ''}${deductedCount > 0 ? ' · −' + deductedCount + ' post-expiry class' + (deductedCount === 1 ? '' : 'es') : ''}${carried > 0 ? ' · +' + carried + ' carried class' + (carried === 1 ? '' : 'es') : ''}`;
+        const _rnVerify = [{ collection: 'members', id: m.id }]; if (_rnInvId != null) _rnVerify.push({ collection: 'invoices', id: _rnInvId });
+        if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: _rnVerify, okMsg: _rnMsg });
+        else { save(); toast(_rnMsg); }
       }},
     ],
   });
@@ -23738,6 +23758,8 @@ window.convertTrialToMember = function(id) {
           }
           return;
         }
+        // OFFLINE GUARD (v6.331): don't create a member+invoice that can't reach the cloud.
+        if (typeof assertCloudWritable === 'function' && !assertCloudWritable('convert this trial', 'تحويل هذه التجربة')) return;
         const sport = $('#cv-sport').value;
         const coachId = parseInt($('#cv-coach').value);
         const classes = parseInt($('#cv-classes').value) || 0;
@@ -23796,8 +23818,9 @@ window.convertTrialToMember = function(id) {
         state.members.push(newMember);
 
         // 2. Create Invoice
+        const _cvInvId = nextId(state.invoices);
         state.invoices.push({
-          id: nextId(state.invoices),
+          id: _cvInvId,
           date: start,
           description: `${t.name} — converted from trial · ${sport}`,
           amount: price,
@@ -23819,12 +23842,13 @@ window.convertTrialToMember = function(id) {
         t.convertedMemberId = newMember.id;
         t.convertedAt = new Date().toISOString();
 
-        save();
         closeModal();
         render();
-        toast(`✓ ${t.name} is now a member · invoice ${ref} · ${fmt(price)} QAR`);
-        // Show their profile so admin can verify
-        setTimeout(() => viewMember(newMember.id), 200);
+        // Write-through + SERVER read-back: confirm the member AND invoice are retrievable from
+        // the cloud before saying success / opening the profile. (v6.332)
+        const _cvOk = () => { toast(`✓ ${t.name} is now a member · invoice ${ref} · ${fmt(price)} QAR`, 'success'); setTimeout(() => viewMember(newMember.id), 200); };
+        if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'members', id: newMember.id }, { collection: 'invoices', id: _cvInvId }], onOk: _cvOk });
+        else { save(); _cvOk(); }
       }},
     ],
   });
@@ -26699,11 +26723,13 @@ function saveRental(existingId, onDone) {
     createdAt: new Date().toISOString(),
   });
 
-  save();
   closeModal();
-  const linkBadge = matchedMember ? ` · linked to member ${matchedMember.name}` : '';
-  toast(`Booking saved · invoice ${ref} created${linkBadge}`, 'success');
   if (onDone) onDone(); else render();
+  const linkBadge = matchedMember ? ` · linked to member ${matchedMember.name}` : '';
+  // Write-through + SERVER read-back of the booking's invoice before confirming. (v6.332)
+  const _rtMsg = `Booking saved · invoice ${ref} created${linkBadge}`;
+  if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'invoices', id: newInv.id }], okMsg: _rtMsg });
+  else { save(); toast(_rtMsg, 'success'); }
 }
 
 // Edit default hourly rates per facility
@@ -27215,8 +27241,14 @@ PAGES.transfers = (main) => {
       actions: [
         { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
         { label: '🔁 ' + t('Transfer', 'نقل'), class: 'btn primary', onclick: () => {
+          if (typeof assertCloudWritable === 'function' && !assertCloudWritable('transfer this membership', 'نقل هذا الاشتراك')) return;
           const ok = window.transferMembership(fromMember.id, selEnr.sport, toMember.id);
-          if (ok) { window._trState = { fromId: null, sport: null, toId: null, fromQ: '', toQ: '' }; closeModal(); render(); toast(`✓ ${selEnr.sport} ${t('transferred to', 'نُقل إلى')} ${toMember.name}`); }
+          if (!ok) return;
+          window._trState = { fromId: null, sport: null, toId: null, fromQ: '', toQ: '' }; closeModal(); render();
+          // Write-through confirm before saying "transferred". (v6.332)
+          const _trMsg = `✓ ${selEnr.sport} ${t('transferred to', 'نُقل إلى')} ${toMember.name}`;
+          if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'members', id: toMember.id }], okMsg: _trMsg });
+          else toast(_trMsg);
         }},
       ],
     });
