@@ -454,6 +454,9 @@
       // element-merges its list(s) (window._mergeArrayById), so a concurrent add/edit on
       // another device is preserved instead of being overwritten by Firestore's whole-array
       // replace. Retries automatically on contention. Non-list fields stay field-level.
+      // FieldValue for the map-key delete sentinel below. Deliberately re-read here: the `_FV`
+      // above lives inside the `if (metaChanged)` block and is NOT in scope in this closure.
+      const _txnFV = (typeof window !== 'undefined' && window.firebase && window.firebase.firestore) ? window.firebase.firestore.FieldValue : null;
       const txnCommits = txnOps.map(op => {
         const ref = colRef(op.name).doc(op.id);
         return db.runTransaction(async t => {
@@ -464,7 +467,14 @@
           // Nested map (dailyAttendance …): 3-way deep-merge my current view against the LIVE
           // cloud copy so another device's just-added keys survive, mine survive, and I win a
           // true same-key conflict — exactly the array policy, applied key-by-key. (v6.320)
-          for (const f of (op.mapFields || [])) merged[f] = window._mergeRecord(op.base[f], op.cur[f], cloud[f], op.name + ':' + op.id + ':' + f);
+          //
+          // Pass a delete-sentinel factory: `set(..., {merge:true})` only ADDS and OVERWRITES
+          // map keys, it never removes one. A cleared attendance cell must therefore be written
+          // as an explicit FieldValue.delete() or the old mark lives on in the cloud. (v6.341)
+          // No FieldValue (local/test backend) → fall back to omitting the key rather than
+          // writing `undefined`, which Firestore would reject.
+          const _delSentinel = _txnFV ? (() => _txnFV.delete()) : null;
+          for (const f of (op.mapFields || [])) merged[f] = window._mergeRecord(op.base[f], op.cur[f], cloud[f], op.name + ':' + op.id + ':' + f, _delSentinel);
           t.set(ref, merged, { merge: true });
         });
       });

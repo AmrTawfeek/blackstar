@@ -18561,10 +18561,12 @@ PAGES.attendance = (main) => {
       const _cell = { id: m.id, sport, mo, day: String(day), iso: _markISO };
       saveConfirmed().then(r => {
         if (r && !r.ok) { try { toast('⚠ ' + t('Attendance saved on this device but NOT yet in the cloud — check your connection', 'الحضور محفوظ على هذا الجهاز لكن لم يصل السحابة بعد — تحقق من الاتصال'), 'error'); } catch (_) {} return; }
-        // A present mark is only announced after the SERVER hands the record back with the
-        // 'Y' in place — the name in the toast comes from that server copy, never from
-        // local state or from what was clicked. (v6.336)
-        if (next === 'Y') _announceAttendanceFromCloud(_cell);
+        // EVERY transition is now read back from the SERVER and compared to what we intended:
+        // present, absent, AND cleared. A present mark shows the full confirmation popup; the
+        // other two verify silently and only speak up when the server disagrees. A cleared cell
+        // that comes back still holding a mark is precisely the bug that shipped in v6.338, and
+        // it must never again be discovered by the user instead of by the app. (v6.342)
+        _announceAttendanceFromCloud(_cell, next);
       });
     } else save();
     refresh();
@@ -18581,30 +18583,46 @@ PAGES.attendance = (main) => {
     const attended = live.y || 0;
     return { attended, planned, left: Math.max(0, planned - attended) };
   }
-  // Re-reads the member straight from the cloud and confirms the 'Y' is really there, then
-  // shows a centred modal the marker must dismiss. Everything on it — English name, Arabic
-  // name, sessions remaining, status — is derived from the SERVER document, never from local
-  // state and never from what was clicked. (v6.340)
-  async function _announceAttendanceFromCloud(cell) {
+  // Re-reads the member straight from the cloud and confirms the server holds EXACTLY what was
+  // intended: 'Y', 'N', or nothing at all for a cleared cell. `expected` is null when cleared.
+  //
+  // A present mark then shows a centred modal the marker must dismiss — English name, Arabic
+  // name, sessions remaining, status, all derived from the SERVER document, never from local
+  // state and never from what was clicked. Absent + cleared verify silently and only interrupt
+  // when the server disagrees, because those are the quiet failures. (v6.340, v6.342)
+  async function _announceAttendanceFromCloud(cell, expected) {
     const S = window.Storage;
     if (!S || typeof S.fetchDoc !== 'function') return false;
     let doc = null;
     try { doc = await S.fetchDoc('members', cell.id); } catch (_) { doc = null; }
     const mark = doc && doc.dailyAttendance && doc.dailyAttendance[cell.mo]
-      && doc.dailyAttendance[cell.mo][cell.sport] && doc.dailyAttendance[cell.mo][cell.sport][cell.day];
-    if (!doc || mark !== 'Y') {
+      && doc.dailyAttendance[cell.mo][cell.sport] ? doc.dailyAttendance[cell.mo][cell.sport][cell.day] : undefined;
+    // A cleared cell must come back ABSENT. Anything else — including the old mark surviving —
+    // is a failed clear and gets reported, not swallowed.
+    const want = expected || null;
+    const got = (mark === 'Y' || mark === 'N') ? mark : null;
+    if (!doc || got !== want) {
+      const _cleared = want === null;
+      const _what = _cleared ? t('clear this attendance', 'مسح هذا الحضور')
+        : want === 'N' ? t('mark this absence', 'تسجيل هذا الغياب')
+        : t('save this attendance', 'حفظ هذا الحضور');
+      const _stillHolds = (!doc || got === null) ? '' :
+        `<div style="font-size:13px;color:var(--red);font-weight:700;margin-top:6px">${escapeHtml(t('The server still holds', 'لا يزال الخادم يحتفظ بـ'))} “${escapeHtml(got)}”</div>`;
       _attendanceModal({
         okay: false,
         title: '⚠ ' + t('NOT saved in the cloud', 'لم يُحفظ في السحابة'),
         body: `<div style="text-align:center;padding:8px 0">
             <div style="font-size:46px;line-height:1">⚠️</div>
-            <div style="font-size:16px;font-weight:800;color:var(--red);margin-top:8px">${escapeHtml(t('Could not confirm this attendance on the server', 'تعذّر تأكيد هذا الحضور على الخادم'))}</div>
+            <div style="font-size:16px;font-weight:800;color:var(--red);margin-top:8px">${escapeHtml(t('Could not ' + _what + ' on the server', 'تعذّر ' + _what + ' على الخادم'))}</div>
             <div style="font-size:13px;color:var(--text-mute);margin-top:8px">${escapeHtml(cell.sport)} · ${escapeHtml(cell.iso)}</div>
-            <div style="font-size:13px;color:var(--text);margin-top:10px">${escapeHtml(t('Do NOT assume it saved. Check your connection and mark it again.', 'لا تفترض أنه حُفظ. تحقق من الاتصال وسجّل الحضور مرة أخرى.'))}</div>
+            ${_stillHolds}
+            <div style="font-size:13px;color:var(--text);margin-top:10px">${escapeHtml(t('Do NOT assume it saved. Check your connection and try again.', 'لا تفترض أنه حُفظ. تحقق من الاتصال وحاول مرة أخرى.'))}</div>
           </div>`,
       });
       return false;
     }
+    // Absent / cleared: verified against the server, nothing to interrupt the roll-call for.
+    if (want !== 'Y') return true;
 
     // ── everything below reads ONLY from `doc` (the server copy) ──
     const nameEn = doc.name || '';
