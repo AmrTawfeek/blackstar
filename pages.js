@@ -3617,7 +3617,7 @@ function showMemberForm(m) {
                 if (typeof audit === 'function') audit('member.sibling_split', 'family:' + famId, `Split ${fmt(familyTotal)} across ${sibs.length} siblings = ${fmt(share)} each`);
                 closeModal();
                 render();
-                if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg: `${t('Sibling added & saved to cloud', 'تمت إضافة الأخ/الأخت وحُفظ في السحابة')} · family payment ${fmt(familyTotal)} split across ${sibs.length} = ${fmt(share)} each` });
+                if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'members', id: data.id }], okMsg: `${t('Sibling added & saved to cloud', 'تمت إضافة الأخ/الأخت وحُفظ في السحابة')} · family payment ${fmt(familyTotal)} split across ${sibs.length} = ${fmt(share)} each` });
                 else { save(); toast(`Sibling added · family payment ${fmt(familyTotal)} split across ${sibs.length} = ${fmt(share)} each`); }
                 return;
               }
@@ -3866,9 +3866,10 @@ function showMemberForm(m) {
             toast(t('Member updated', 'تم تحديث العضو'), 'success');
           }
         };
-        // Write-through: WAIT for the cloud to confirm before closing; on failure keep the
-        // form open + warn (data is safe locally + retries) so no edit is silently unsynced.
-        if (typeof withCloudConfirm === 'function') withCloudConfirm({ onOk: _finishOk, onFail: () => render() });
+        // Write-through: WAIT for the cloud to confirm before closing, then show the member
+        // exactly as the SERVER holds them; on failure keep the form open + warn (data is safe
+        // locally + retries) so no edit is silently unsynced. (v6.344)
+        if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'members', id: data.id }], onOk: _finishOk, onFail: () => render() });
         else { save(); _finishOk(); }
       }},
     ],
@@ -15132,9 +15133,12 @@ function showExpenseForm(id) {
         if (salaryCoachId != null) data.coachId = salaryCoachId;
         if (salaryCoachName) data.coachName = salaryCoachName;
         if (isNew) {
-          state.expenses.push({ id: nextId(state.expenses), ...data });
+          var _expNew = { id: nextId(state.expenses), ...data };
+          state.expenses.push(_expNew);
+          var _expId = _expNew.id;
           var _expMsg = t('Expense added & saved to cloud', 'أُضيف المصروف وحُفظ في السحابة');
         } else {
+          var _expId = e.id;
           // Preserve any legacy fields like `classification` from older data
           Object.assign(e, data);
           if (!isSalaryCategory(category) || salaryCoachId == null) delete e.coachId;
@@ -15146,8 +15150,9 @@ function showExpenseForm(id) {
         }
         closeModal();
         render();
-        // Write-through: confirm the money change reached Firebase before saying "saved".
-        if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg: _expMsg });
+        // Write-through: confirm the money change reached Firebase, then show the expense
+        // exactly as the SERVER holds it, before saying "saved". (v6.344)
+        if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'expenses', id: _expId }], okMsg: _expMsg });
         else { save(); toast(_expMsg); }
       }},
     ],
@@ -15702,18 +15707,25 @@ window._salAddPay = function(coachId, monthKey) {
   // The accounting month is the SALARY month (monthKey), NOT the payment date: paying
   // June salaries on 4 July books the expense in JUNE. The `date` keeps the real payout day.
   if (!Array.isArray(state.expenses)) state.expenses = [];
-  state.expenses.push({
+  const _salExpense = {
     id: nextId(state.expenses), date, month: monthKey, amount,
     category: 'Salary', method,
     description: `Coach salary — ${c ? c.name : ''} · ${fmtMonth(monthKey)} · payment ${rec.payments.length} (${method})`,
     coachId, coachName: c ? c.name : '', _salaryAutoExpense: true, salaryId: rec.id, salaryPaymentId: payId,
-  });
+  };
+  state.expenses.push(_salExpense);
   audit('salary.payment', `coach:${coachId}`, `Paid ${c ? c.name : ''} ${fmt(amount)} QAR (${method}) toward ${fmtMonth(monthKey)} salary`, { coachId, month: monthKey, amount, method, date });
   render();
-  // Write-through: WAIT for the cloud to confirm the payment before re-opening the manager,
-  // so the money is provably saved (or the user is warned to retry).
+  // Write-through: WAIT for the cloud to confirm the payment, show the salary + its expense
+  // exactly as the SERVER holds them, and only re-open the manager once the user clicks OK —
+  // otherwise the manager's own modal would replace the confirmation popup. (v6.344)
   if (typeof withCloudConfirm === 'function') {
-    withCloudConfirm({ okMsg: t('Payment saved to cloud', 'تم حفظ الدفعة في السحابة') }).finally(() => markPaid(coachId, monthKey));
+    withCloudConfirm({
+      verify: [{ collection: 'salaries', id: rec.id }, { collection: 'expenses', id: _salExpense.id }],
+      okMsg: t('Payment saved to cloud', 'تم حفظ الدفعة في السحابة'),
+      afterOk: () => markPaid(coachId, monthKey),
+      onFail: () => markPaid(coachId, monthKey),
+    });
   } else { save(); markPaid(coachId, monthKey); }
 };
 
@@ -18331,6 +18343,34 @@ function closeModal() {
 
 function escClose(e) { if (e.key === 'Escape') tryCloseModal(); }
 
+// The shared "your write reached the cloud" popup: wider than a normal modal, centred, and
+// dismissed ONLY by its OK button (no ✕, no Esc, no backdrop click) so a confirmation can
+// never be scrolled away unseen. Used by attendance and by every withCloudConfirm write.
+// `onClose` runs after OK — e.g. to reopen a panel the write came from. (v6.344)
+window.showLockedModal = function ({ title, body, okay, onClose }) {
+  showModal({
+    title,
+    body,
+    actions: [{
+      label: t('OK', 'حسناً'),
+      class: okay ? 'btn primary' : 'btn danger',
+      id: 'cloud-confirm-ok',
+      onclick: () => { closeModal(); if (typeof onClose === 'function') { try { onClose(); } catch (_) {} } },
+    }],
+  });
+  const backdrop = document.getElementById('modal-backdrop');
+  if (backdrop) backdrop.dataset.modalLocked = '1';   // tryCloseModal() refuses Esc + backdrop click
+  const modal = backdrop && backdrop.querySelector('.modal');
+  if (modal) {
+    modal.style.maxWidth = '520px';
+    modal.style.width = 'min(92vw, 520px)';
+    const x = modal.querySelector('#modal-close');
+    if (x) x.style.display = 'none';                  // OK is the only way out
+  }
+  const ok = document.getElementById('cloud-confirm-ok');
+  if (ok) ok.focus();                                  // Enter/Space dismisses it
+};
+
 // ─── ATTENDANCE ──────────────────────────────────────────────────
 PAGES.attendance = (main) => {
   // Defaults: pick today's month if we have data for it (else latest month with
@@ -18621,9 +18661,6 @@ PAGES.attendance = (main) => {
       });
       return false;
     }
-    // Absent / cleared: verified against the server, nothing to interrupt the roll-call for.
-    if (want !== 'Y') return true;
-
     // ── everything below reads ONLY from `doc` (the server copy) ──
     const nameEn = doc.name || '';
     const nameAr = doc.nameArabic || '';
@@ -18646,14 +18683,25 @@ PAGES.attendance = (main) => {
     const cellStyle = 'padding:12px;border:1px solid var(--border);border-radius:10px;text-align:center';
     const labelStyle = 'font-size:11px;color:var(--text-mute);letter-spacing:.4px;text-transform:uppercase';
 
+    // The same confirmation popup for all three outcomes — present, absent, and cleared —
+    // so every attendance action is acknowledged from the SERVER, not just a present mark.
+    // Only the icon, the title and the one-line verb change. (v6.343)
+    const _icon = want === 'Y' ? '✅' : want === 'N' ? '🚫' : '⬜';
+    const _title = want === 'Y' ? t('Attendance saved in the cloud', 'حُفظ الحضور في السحابة')
+      : want === 'N' ? t('Absence saved in the cloud', 'حُفظ الغياب في السحابة')
+      : t('Attendance cleared in the cloud', 'تم مسح الحضور في السحابة');
+    const _verb = want === 'Y' ? t('marked present', 'تم تسجيله حاضراً')
+      : want === 'N' ? t('marked absent', 'تم تسجيله غائباً')
+      : t('attendance cleared — no mark for this day', 'تم مسح الحضور — لا توجد علامة لهذا اليوم');
+
     _attendanceModal({
       okay: true,
-      title: '✅ ' + t('Attendance saved in the cloud', 'حُفظ الحضور في السحابة'),
+      title: _icon + ' ' + _title,
       body: `<div style="text-align:center">
-          <div style="font-size:46px;line-height:1">✅</div>
+          <div style="font-size:46px;line-height:1">${_icon}</div>
           <div style="font-size:22px;font-weight:900;margin-top:8px;color:var(--text)">${escapeHtml(shown)}</div>
           ${nameAr ? `<div dir="rtl" style="font-size:18px;font-weight:700;margin-top:2px;color:var(--text)">${escapeHtml(nameAr)}</div>` : ''}
-          <div style="font-size:13px;color:var(--text-mute);margin-top:6px">${escapeHtml(t('marked present', 'تم تسجيله حاضراً'))} · ${escapeHtml(cell.sport)} · ${escapeHtml(cell.iso)}</div>
+          <div style="font-size:13px;color:var(--text-mute);margin-top:6px">${escapeHtml(_verb)} · ${escapeHtml(cell.sport)} · ${escapeHtml(cell.iso)}</div>
 
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px;text-align:center">
             <div style="${cellStyle}">
@@ -18667,31 +18715,16 @@ PAGES.attendance = (main) => {
             </div>
           </div>
 
-          <div style="font-size:11px;color:var(--text-mute);margin-top:14px">☁ ${escapeHtml(t('Read back from the server — this record is stored in the cloud.', 'تمت القراءة من الخادم — هذا السجل محفوظ في السحابة.'))}</div>
+          <div style="font-size:11px;color:var(--text-mute);margin-top:14px">☁ ${escapeHtml(want === null
+            ? t('Read back from the server — the mark is gone from the cloud.', 'تمت القراءة من الخادم — لم تعد العلامة موجودة في السحابة.')
+            : t('Read back from the server — this record is stored in the cloud.', 'تمت القراءة من الخادم — هذا السجل محفوظ في السحابة.'))}</div>
         </div>`,
     });
     return true;
   }
-  // The attendance confirmation popup: wider than a normal modal, centred, and dismissed only
-  // by the OK button (no backdrop click, no ✕) so a roll-call can't scroll it away unseen.
-  function _attendanceModal({ title, body, okay }) {
-    showModal({
-      title,
-      body,
-      actions: [{ label: t('OK', 'حسناً'), class: okay ? 'btn primary' : 'btn danger', id: 'att-confirm-ok', onclick: () => closeModal() }],
-    });
-    const backdrop = document.getElementById('modal-backdrop');
-    if (backdrop) backdrop.dataset.modalLocked = '1';   // tryCloseModal() refuses Esc + backdrop click
-    const modal = backdrop && backdrop.querySelector('.modal');
-    if (modal) {
-      modal.style.maxWidth = '520px';
-      modal.style.width = 'min(92vw, 520px)';
-      const x = modal.querySelector('#modal-close');
-      if (x) x.style.display = 'none';                  // OK is the only way out
-    }
-    const ok = document.getElementById('att-confirm-ok');
-    if (ok) ok.focus();                                 // Enter/Space dismisses it
-  }
+  // The attendance confirmation popup is the shared locked modal — same shell every other
+  // cloud-confirmed write uses, so there is exactly one implementation to trust. (v6.344)
+  const _attendanceModal = (o) => window.showLockedModal(o);
   function markCell(memberId, sport, day, current) {
     const next = current === 'Y' ? 'N' : current === 'N' ? null : 'Y';
     // First mark (empty → present) stays one-click for fast roll-call.
@@ -21246,7 +21279,9 @@ window.deleteSubscription = function(memberId, sid) {
   // WRITE-THROUGH: only say "Deleted" once the CLOUD confirms the removal persisted — a
   // success message must mean it's really saved, not just changed on this screen.
   if (typeof withCloudConfirm === 'function') {
-    withCloudConfirm({ okMsg: `🗑 ${t('Deleted', 'تم الحذف')}: ${label}`, onFail: () => { try { render(); } catch (_) {} } });
+    // The subscription lives INSIDE the member document, so read the member back and show what
+    // the cloud now holds for them. (v6.344)
+    withCloudConfirm({ verify: [{ collection: 'members', id: m.id }], okMsg: `🗑 ${t('Deleted', 'تم الحذف')}: ${label}`, onFail: () => { try { render(); } catch (_) {} } });
   } else { save(); toast(`Deleted subscription: ${label}`); }
 };
 
@@ -23899,7 +23934,9 @@ window.editUserRole = function(email) {
           audit('user.role_map', `user:${e}`, `Mapped ${e} → ${role}${pass ? ' (login created)' : ''}`, { name: e, recordName: e, new: { role, coachId: entry.coachId ?? null, memberId: entry.memberId ?? null } });
           closeModal(); renderUserRolesList();
           // Write-through: confirm the mapping reached Firebase before saying "saved".
-          if (typeof withCloudConfirm === 'function') withCloudConfirm({ okMsg: `${e} → ${ROLE_LABELS[role] || role} ${t('(saved to cloud)', '(حُفظ في السحابة)')}`, onFail: () => renderUserRolesList() });
+          // User roles live on the parent meta doc, so verify the mapping is really on the
+          // SERVER — not merely acknowledged. (v6.344)
+          if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ metaPath: ['settings', 'userRoles', e], label: e + ' → ' + (ROLE_LABELS[role] || role) }], okMsg: `${e} → ${ROLE_LABELS[role] || role} ${t('(saved to cloud)', '(حُفظ في السحابة)')}`, onFail: () => renderUserRolesList() });
           else { save(); toast(`${e} → ${ROLE_LABELS[role] || role}`); }
         } },
     ],
@@ -23951,7 +23988,9 @@ window.removeUserRole = function(email) {
   // v6.330) AND we only report success once Firebase confirms — on failure the user gets a
   // loud "NOT saved — retry" instead of a silent optimistic toast.
   if (typeof withCloudConfirm === 'function') {
-    withCloudConfirm({ okMsg: t(`Removed ${email} — confirmed in the cloud`, `تم حذف ${email} — مؤكّد في السحابة`), onFail: () => renderUserRolesList() });
+    // Verify the mapping is GONE from the server — a merge:true write can silently fail to
+    // delete a map key, which is exactly how removed users used to reappear. (v6.344)
+    withCloudConfirm({ verify: [{ metaPath: ['settings', 'userRoles', email], absent: true, label: email }], okMsg: t(`Removed ${email} — confirmed in the cloud`, `تم حذف ${email} — مؤكّد في السحابة`), onFail: () => renderUserRolesList() });
   } else { save(); toast('Mapping removed'); }
 };
 window.setUnmappedRole = function(v) {

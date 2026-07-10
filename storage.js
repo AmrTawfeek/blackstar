@@ -233,6 +233,7 @@
     async migrateToMultiDoc() { return { migrated: false, reason: 'offline mode (localStorage)' }; },
     async verifyDoc() { return true; },   // local mode: data is durable locally
     async fetchDoc() { return null; },    // local mode: there is no server to read back from
+    async fetchMeta() { return null; },
     cloudWriteBlocked() { return false; },
   };
 
@@ -257,7 +258,16 @@
       // which silently killed whole saves. Ignore undefined props so a stray undefined
       // field is simply omitted instead of failing the entire write. Must run before any
       // other Firestore call.
-      try { db.settings({ ignoreUndefinedProperties: true }); } catch (e) { console.warn('[Storage:firebase] settings(ignoreUndefinedProperties) failed:', e); }
+      const _fsSettings = { ignoreUndefinedProperties: true };
+      // TRANSPORT RESILIENCE (v6.346). Firestore's default transport is a streaming WebChannel
+      // (firestore.googleapis.com/.../channel). Firefox Enhanced Tracking Protection, ad/privacy
+      // blockers, some VPNs and corporate proxies ABORT that channel — the network tab shows the
+      // channel requests failing with NS_BINDING_ABORTED, and the app then can't read → "Cannot
+      // reach the cloud" even though the internet is fine. Auto-detecting long-polling makes
+      // Firestore fall back to plain HTTP requests, which survive those environments. Auto-detect
+      // (not force) means users whose streaming channel works are unaffected. Emulator excluded.
+      if (!cfg.useEmulator) _fsSettings.experimentalAutoDetectLongPolling = true;
+      try { db.settings(_fsSettings); } catch (e) { console.warn('[Storage:firebase] settings() failed:', e); }
       auth = window.firebase.auth();
       // ── LOCAL EMULATOR support (test the cloud path before deployment). Only when
       // firebase-config.js sets useEmulator:true; production is untouched. ──
@@ -554,12 +564,14 @@
           // so the app has a consistent shape (and never shows stale local copies).
           if (memberScope) for (const name of COLLECTIONS) if (!(name in assembled)) assembled[name] = [];
 
-          // A partial/failed SERVER read → don't trust it, block writes (read-only).
+          // A partial/failed SERVER read → don't trust it, block writes (read-only). The PARENT
+          // read already succeeded here (auth was fine), so a failed SUBcollection read is a
+          // transient network/backend problem, not an auth one. (v6.345)
           if (anyReadFail) {
             loadErrored = true; cloudReadFailed = true;
             console.warn('[Storage:firebase] SERVER read incomplete — CLOUD-ONLY mode: refusing to run on a local copy.');
             try { if (typeof window !== 'undefined' && typeof window.__onCloudReadFailed === 'function') window.__onCloudReadFailed(new Error('partial read')); } catch (_) {}
-            return { __cloudUnavailable: true };   // v6.332: NO offline fallback — the app must not run on stale local data
+            return { __cloudUnavailable: true, reason: 'network', code: 'partial-read' };   // v6.332: NO offline fallback
           }
 
           // Legacy single-document back-compat: old doc kept collections INLINE.
@@ -583,10 +595,17 @@
           for (const name of COLLECTIONS) { _live[name] = new Map(); for (const r of (assembled[name] || [])) if (r && r.id != null) _live[name].set(String(r.id), r); }
           return result;
         } catch (e) {
-          console.warn('[Storage:firebase] SERVER load failed — CLOUD-ONLY mode: refusing to run on a local copy:', (e && e.code) || e);
+          // Distinguish a SESSION problem from a NETWORK problem. The parent-doc read requires
+          // request.auth != null (firestore.rules), so an expired / missing sign-in returns
+          // 'permission-denied' (or 'unauthenticated'). That is NOT "no internet" — the fix is
+          // to sign in again, so the app routes it to the login screen instead of the dead-end
+          // "cannot reach cloud" block. Anything else is treated as a real network outage. (v6.345)
+          const code = (e && e.code) || (e && e.message) || 'unknown';
+          const reason = (code === 'permission-denied' || code === 'unauthenticated') ? 'auth' : 'network';
+          console.warn('[Storage:firebase] SERVER load failed — CLOUD-ONLY mode (' + reason + '):', code, e);
           loadErrored = true; cloudReadFailed = true;
           try { if (typeof window !== 'undefined' && typeof window.__onCloudReadFailed === 'function') window.__onCloudReadFailed(e); } catch (_) {}
-          return { __cloudUnavailable: true };   // v6.332: NO offline fallback
+          return { __cloudUnavailable: true, reason, code: String(code) };   // v6.332: NO offline fallback
         }
       },
       // Read-back verification: confirm a specific record REALLY exists on the SERVER (not the
@@ -603,6 +622,15 @@
         try {
           const snap = await colRef(collection).doc(String(id)).get({ source: 'server' });
           return snap.exists ? snap.data() : null;
+        } catch (_) { return null; }
+      },
+      // The parent "meta" document (settings, userRoles, schema…), read from the SERVER.
+      // Lets a settings write — e.g. granting or removing a user role — be confirmed against
+      // the cloud the same way a record write is. Returns null when unreachable. (v6.344)
+      async fetchMeta() {
+        try {
+          const snap = await parentRef().get({ source: 'server' });
+          return snap.exists ? (snap.data() || {}) : null;
         } catch (_) { return null; }
       },
 
@@ -836,6 +864,7 @@
     // Confirm a specific record exists on the SERVER (read-back verification). (v6.332)
     verifyDoc(collection, id) { try { return (activeBackend && activeBackend.verifyDoc) ? activeBackend.verifyDoc(collection, id) : Promise.resolve(true); } catch (_) { return Promise.resolve(false); } },
     fetchDoc(collection, id) { try { return (activeBackend && activeBackend.fetchDoc) ? activeBackend.fetchDoc(collection, id) : Promise.resolve(null); } catch (_) { return Promise.resolve(null); } },
+    fetchMeta() { try { return (activeBackend && activeBackend.fetchMeta) ? activeBackend.fetchMeta() : Promise.resolve(null); } catch (_) { return Promise.resolve(null); } },
     save(state) {
       if (!activeBackend) this.init();
       pendingState = state;
