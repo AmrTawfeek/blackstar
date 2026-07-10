@@ -897,17 +897,9 @@ window.runSyncCheck = async function () {
 };
 
 // ─── MEMBERS ──────────────────────────────────────────────────
-// The Members status filter also offers three "expiring within N days" chips alongside the
-// real statuses. They are stored in filter.statuses as exp3 / exp7 / exp30 and OR together
-// with the status chips in the table predicate. (v6.335)
-const EXPIRY_CHIPS = ['exp3', 'exp7', 'exp30'];
-function expiryChipLabel(s) {
-  return ({
-    exp3: '⏰ ' + t('Expiring ≤ 3 days', 'ينتهي خلال ٣ أيام'),
-    exp7: '⏰ ' + t('Expiring ≤ 7 days', 'ينتهي خلال ٧ أيام'),
-    exp30: '⏰ ' + t('Expiring ≤ 30 days', 'ينتهي خلال ٣٠ يوماً'),
-  })[s] || s;
-}
+// The only values the Members status filter accepts. Anything else in a saved
+// filter is stale and gets dropped on load.
+const MEMBER_STATUS_FILTERS = ['Active', 'Completed', 'Frozen', 'Expired', 'Withdrawn', 'Archived'];
 // Clicking a status chip in the Members header filters the table to that status.
 // Clicking the same chip again clears the filter (toggle). Persists the filter and
 // re-renders the Members page.
@@ -929,6 +921,10 @@ PAGES.members = (main) => {
   let filter = loadFilter('members', { search: '', status: 'all', sports: [], coach: 'all', nationality: 'all', incomplete: 'all', balance: 'all', expiry: 'all', enrollMonths: [] });
   if (!Array.isArray(filter.sports)) filter.sports = filter.sport && filter.sport !== 'all' ? [filter.sport] : [];  // migrate old single-sport filter
   if (!Array.isArray(filter.statuses)) filter.statuses = (filter.status && filter.status !== 'all') ? [filter.status] : [];
+  // v6.335 briefly put exp3/exp7/exp30 pseudo-statuses in here. They were removed (expiry has
+  // its own dropdown), but a saved filter can still carry them — and they now match no member,
+  // which would silently show an empty table. Drop anything that isn't a real status. (v6.338)
+  filter.statuses = filter.statuses.filter(s => MEMBER_STATUS_FILTERS.includes(s));
   if (!Array.isArray(filter.coaches)) filter.coaches = (filter.coach && filter.coach !== 'all') ? [String(filter.coach)] : [];
   if (!Array.isArray(filter.nationalities)) filter.nationalities = (filter.nationality && filter.nationality !== 'all') ? [filter.nationality] : [];
   if (!Array.isArray(filter.enrollMonths)) filter.enrollMonths = [];
@@ -1161,14 +1157,10 @@ PAGES.members = (main) => {
       // user is actively SEARCHING (so a search finds everyone). They get a visual
       // "📦 Archived" indicator in the row either way.
       const wantArchived = (f.statuses || []).includes('Archived');
-      // The status filter also carries three "expiring within N days" pseudo-statuses. (v6.335)
-      const _EXPW = { exp3: 3, exp7: 7, exp30: 30 };
-      const _selAll = (f.statuses || []).filter(s => s !== 'Archived');
-      const expSel = _selAll.filter(s => _EXPW[s] != null);
-      const statusSel = _selAll.filter(s => _EXPW[s] == null);
+      const statusSel = (f.statuses || []).filter(s => s !== 'Archived');
       const isSearching = !!(f.search && f.search.trim());
       if (m.deleted && !wantArchived && !isSearching) return false;
-      if (!m.deleted && wantArchived && statusSel.length === 0 && expSel.length === 0 && !isSearching) return false; // only Archived chosen
+      if (!m.deleted && wantArchived && statusSel.length === 0 && !isSearching) return false; // only Archived chosen
       // Similar-name filter: keep only members flagged as a likely duplicate.
       if (f.dupNames && dupNameInfo && !dupNameInfo.ids.has(m.id)) return false;
       if (f.search) {
@@ -1180,19 +1172,8 @@ PAGES.members = (main) => {
         if (!hit) return false;
       }
       // Status filter (multi-select): for non-archived members, match any chosen status.
-      // Status chips OR "expiring within N days" chips (multi-select is OR, like the others).
-      // Frozen memberships are paused (not counting down) and withdrawn members are not
-      // renewing, so neither ever matches an expiry chip.
-      if ((statusSel.length || expSel.length) && !m.deleted) {
-        const _st = memberStatus(m);
-        const byStatus = statusSel.length > 0 && statusSel.includes(_st);
-        let byExpiry = false;
-        if (expSel.length && _st !== 'Frozen' && _st !== 'Withdrawn') {
-          const _d = m.expiryDate ? daysUntil(m.expiryDate) : null;
-          if (_d != null && _d >= 0) byExpiry = expSel.some(s => _d <= _EXPW[s]);
-        }
-        if (!byStatus && !byExpiry) return false;
-      }
+      // ("Expiring within N days" lives in its own Expiry dropdown, not here.)
+      if (statusSel.length && !m.deleted && !statusSel.includes(memberStatus(m))) return false;
       // Sport filter (multi-select): keep if the member is in ANY selected sport
       if (f.sports && f.sports.length) {
         const sports = new Set([m.sport, ...((m.enrollments||[]).map(e=>e.sport))].filter(Boolean));
@@ -1489,14 +1470,12 @@ PAGES.members = (main) => {
         <div class="search"><input id="search-input" type="text" placeholder="${t('Search name, phone, QID, email...', 'ابحث بالاسم أو الهاتف أو الهوية أو البريد...')}" value="${escapeHtml(filter.search || '')}" /></div>
         <div style="position:relative">
           <button type="button" id="filter-status-btn" class="btn ghost" style="min-width:120px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more statuses">
-            <span id="filter-status-label">${filter.statuses && filter.statuses.length ? (filter.statuses.length === 1 ? escapeHtml(expiryChipLabel(filter.statuses[0])) : filter.statuses.length + ' filters') : 'All status'}</span>
+            <span id="filter-status-label">${filter.statuses && filter.statuses.length ? (filter.statuses.length === 1 ? escapeHtml(filter.statuses[0]) : filter.statuses.length + ' statuses') : 'All status'}</span>
             <span style="opacity:.6">▾</span>
           </button>
           <div id="filter-status-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:170px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
             <div style="display:flex;justify-content:space-between;padding:2px 6px 6px;border-bottom:1px solid var(--border);margin-bottom:4px"><button type="button" class="mfilter-all" data-cb="filter-status-cb" data-group="statuses" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">All</button><button type="button" class="mfilter-none" data-cb="filter-status-cb" data-group="statuses" style="background:none;border:none;color:var(--text-mute);font-size:12px;cursor:pointer">Clear</button></div>
-            ${['Active', 'Completed', 'Frozen', 'Expired', 'Withdrawn', 'Archived'].map(st => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-status-cb" value="${st}" ${(filter.statuses||[]).includes(st) ? 'checked' : ''} /> ${({ Frozen: '❄️ Frozen', Withdrawn: '↩ Withdrawn', Archived: '📦 Archived' }[st] || st)}</label>`).join('')}
-            <div style="border-top:1px solid var(--border);margin:6px 0 4px;padding-top:6px;font-size:11px;color:var(--text-mute);padding-inline-start:6px">${t('Expiring soon', 'ينتهي قريباً')}</div>
-            ${EXPIRY_CHIPS.map(st => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-status-cb" value="${st}" ${(filter.statuses||[]).includes(st) ? 'checked' : ''} /> ${expiryChipLabel(st)}</label>`).join('')}
+            ${MEMBER_STATUS_FILTERS.map(st => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-status-cb" value="${st}" ${(filter.statuses||[]).includes(st) ? 'checked' : ''} /> ${({ Frozen: '❄️ Frozen', Withdrawn: '↩ Withdrawn', Archived: '📦 Archived' }[st] || st)}</label>`).join('')}
           </div>
         </div>
         <div style="position:relative">
@@ -1510,7 +1489,7 @@ PAGES.members = (main) => {
           </div>
         </div>
         <div style="position:relative">
-          <button type="button" id="filter-emonth-btn" class="btn ghost" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="${t('Filter by enrollment month (membership start date)', 'تصفية حسب شهر التسجيل (تاريخ بدء الاشتراك)')}">
+          <button type="button" id="filter-emonth-btn" class="btn ghost" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="${t('Filter by enrollment month. A member matches when ANY of their sports started in a selected month — so someone who joined in May and added a second sport in June appears under both.', 'تصفية حسب شهر التسجيل. يظهر العضو إذا بدأت أيٌّ من رياضاته في شهر محدد — فمن سجّل في مايو وأضاف رياضة ثانية في يونيو يظهر في الشهرين.')}">
             <span id="filter-emonth-label">📅 ${filter.enrollMonths && filter.enrollMonths.length ? (filter.enrollMonths.length === 1 ? fmtMonth(filter.enrollMonths[0]) : filter.enrollMonths.length + ' ' + t('months', 'أشهر')) : t('All enroll months', 'كل أشهر التسجيل')}</span>
             <span style="opacity:.6">▾</span>
           </button>
@@ -9737,18 +9716,19 @@ PAGES.invoices = (main) => {
       if (filter.archived) { if (!i.deleted) return false; }
       else if (i.deleted) return false;
       if (filter.search) {
-        const q = filter.search.toLowerCase();
         const cust = customerInfo(i);   // live name + phone if linked
         // Also pull the linked member record directly so Arabic name, QID, and
         // both phones are always searchable even if customerInfo misses one.
         const mem = i.customerId != null ? state.members.find(m => m.id === i.customerId) : null;
-        const hay = [
+        // Route through searchMatchesFields so Arabic letter variants collapse the same way
+        // they do on Members/Attendance (أحمد = احمد = إحمد). It also carries the
+        // digits-only phone fallback. (v6.337)
+        let hit = searchMatchesFields(filter.search, [
           i.description, i.ref, i.coach, i.sport, i.category,
           cust.name, cust.nameArabic, cust.phone, cust.phone2, cust.qid,
           i.customerName, i.customerPhone, i.customerNameArabic, i.customerQid,
           mem && mem.name, mem && mem.nameArabic, mem && mem.phone, mem && mem.phone2, mem && mem.qid, mem && mem.email,
-        ].filter(Boolean).join(' ').toLowerCase();
-        let hit = hay.includes(q);
+        ], [cust.phone, cust.phone2, i.customerPhone, mem && mem.phone, mem && mem.phone2]);
         // Phone-aware fallback: match by digits, ignoring spaces, +, and 974.
         if (!hit) hit = phoneQueryMatches(cust.phone, filter.search) || phoneQueryMatches(cust.phone2, filter.search)
           || phoneQueryMatches(i.customerPhone, filter.search) || phoneQueryMatches(mem && mem.phone, filter.search) || phoneQueryMatches(mem && mem.phone2, filter.search);
@@ -18964,7 +18944,7 @@ PAGES.attendance = (main) => {
             ${SPORTS.map(s => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="att-sport-cb" value="${s}" /> ${s}</label>`).join('')}
           </div>
         </div>
-        <div style="min-width:260px;flex:1;max-width:340px">${memberPickerHtml('att-student', { placeholder: 'All students (type to search)' })}</div>
+        <div style="min-width:260px;flex:1;max-width:340px">${memberPickerHtml('att-student', { placeholder: 'All students (type to search)' })}${recentSearchChipsHtml('attendance', 'att-recent-search')}</div>
         <div class="text-mute" style="margin-left:auto;font-size:11px;align-self:center">
           <span class="att-cell att-y" style="display:inline-block;padding:2px 6px;border-radius:3px">Y</span> present ·
           <span class="att-cell att-n" style="display:inline-block;padding:2px 6px;border-radius:3px">N</span> absent ·
@@ -19066,8 +19046,17 @@ PAGES.attendance = (main) => {
     attStudentHidden.addEventListener('change', applyStudent);
     // mousedown selection updates hidden value without firing 'change', so poll on blur/input
     attStudentSearch.addEventListener('input', () => { filter.memberId = null; filter.search = attStudentSearch.value.trim(); refresh(); });
-    attStudentSearch.addEventListener('blur', () => setTimeout(applyStudent, 200));
+    attStudentSearch.addEventListener('blur', () => { recordRecentSearch('attendance', attStudentSearch.value); setTimeout(applyStudent, 200); });
+    attStudentSearch.addEventListener('keydown', e => { if (e.key === 'Enter') recordRecentSearch('attendance', attStudentSearch.value); });
   }
+  // Recent searches as chips (not a dropdown — the student picker already owns one).
+  bindRecentSearchChips('attendance', 'att-recent-search', term => {
+    if (attStudentSearch) attStudentSearch.value = term;
+    if (attStudentHidden) attStudentHidden.value = '';
+    filter.memberId = null;
+    filter.search = term.trim();
+    refresh();
+  });
 
   // Multi-select sports dropdown
   const sportsBtn = $('#att-sports-btn');
