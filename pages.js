@@ -2498,10 +2498,10 @@ window.freezeMember = function(id) {
           if (!isAdmin && days > allow.remainingDays) { toast(`Only ${allow.remainingDays} freeze day${allow.remainingDays === 1 ? '' : 's'} remaining for this membership cycle.`, 'error'); return; }
           const reason = document.getElementById('freeze-reason').value.trim();
           applyFreeze(m, days, reason, { start: from, end: until });
-          save();
           closeModal();
-          toast(`${m.name} frozen ${fmtDate(from)} → ${fmtDate(until)} (${days} day${days === 1 ? '' : 's'}).`, 'success');
-          viewMember(m.id);
+          // Confirm the freeze reached the cloud (it shifts the expiry) + show the member as
+          // the SERVER holds them; reopen the card only after OK. (v6.347)
+          withCloudConfirm({ verify: [{ collection: 'members', id: m.id }], okMsg: `${m.name} frozen ${fmtDate(from)} → ${fmtDate(until)} (${days} day${days === 1 ? '' : 's'})`, afterOk: () => viewMember(m.id) });
           return;
         }
         const days = parseInt(document.getElementById('freeze-days').value);
@@ -2509,10 +2509,8 @@ window.freezeMember = function(id) {
         if (!isAdmin && days > allow.remainingDays) { toast(`Only ${allow.remainingDays} freeze day${allow.remainingDays === 1 ? '' : 's'} remaining for this membership cycle.`, 'error'); return; }
         const reason = document.getElementById('freeze-reason').value.trim();
         applyFreeze(m, days, reason);
-        save();
         closeModal();
-        toast(`${m.name} frozen for ${days} day${days===1?'':'s'}.`, 'success');
-        viewMember(m.id);
+        withCloudConfirm({ verify: [{ collection: 'members', id: m.id }], okMsg: `${m.name} frozen for ${days} day${days === 1 ? '' : 's'}`, afterOk: () => viewMember(m.id) });
       }},
     ],
   });
@@ -2591,9 +2589,7 @@ window.unfreezeMember = function(id) {
     name: m.name, memberId: m.id, membershipNo: m.membershipNo || m.qid || '', mobile: m.phone || '',
     old: { frozenUntil: wasUntil }, new: { frozenUntil: null },
   });
-  save();
-  toast(`${m.name} unfrozen.`, 'success');
-  viewMember(m.id);
+  withCloudConfirm({ verify: [{ collection: 'members', id: m.id }], okMsg: `${m.name} unfrozen`, afterOk: () => viewMember(m.id) });
 };
 
 window.deleteMember = function(id) {
@@ -3640,10 +3636,11 @@ function showMemberForm(m) {
             return;
           }
 
+          // Close the form and go straight to the loader (don't render the whole list first —
+          // that delayed the loader); the list re-renders on OK. (v6.348)
           closeModal();
-          render();
-          if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'members', id: data.id }], okMsg: t('Member added & saved to cloud', 'تمت إضافة العضو وحُفظ في السحابة') });
-          else { save(); toast('Member added'); }
+          if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: [{ collection: 'members', id: data.id }], okMsg: t('Member added & saved to cloud', 'تمت إضافة العضو وحُفظ في السحابة'), afterOk: () => render() });
+          else { save(); render(); toast('Member added'); }
           return;
         }
 
@@ -4144,8 +4141,8 @@ window.offboardCoach = function (coachId) {
         c.active = 'N'; c.status = 'inactive'; c.leftDate = TODAY;
         if (typeof audit === 'function') audit('coach.offboard', `coach:${coachId}`,
           `Offboarded ${c.name}: reassigned ${moved} subs, settled ${money(P.total)} QAR`, { coachId, moved, payout: P.total });
-        save(); closeModal(); render();
-        toast(`Offboarded ${c.name} · ${moved} students reassigned · ${money(P.total)} QAR settled`);
+        closeModal();
+        withCloudConfirm({ verify: [{ collection: 'coaches', id: c.id }], okMsg: `Offboarded ${c.name} · ${moved} students reassigned · ${money(P.total)} QAR settled`, afterOk: () => render() });
       } },
     ],
   });
@@ -4308,8 +4305,8 @@ window.deleteCoach = function(id) {
     }
     state.coaches = state.coaches.filter(x => x.id !== id);
     audit('coach.delete', 'coach:' + id, `Deleted ${c.name}${to ? ' — students moved to ' + to.name : ' — students kept without a coach'}`, { coachId: id, targetId, moved, movedInv, movedSched });
-    save(); closeModal(); render();
-    toast(`✅ ${t('Deleted', 'تم حذف')} ${c.name}${to ? ' · ' + t('students moved to', 'نُقل الطلاب إلى') + ' ' + to.name : ' · ' + t('students unassigned', 'الطلاب بلا مدرب')}`, 'success');
+    closeModal();
+    withCloudConfirm({ verify: [{ collection: 'coaches', id, absent: true, label: c.name }], okMsg: `${t('Deleted', 'تم حذف')} ${c.name}${to ? ' · ' + t('students moved to', 'نُقل الطلاب إلى') + ' ' + to.name : ' · ' + t('students unassigned', 'الطلاب بلا مدرب')}`, afterOk: () => render() });
   };
 
   // No links → straight delete.
@@ -4528,20 +4525,24 @@ window.editCoach = function(id, defaultRole) {
         if (fixedSalary === 0 && rate === 0) {
           if (!confirm('Both fixed salary AND commission % are 0. This person will earn nothing. Save anyway?')) return;
         }
+        let _savedCoachId;
         if (isNew) {
-          state.coaches.push({
+          const _nc = {
             id: nextId(state.coaches),
             name, rate, fixedSalary, role: roleVal, sports, active: activeVal,
             phone, email: email || null, qid, birthdate: birthdate || null, gender,
-          });
+          };
+          state.coaches.push(_nc);
+          _savedCoachId = _nc.id;
         } else {
           Object.assign(c, {
             name, rate, fixedSalary, role: roleVal, sports, active: activeVal,
             phone, email: email || null, qid, birthdate: birthdate || null, gender,
           });
+          _savedCoachId = c.id;
         }
-        save(); closeModal(); render();
-        toast(isNew ? `${roleVal === 'staff' ? 'Staff member' : 'Coach'} added` : 'Saved');
+        closeModal();
+        withCloudConfirm({ verify: [{ collection: 'coaches', id: _savedCoachId }], okMsg: isNew ? `${roleVal === 'staff' ? 'Staff member' : 'Coach'} added` : 'Saved', afterOk: () => render() });
       }},
     ],
   });
@@ -7303,7 +7304,8 @@ window.addDriver = function() {
         const d = { id: nextId(state.drivers), name, phone: $('#drv-phone').value.trim() || '' };
         state.drivers.push(d);
         if (typeof audit === 'function') audit('driver.create', 'driver:' + d.id, name);
-        save(); closeModal(); render(); toast(t('Driver added', 'تمت إضافة السائق'));
+        closeModal();
+        withCloudConfirm({ verify: [{ collection: 'drivers', id: d.id }], okMsg: t('Driver added', 'تمت إضافة السائق'), afterOk: () => render() });
       } },
     ],
   });
@@ -7323,7 +7325,8 @@ window.editDriver = function(id) {
         state.members.forEach(m => { if (m.campDriverId === id) m.campDriverId = null; });
         state.drivers = state.drivers.filter(x => x.id !== id);
         if (typeof audit === 'function') audit('driver.delete', 'driver:' + id, d.name);
-        save(); closeModal(); render(); toast(t('Driver deleted', 'تم حذف السائق'));
+        closeModal();
+        withCloudConfirm({ verify: [{ collection: 'drivers', id, absent: true, label: d.name }], okMsg: t('Driver deleted', 'تم حذف السائق'), afterOk: () => render() });
       } },
       { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
       { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
@@ -7331,7 +7334,8 @@ window.editDriver = function(id) {
         if (!name) { toast(t('Enter a driver name', 'أدخل اسم السائق'), 'error'); return; }
         d.name = name; d.phone = $('#drv-phone').value.trim() || '';
         if (typeof audit === 'function') audit('driver.update', 'driver:' + id, name);
-        save(); closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
+        closeModal();
+        withCloudConfirm({ verify: [{ collection: 'drivers', id }], okMsg: t('Saved', 'تم الحفظ'), afterOk: () => render() });
       } },
     ],
   });
@@ -9612,9 +9616,7 @@ window.toggleCoachActive = function(coachId) {
   const c = state.coaches.find(x => x.id === coachId);
   if (!c) return;
   c.active = (c.active || 'Y') === 'Y' ? 'N' : 'Y';
-  save();
-  render();
-  toast(`${c.name} marked ${c.active === 'Y' ? 'Active' : 'Inactive'}`);
+  withCloudConfirm({ verify: [{ collection: 'coaches', id: c.id }], okMsg: `${c.name} marked ${c.active === 'Y' ? 'Active' : 'Inactive'}`, afterOk: () => render() });
 };
 
 // ─── Multi-select month picker ─────────────────────────────────
@@ -14139,15 +14141,15 @@ window.openCashCountDialog = function(existingId) {
           ex.amount = amount; ex.date = date; ex.by = by; ex.note = note;
           if (typeof stampUpdate === 'function') stampUpdate(ex);
           if (typeof audit === 'function') audit('cash.count_edit', 'cashinhand', `Edited cash count → ${fmt(amount)} QAR (was ${fmt(before)}) on ${fmtDate(date)}`);
-          save(); closeModal(); render();
-          toast(`✓ ${t('Cash count updated', 'تم تحديث الجرد')}: ${fmt(amount)} QAR`);
+          closeModal();
+          withCloudConfirm({ verify: [{ collection: 'cashCounts', id: ex.id }], okMsg: `${t('Cash count updated', 'تم تحديث الجرد')}: ${fmt(amount)} QAR`, afterOk: () => render() });
         } else {
           const entry = { id: 'cc_' + Date.now(), amount, date, by, note, createdAt: new Date().toISOString() };
           if (!Array.isArray(state.cashCounts)) state.cashCounts = [];
           state.cashCounts.push(entry);
           if (typeof audit === 'function') audit('cash.count', 'cashinhand', `Recorded cash count ${fmt(amount)} QAR`);
-          save(); closeModal(); render();
-          toast(`✓ ${t('Cash count recorded', 'تم تسجيل الجرد')}: ${fmt(amount)} QAR`);
+          closeModal();
+          withCloudConfirm({ verify: [{ collection: 'cashCounts', id: entry.id }], okMsg: `${t('Cash count recorded', 'تم تسجيل الجرد')}: ${fmt(amount)} QAR`, afterOk: () => render() });
         }
       }},
     ],
@@ -14161,8 +14163,7 @@ window.deleteCashCount = function(id) {
   if (!confirm(`Delete this cash count (${fmt(entry.amount)} QAR on ${fmtDate(entry.date)})?`)) return;
   state.cashCounts = state.cashCounts.filter(c => c.id !== id);
   if (typeof audit === 'function') audit('cash.count_delete', 'cashinhand', `Deleted cash count ${fmt(entry.amount)} QAR`);
-  save(); render();
-  toast('Cash count deleted');
+  withCloudConfirm({ verify: [{ collection: 'cashCounts', id, absent: true }], okMsg: 'Cash count deleted', afterOk: () => render() });
 };
 
 // ─── Bank account + Reconciliation ───────────────────────────────────────
@@ -15484,8 +15485,8 @@ window.recordAdvance = function(coachId, monthKey) {
             `Recorded advance ${fmt(amt)} QAR for ${c.name} · ${fmtMonth(monthKey)}`,
             { coachId, month: monthKey, amount: amt });
         }
-        save(); closeModal(); render();
-        toast(amt > 0 ? `Advance saved (${fmt(amt)} QAR)` : 'Advance removed');
+        closeModal();
+        withCloudConfirm({ okMsg: amt > 0 ? `Advance saved (${fmt(amt)} QAR)` : 'Advance removed', afterOk: () => render() });
       }},
     ],
   });
@@ -15524,17 +15525,18 @@ window.carrySalaryForward = function(coachId, monthKey) {
     actions: [
       { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
       { label: `↩ Carry ${fmt(excess)} to ${fmtMonth(next)}`, class: 'btn primary', onclick: () => {
-        state.salaries.push({
+        const _carry = {
           id: nextId(state.salaries),
           coachId, kind: 'carry', fromMonth: monthKey, month: next,
           amount: excess, note: `Over-advance carried from ${fmtMonth(monthKey)}`,
           createdAt: new Date().toISOString(),
-        });
+        };
+        state.salaries.push(_carry);
         audit('salary.carry', `coach:${coachId}`,
           `Carried over-advance ${fmt(excess)} QAR from ${fmtMonth(monthKey)} to ${fmtMonth(next)} for ${c.name}`,
           { coachId, fromMonth: monthKey, month: next, amount: excess });
-        save(); closeModal(); render();
-        toast(`Carried ${fmt(excess)} QAR to ${fmtMonth(next)}`);
+        closeModal();
+        withCloudConfirm({ verify: [{ collection: 'salaries', id: _carry.id }], okMsg: `Carried ${fmt(excess)} QAR to ${fmtMonth(next)}`, afterOk: () => render() });
       }},
     ],
   });
@@ -15560,8 +15562,8 @@ window.undoSalaryCarry = function(coachId, monthKey) {
         audit('salary.carry_undo', `coach:${coachId}`,
           `Undid carry-forward ${fmt(total)} QAR from ${fmtMonth(monthKey)} for ${c.name}`,
           { coachId, fromMonth: monthKey, amount: total });
-        save(); closeModal(); render();
-        toast('Carry-forward undone');
+        closeModal();
+        withCloudConfirm({ okMsg: 'Carry-forward undone', afterOk: () => render() });
       }},
     ],
   });
@@ -16559,17 +16561,18 @@ function saveProduct(existingId) {
     stock: parseInt($('#p-stock').value) || 0,
     lowStockThreshold: parseInt($('#p-lowst').value) || 3,
   };
+  let _prodId, _prodMsg;
   if (existingId) {
     const idx = state.products.findIndex(x => x.id === existingId);
     state.products[idx] = { ...state.products[idx], ...data };
-    toast('Product updated');
+    _prodId = existingId; _prodMsg = 'Product updated';
   } else {
-    state.products.push({ id: nextId(state.products || []), ...data });
-    toast('Product added');
+    const _np = { id: nextId(state.products || []), ...data };
+    state.products.push(_np);
+    _prodId = _np.id; _prodMsg = 'Product added';
   }
-  save();
   closeModal();
-  render();
+  withCloudConfirm({ verify: [{ collection: 'products', id: _prodId }], okMsg: _prodMsg, afterOk: () => render() });
 }
 
 window.deleteProduct = function(id) {
@@ -16582,9 +16585,7 @@ window.deleteProduct = function(id) {
     if (!confirm(`"${p.name}" appears in ${usedIn} past sale${usedIn===1?'':'s'}. Delete anyway? (Sales history won't be affected)`)) return;
   } else if (!confirm(`Delete product "${p.name}"?`)) return;
   state.products = state.products.filter(x => x.id !== id);
-  save();
-  render();
-  toast('Product deleted');
+  withCloudConfirm({ verify: [{ collection: 'products', id, absent: true, label: p.name }], okMsg: 'Product deleted', afterOk: () => render() });
 };
 
 window.restockProduct = function(id) {
@@ -22275,15 +22276,14 @@ function showTrialForm(t) {
           createdAt: t.createdAt || new Date().toISOString(),
         };
         if (!state.trials) state.trials = [];
+        if (isNew && !data.id) data.id = 'tr_' + Date.now();   // stable id so we can read it back
         if (isNew) state.trials.push(data);
         else {
           const idx = state.trials.findIndex(x => x.id === t.id);
           state.trials[idx] = data;
         }
-        save();
         closeModal();
-        render();
-        toast(isNew ? 'Trial added' : 'Trial updated');
+        withCloudConfirm({ verify: [{ collection: 'trials', id: data.id }], okMsg: isNew ? 'Trial added' : 'Trial updated', afterOk: () => render() });
       }},
     ],
   });
@@ -22292,9 +22292,7 @@ function showTrialForm(t) {
 window.deleteTrial = function(id) {
   if (!confirm('Delete this trial record?')) return;
   state.trials = (state.trials || []).filter(t => t.id !== id);
-  save();
-  render();
-  toast('Trial deleted');
+  withCloudConfirm({ verify: [{ collection: 'trials', id, absent: true }], okMsg: 'Trial deleted', afterOk: () => render() });
 };
 
 // Switch the role-preview. Pure view layer (no security) until online sign-in exists.
@@ -26923,9 +26921,7 @@ window.deleteRental = function(id) {
   // Drop linked invoice
   if (r.invoiceId) state.invoices = state.invoices.filter(i => i.id !== r.invoiceId);
   state.rentals = state.rentals.filter(x => x.id !== id);
-  save();
-  render();
-  toast('Booking deleted');
+  withCloudConfirm({ verify: [{ collection: 'rentals', id, absent: true }], okMsg: 'Booking deleted', afterOk: () => render() });
 };
 
 function saveRental(existingId, onDone) {
@@ -28912,16 +28908,19 @@ window.editNote = function(id) {
         const priority = document.getElementById('note-priority').value;
         const remindDate = document.getElementById('note-remind').value || null;
         const follow = document.getElementById('note-follow').checked;
+        let _noteId;
         if (n) {
           n.title = title; n.body = body; n.priority = priority; n.remindDate = remindDate; n.follow = follow; n.updatedAt = new Date().toISOString();
+          _noteId = n.id;
           if (typeof audit === 'function') audit('note.update', 'note:' + n.id, title || '(untitled)');
         } else {
           const note = { id: nextId(notes), title, body, priority, remindDate, follow, done: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
           notes.push(note);
+          _noteId = note.id;
           if (typeof audit === 'function') audit('note.create', 'note:' + note.id, title || '(untitled)');
         }
-        save(); closeModal(); render();
-        toast(n ? t('Note updated', 'تم تحديث الملاحظة') : t('Note added', 'تمت إضافة الملاحظة'), 'success');
+        closeModal();
+        withCloudConfirm({ verify: [{ collection: 'notes', id: _noteId }], okMsg: n ? t('Note updated', 'تم تحديث الملاحظة') : t('Note added', 'تمت إضافة الملاحظة'), afterOk: () => render() });
       }},
     ],
   });
@@ -28944,6 +28943,5 @@ window.deleteNote = function(id) {
   if (!confirm(t('Delete this note?', 'حذف هذه الملاحظة؟'))) return;
   const idx = notes.indexOf(n); if (idx >= 0) notes.splice(idx, 1);
   if (typeof audit === 'function') audit('note.delete', 'note:' + id, n.title || '(untitled)');
-  save(); render();
-  toast(t('Note deleted', 'تم حذف الملاحظة'), 'success');
+  withCloudConfirm({ verify: [{ collection: 'notes', id, absent: true }], okMsg: t('Note deleted', 'تم حذف الملاحظة'), afterOk: () => render() });
 };
