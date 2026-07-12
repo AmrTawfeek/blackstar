@@ -2604,9 +2604,7 @@ window.deleteMember = function(id) {
       delete m.deleted;
       delete m.deletedAt;
       delete m.deletedReason;
-      save();
-      render();
-      toast(`Restored ${m.name}`);
+      withCloudConfirm({ verify: [{ collection: 'members', id: m.id }], okMsg: `Restored ${m.name}`, afterOk: () => render() });
     }
     return;
   }
@@ -2636,9 +2634,7 @@ window.deleteMember = function(id) {
   audit('member.archive', `member:${m.id}`,
     `Archived ${m.name}${reason ? ' — ' + reason : ''}`,
     { memberId: m.id, name: m.name, reason });
-  save();
-  render();
-  toast(`📦 Archived ${m.name}${linked.length ? ' · ' + linked.length + ' record types preserved' : ''}`);
+  withCloudConfirm({ verify: [{ collection: 'members', id: m.id }], okMsg: `📦 Archived ${m.name}${linked.length ? ' · ' + linked.length + ' record types preserved' : ''}`, afterOk: () => render() });
 };
 
 window.restoreMember = function(id) {
@@ -2649,9 +2645,7 @@ window.restoreMember = function(id) {
   delete m.deletedAt;
   delete m.deletedReason;
   audit('member.restore', `member:${m.id}`, `Restored ${m.name}`, { memberId: m.id, name: m.name });
-  save();
-  render();
-  toast(`Restored ${m.name}`);
+  withCloudConfirm({ verify: [{ collection: 'members', id: m.id }], okMsg: `Restored ${m.name}`, afterOk: () => render() });
 };
 
 // Hard-delete an ARCHIVED member. Irreversible (unlike restore). Lets the user
@@ -4306,7 +4300,7 @@ window.deleteCoach = function(id) {
     state.coaches = state.coaches.filter(x => x.id !== id);
     audit('coach.delete', 'coach:' + id, `Deleted ${c.name}${to ? ' — students moved to ' + to.name : ' — students kept without a coach'}`, { coachId: id, targetId, moved, movedInv, movedSched });
     closeModal();
-    withCloudConfirm({ verify: [{ collection: 'coaches', id, absent: true, label: c.name }], okMsg: `${t('Deleted', 'تم حذف')} ${c.name}${to ? ' · ' + t('students moved to', 'نُقل الطلاب إلى') + ' ' + to.name : ' · ' + t('students unassigned', 'الطلاب بلا مدرب')}`, afterOk: () => render() });
+    withCloudConfirm({ verify: [{ collection: 'coaches', id, absent: true, label: c.name, snapshot: c }], okMsg: `${t('Deleted', 'تم حذف')} ${c.name}${to ? ' · ' + t('students moved to', 'نُقل الطلاب إلى') + ' ' + to.name : ' · ' + t('students unassigned', 'الطلاب بلا مدرب')}`, afterOk: () => render() });
   };
 
   // No links → straight delete.
@@ -7326,7 +7320,7 @@ window.editDriver = function(id) {
         state.drivers = state.drivers.filter(x => x.id !== id);
         if (typeof audit === 'function') audit('driver.delete', 'driver:' + id, d.name);
         closeModal();
-        withCloudConfirm({ verify: [{ collection: 'drivers', id, absent: true, label: d.name }], okMsg: t('Driver deleted', 'تم حذف السائق'), afterOk: () => render() });
+        withCloudConfirm({ verify: [{ collection: 'drivers', id, absent: true, label: d.name, snapshot: d }], okMsg: t('Driver deleted', 'تم حذف السائق'), afterOk: () => render() });
       } },
       { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
       { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
@@ -12670,10 +12664,13 @@ window.deleteInvoice = function(id) {
   const coachSummary = coachImpact.size
     ? '<div style="margin-top:6px">• Coach commission deducted:</div>' + [...coachImpact.values()].map(c => `<div style="margin-left:14px">— ${escapeHtml(c.name)} (${c.rate}%): <b style="color:var(--red)">−${fmt(c.commission)} QAR</b> <span class="text-mute" style="font-size:10px">on ${fmt(c.lineRevenue)} revenue</span></div>`).join('')
     : '';
-  const _afterDelete = () => {
-    save(); closeModal();
-    if (typeof window._invoicesRefresh === 'function' && state.route === 'invoices') window._invoicesRefresh();
-    else render();
+  // Close the dialog, then confirm the change reached the cloud in the locked popup (loader +
+  // read-back). `verify` shows the invoice — absent+snapshot for a permanent delete, or the
+  // live archived record for a soft delete. (v6.349)
+  const _afterDelete = (verify, okMsg) => {
+    closeModal();
+    const done = () => { if (typeof window._invoicesRefresh === 'function' && state.route === 'invoices') window._invoicesRefresh(); else render(); };
+    withCloudConfirm({ verify, okMsg, afterOk: done, onFail: done });
   };
   const _isAdmin = currentRole() === 'admin';
   showModal({
@@ -12698,7 +12695,7 @@ window.deleteInvoice = function(id) {
         if (linkedSale) delete linkedSale.invoiceId;
         state.invoices = state.invoices.filter(i => i.id !== id);   // HARD remove
         if (typeof audit === 'function') audit('invoice.purge', 'invoice:' + id, `Permanently deleted ${inv.ref || '#' + id} for ${cust.name || 'customer'} — ${fmt(invoiceTotal(inv))} QAR`);
-        _afterDelete(); toast(`✓ ${t('Invoice permanently deleted', 'تم الحذف النهائي للفاتورة')}`);
+        _afterDelete([{ collection: 'invoices', id, absent: true, snapshot: inv }], t('Invoice permanently deleted', 'تم الحذف النهائي للفاتورة'));
       } }] : [],
       { label: '🗑 ' + t('Delete (archive)', 'حذف (أرشفة)'), class: 'btn primary', onclick: () => {
         if (linkedSale) delete linkedSale.invoiceId;
@@ -12707,7 +12704,7 @@ window.deleteInvoice = function(id) {
         const _inv = state.invoices.find(i => i.id === id);
         if (_inv) { _inv.deleted = true; _inv.deletedAt = new Date().toISOString(); _inv.deletedBy = currentUserName(); }
         if (typeof audit === 'function') audit('invoice.delete', 'invoice:' + id, `Archived ${inv.ref || '#' + id} for ${cust.name || 'customer'} — ${fmt(invoiceTotal(inv))} QAR, ${fmt(paid)} paid`);
-        _afterDelete(); toast(`✓ ${t('Invoice archived', 'تمت أرشفة الفاتورة')} · ${inv.ref || '#' + id}`);
+        _afterDelete([{ collection: 'invoices', id }], `${t('Invoice archived', 'تمت أرشفة الفاتورة')} · ${inv.ref || '#' + id}`);
       }},
     ],
   });
@@ -12733,10 +12730,8 @@ window.hardDeleteInvoice = function(id) {
   const linkedSale = (state.sales || []).find(s => s.invoiceId === id); if (linkedSale) delete linkedSale.invoiceId;
   state.invoices = state.invoices.filter(i => i.id !== id);
   if (typeof audit === 'function') audit('invoice.purge', 'invoice:' + id, `Permanently deleted ${inv.ref || '#' + id}`);
-  save();
-  if (typeof window._invoicesRefresh === 'function' && state.route === 'invoices') window._invoicesRefresh();
-  else render();
-  toast(`🗑 ${t('Invoice permanently deleted', 'تم الحذف النهائي للفاتورة')}`);
+  const _hdiDone = () => { if (typeof window._invoicesRefresh === 'function' && state.route === 'invoices') window._invoicesRefresh(); else render(); };
+  withCloudConfirm({ verify: [{ collection: 'invoices', id, absent: true, snapshot: inv }], okMsg: t('Invoice permanently deleted', 'تم الحذف النهائي للفاتورة'), afterOk: _hdiDone, onFail: _hdiDone });
 };
 
 // Regenerate an invoice from the customer's CURRENT enrollment state.
@@ -14037,8 +14032,7 @@ window.deleteCashCollection = function(id) {
   if (!confirm(`Delete cash collection of ${fmt(ex.amount)} QAR from ${fmtDate(ex.date)}?\n\nThis will restore that amount to your net profit for that month.`)) return;
   state.expenses = state.expenses.filter(e => e.id !== id);
   if (typeof audit === 'function') audit('cash.collection.delete', 'expense:' + id, `Deleted cash collection ${fmt(ex.amount)} QAR`);
-  save(); render();
-  toast('✓ Cash collection deleted');
+  withCloudConfirm({ verify: [{ collection: 'expenses', id, absent: true, snapshot: ex }], okMsg: 'Cash collection deleted', afterOk: () => render() });
 };
 
 PAGES.cashinhand = (main) => {
@@ -14163,7 +14157,7 @@ window.deleteCashCount = function(id) {
   if (!confirm(`Delete this cash count (${fmt(entry.amount)} QAR on ${fmtDate(entry.date)})?`)) return;
   state.cashCounts = state.cashCounts.filter(c => c.id !== id);
   if (typeof audit === 'function') audit('cash.count_delete', 'cashinhand', `Deleted cash count ${fmt(entry.amount)} QAR`);
-  withCloudConfirm({ verify: [{ collection: 'cashCounts', id, absent: true }], okMsg: 'Cash count deleted', afterOk: () => render() });
+  withCloudConfirm({ verify: [{ collection: 'cashCounts', id, absent: true, snapshot: entry }], okMsg: 'Cash count deleted', afterOk: () => render() });
 };
 
 // ─── Bank account + Reconciliation ───────────────────────────────────────
@@ -15630,8 +15624,8 @@ window.deleteAdvance = function(id) {
       `Removed advance${adv.amount ? ' (' + fmt(adv.amount) + ' QAR)' : ''} for ${c ? c.name : 'coach ' + adv.coachId}${adv.month ? ' · ' + fmtMonth(adv.month) : ''}`,
       { coachId: adv.coachId, month: adv.month, amount: adv.amount });
   }
-  save(); closeModal(); render();
-  toast('Advance removed');
+  closeModal();
+  withCloudConfirm({ verify: [{ collection: 'salaries', id, absent: true, snapshot: adv }], okMsg: 'Advance removed', afterOk: () => render() });
 };
 
 // Mark person as paid for the month (or change paid date)
@@ -16585,7 +16579,7 @@ window.deleteProduct = function(id) {
     if (!confirm(`"${p.name}" appears in ${usedIn} past sale${usedIn===1?'':'s'}. Delete anyway? (Sales history won't be affected)`)) return;
   } else if (!confirm(`Delete product "${p.name}"?`)) return;
   state.products = state.products.filter(x => x.id !== id);
-  withCloudConfirm({ verify: [{ collection: 'products', id, absent: true, label: p.name }], okMsg: 'Product deleted', afterOk: () => render() });
+  withCloudConfirm({ verify: [{ collection: 'products', id, absent: true, label: p.name, snapshot: p }], okMsg: 'Product deleted', afterOk: () => render() });
 };
 
 window.restockProduct = function(id) {
@@ -17105,9 +17099,7 @@ window.deleteSale = function(id) {
   if (!confirm(`Delete this ${label}? Linked invoice (if any) will also be deleted.`)) return;
   if (s.invoiceId) state.invoices = state.invoices.filter(i => i.id !== s.invoiceId);
   state.sales = state.sales.filter(x => x.id !== id);
-  save();
-  render();
-  toast('Sale deleted');
+  withCloudConfirm({ verify: [{ collection: 'sales', id, absent: true, snapshot: s }], okMsg: 'Sale deleted', afterOk: () => render() });
 };
 
 // ─── SPORTS MANAGEMENT ────────────────────────────────────────────
@@ -22291,8 +22283,9 @@ function showTrialForm(t) {
 
 window.deleteTrial = function(id) {
   if (!confirm('Delete this trial record?')) return;
+  const _delTrial = (state.trials || []).find(t => t.id === id);   // snapshot before removal
   state.trials = (state.trials || []).filter(t => t.id !== id);
-  withCloudConfirm({ verify: [{ collection: 'trials', id, absent: true }], okMsg: 'Trial deleted', afterOk: () => render() });
+  withCloudConfirm({ verify: [{ collection: 'trials', id, absent: true, snapshot: _delTrial }], okMsg: 'Trial deleted', afterOk: () => render() });
 };
 
 // Switch the role-preview. Pure view layer (no security) until online sign-in exists.
@@ -26921,7 +26914,7 @@ window.deleteRental = function(id) {
   // Drop linked invoice
   if (r.invoiceId) state.invoices = state.invoices.filter(i => i.id !== r.invoiceId);
   state.rentals = state.rentals.filter(x => x.id !== id);
-  withCloudConfirm({ verify: [{ collection: 'rentals', id, absent: true }], okMsg: 'Booking deleted', afterOk: () => render() });
+  withCloudConfirm({ verify: [{ collection: 'rentals', id, absent: true, snapshot: r }], okMsg: 'Booking deleted', afterOk: () => render() });
 };
 
 function saveRental(existingId, onDone) {
@@ -28943,5 +28936,5 @@ window.deleteNote = function(id) {
   if (!confirm(t('Delete this note?', 'حذف هذه الملاحظة؟'))) return;
   const idx = notes.indexOf(n); if (idx >= 0) notes.splice(idx, 1);
   if (typeof audit === 'function') audit('note.delete', 'note:' + id, n.title || '(untitled)');
-  withCloudConfirm({ verify: [{ collection: 'notes', id, absent: true }], okMsg: t('Note deleted', 'تم حذف الملاحظة'), afterOk: () => render() });
+  withCloudConfirm({ verify: [{ collection: 'notes', id, absent: true, snapshot: n }], okMsg: t('Note deleted', 'تم حذف الملاحظة'), afterOk: () => render() });
 };
