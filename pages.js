@@ -6976,6 +6976,22 @@ function campRenewalMessage(m) {
 function campRenewalWaLink(m) {
   return waLink(m.phone, campRenewalMessage(m));
 }
+// "Last day — renew tomorrow to complete the journey" message, for a camp member whose
+// subscription ends TODAY. Warmer + more urgent than the generic "ending soon" note. (v6.350)
+function campEndsTodayMessage(m) {
+  const nameEn = m.name || '';
+  const nameAr = m.nameArabic || m.name || '';
+  const ar = `مرحباً 👋\n\nاليوم هو آخر يوم لـ ${nameAr} في المعسكر الصيفي بنادي بلاك ستارز — ينتهي الاشتراك اليوم! 🌟\n\nنتمنّى أن يكمل ${nameAr} المسيرة معنا — يسعدنا تجديد الاشتراك غداً حتى لا يفوته يوم من المرح ومن أصدقائه. 💚\n\nنراكم غداً! 🎯\nنادي بلاك ستارز الرياضي`;
+  const en = `Hello 👋\n\nToday is ${nameEn}'s last day of Summer Camp at Black Stars Sports Club — the subscription ends today! 🌟\n\nWe'd love for ${nameEn} to complete the journey with us — you're very welcome to renew tomorrow so they don't miss a single day of the fun and their friends. 💚\n\nSee you tomorrow! 🎯\nBlack Stars Sports Club`;
+  return `${ar}\n\n— — — — — — —\n\n${en}`;
+}
+function campEndsTodayWaLink(m) {
+  return waLink(m.phone, campEndsTodayMessage(m));
+}
+// Is this camp member's subscription ending TODAY?
+function campEndsToday(m) {
+  return !!(m && m.expiryDate && typeof daysUntil === 'function' && daysUntil(m.expiryDate) === 0);
+}
 window.markCampReminded = function(id) {
   const m = state.members.find(x => x.id === id);
   if (!m) return;
@@ -7017,7 +7033,9 @@ window.campRemindAll = function() {
         <div class="text-mute" style="font-size:11px">${hasPhone ? escapeHtml(String(m.phone)) : t('no phone', 'بدون هاتف')} · ${t('expires', 'ينتهي')} ${fmtDate(m.expiryDate)} (${daysTxt})${done ? ' · <span style="color:var(--green)">' + t('messaged', 'تم الإرسال') + '</span>' : ''}</div>
       </div>
       ${hasPhone
-        ? `<a class="btn ${done ? 'ghost' : 'primary'} sm" href="${campRenewalWaLink(m)}" target="_blank" onclick="campRemindOne(${m.id})">📱 ${done ? t('Again', 'إعادة') : t('Message', 'مراسلة')}</a>`
+        ? (campEndsToday(m)
+            ? `<a class="btn sm" style="background:var(--green);color:#fff;border-color:var(--green)" href="${campEndsTodayWaLink(m)}" target="_blank" onclick="campRemindOne(${m.id})" title="${t('Ends today — renew tomorrow to complete the journey', 'ينتهي اليوم — جدّد غداً لإكمال المسيرة')}">🎯 ${t('Ends today', 'ينتهي اليوم')}</a>`
+            : `<a class="btn ${done ? 'ghost' : 'primary'} sm" href="${campRenewalWaLink(m)}" target="_blank" onclick="campRemindOne(${m.id})">📱 ${done ? t('Again', 'إعادة') : t('Message', 'مراسلة')}</a>`)
         : `<span class="text-mute" style="font-size:11px">${t('add a phone first', 'أضف رقماً أولاً')}</span>`}
     </div>`;
   };
@@ -7166,7 +7184,7 @@ PAGES.campmembers = (main) => {
         <select onchange="assignDriver(${m.id}, this.value)" ${drivers.length ? '' : 'disabled'} style="min-width:140px;font-size:12px">${driverOptions(m.campDriverId)}</select>
       </td>
       <td style="padding:9px 10px;text-align:right;white-space:nowrap">
-        ${isExpiringSoon(m) && m.phone && isRealPhone(m.phone) ? `<a class="btn ghost sm" style="color:var(--accent-2);border-color:var(--accent-2)" href="${campRenewalWaLink(m)}" target="_blank" onclick="markCampReminded(${m.id})" title="${t('Send a friendly renewal message', 'إرسال رسالة تجديد ودّية')}">📱 ${t('Remind', 'تذكير')}</a>` : ''}
+        ${campEndsToday(m) && m.phone && isRealPhone(m.phone) ? `<a class="btn sm" style="background:var(--green);color:#fff;border-color:var(--green)" href="${campEndsTodayWaLink(m)}" target="_blank" onclick="markCampReminded(${m.id})" title="${t('“Camp ends today — renew tomorrow to complete the journey” message', 'رسالة «ينتهي المعسكر اليوم — جدّد غداً لإكمال المسيرة»')}">🎯 ${t('Ends today', 'ينتهي اليوم')}</a>` : (isExpiringSoon(m) && m.phone && isRealPhone(m.phone) ? `<a class="btn ghost sm" style="color:var(--accent-2);border-color:var(--accent-2)" href="${campRenewalWaLink(m)}" target="_blank" onclick="markCampReminded(${m.id})" title="${t('Send a friendly renewal message', 'إرسال رسالة تجديد ودّية')}">📱 ${t('Remind', 'تذكير')}</a>` : '')}
         <button class="btn ghost sm" onclick="editCampMember(${m.id})" title="${t('Edit duration & transport', 'تعديل المدة والنقل')}">✏️ ${t('Edit', 'تعديل')}</button>
         <button class="btn ghost sm" onclick="viewMember(${m.id})">👁 ${t('View', 'عرض')}</button>
       </td>
