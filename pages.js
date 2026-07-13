@@ -21477,6 +21477,8 @@ window.exportMemberHistoryCSV = function(memberId) {
 
 PAGES.expiring = (main) => {
   const threshold = state.settings?.expiringSoonDays || 3;
+  // Average renewal value used to estimate potential revenue (per KPI card + per section).
+  const AVG_RENEWAL = (state.settings && Number(state.settings.avgRenewalValue)) || 350;
   let filter = { sport: 'all', coach: 'all', search: '', bucket: 'all', sort: 'expiry', reminded: 'all' };
   // Which sections are collapsed (default: all open)
   const collapsed = { soon: false, expired: false, upcoming: false };
@@ -21650,7 +21652,7 @@ PAGES.expiring = (main) => {
             <span class="exp-chevron" style="display:inline-block;transition:transform .15s;transform:rotate(${isCollapsed ? '-90' : '0'}deg);color:${color};font-size:13px">▾</span>
             <div>
               <div class="card-title" style="color:${color}">${icon} ${title}</div>
-              <div class="card-subtitle">${list.length} member${list.length === 1 ? '' : 's'}${selectedInSection ? ` · <b style="color:var(--blue)">${selectedInSection} selected</b>` : ''}${isCollapsed ? ' · collapsed (click to expand)' : ''}</div>
+              <div class="card-subtitle">${list.length} member${list.length === 1 ? '' : 's'}${(!isViewerRole() && list.length) ? ` · 💰 <b style="color:${color}">${fmt(list.length * AVG_RENEWAL)} QAR</b> ${t('potential', 'محتمل')}` : ''}${selectedInSection ? ` · <b style="color:var(--blue)">${selectedInSection} selected</b>` : ''}${isCollapsed ? ' · collapsed (click to expand)' : ''}</div>
             </div>
           </div>
         </div>
@@ -21719,8 +21721,8 @@ PAGES.expiring = (main) => {
       ${isViewerRole() ? '' : `<div class="kpi green">
         <div class="kpi-icon">💰</div>
         <div class="kpi-label">Potential Revenue</div>
-        <div class="kpi-value num">${fmt((expired.length + expiringSoon.length) * 350)} <span style="font-size:12px;color:var(--text-dim)">QAR</span></div>
-        <div class="kpi-delta flat">@ 350 QAR avg/renewal</div>
+        <div class="kpi-value num">${fmt((expired.length + expiringSoon.length) * AVG_RENEWAL)} <span style="font-size:12px;color:var(--text-dim)">QAR</span></div>
+        <div class="kpi-delta flat">@ ${fmt(AVG_RENEWAL)} QAR avg/renewal</div>
       </div>`}
     </div>
 
