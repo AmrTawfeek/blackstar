@@ -4447,7 +4447,7 @@ window.editCoach = function(id, defaultRole) {
         </div>
       </div>
       <div class="form-row">
-        ${phoneInputHtml('c-phone', c.phone, { label: 'Mobile' })}
+        ${phoneInputHtml('c-phone', c.phone, { label: 'Mobile (optional)' })}
         <div class="field"><label>Email <span class="text-mute" style="font-size:10px">(optional)</span></label><input id="c-email" type="email" value="${escapeHtml(c.email || '')}" placeholder="name@example.com" /></div>
       </div>
       <div class="form-row">
@@ -4491,7 +4491,10 @@ window.editCoach = function(id, defaultRole) {
         const birthdate = $('#c-bdate').value;
 
         if (!name) { toast('Name required', 'error'); $('#c-name')?.focus(); return; }
-        if (!phoneInput.valid) {
+        // Phone is OPTIONAL for a coach / staff member (unlike a member, who needs it for
+        // WhatsApp reminders). Only reject a phone that was TYPED but is too short — an empty
+        // one is fine, so "no phone" no longer blocks creating a coach. (v6.353)
+        if (phoneInput.digits && !phoneInput.valid) {
           toast(phoneInput.error || 'Mobile number is invalid', 'error');
           document.getElementById('c-phone-digits')?.focus();
           return;
