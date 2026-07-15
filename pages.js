@@ -2068,7 +2068,9 @@ function viewMember(id) {
           // a sport whose period ended shows "expired" even while the member is
           // still active on another sport. COMPLETED (all classes attended) wins over
           // expired and gets its OWN colour (purple) so it stands apart from active.
-          const total = s.totalClasses, attended = s.attendedClasses;
+          // Use the SAME live attendance + class-limit the attendance cell shows above
+          // (`attended`/`total`), NOT the stored s.attendedClasses which lags the roll-call
+          // grid — otherwise a real 8/8 kept reading a stale "active". (v6.359)
           const isCompleted = total != null && total > 0 && attended != null && attended >= total;
           let label, cls;
           if (isCompleted) { label = 'completed'; cls = 'completed'; }
@@ -21565,6 +21567,95 @@ window.exportMemberHistoryCSV = function(memberId) {
 // EXPIRING SOON — members whose membership ends within N days
 // ═══════════════════════════════════════════════════════════════════
 
+// ── READY TO RENEW (v6.359) ────────────────────────────────────────────────────
+// Members who FINISHED all their class-days early (live attendance ≥ the class limit) on a
+// sport — so they're ready to renew that sport even before their date expires. Based on LIVE
+// attendance (the roll-call grid), the same basis the member card shows.
+PAGES.completed = (main) => {
+  const AVG_RENEWAL = (state.settings && Number(state.settings.avgRenewalValue)) || 350;
+  const all = (typeof membersReadyToRenew === 'function') ? membersReadyToRenew() : [];
+  const sportsInList = [...new Set(all.flatMap(r => r.done.map(d => d.sport)))].sort();
+  let f = { search: '', sport: 'all' };
+
+  const waLink = (m, sports) => {
+    if (!m.phone || (typeof isRealPhone === 'function' && !isRealPhone(m.phone))) return null;
+    let digits = String(m.phone).replace(/\D/g, '');
+    if (digits.startsWith('00')) digits = digits.slice(2);
+    if (digits.length === 8) digits = '974' + digits;
+    const sp = sports.join('، '), spEn = sports.join(', ');
+    const msg = `مرحباً ${m.nameArabic || m.name} 🖤⭐\nلقد أكملتم جميع حصص ${sp} في نادي بلاك ستارز! نودّ تذكيركم بتجديد الاشتراك لمواصلة التقدّم.\n\nHello ${m.name}! You have completed all your ${spEn} classes at Black Stars Sports Club 🎉 Renew now to keep going.`;
+    return `https://wa.me/${digits}?text=${encodeURIComponent(msg)}`;
+  };
+
+  function refresh() {
+    const rows = all.filter(({ m, done }) => {
+      if (f.sport !== 'all' && !done.some(d => d.sport === f.sport)) return false;
+      if (f.search && typeof searchMatchesFields === 'function' && !searchMatchesFields(f.search.toLowerCase(), [m.name, m.nameArabic, m.phone, m.phone2, m.qid], [m.phone, m.phone2])) return false;
+      return true;
+    });
+    const totalSports = rows.reduce((s, r) => s + (f.sport === 'all' ? r.done.length : r.done.filter(d => d.sport === f.sport).length), 0);
+    if ($('#comp-kpi-members')) $('#comp-kpi-members').textContent = rows.length;
+    if ($('#comp-kpi-sports')) $('#comp-kpi-sports').textContent = totalSports;
+    if ($('#comp-kpi-potential')) $('#comp-kpi-potential').textContent = fmt(totalSports * AVG_RENEWAL);
+    const body = rows.length ? rows.map(({ m, done }) => {
+      const shown = f.sport === 'all' ? done : done.filter(d => d.sport === f.sport);
+      const sportBadges = shown.map(d => `<span class="badge" style="background:rgba(139,92,246,.14);color:#7c3aed;font-weight:700;margin:1px 2px;white-space:nowrap">✓ ${escapeHtml(d.sport)} ${d.attended}/${d.total}${d.expired ? ' · <span style="color:var(--red)">expired</span>' : ''}</span>`).join(' ');
+      const paid = shown.reduce((s, d) => s + (Number(d.sub.amountPaid) || 0), 0);
+      const coaches = [...new Set(shown.map(d => d.coach || (d.coachId ? (state.coaches.find(c => c.id === d.coachId) || {}).name : '')).filter(Boolean))].join(', ');
+      const wl = waLink(m, shown.map(d => d.sport));
+      return `<tr data-id="${m.id}" style="cursor:pointer">
+        <td><div style="display:flex;align-items:center;gap:8px"><div class="avatar" style="width:26px;height:26px;font-size:10px;background:linear-gradient(135deg,var(--purple),var(--blue))">${initials(m.name)}</div><div><div class="font-bold">${escapeHtml(m.name)}</div>${isRealPhone(m.phone) ? `<div class="text-mute" style="font-size:10px">${phoneCell(m.phone)}</div>` : ''}</div></div></td>
+        <td>${sportBadges}</td>
+        <td class="text-dim" style="font-size:12px">${escapeHtml(coaches || '—')}</td>
+        <td class="text-right num">${paid ? fmt(paid) : '—'}</td>
+        <td class="text-right" onclick="event.stopPropagation()" style="white-space:nowrap">
+          <button class="btn primary sm" onclick="if(typeof closeModal==='function')closeModal();addRenewal(${m.id})" title="${t('Renew this member', 'تجديد هذا العضو')}">🔄 ${t('Renew', 'تجديد')}</button>
+          ${wl ? `<a class="btn ghost sm" style="color:var(--green);border-color:var(--green)" href="${wl}" target="_blank" title="${t('WhatsApp a renewal reminder', 'إرسال تذكير تجديد عبر واتساب')}">💬</a>` : ''}
+        </td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="5" class="text-mute" style="text-align:center;padding:26px">✅ ${t('No members have finished all their classes right now', 'لا يوجد أعضاء أكملوا جميع حصصهم حالياً')}</td></tr>`;
+    $('#comp-tbody').innerHTML = body;
+    $$('#comp-tbody tr[data-id]').forEach(tr => tr.addEventListener('click', () => viewMember(parseInt(tr.dataset.id))));
+  }
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>✅ ${t('Ready to Renew', 'جاهز للتجديد')}</h1>
+        <div class="subtitle">${t('Members who finished all their class-days — renew them to keep the momentum. Based on the live attendance grid.', 'الأعضاء الذين أكملوا جميع حصصهم — جدّد لهم للحفاظ على الاستمرارية. بناءً على سجل الحضور المباشر.')}</div>
+      </div>
+    </div>
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi" style="border-color:#7c3aed;background:rgba(139,92,246,.06)"><div class="kpi-label" style="color:#7c3aed">✅ ${t('Members ready', 'أعضاء جاهزون')}</div><div class="kpi-value num" id="comp-kpi-members" style="color:#7c3aed">0</div><div class="kpi-sub">${t('finished all classes', 'أكملوا جميع الحصص')}</div></div>
+      <div class="kpi"><div class="kpi-label">🎯 ${t('Sports finished', 'رياضات مكتملة')}</div><div class="kpi-value num" id="comp-kpi-sports">0</div><div class="kpi-sub">${t('one row per member', 'صف لكل عضو')}</div></div>
+      <div class="kpi" style="border-color:var(--green);background:rgba(16,185,129,.06)"><div class="kpi-label" style="color:var(--green)">💰 ${t('Renewal potential', 'قيمة التجديد المحتملة')}</div><div class="kpi-value num" id="comp-kpi-potential" style="color:var(--green)">0</div><div class="kpi-sub">@ ${fmt(AVG_RENEWAL)} ${t('avg/renewal', 'متوسط/تجديد')}</div></div>
+    </div>
+    <div class="card" style="padding:14px 16px;margin-bottom:14px">
+      <div class="filter-bar" style="flex-wrap:wrap;gap:8px">
+        <input id="comp-search" class="input" placeholder="🔍 ${t('Search name / phone', 'ابحث بالاسم / الهاتف')}" style="max-width:240px" />
+        <select id="comp-sport" class="btn ghost">
+          <option value="all">${t('All sports', 'كل الرياضات')}</option>
+          ${sportsInList.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="card table-wrap">
+      <table>
+        <thead><tr>
+          <th>${t('Member', 'العضو')}</th>
+          <th>${t('Finished (classes)', 'مكتمل (الحصص)')}</th>
+          <th>${t('Coach', 'المدرب')}</th>
+          <th class="text-right">${t('Paid', 'المدفوع')}</th>
+          <th class="text-right">${t('Action', 'إجراء')}</th>
+        </tr></thead>
+        <tbody id="comp-tbody"></tbody>
+      </table>
+    </div>`;
+  $('#comp-search')?.addEventListener('input', e => { f.search = e.target.value; refresh(); });
+  $('#comp-sport')?.addEventListener('change', e => { f.sport = e.target.value; refresh(); });
+  refresh();
+};
+
 PAGES.expiring = (main) => {
   const threshold = state.settings?.expiringSoonDays || 3;
   // Average renewal value used to estimate potential revenue (per KPI card + per section).
@@ -21618,6 +21709,8 @@ PAGES.expiring = (main) => {
   function matchFilter({ m, days }) {
     // "Recently expired" bucket: only expired within the last N days.
     if (filter.bucket === 'recent' && !(days < 0 && days >= -recentDays)) return false;
+    // "Expiring in ≤ 7 days" bucket: active memberships whose expiry is 0–7 days out. (v6.358)
+    if (filter.bucket === 'd7' && !(days >= 0 && days <= 7)) return false;
     if (filter.sport !== 'all') {
       const ms = new Set([m.sport, ...((m.enrollments||[]).map(e=>e.sport)), ...((m.subscriptions||[]).map(s=>s.activity))].filter(Boolean));
       if (!ms.has(filter.sport)) return false;
@@ -21821,6 +21914,7 @@ PAGES.expiring = (main) => {
         <select id="exp-bucket" class="btn ghost">
           <option value="all">All statuses</option>
           <option value="soon">⏰ Expiring in ≤ ${threshold} days</option>
+          <option value="d7">⏳ Expiring in ≤ 7 days</option>
           <option value="recent">🔴 Recently expired (≤ ${recentDays} days)</option>
           <option value="expired">⛔ Already expired</option>
           <option value="upcoming">📅 Expiring in ≤ 30 days</option>
@@ -21886,6 +21980,12 @@ PAGES.expiring = (main) => {
     if (filter.bucket === 'recent') {
       parts.push(section(`Recently expired — within ${recentDays} days`, 'var(--red)', '🔴', eFiltered, 'expired'));
     }
+    // "Expiring in ≤ 7 days": spans the soon (0–threshold) + upcoming (threshold–30) buckets,
+    // trimmed to 0–7 days by matchFilter's d7 guard, in expiry order. (v6.358)
+    if (filter.bucket === 'd7') {
+      const d7List = applySort([...expiringSoon, ...upcoming].filter(matchFilter));
+      parts.push(section('Expiring within 7 days — call ASAP', 'var(--accent-2)', '⏳', d7List, 'soon'));
+    }
     if (filter.bucket === 'all' || filter.bucket === 'soon')
       parts.push(section('Expiring within ' + threshold + ' days — call ASAP', 'var(--accent-2)', '⏰', sFiltered, 'soon'));
     if (filter.bucket === 'all' || filter.bucket === 'expired')
@@ -21922,7 +22022,10 @@ PAGES.expiring = (main) => {
       cb.addEventListener('click', e => e.stopPropagation());
       cb.addEventListener('change', e => {
         const bucket = e.target.dataset.bucket;
-        const list = bucket === 'soon' ? expiringSoon.filter(matchFilter)
+        // The ≤7-day view is ONE section spanning both soon + upcoming, so select-all must
+        // cover the whole combined list, not just the 'soon' half. (v6.358)
+        const list = filter.bucket === 'd7' ? [...expiringSoon, ...upcoming].filter(matchFilter)
+                   : bucket === 'soon' ? expiringSoon.filter(matchFilter)
                    : bucket === 'expired' ? expired.filter(matchFilter)
                    : upcoming.filter(matchFilter);
         const phoneIds = list.filter(x => x.m.phone && !x.m.phone.startsWith('+9747000')).map(x => x.m.id);
