@@ -306,17 +306,31 @@
     // another change. On failure we re-flush the LATEST state automatically with
     // backoff (base is NOT advanced on failure, so the same delta is re-sent), and
     // keep retrying until it lands. `retryNow()` lets the UI force an immediate try.
-    let _retryTimer = null, _retryAttempt = 0, _lastState = null;
+    let _retryTimer = null, _retryAttempt = 0, _lastState = null, _lastErrorCode = null;
     const RETRY_DELAYS = [2000, 5000, 15000, 30000, 60000];   // ms; last value repeats
     function _clearRetry() { if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; } _retryAttempt = 0; }
+    // A 'permission-denied' / 'unauthenticated' WRITE is almost always a LAPSED ID token — the
+    // tab stayed open past the token's lifetime and the SDK had no pending call to refresh it on.
+    // Re-sending the same delta with the same stale token fails forever, so before any retry of
+    // an auth-coded failure we FORCE a token refresh. If it succeeds the next write normally
+    // lands; if it fails (or there's nothing to refresh) we behave exactly as before. (v6.354)
+    function _isAuthCode(code) { return code === 'permission-denied' || code === 'unauthenticated'; }
+    async function _refreshAuthToken() {
+      try {
+        const u = (typeof window !== 'undefined' && window.firebase && window.firebase.auth) ? window.firebase.auth().currentUser : null;
+        if (u && typeof u.getIdToken === 'function') { await u.getIdToken(true); return true; }
+      } catch (_) {}
+      return false;
+    }
     function _scheduleRetry() {
       if (_retryTimer || !_lastState) return;                  // already scheduled / nothing to send
       const delay = RETRY_DELAYS[Math.min(_retryAttempt, RETRY_DELAYS.length - 1)];
       _retryAttempt++;
       console.warn(`[Storage] ↻ auto-retry #${_retryAttempt} in ${Math.round(delay / 1000)}s`);
-      _retryTimer = setTimeout(() => {
+      _retryTimer = setTimeout(async () => {
         _retryTimer = null;
         if (writeInFlight) return;                             // a fresh write is running; its result drives status
+        if (_isAuthCode(_lastErrorCode)) await _refreshAuthToken();   // re-mint a stale token before re-sending
         if (_lastState) _flushWrite(_lastState);
       }, delay);
     }
@@ -490,12 +504,12 @@
       });
       Promise.all([...batchCommits, ...txnCommits])
         .then(() => {
-          lastWriteFailed = false; _clearRetry(); setBaseFromState(state); _lastFlushResult = { ok: true, records: ops.length };
+          lastWriteFailed = false; _lastErrorCode = null; _clearRetry(); setBaseFromState(state); _lastFlushResult = { ok: true, records: ops.length };
           console.log(`%c[Storage] ✅ stored in Firestore — ${nSet} written, ${nDel} deleted${metaChanged ? ', settings updated' : ''} @ ${new Date().toLocaleTimeString()}`, 'color:#16a34a;font-weight:700');
           try { if (typeof window !== 'undefined') { const L = window.__cloudWriteLog; if (L && L.length) L[L.length - 1].ok = true; if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'saved', records: ops.length, at: Date.now(), byCollection: perCol }); } } catch (_) {}
         })
         .catch(e => {
-          lastWriteFailed = true; _lastFlushResult = { ok: false, error: (e && e.code) || String(e) };
+          lastWriteFailed = true; _lastErrorCode = (e && e.code) || null; _lastFlushResult = { ok: false, error: (e && e.code) || String(e) };
           console.error('[Storage] ❌ save FAILED (kept locally, will retry on next change):', (e && e.code) || e, e);
           try {
             if (typeof window !== 'undefined') {
@@ -678,7 +692,13 @@
         _retryAttempt = 0;
         if (writeInFlight) return new Promise(resolve => _confirmWaiters.push(resolve));   // ride the in-flight write
         if (!_lastState || !lastWriteFailed) return Promise.resolve({ ok: true, noop: true });
-        return new Promise(resolve => { _confirmWaiters.push(resolve); _flushWrite(_lastState); });
+        return new Promise(resolve => {
+          _confirmWaiters.push(resolve);
+          // Same stale-token recovery as the auto-retry: force a fresh token before a manual
+          // "Retry now" when the last failure was auth-coded, so the button can actually fix it. (v6.354)
+          const go = () => _flushWrite(_lastState);
+          if (_isAuthCode(_lastErrorCode)) _refreshAuthToken().then(go); else go();
+        });
       },
 
       // PURE server read for a sync-check / discrepancy diff: reads the authoritative

@@ -2795,21 +2795,21 @@ function enrollRowHtml(row, idx) {
 // Summer Camp uses its day count). Returns 'YYYY-MM-DD' or '' if not computable.
 function autoExpiryFromRows() {
   const ends = (window._enrollRows || []).map(r => {
-    // Camp expiry = start + VALIDITY window (calendar days), independent of the
-    // class-day count. The window comes from the duration LABEL (e.g. "2 months" = 60
-    // calendar days), NOT the number of class days a member may attend (e.g. 44).
+    // Camp expiry counts BUSINESS days (Sun–Thu; closed Fri/Sat) via campEndDate, so the form
+    // shows the SAME expiry the record will save — "1 month" = 22 working days, e.g. Sun 14-Jun →
+    // Mon 13-Jul. Non-camp sports use their calendar validity. (v6.357 — owner rule.)
     const isCamp = r.sport === SUMMER_CAMP;
     let days;
     if (isCamp) {
-      // Prefer the duration label's calendar-days; then an explicit validity; only
-      // fall back to the class count if neither is available.
+      // Prefer the duration label's day-value; then an explicit validity; only fall back to the
+      // class count if neither is available. campEndDate converts it to the business-day span.
       const labelDays = (typeof campDaysForLabel === 'function' && r.durationLabel) ? campDaysForLabel(r.durationLabel) : 0;
       days = labelDays || parseInt(r.validity) || parseInt(r.campDays) || parseInt(r.classes) || 0;
     } else {
       days = parseInt(r.validity) || 0;
     }
     if (!(r.start && days > 0)) return null;
-    return addDays(r.start, days);
+    return (isCamp && typeof campEndDate === 'function') ? campEndDate(r.start, days) : addDays(r.start, days);
   }).filter(Boolean).sort();
   return ends.length ? ends[ends.length - 1] : '';
 }
@@ -3747,11 +3747,13 @@ function showMemberForm(m) {
             existingInv.lineItems = [...(existingInv.lineItems || []), ...newLines];
             existingInv.amount = (existingInv.amount || 0) + totalNew;
             if (!Array.isArray(existingInv.payments)) {
-              // Back-fill a payment record for any previously-paid amount.
+              // Back-fill a RECONSTRUCTION row for previously-paid money (see recordInvoicePayment):
+              // stable invoice-scoped pid + `_recon` flag so parallel devices collapse it and the
+              // Invoice Checker can spot a reconstruction that duplicates a real row. (v6.355)
               const prior = existingInv.amountPaid != null ? existingInv.amountPaid : (existingInv.amount - totalNew);
-              existingInv.payments = prior > 0 ? [{ date: existingInv.date || payDate, month: existingInv.month || (existingInv.date || payDate).slice(0, 7), amount: prior, method: existingInv.method || 'cash' }] : [];
+              existingInv.payments = prior > 0 ? [{ date: existingInv.date || payDate, month: existingInv.month || (existingInv.date || payDate).slice(0, 7), amount: prior, method: existingInv.method || 'cash', pid: 'recon:' + existingInv.id, _recon: true }] : [];
             }
-            existingInv.payments.push({ date: payDate, month: monthKey, amount: totalNew, method: 'cash' });
+            existingInv.payments.push({ date: payDate, month: monthKey, amount: totalNew, method: 'cash', at: new Date().toISOString() });
             existingInv.amountPaid = existingInv.payments.reduce((s, p) => s + (p.amount || 0), 0);
             // Refresh the headline sport label + description to include all sports.
             const allLabel = sportListWithDuration(existingInv.lineItems) || existingInv.lineItems.map(li => li.sport).join(', ');
@@ -6076,7 +6078,7 @@ PAGES.renewaldetail = (main) => {
       const sub = subFor(m, e.sport);
       const start = (sub && sub.start) || e.start || m.startDate || null;
       let end = (sub && sub.end) || null;
-      if (!end && start) end = addDays(start, parseInt(e.validity || DEFAULT_VALIDITY));
+      if (!end && start) { const _v = parseInt(e.validity || DEFAULT_VALIDITY); end = (e.sport === SUMMER_CAMP && typeof campEndDate === 'function') ? campEndDate(start, _v) : addDays(start, _v); }
       if (!end) end = m.expiryDate || null;
       rows.push({ m, sport: e.sport || '—', start, end, price: parseFloat(e.price) || 0 });
     }
@@ -9850,11 +9852,22 @@ PAGES.invoices = (main) => {
         <td>${i.sport ? `<span class="badge ${sportBadgeColor}">${escapeHtml(sportLabel)}</span>` : '<span class="text-mute">—</span>'}</td>
         <td>${i.coach ? `<span class="text-dim">${escapeHtml(i.coach)}</span>` : '<span class="text-mute">—</span>'}</td>
         <td><span class="badge ${i.method === 'card' ? 'blue' : ''}">${i.method}</span></td>
-        <td class="text-right num font-bold">${fmt(rowAmtOf(i))}${(() => {
-          const rAmt = rowAmtOf(i), rPaid = rowPaidOf(i), rDue = Math.max(0, rAmt - rPaid);
+        <td class="text-right num font-bold">${(() => {
+          const rAmt = rowAmtOf(i), rPaid = rowPaidOf(i), rFull = invoiceTotal(i);
+          // A month filter also SHOWS an invoice when a PAYMENT landed in the filtered month, even
+          // though its REVENUE bills a different month (share = 0). Rendering a bare "0" there looks
+          // like a broken invoice — the amount is fine when you open it. Instead show the real total
+          // (dimmed) and say where it bills + that a payment hit the filtered month. The footer/
+          // revenue total still uses the per-month share, so no money is double-counted. (v6.356)
+          const billedElsewhere = selMonths.length && rAmt < 0.005 && rFull > 0.005;
+          if (billedElsewhere) {
+            const bm = (typeof invoiceMonths === 'function' ? invoiceMonths(i) : []).map(m => (typeof fmtMonth === 'function' ? fmtMonth(m) : m)).join(', ');
+            return `<span style="color:var(--text-mute)">${fmt(rFull)}</span>
+              <div style="font-size:10px;font-weight:600;color:var(--text-mute);margin-top:2px">${t('billed', 'محتسبة')} ${escapeHtml(bm)} · ${t('paid this month', 'دُفعت هذا الشهر')}</div>`;
+          }
+          const rDue = Math.max(0, rAmt - rPaid);
           const st = rAmt <= 0.001 ? 'Paid' : (rPaid <= 0.001 ? 'Unpaid' : (rDue > 0.5 ? 'Partial' : 'Paid'));
-          if (st === 'Paid') return '';
-          return `<div style="font-size:10px;font-weight:700;color:${st === 'Unpaid' ? 'var(--red)' : 'var(--accent-2)'};margin-top:2px">${st} · ${fmt(rDue)} due</div>`;
+          return fmt(rAmt) + (st === 'Paid' ? '' : `<div style="font-size:10px;font-weight:700;color:${st === 'Unpaid' ? 'var(--red)' : 'var(--accent-2)'};margin-top:2px">${st} · ${fmt(rDue)} due</div>`);
         })()}</td>
         <td class="text-right" style="white-space:nowrap">
           ${filter.archived ? `
@@ -11143,6 +11156,10 @@ PAGES.invoicechecker = (main) => {
   }
   driftRows.sort((a, b) => String(b.inv.month || b.inv.date || '').localeCompare(String(a.inv.month || a.inv.date || '')));
   const scannedCount = (state.invoices || []).filter(i => !i.deleted && inScope(i)).length;
+  // Payment-ledger integrity: invoices whose payment rows don't reconcile (a phantom "installment
+  // shown twice" duplicate, and/or amountPaid ≠ the sum of rows). Scoped to the month filter. (v6.355)
+  const payLedger = (typeof _paymentLedgerIssues === 'function' ? _paymentLedgerIssues() : []).filter(x => inScope(x.inv));
+  const payPhantomN = payLedger.filter(x => x.phantomIdx.length).length;
   // Only a MEMBERSHIP invoice must have a member — a rental / product with no member
   // link is a legitimate WALK-IN, not a problem. Split the orphans on that line.
   const orphanReal = orphanRows.filter(o => (o.inv.category || 'Membership') === 'Membership');   // needs review
@@ -11247,6 +11264,7 @@ PAGES.invoicechecker = (main) => {
         <div class="subtitle">${t('One tool: find MISSING invoices (members active but not invoiced) and CORRUPTED invoices (name / phone / QID / amount drifted, or no member link)', 'أداة واحدة: العثور على الفواتير الناقصة (أعضاء نشطون بلا فاتورة) والفواتير المُحرّفة (اسم/هاتف/رقم/مبلغ غير مطابق، أو بلا ارتباط بعضو)')}</div>
       </div>
       <div class="topbar-actions" style="display:flex;gap:8px;align-items:center">
+        <button class="btn ${payLedger.length ? 'primary' : 'ghost'}" id="ic-payledger" title="${t('Review invoices whose payment rows do not reconcile — a duplicated installment, or a paid-total that does not match the rows', 'مراجعة الفواتير التي لا تتطابق دفعاتها — دفعة مكررة أو إجمالي مدفوع لا يطابق الصفوف')}">💳 ${t('Payment ledger', 'دفتر الدفعات')}${payLedger.length ? ` (${payLedger.length})` : ''}</button>
         ${monthMultiHTML('ic-month', months, window._icMonths)}
       </div>
     </div>
@@ -11269,6 +11287,75 @@ PAGES.invoicechecker = (main) => {
 
   bindMonthMulti('ic-month', (mSel) => { window._icMonths = mSel; PAGES.invoicechecker(main); });
   $('#ic-fixall')?.addEventListener('click', () => window._icFixAll());
+  $('#ic-payledger')?.addEventListener('click', () => window.reviewPaymentLedger());
+};
+
+// ── Payment-ledger review (admin, v6.355) ────────────────────────────────────────
+// Lists every LIVE invoice whose payment rows don't reconcile: a PHANTOM duplicate row
+// (a reconstruction/seed that an exact real payment already covers — the "first installment
+// shows twice" bug) and/or a paid-total that drifts from the sum of rows. The admin reviews
+// each and clicks to remove the phantom(s); nothing is auto-deleted, and only rows the checker
+// flags as phantoms (never a real recorded payment) can be removed, so money is never lost.
+window.reviewPaymentLedger = function () {
+  if (currentRole() !== 'admin') { toast(t('Admins only', 'المشرفون فقط'), 'error'); return; }
+  const issues = (typeof _paymentLedgerIssues === 'function' ? _paymentLedgerIssues() : []);
+  const rowHtml = (x) => {
+    const inv = x.inv;
+    const phantom = new Set(x.phantomIdx);
+    const pays = (inv.payments || []).map((p, i) => {
+      const real = (p._recon !== true && (p.at != null || p.by != null));
+      const isPh = phantom.has(i);
+      return `<div style="display:flex;gap:8px;align-items:center;font-size:12px;padding:3px 8px;border-radius:6px;${isPh ? 'background:rgba(239,68,68,.12);color:var(--red);font-weight:700' : ''}">
+        <span style="flex:0 0 74px" class="num">${fmt(p.amount)}</span>
+        <span style="flex:0 0 92px">${escapeHtml(p.date || '—')}</span>
+        <span style="flex:0 0 60px">${escapeHtml(String(p.method || ''))}</span>
+        <span style="flex:1 1 auto;color:var(--text-mute)">${isPh ? '⚠ ' + t('phantom (duplicate) — will be removed', 'وهمية (مكررة) — ستُحذف') : (real ? '✔ ' + t('recorded', 'مسجلة') + (p.byName ? ' · ' + escapeHtml(p.byName) : '') : t('reconstructed', 'معاد بناؤها'))}</span>
+      </div>`;
+    }).join('');
+    const canFix = x.phantomIdx.length > 0;
+    return `<div class="card" style="padding:12px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+        <div><b>${escapeHtml(inv.customerName || ('#' + inv.id))}</b> <span class="text-mute" style="font-size:12px">${inv.ref || '#' + inv.id}</span></div>
+        <div style="font-size:12px" class="text-mute">${t('Total', 'الإجمالي')} ${fmt(inv.amount)} · ${t('Paid field', 'حقل المدفوع')} <b>${fmt(x.amountPaid)}</b> · ${t('Rows sum', 'مجموع الصفوف')} <b style="color:${x.drift ? 'var(--red)' : 'inherit'}">${fmt(x.sum)}</b></div>
+      </div>
+      ${pays}
+      <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px">
+        ${canFix
+          ? `<button class="btn primary sm" onclick="window._payLedgerFix(${inv.id})">🧹 ${t('Remove phantom & fix', 'إزالة المكرر والإصلاح')} (${x.phantomIdx.length})</button>`
+          : `<span class="text-mute" style="font-size:12px;align-self:center">${t('Drift only — open the invoice to correct the rows manually', 'انحراف فقط — افتح الفاتورة لتصحيح الصفوف يدوياً')}</span>`}
+        <button class="btn ghost sm" onclick="editInvoicePayments(${inv.id})">✏ ${t('Open payments', 'فتح الدفعات')}</button>
+      </div>
+    </div>`;
+  };
+  showModal({
+    title: '💳 ' + t('Payment ledger review', 'مراجعة دفتر الدفعات'),
+    wide: true,
+    body: issues.length
+      ? `<div style="font-size:13px;color:var(--text-mute);margin-bottom:10px">${t('These invoices have payment rows that do not add up. A red row is a phantom duplicate (the same installment recorded twice) — removing it keeps the real payment and fixes the paid total. Nothing is changed until you click.', 'هذه الفواتير بها صفوف دفعات غير متطابقة. الصف الأحمر دفعة مكررة — إزالته تُبقي الدفعة الحقيقية وتصحح الإجمالي. لا شيء يتغير حتى تضغط.')}</div>
+         ${issues.map(rowHtml).join('')}`
+      : `<div style="text-align:center;padding:30px;color:var(--green)"><div style="font-size:40px">✅</div><div style="font-weight:700;margin-top:8px">${t('Every invoice payment reconciles', 'كل دفعات الفواتير متطابقة')}</div></div>`,
+    actions: [{ label: t('Close', 'إغلاق'), class: 'btn ghost', onclick: closeModal }],
+  });
+};
+
+// Remove one invoice's phantom rows, then write-through + confirm from the cloud, then reopen
+// the review so the admin sees it drop off the list. (v6.355)
+window._payLedgerFix = function (invId) {
+  const inv = (state.invoices || []).find(i => i.id === invId);
+  if (!inv) { toast(t('Invoice not found', 'الفاتورة غير موجودة'), 'error'); return; }
+  if (typeof assertCloudWritable === 'function' && !assertCloudWritable('fix this payment ledger', 'إصلاح دفتر الدفعات')) return;
+  const removed = (typeof _fixPaymentPhantoms === 'function') ? _fixPaymentPhantoms(inv) : 0;
+  if (!removed) { toast(t('Nothing to fix', 'لا شيء لإصلاحه'), 'error'); return; }
+  if (typeof audit === 'function') audit('invoice.payments', 'invoice:' + inv.id, `removed ${removed} phantom payment row(s); paid total corrected to ${inv.amountPaid}`, { recordName: inv.customerName || '' });
+  closeModal();
+  render();
+  if (typeof withCloudConfirm === 'function') {
+    withCloudConfirm({
+      verify: [{ collection: 'invoices', id: inv.id }],
+      okMsg: t('Phantom removed · paid total corrected to ', 'أُزيلت المكررة · صُحح الإجمالي إلى ') + fmt(inv.amountPaid),
+      afterOk: () => window.reviewPaymentLedger(),
+    });
+  } else { save(); window.reviewPaymentLedger(); }
 };
 
 // ── Member Commission report (admin): per member, per sport ───────────────────
@@ -24127,7 +24214,8 @@ window.convertTrialToMember = function(id) {
         if (classes <= 0) { toast('Classes must be > 0', 'error'); return; }
         if (price <= 0) { toast('Price must be > 0', 'error'); return; }
 
-        const end = addDays(start, validity);
+        // Camp end = business days (Sun–Thu) via campEndDate; other sports = calendar validity. (v6.357)
+        const end = (sport === SUMMER_CAMP && typeof campEndDate === 'function') ? campEndDate(start, validity) : addDays(start, validity);
         const monthKey = start.slice(0, 7);
         const ref = nextInvoiceRef();
         const _sid = 's' + Date.now();
@@ -27181,7 +27269,8 @@ window.transferMembership = function(fromId, sport, toId) {
   const transferValue = Math.max(0, price - attendedValue);
   const validity = enr.validity || DEFAULT_VALIDITY;
   const start = TODAY;
-  const end = addDays(start, validity);
+  // Camp end = business days (Sun–Thu) via campEndDate; other sports = calendar validity. (v6.357)
+  const end = (enr.sport === SUMMER_CAMP && typeof campEndDate === 'function') ? campEndDate(start, validity) : addDays(start, validity);
 
   // Does B already have this sport? If so, only MERGE when it's the SAME coach —
   // we add the remaining classes onto B's existing enrollment instead of creating a
