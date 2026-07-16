@@ -6159,23 +6159,28 @@ function reminderInfo(m) {
   const inCycle = dates.filter(d => (d || '') >= cycleStart);
   return { count: inCycle.length, dates: inCycle, last: inCycle[inCycle.length - 1] || null, remaining: Math.max(0, MAX_REMINDERS - inCycle.length) };
 }
-window.markReminded = function(id) {
-  const m = state.members.find(x => x.id === id); if (!m) return;
+// Mark a renewal reminder. Returns TRUE when it actually recorded one (false = maxed out or the
+// user cancelled the confirm). Pass { rerender:false } to skip the global full-page render() so a
+// caller can repaint just its own rows instead — instant feedback, keeps scroll + filters. (v6.366)
+window.markReminded = function(id, opts) {
+  const m = state.members.find(x => x.id === id); if (!m) return false;
   const info = reminderInfo(m);
   if (info.count >= MAX_REMINDERS) {
     toast(`${m.name} has already been reminded ${MAX_REMINDERS} times this cycle.`, 'info');
-    return;
+    return false;
   }
   if (info.count >= 1) {
     const nextLevel = info.count + 1;
     const label = nextLevel === 2 ? 'second (firmer)' : 'third (final)';
-    if (!confirm(`${m.name} was already reminded ${info.count} time(s)${info.last ? ', last on ' + fmtDate(info.last) : ''}.\n\nSend the ${label} reminder?`)) return;
+    if (!confirm(`${m.name} was already reminded ${info.count} time(s)${info.last ? ', last on ' + fmtDate(info.last) : ''}.\n\nSend the ${label} reminder?`)) return false;
   }
   if (!Array.isArray(m.reminderDates)) m.reminderDates = info.dates.slice();
   m.reminderDates.push(TODAY);
   m.lastRemindedAt = TODAY;   // keep legacy field in sync
   if (typeof audit === 'function') audit('member.remind', 'member:' + id, `renewal reminder #${info.count + 1} sent`);
-  save(); render();
+  save();
+  if (!opts || opts.rerender !== false) render();
+  return true;
 };
 
 // ─── Club Revenue Summary ────────────────────────────────────────────
@@ -21654,8 +21659,8 @@ PAGES.completed = (main) => {
       // Clicking marks a reminder (markReminded handles the 2nd-time confirm + 3rd-time block). (v6.365)
       const ri = (typeof reminderInfo === 'function') ? reminderInfo(m) : { count: 0, last: null };
       const remindedBtn = ri.count > 0
-        ? `<button class="btn sm" style="background:var(--green);color:#fff;border-color:var(--green);font-weight:700" onclick="event.stopPropagation();markReminded(${m.id})" title="${t('Reminded', 'تم التذكير')} ${ri.count}×${ri.last ? ' · ' + t('last', 'آخر') + ' ' + fmtDate(ri.last) : ''} — ${t('click to remind again', 'اضغط للتذكير مجدداً')}">✅ ${t('Reminded', 'تم التذكير')}${ri.count > 1 ? ' ×' + ri.count : ''}</button>`
-        : `<button class="btn ghost sm" onclick="event.stopPropagation();markReminded(${m.id})" title="${t('Mark this member as reminded', 'تعليم هذا العضو كمُذكَّر')}">🔔 ${t('Reminded', 'تذكير')}</button>`;
+        ? `<button class="btn sm" style="background:var(--green);color:#fff;border-color:var(--green);font-weight:700" onclick="event.stopPropagation();_compRemind(${m.id})" title="${t('Reminded', 'تم التذكير')} ${ri.count}×${ri.last ? ' · ' + t('last', 'آخر') + ' ' + fmtDate(ri.last) : ''} — ${t('click to remind again', 'اضغط للتذكير مجدداً')}">✅ ${t('Reminded', 'تم التذكير')}${ri.count > 1 ? ' ×' + ri.count : ''}</button>`
+        : `<button class="btn ghost sm" onclick="event.stopPropagation();_compRemind(${m.id})" title="${t('Mark this member as reminded — turns green', 'تعليم هذا العضو كمُذكَّر — يتحول للأخضر')}">🔔 ${t('Reminded', 'تذكير')}</button>`;
       return `<tr data-id="${m.id}" style="cursor:pointer">
         <td><div style="display:flex;align-items:center;gap:8px"><div class="avatar" style="width:26px;height:26px;font-size:10px;background:linear-gradient(135deg,var(--purple),var(--blue))">${initials(m.name)}</div><div style="min-width:0"><div class="font-bold">${escapeHtml(m.name)}</div>${m.nameArabic ? `<div style="font-size:11px;color:var(--text-dim)" dir="rtl">${escapeHtml(m.nameArabic)}</div>` : ''}${isRealPhone(m.phone) ? `<div class="text-mute" style="font-size:10px">${phoneCell(m.phone)}</div>` : ''}</div></div></td>
         <td>${sportBadges}</td>
@@ -21721,6 +21726,11 @@ PAGES.completed = (main) => {
   $('#comp-sport')?.addEventListener('change', e => { f.sport = e.target.value; refresh(); });
   $('#comp-month')?.addEventListener('change', e => { f.month = e.target.value; refresh(); });
   $('#comp-coach')?.addEventListener('change', e => { f.coach = e.target.value; refresh(); });
+  // Let the Reminded button repaint just these rows (so it turns green instantly, without the
+  // global render() rebuilding the whole page and losing the user's scroll position). (v6.366)
+  window._compRemind = function (id) {
+    if (typeof markReminded === 'function' && markReminded(id, { rerender: false })) refresh();
+  };
   refresh();
 };
 
