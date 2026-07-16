@@ -4476,8 +4476,14 @@ window.editCoach = function(id, defaultRole) {
       </div>
 
       <div style="margin:14px 0 6px;font-size:11px;color:var(--blue);text-transform:uppercase;letter-spacing:.6px;font-weight:600">⚙️ Other</div>
-      <div class="field"><label>Status</label>
-        <select id="c-active"><option value="Y" ${isCoachActive(c)?'selected':''}>Active — included in payroll</option><option value="N" ${!isCoachActive(c)?'selected':''}>Inactive — hidden, won't appear on payroll</option></select>
+      <div class="form-row">
+        <div class="field"><label>Status</label>
+          <select id="c-active"><option value="Y" ${isCoachActive(c)?'selected':''}>Active — included in payroll</option><option value="N" ${!isCoachActive(c)?'selected':''}>Inactive — hidden, won't appear on payroll</option></select>
+        </div>
+        <div class="field"><label>Joined the club <span class="text-mute" style="font-size:10px">(optional)</span></label>
+          <input id="c-joined" type="date" value="${c.joinedDate || ''}" />
+          <div class="text-mute" style="font-size:10px;margin-top:3px">💡 Payroll won't show this person for months BEFORE they joined.</div>
+        </div>
       </div>
       <div class="field" id="c-sports-field" style="display:${role === 'staff' ? 'none' : 'block'}">
         <label>Sports taught</label>
@@ -4522,6 +4528,7 @@ window.editCoach = function(id, defaultRole) {
         const activeVal = $('#c-active').value;
         const qid = $('#c-qid').value.trim() || null;
         const gender = $('#c-gender').value || null;
+        const joinedDate = $('#c-joined').value || null;   // hides earlier months from payroll (v6.364)
 
         if (fixedSalary === 0 && rate === 0) {
           if (!confirm('Both fixed salary AND commission % are 0. This person will earn nothing. Save anyway?')) return;
@@ -4531,14 +4538,14 @@ window.editCoach = function(id, defaultRole) {
           const _nc = {
             id: nextId(state.coaches),
             name, rate, fixedSalary, role: roleVal, sports, active: activeVal,
-            phone, email: email || null, qid, birthdate: birthdate || null, gender,
+            phone, email: email || null, qid, birthdate: birthdate || null, gender, joinedDate,
           };
           state.coaches.push(_nc);
           _savedCoachId = _nc.id;
         } else {
           Object.assign(c, {
             name, rate, fixedSalary, role: roleVal, sports, active: activeVal,
-            phone, email: email || null, qid, birthdate: birthdate || null, gender,
+            phone, email: email || null, qid, birthdate: birthdate || null, gender, joinedDate,
           });
           _savedCoachId = c.id;
         }
@@ -9858,14 +9865,24 @@ PAGES.invoices = (main) => {
           const rAmt = rowAmtOf(i), rPaid = rowPaidOf(i), rFull = invoiceTotal(i);
           // A month filter also SHOWS an invoice when a PAYMENT landed in the filtered month, even
           // though its REVENUE bills a different month (share = 0). Rendering a bare "0" there looks
-          // like a broken invoice — the amount is fine when you open it. Instead show the real total
-          // (dimmed) and say where it bills + that a payment hit the filtered month. The footer/
-          // revenue total still uses the per-month share, so no money is double-counted. (v6.356)
+          // like a broken invoice — the amount is fine when you open it. Instead show what was PAID
+          // in the filtered month over the invoice TOTAL (e.g. 1,000 / 2,400) plus the billing month,
+          // so it's clear how much of the bill was collected this month. The footer/revenue total
+          // still uses the per-month share, so no money is double-counted. (v6.356 · v6.362 fraction)
           const billedElsewhere = selMonths.length && rAmt < 0.005 && rFull > 0.005;
           if (billedElsewhere) {
             const bm = (typeof invoiceMonths === 'function' ? invoiceMonths(i) : []).map(m => (typeof fmtMonth === 'function' ? fmtMonth(m) : m)).join(', ');
-            return `<span style="color:var(--text-mute)">${fmt(rFull)}</span>
-              <div style="font-size:10px;font-weight:600;color:var(--text-mute);margin-top:2px">${t('billed', 'محتسبة')} ${escapeHtml(bm)} · ${t('paid this month', 'دُفعت هذا الشهر')}</div>`;
+            // Cash actually COLLECTED in the filtered month(s), by the PAYMENT date — NOT the accrual
+            // attribution (rowPaidOf books a payment to the billing month). That physical payment is
+            // exactly why the invoice appears under this month, so show "collected / total". (v6.362)
+            const paidHere = (Array.isArray(i.payments) ? i.payments : [])
+              .filter(p => selMonths.some(m => String((p && (p.month || p.date)) || '').slice(0, 7) === m))
+              .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+            const head = paidHere > 0.005
+              ? `<span style="color:var(--green)">${fmt(paidHere)}</span> <span style="color:var(--text-mute);font-weight:600">/ ${fmt(rFull)}</span>`
+              : `<span style="color:var(--text-mute)">${fmt(rFull)}</span>`;
+            return `${head}
+              <div style="font-size:10px;font-weight:600;color:var(--text-mute);margin-top:2px">${paidHere > 0.005 ? t('paid this month', 'دُفع هذا الشهر') + ' · ' : ''}${t('billed', 'محتسبة')} ${escapeHtml(bm)}</div>`;
           }
           const rDue = Math.max(0, rAmt - rPaid);
           const st = rAmt <= 0.001 ? 'Paid' : (rPaid <= 0.001 ? 'Unpaid' : (rDue > 0.5 ? 'Partial' : 'Paid'));
@@ -15296,14 +15313,25 @@ window.deleteExpense = function(id) {
 //   { id, coachId, month, kind: 'advance'|'paid', amount?, paidDate?, note? }
 
 PAGES.salaries = (main) => {
-  let filter = { month: latestDataMonth() || currentMonth(), settleDate: null };
+  // Persist the chosen month + settle date on `window` so paying someone (which triggers a global
+  // render() → re-runs this page) KEEPS the month the user was viewing instead of snapping back to
+  // the latest/current month. (v6.363)
+  let filter = { month: window._salMonth || latestDataMonth() || currentMonth(), settleDate: window._salSettleDate || null };
 
   function refresh() {
     // Compute pay rows for every active coach/staff — either for the selected
     // month, or (if a settlement date is set) up to and including that date.
     const upto = filter.settleDate || null;
+    // A coach with a "Joined the club" date is HIDDEN from payroll for any month BEFORE they joined
+    // (e.g. a coach hired in July shouldn't appear in June). No joined date → shown in every month,
+    // so existing coaches are unaffected. In settle mode, compare against the settlement date. (v6.364)
+    const joinedBy = (c) => {
+      const jd = c && c.joinedDate;
+      if (!jd) return true;
+      return upto ? (String(jd) <= String(upto)) : (String(jd).slice(0, 7) <= filter.month);
+    };
     const people = (state.coaches || [])
-      .filter(c => isCoachActive(c))
+      .filter(c => isCoachActive(c) && joinedBy(c))
       .map(c => upto ? computeMonthlyPay(c.id, null, upto) : computeMonthlyPay(c.id, filter.month))
       .filter(p => p) // skip any null
       // Sort: unpaid (pending, then partial) first, then paid; each by amount desc
@@ -15498,7 +15526,7 @@ PAGES.salaries = (main) => {
     </div>
     <div id="sal-adhoc" style="margin-top:14px"></div>
   `;
-  $('#sal-month').addEventListener('change', e => { filter.month = e.target.value; refresh(); });
+  $('#sal-month').addEventListener('change', e => { filter.month = e.target.value; window._salMonth = filter.month; refresh(); });
   const salBasisChange = $('#sal-basis-change');
   if (salBasisChange) salBasisChange.addEventListener('click', () => {
     if (currentRole() !== 'admin') { toast('Only an admin can change the commission basis.'); return; }
@@ -15534,6 +15562,7 @@ PAGES.salaries = (main) => {
   const salDate = $('#sal-date');
   if (salDate) salDate.addEventListener('change', e => {
     filter.settleDate = e.target.value || null;
+    window._salSettleDate = filter.settleDate;
     const sel = $('#sal-month');
     if (sel) { sel.disabled = !!filter.settleDate; sel.style.opacity = filter.settleDate ? '.5' : ''; }
     const note = $('#sal-mode-note');
