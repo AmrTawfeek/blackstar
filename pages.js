@@ -21574,8 +21574,12 @@ window.exportMemberHistoryCSV = function(memberId) {
 PAGES.completed = (main) => {
   const AVG_RENEWAL = (state.settings && Number(state.settings.avgRenewalValue)) || 350;
   const all = (typeof membersReadyToRenew === 'function') ? membersReadyToRenew() : [];
+  const coachNameOf = (d) => d.coach || (d.coachId ? (state.coaches.find(c => c.id === d.coachId) || {}).name : '') || '';
   const sportsInList = [...new Set(all.flatMap(r => r.done.map(d => d.sport)))].sort();
-  let f = { search: '', sport: 'all' };
+  // Enrolled-month + coach filter options, drawn from the finished subscriptions themselves.
+  const monthsInList = [...new Set(all.flatMap(r => r.done.map(d => (d.sub.start || '').slice(0, 7)).filter(Boolean)))].sort().reverse();
+  const coachesInList = [...new Set(all.flatMap(r => r.done.map(coachNameOf).filter(Boolean)))].sort();
+  let f = { search: '', sport: 'all', month: 'all', coach: 'all' };
 
   const waLink = (m, sports) => {
     if (!m.phone || (typeof isRealPhone === 'function' && !isRealPhone(m.phone))) return null;
@@ -21588,32 +21592,45 @@ PAGES.completed = (main) => {
   };
 
   function refresh() {
-    const rows = all.filter(({ m, done }) => {
-      if (f.sport !== 'all' && !done.some(d => d.sport === f.sport)) return false;
+    // Filter at the SPORT level so a member shows only when they have a finished sport matching
+    // EVERY active filter (sport + enrolled month + coach); the row then displays just those.
+    const rows = all.map(({ m, done }) => {
+      let shown = done;
+      if (f.sport !== 'all') shown = shown.filter(d => d.sport === f.sport);
+      if (f.month !== 'all') shown = shown.filter(d => (d.sub.start || '').slice(0, 7) === f.month);
+      if (f.coach !== 'all') shown = shown.filter(d => coachNameOf(d) === f.coach);
+      return { m, shown };
+    }).filter(({ m, shown }) => {
+      if (!shown.length) return false;
       if (f.search && typeof searchMatchesFields === 'function' && !searchMatchesFields(f.search.toLowerCase(), [m.name, m.nameArabic, m.phone, m.phone2, m.qid], [m.phone, m.phone2])) return false;
       return true;
     });
-    const totalSports = rows.reduce((s, r) => s + (f.sport === 'all' ? r.done.length : r.done.filter(d => d.sport === f.sport).length), 0);
+    const totalSports = rows.reduce((s, r) => s + r.shown.length, 0);
     if ($('#comp-kpi-members')) $('#comp-kpi-members').textContent = rows.length;
     if ($('#comp-kpi-sports')) $('#comp-kpi-sports').textContent = totalSports;
     if ($('#comp-kpi-potential')) $('#comp-kpi-potential').textContent = fmt(totalSports * AVG_RENEWAL);
-    const body = rows.length ? rows.map(({ m, done }) => {
-      const shown = f.sport === 'all' ? done : done.filter(d => d.sport === f.sport);
+    const body = rows.length ? rows.map(({ m, shown }) => {
       const sportBadges = shown.map(d => `<span class="badge" style="background:rgba(139,92,246,.14);color:#7c3aed;font-weight:700;margin:1px 2px;white-space:nowrap">✓ ${escapeHtml(d.sport)} ${d.attended}/${d.total}${d.expired ? ' · <span style="color:var(--red)">expired</span>' : ''}</span>`).join(' ');
       const paid = shown.reduce((s, d) => s + (Number(d.sub.amountPaid) || 0), 0);
-      const coaches = [...new Set(shown.map(d => d.coach || (d.coachId ? (state.coaches.find(c => c.id === d.coachId) || {}).name : '')).filter(Boolean))].join(', ');
+      const coaches = [...new Set(shown.map(coachNameOf).filter(Boolean))].join(', ');
+      const starts = shown.map(d => d.sub.start).filter(Boolean).sort();
+      const ends = shown.map(d => d.sub.end).filter(Boolean).sort();
+      const startD = starts[0] || null;
+      const endD = ends.length ? ends[ends.length - 1] : null;
       const wl = waLink(m, shown.map(d => d.sport));
       return `<tr data-id="${m.id}" style="cursor:pointer">
-        <td><div style="display:flex;align-items:center;gap:8px"><div class="avatar" style="width:26px;height:26px;font-size:10px;background:linear-gradient(135deg,var(--purple),var(--blue))">${initials(m.name)}</div><div><div class="font-bold">${escapeHtml(m.name)}</div>${isRealPhone(m.phone) ? `<div class="text-mute" style="font-size:10px">${phoneCell(m.phone)}</div>` : ''}</div></div></td>
+        <td><div style="display:flex;align-items:center;gap:8px"><div class="avatar" style="width:26px;height:26px;font-size:10px;background:linear-gradient(135deg,var(--purple),var(--blue))">${initials(m.name)}</div><div style="min-width:0"><div class="font-bold">${escapeHtml(m.name)}</div>${m.nameArabic ? `<div style="font-size:11px;color:var(--text-dim)" dir="rtl">${escapeHtml(m.nameArabic)}</div>` : ''}${isRealPhone(m.phone) ? `<div class="text-mute" style="font-size:10px">${phoneCell(m.phone)}</div>` : ''}</div></div></td>
         <td>${sportBadges}</td>
         <td class="text-dim" style="font-size:12px">${escapeHtml(coaches || '—')}</td>
+        <td class="text-dim" style="font-size:12px;white-space:nowrap">${startD ? fmtDate(startD) : '—'}</td>
+        <td style="font-size:12px;white-space:nowrap;${endD && endD < TODAY ? 'color:var(--red);font-weight:700' : 'color:var(--text-dim)'}">${endD ? fmtDate(endD) : '—'}</td>
         <td class="text-right num">${paid ? fmt(paid) : '—'}</td>
         <td class="text-right" onclick="event.stopPropagation()" style="white-space:nowrap">
           <button class="btn primary sm" onclick="if(typeof closeModal==='function')closeModal();addRenewal(${m.id})" title="${t('Renew this member', 'تجديد هذا العضو')}">🔄 ${t('Renew', 'تجديد')}</button>
           ${wl ? `<a class="btn ghost sm" style="color:var(--green);border-color:var(--green)" href="${wl}" target="_blank" title="${t('WhatsApp a renewal reminder', 'إرسال تذكير تجديد عبر واتساب')}">💬</a>` : ''}
         </td>
       </tr>`;
-    }).join('') : `<tr><td colspan="5" class="text-mute" style="text-align:center;padding:26px">✅ ${t('No members have finished all their classes right now', 'لا يوجد أعضاء أكملوا جميع حصصهم حالياً')}</td></tr>`;
+    }).join('') : `<tr><td colspan="7" class="text-mute" style="text-align:center;padding:26px">✅ ${t('No members match — try clearing the filters', 'لا يوجد أعضاء مطابقون — جرّب مسح عوامل التصفية')}</td></tr>`;
     $('#comp-tbody').innerHTML = body;
     $$('#comp-tbody tr[data-id]').forEach(tr => tr.addEventListener('click', () => viewMember(parseInt(tr.dataset.id))));
   }
@@ -21630,11 +21647,20 @@ PAGES.completed = (main) => {
       <div class="kpi"><div class="kpi-label">🎯 ${t('Sports finished', 'رياضات مكتملة')}</div><div class="kpi-value num" id="comp-kpi-sports">0</div><div class="kpi-sub">${t('one row per member', 'صف لكل عضو')}</div></div>
       <div class="kpi" style="border-color:var(--green);background:rgba(16,185,129,.06)"><div class="kpi-label" style="color:var(--green)">💰 ${t('Renewal potential', 'قيمة التجديد المحتملة')}</div><div class="kpi-value num" id="comp-kpi-potential" style="color:var(--green)">0</div><div class="kpi-sub">@ ${fmt(AVG_RENEWAL)} ${t('avg/renewal', 'متوسط/تجديد')}</div></div>
     </div>
-    <div class="card" style="padding:14px 16px;margin-bottom:14px">
+    <div class="card" style="padding:16px;margin-bottom:14px">
+      <input id="comp-search" class="input" placeholder="🔍 ${t('Search by name (EN/AR), phone or QID…', 'ابحث بالاسم (EN/AR) أو الهاتف أو الرقم الشخصي…')}" style="width:100%;font-size:16px;padding:12px 14px;box-sizing:border-box;margin-bottom:10px" />
       <div class="filter-bar" style="flex-wrap:wrap;gap:8px">
-        <input id="comp-search" class="input" placeholder="🔍 ${t('Search name / phone', 'ابحث بالاسم / الهاتف')}" style="max-width:240px" />
-        <select id="comp-sport" class="btn ghost">
-          <option value="all">${t('All sports', 'كل الرياضات')}</option>
+        <label style="font-size:12px;color:var(--text-mute);align-self:center">${t('Filter:', 'تصفية:')}</label>
+        <select id="comp-month" class="btn ghost" title="${t('Enrolled (start) month', 'شهر التسجيل (البدء)')}">
+          <option value="all">🗓 ${t('All months', 'كل الأشهر')}</option>
+          ${monthsInList.map(mo => `<option value="${mo}">${escapeHtml(typeof fmtMonth === 'function' ? fmtMonth(mo) : mo)}</option>`).join('')}
+        </select>
+        <select id="comp-coach" class="btn ghost" title="${t('Coach', 'المدرب')}">
+          <option value="all">🥋 ${t('All coaches', 'كل المدربين')}</option>
+          ${coachesInList.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}
+        </select>
+        <select id="comp-sport" class="btn ghost" title="${t('Sport', 'الرياضة')}">
+          <option value="all">🎯 ${t('All sports', 'كل الرياضات')}</option>
           ${sportsInList.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('')}
         </select>
       </div>
@@ -21645,6 +21671,8 @@ PAGES.completed = (main) => {
           <th>${t('Member', 'العضو')}</th>
           <th>${t('Finished (classes)', 'مكتمل (الحصص)')}</th>
           <th>${t('Coach', 'المدرب')}</th>
+          <th>${t('Start', 'البداية')}</th>
+          <th>${t('Expiry', 'الانتهاء')}</th>
           <th class="text-right">${t('Paid', 'المدفوع')}</th>
           <th class="text-right">${t('Action', 'إجراء')}</th>
         </tr></thead>
@@ -21653,6 +21681,8 @@ PAGES.completed = (main) => {
     </div>`;
   $('#comp-search')?.addEventListener('input', e => { f.search = e.target.value; refresh(); });
   $('#comp-sport')?.addEventListener('change', e => { f.sport = e.target.value; refresh(); });
+  $('#comp-month')?.addEventListener('change', e => { f.month = e.target.value; refresh(); });
+  $('#comp-coach')?.addEventListener('change', e => { f.coach = e.target.value; refresh(); });
   refresh();
 };
 
