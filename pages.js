@@ -21608,7 +21608,10 @@ PAGES.completed = (main) => {
   // Enrolled-month + coach filter options, drawn from the finished subscriptions themselves.
   const monthsInList = [...new Set(all.flatMap(r => r.done.map(d => (d.sub.start || '').slice(0, 7)).filter(Boolean)))].sort().reverse();
   const coachesInList = [...new Set(all.flatMap(r => r.done.map(coachNameOf).filter(Boolean)))].sort();
-  let f = { search: '', sport: 'all', month: 'all', coach: 'all' };
+  // Keep the filters on `window` so marking a reminder (which calls the global render() → re-runs
+  // this page) doesn't wipe the search / month / coach / sport the user set. (v6.365)
+  let f = window._compFilter || { search: '', sport: 'all', month: 'all', coach: 'all' };
+  window._compFilter = f;
 
   const waLink = (m, sports) => {
     if (!m.phone || (typeof isRealPhone === 'function' && !isRealPhone(m.phone))) return null;
@@ -21647,6 +21650,12 @@ PAGES.completed = (main) => {
       const startD = starts[0] || null;
       const endD = ends.length ? ends[ends.length - 1] : null;
       const wl = waLink(m, shown.map(d => d.sport));
+      // "Reminded" — GREEN once this member has been reminded in the current cycle, grey before.
+      // Clicking marks a reminder (markReminded handles the 2nd-time confirm + 3rd-time block). (v6.365)
+      const ri = (typeof reminderInfo === 'function') ? reminderInfo(m) : { count: 0, last: null };
+      const remindedBtn = ri.count > 0
+        ? `<button class="btn sm" style="background:var(--green);color:#fff;border-color:var(--green);font-weight:700" onclick="event.stopPropagation();markReminded(${m.id})" title="${t('Reminded', 'تم التذكير')} ${ri.count}×${ri.last ? ' · ' + t('last', 'آخر') + ' ' + fmtDate(ri.last) : ''} — ${t('click to remind again', 'اضغط للتذكير مجدداً')}">✅ ${t('Reminded', 'تم التذكير')}${ri.count > 1 ? ' ×' + ri.count : ''}</button>`
+        : `<button class="btn ghost sm" onclick="event.stopPropagation();markReminded(${m.id})" title="${t('Mark this member as reminded', 'تعليم هذا العضو كمُذكَّر')}">🔔 ${t('Reminded', 'تذكير')}</button>`;
       return `<tr data-id="${m.id}" style="cursor:pointer">
         <td><div style="display:flex;align-items:center;gap:8px"><div class="avatar" style="width:26px;height:26px;font-size:10px;background:linear-gradient(135deg,var(--purple),var(--blue))">${initials(m.name)}</div><div style="min-width:0"><div class="font-bold">${escapeHtml(m.name)}</div>${m.nameArabic ? `<div style="font-size:11px;color:var(--text-dim)" dir="rtl">${escapeHtml(m.nameArabic)}</div>` : ''}${isRealPhone(m.phone) ? `<div class="text-mute" style="font-size:10px">${phoneCell(m.phone)}</div>` : ''}</div></div></td>
         <td>${sportBadges}</td>
@@ -21655,8 +21664,8 @@ PAGES.completed = (main) => {
         <td style="font-size:12px;white-space:nowrap;${endD && endD < TODAY ? 'color:var(--red);font-weight:700' : 'color:var(--text-dim)'}">${endD ? fmtDate(endD) : '—'}</td>
         <td class="text-right num">${paid ? fmt(paid) : '—'}</td>
         <td class="text-right" onclick="event.stopPropagation()" style="white-space:nowrap">
-          <button class="btn primary sm" onclick="if(typeof closeModal==='function')closeModal();addRenewal(${m.id})" title="${t('Renew this member', 'تجديد هذا العضو')}">🔄 ${t('Renew', 'تجديد')}</button>
-          ${wl ? `<a class="btn ghost sm" style="color:var(--green);border-color:var(--green)" href="${wl}" target="_blank" title="${t('WhatsApp a renewal reminder', 'إرسال تذكير تجديد عبر واتساب')}">💬</a>` : ''}
+          ${remindedBtn}
+          ${wl ? `<a class="btn ghost sm" style="color:var(--green);border-color:var(--green)" href="${wl}" target="_blank" title="${t('WhatsApp a renewal reminder — then mark it with the Reminded button', 'إرسال تذكير تجديد عبر واتساب — ثم علّمه بزر «تم التذكير»')}">💬</a>` : ''}
         </td>
       </tr>`;
     }).join('') : `<tr><td colspan="7" class="text-mute" style="text-align:center;padding:26px">✅ ${t('No members match — try clearing the filters', 'لا يوجد أعضاء مطابقون — جرّب مسح عوامل التصفية')}</td></tr>`;
