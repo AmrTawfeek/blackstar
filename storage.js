@@ -357,12 +357,24 @@
       writeInFlight = true;
       _lastState = state;   // remember the newest state so auto-retry re-sends the same delta
       const ops = [];
+      // ── SENT SNAPSHOT (v6.368) — THE fix for same-day data loss ──────────────────────────
+      // The base MUST be advanced from exactly what we SENT, never from the live `state` object.
+      // app.js save() only shallow-copies, so `state` keeps mutating while the write is in flight
+      // (the user carries on marking attendance / taking payments during the 1-2s round-trip).
+      // Advancing the base from that live object on ack silently ABSORBS those in-flight edits:
+      // the next delta compares live-vs-poisoned-base, sees "no change", never writes them, and
+      // hasUnsavedCloud() stays false — so the work is lost on the next reload with no warning.
+      // Freezing each record's serialization HERE makes the base immune to later mutation.
+      const sentBase = {};
       for (const name of COLLECTIONS) {
         const baseMap = _base[name] || new Map();
         const curIdx = indexById(state[name], name.slice(0, 3));
+        const snap = new Map();
+        sentBase[name] = snap;
         for (const [id, rec] of curIdx) {
-          const prevStr = baseMap.get(id);
           const now = _stable(rec);
+          snap.set(id, now);   // frozen string — what this write actually carries
+          const prevStr = baseMap.get(id);
           if (prevStr === now) continue;
           if (prevStr === undefined) { ops.push({ kind: 'set', name, id, data: rec }); continue; }
           const prev = JSON.parse(prevStr);
@@ -504,7 +516,14 @@
       });
       Promise.all([...batchCommits, ...txnCommits])
         .then(() => {
-          lastWriteFailed = false; _lastErrorCode = null; _clearRetry(); setBaseFromState(state); _lastFlushResult = { ok: true, records: ops.length };
+          lastWriteFailed = false; _lastErrorCode = null; _clearRetry();
+          // Advance the base from the SENT snapshot (frozen at flush time), NOT setBaseFromState(state)
+          // — `state` is the live object and has kept mutating during this round-trip. Using it here
+          // was silently swallowing in-flight edits (same-day data loss). Anything edited during the
+          // round-trip stays "dirty" vs this base, so the follow-up flush below really writes it. (v6.368)
+          for (const name of COLLECTIONS) _base[name] = sentBase[name] || new Map();
+          _baseMeta = metaStr;
+          _lastFlushResult = { ok: true, records: ops.length };
           console.log(`%c[Storage] ✅ stored in Firestore — ${nSet} written, ${nDel} deleted${metaChanged ? ', settings updated' : ''} @ ${new Date().toLocaleTimeString()}`, 'color:#16a34a;font-weight:700');
           try { if (typeof window !== 'undefined') { const L = window.__cloudWriteLog; if (L && L.length) L[L.length - 1].ok = true; if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'saved', records: ops.length, at: Date.now(), byCollection: perCol }); } } catch (_) {}
         })
@@ -680,7 +699,10 @@
       },
 
       // Is there a change that failed to reach the cloud and is only on this device?
-      hasUnsaved() { return !!lastWriteFailed; },
+      // Also TRUE while a save is QUEUED behind an in-flight write (`pendingAfterWrite`): it has
+      // not been sent yet, so a reload in that window would lose it. Counting it here makes the
+      // leave-page guard hold the tab until it is really flushed. (v6.368)
+      hasUnsaved() { return !!lastWriteFailed || !!pendingAfterWrite; },
       // TRUE when the cloud could NOT be confirmed on load (working from the read-only offline
       // copy) — every write is blocked, so the UI must PREVENT creating records that would be
       // lost on reload, not just warn. (v6.331)

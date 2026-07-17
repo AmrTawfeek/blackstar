@@ -6169,7 +6169,9 @@ window.markReminded = function(id, opts) {
     toast(`${m.name} has already been reminded ${MAX_REMINDERS} times this cycle.`, 'info');
     return false;
   }
-  if (info.count >= 1) {
+  // opts.silent — the caller IS the deliberate send (e.g. clicking the WhatsApp icon), so don't
+  // interrupt it with a confirm; the MAX_REMINDERS cap above still applies. (v6.367)
+  if (info.count >= 1 && !(opts && opts.silent)) {
     const nextLevel = info.count + 1;
     const label = nextLevel === 2 ? 'second (firmer)' : 'third (final)';
     if (!confirm(`${m.name} was already reminded ${info.count} time(s)${info.last ? ', last on ' + fmtDate(info.last) : ''}.\n\nSend the ${label} reminder?`)) return false;
@@ -6823,12 +6825,14 @@ Black Stars Academy`;
           const level = Math.min(3, sent + 1);
           // Button label shows which reminder tone will be sent next.
           const lvlLabel = level === 1 ? t('1st reminder', 'تذكير أول') : level === 2 ? t('2nd reminder', 'تذكير ثانٍ') : t('Final notice', 'إشعار أخير');
-          const lvlIcon = level === 1 ? '💬' : level === 2 ? '🔔' : '⚠️';
-          const lvlColor = level === 1 ? '' : level === 2 ? 'color:var(--accent-2)' : 'color:var(--red)';
+          // Real WhatsApp glyph (the 💬 emoji rendered as a plain "…" bubble on Windows). The tone
+          // still escalates by colour: green → amber → red. (v6.370)
+          const lvlIcon = (typeof waIconSvg === 'function') ? waIconSvg(14) : '💬';
+          const lvlColor = level === 1 ? 'color:var(--green)' : level === 2 ? 'color:var(--accent-2)' : 'color:var(--red)';
           const disabled = sent >= 3;
           return disabled
             ? `<span class="btn ghost sm" style="opacity:.5;cursor:default" title="${t('All 3 reminders sent this cycle', 'تم إرسال 3 تذكيرات هذه الدورة')}">✓ ${t('Reminded', 'تم التذكير')}</span>`
-            : `<a class="btn ghost sm" style="text-decoration:none;${lvlColor}" href="${wa}" target="_blank" rel="noopener" onclick="markReminded(${r.m.id})" title="${t('Send', 'إرسال')}: ${lvlLabel}">${lvlIcon} ${lvlLabel}</a>`;
+            : `<a class="btn ghost sm" style="text-decoration:none;display:inline-flex;align-items:center;gap:5px;${lvlColor}" href="${wa}" target="_blank" rel="noopener" onclick="markReminded(${r.m.id})" title="${t('Send', 'إرسال')}: ${lvlLabel}">${lvlIcon} ${lvlLabel}</a>`;
         })()}
         <button class="btn ghost sm" onclick="viewMember(${r.m.id})" title="${t('Open profile', 'فتح الملف')}">👁</button>
       </td>
@@ -15371,13 +15375,26 @@ PAGES.salaries = (main) => {
       const canCarry = p.net < -0.005 && !(p.carriedOut > 0.005);
       const carryInNote  = p.carriedIn  > 0.005 ? `<div style="color:#2563eb;margin-top:2px">↩ ${fmt(p.carriedIn)} carried in (over-advance from a prior month)</div>` : '';
       const carryOutNote = p.carriedOut > 0.005 ? `<div style="color:#6b7280;margin-top:2px">↩ ${fmt(p.carriedOut)} over-advance carried forward · settled at 0</div>` : '';
+      // DOUBLE-PAY GUARD (v6.369): a duplicate INVOICE yields two identical commission lines, so
+      // this coach would be paid twice for the same membership. Warn BEFORE anyone hits Pay —
+      // the maths is left untouched (the admin fixes the data in Finance → Duplicate Invoices).
+      const _dups = (p.basis === 'attendance' && p.attendanceLines && typeof duplicateCommissionLines === 'function')
+        ? duplicateCommissionLines(p.attendanceLines.lines) : [];
+      const _dupExtra = _dups.reduce((s, d) => s + (d.extra || 0), 0);
+      const _dupPay = _dupExtra * (p.commissionRate || 0) / 100;
+      const dupBadge = _dups.length
+        ? ` <span class="badge" style="background:rgba(239,68,68,.15);color:var(--red);font-size:9px;padding:1px 6px;cursor:help" title="${escapeHtml(_dups.map(d => `${d.line.memberName} · ${d.line.sport} ×${d.count}`).join(' | '))} — duplicate invoice(s) in the data are DOUBLE-COUNTING ${fmt(_dupExtra)} of base (≈ ${fmt(_dupPay)} extra pay). Check Finance → Duplicate Invoices before paying.">⚠️ DUPLICATE ×${_dups.length}</span>`
+        : '';
+      const dupNote = _dups.length
+        ? `<div style="color:var(--red);margin-top:2px;font-weight:600">⚠️ Includes ${_dups.length} duplicated line${_dups.length === 1 ? '' : 's'} (${escapeHtml(_dups.map(d => d.line.memberName + ' · ' + d.line.sport).join(', '))}) — overstates base by ${fmt(_dupExtra)} ≈ ${fmt(_dupPay)} extra pay. Fix in Finance → Duplicate Invoices.</div>`
+        : '';
       return `
         <tr>
           <td>
-            <div class="font-bold">${escapeHtml(p.name)}${netNegative ? ' <span class="badge" style="background:rgba(242,96,96,.15);color:var(--red);font-size:9px;padding:1px 6px" title="Net pay is negative — admin should reconcile">⚠️ NEGATIVE</span>' : ''}</div>
+            <div class="font-bold">${escapeHtml(p.name)}${netNegative ? ' <span class="badge" style="background:rgba(242,96,96,.15);color:var(--red);font-size:9px;padding:1px 6px" title="Net pay is negative — admin should reconcile">⚠️ NEGATIVE</span>' : ''}${dupBadge}</div>
             <div class="text-mute" style="font-size:10px">${isStaff ? '👔 Staff' : '🥋 Coach'} · ${p.uptoDate ? 'up to ' + fmtDate(p.uptoDate) : fmtMonth(p.month)}</div>
           </td>
-          <td class="text-mute" style="font-size:11px">${breakdownStr}${pendingNote}${carryInNote}${carryOutNote}</td>
+          <td class="text-mute" style="font-size:11px">${breakdownStr}${dupNote}${pendingNote}${carryInNote}${carryOutNote}</td>
           <td class="text-right num font-bold" style="color:${grossColor}">${fmt(p.gross)}</td>
           <td class="text-right num" style="color:${(p.basis === 'attendance' && p.commissionPending > 0) ? 'var(--accent-2)' : 'var(--text-mute)'}" title="${(p.basis === 'attendance' && p.commissionPending > 0) ? 'Remainder on active memberships — paid as attended or trued-up at expiry' : 'No pending commission'}">${(p.basis === 'attendance' && p.commissionPending > 0) ? '⏳ ' + fmt(p.commissionPending) : '—'}</td>
           <td class="text-right">
@@ -16315,6 +16332,21 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
     bySport[k].total += l.price;
   }
 
+  // DOUBLE-PAY GUARD (v6.369): flag identical repeated lines (a duplicate INVOICE in the data)
+  // right on the report, so an inflated subtotal can't be paid unnoticed. Maths untouched.
+  const _rptDups = (pay && pay.basis === 'attendance' && pay.attendanceLines && typeof duplicateCommissionLines === 'function')
+    ? duplicateCommissionLines(pay.attendanceLines.lines) : [];
+  const _rptDupExtra = _rptDups.reduce((s, d) => s + (d.extra || 0), 0);
+  const dupBanner = _rptDups.length ? `
+    <div style="border:2px solid #dc2626;background:#fef2f2;color:#991b1b;border-radius:8px;padding:10px 12px;margin:10px 0">
+      <div style="font-weight:700;margin-bottom:4px">⚠️ ${_rptDups.length} duplicated line${_rptDups.length === 1 ? '' : 's'} detected — this subtotal is OVERSTATED</div>
+      <div style="font-size:12px;line-height:1.5">
+        ${_rptDups.map(d => `<div>• <b>${escapeHtml(d.line.memberName)}</b> · ${escapeHtml(d.line.sport || '')} appears <b>${d.count}×</b> (${fmt(d.line.amountBase)} each)</div>`).join('')}
+        <div style="margin-top:6px">Commission base is overstated by <b>${fmt(_rptDupExtra)} QAR</b> ≈ <b>${fmt(_rptDupExtra * (pay.commissionRate || 0) / 100)} QAR</b> extra pay.
+        This means a <b>duplicate invoice</b> exists in the data — check <b>Finance → Duplicate Invoices</b> and remove it, then re-open this report.</div>
+      </div>
+    </div>` : '';
+
   const advRows = (state.salaries || []).filter(s => s.coachId === coachId && s.month === monthKey && s.kind === 'advance');
 
   // Filename the browser's Save-as-PDF uses defaults to the document <title>, so we
@@ -16371,6 +16403,7 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
         </div>
       </div>
 
+      ${dupBanner}
       <h2>Members & Sports Breakdown (${lines.length} line${lines.length === 1 ? '' : 's'})</h2>
       ${lines.length ? `
       <table>
@@ -21618,13 +21651,29 @@ PAGES.completed = (main) => {
   let f = window._compFilter || { search: '', sport: 'all', month: 'all', coach: 'all' };
   window._compFilter = f;
 
-  const waLink = (m, sports) => {
+  // The renewal message for someone who FINISHED their classes. It should feel like a
+  // congratulation, not a bill: celebrate the achievement by name + real numbers (how many
+  // classes they actually completed), credit their coach, then invite them back for the next
+  // level. Personal + specific = far more likely to bring them back. (v6.368)
+  const waLink = (m, shown) => {
     if (!m.phone || (typeof isRealPhone === 'function' && !isRealPhone(m.phone))) return null;
     let digits = String(m.phone).replace(/\D/g, '');
     if (digits.startsWith('00')) digits = digits.slice(2);
     if (digits.length === 8) digits = '974' + digits;
+    const sports = shown.map(d => d.sport);
     const sp = sports.join('، '), spEn = sports.join(', ');
-    const msg = `مرحباً ${m.nameArabic || m.name} 🖤⭐\nلقد أكملتم جميع حصص ${sp} في نادي بلاك ستارز! نودّ تذكيركم بتجديد الاشتراك لمواصلة التقدّم.\n\nHello ${m.name}! You have completed all your ${spEn} classes at Black Stars Sports Club 🎉 Renew now to keep going.`;
+    const done = shown.reduce((s, d) => s + (Number(d.attended) || 0), 0);
+    const coach = [...new Set(shown.map(coachNameOf).filter(Boolean))][0] || '';
+    const nameAr = m.nameArabic || m.name;
+    const ar = `مبروك ${nameAr}! 🎉🖤⭐\n`
+      + `أكملت جميع حصص ${sp} في نادي بلاك ستارز${done ? ` (${done} حصة كاملة)` : ''} — إنجاز رائع ونفتخر بك! 👏\n`
+      + `التزامك وتطوّرك كانا واضحين${coach ? ` وكابتن ${coach} فخور بك` : ''} 💪\n`
+      + `لا تتوقف الآن — جدّد اشتراكك وواصل التقدّم إلى المستوى التالي. مكانك محفوظ وبانتظارك! 🏆`;
+    const en = `Congratulations ${m.name}! 🎉\n`
+      + `You completed all your ${spEn} classes at Black Stars${done ? ` — ${done} ${done === 1 ? 'session' : 'sessions'}, start to finish` : ''}. That is real dedication and we're proud of you! 👏\n`
+      + `You've built great momentum${coach ? `, and Coach ${coach} is proud of your progress` : ''} 💪\n`
+      + `Don't stop now — renew and keep climbing to the next level. Your spot is waiting for you! 🏆🖤⭐`;
+    const msg = ar + '\n\n' + en;
     return `https://wa.me/${digits}?text=${encodeURIComponent(msg)}`;
   };
 
@@ -21654,13 +21703,21 @@ PAGES.completed = (main) => {
       const ends = shown.map(d => d.sub.end).filter(Boolean).sort();
       const startD = starts[0] || null;
       const endD = ends.length ? ends[ends.length - 1] : null;
-      const wl = waLink(m, shown.map(d => d.sport));
-      // "Reminded" — GREEN once this member has been reminded in the current cycle, grey before.
-      // Clicking marks a reminder (markReminded handles the 2nd-time confirm + 3rd-time block). (v6.365)
+      const wl = waLink(m, shown);
+      // Reminder STATUS — same design as the Due Payment screen: a GREEN "✓ N/3 · date" badge once
+      // reminded (grey once all 3 are used), and a YELLOW "not reminded yet" badge before. It is a
+      // label, not a button: reminding happens ONLY via the WhatsApp icon, which marks it. (v6.370)
       const ri = (typeof reminderInfo === 'function') ? reminderInfo(m) : { count: 0, last: null };
-      const remindedBtn = ri.count > 0
-        ? `<button class="btn sm" style="background:var(--green);color:#fff;border-color:var(--green);font-weight:700" onclick="event.stopPropagation();_compRemind(${m.id})" title="${t('Reminded', 'تم التذكير')} ${ri.count}×${ri.last ? ' · ' + t('last', 'آخر') + ' ' + fmtDate(ri.last) : ''} — ${t('click to remind again', 'اضغط للتذكير مجدداً')}">✅ ${t('Reminded', 'تم التذكير')}${ri.count > 1 ? ' ×' + ri.count : ''}</button>`
-        : `<button class="btn ghost sm" onclick="event.stopPropagation();_compRemind(${m.id})" title="${t('Mark this member as reminded — turns green', 'تعليم هذا العضو كمُذكَّر — يتحول للأخضر')}">🔔 ${t('Reminded', 'تذكير')}</button>`;
+      const remindedLabel = ri.count
+        ? `<span class="badge ${ri.count >= 3 ? '' : 'active'}" style="font-size:10px;cursor:help;${ri.count >= 3 ? 'background:rgba(120,120,140,.15);color:var(--text-mute)' : ''}" title="${ri.count} ${ri.count === 1 ? t('reminder sent', 'تذكير مُرسل') : t('reminders sent', 'تذكيرات مُرسلة')}${ri.last ? ' · ' + t('last', 'آخر') + ' ' + fmtDate(ri.last) : ''}">✓ ${ri.count}/3${ri.last === TODAY ? ' · ' + t('today', 'اليوم') : ri.last ? ' · ' + fmtDate(ri.last) : ''}</span>`
+        : `<span class="badge" style="font-size:10px;background:rgba(245,158,11,.16);color:var(--accent-2);font-weight:700;cursor:help" title="${t('No reminder sent yet — use the WhatsApp icon to remind', 'لم يُرسل تذكير بعد — استخدم أيقونة واتساب للتذكير')}">🔔 ${t('Not reminded', 'لم يُذكَّر')}</span>`;
+      // Escalating WhatsApp reminder button — identical to Due Payment: the label shows which tone
+      // will be sent next, and clicking it opens WhatsApp AND marks the reminder (label → green).
+      const _sent = ri.count || 0;
+      const _lvl = Math.min(3, _sent + 1);
+      const _lvlLabel = _lvl === 1 ? t('1st reminder', 'تذكير أول') : _lvl === 2 ? t('2nd reminder', 'تذكير ثانٍ') : t('Final reminder', 'تذكير أخير');
+      const _lvlColor = _lvl === 1 ? 'color:var(--green);border-color:var(--green)' : _lvl === 2 ? 'color:var(--accent-2);border-color:var(--accent-2)' : 'color:var(--red);border-color:var(--red)';
+      const _waIcon = (typeof waIconSvg === 'function') ? waIconSvg(14) : '💬';
       return `<tr data-id="${m.id}" style="cursor:pointer">
         <td><div style="display:flex;align-items:center;gap:8px"><div class="avatar" style="width:26px;height:26px;font-size:10px;background:linear-gradient(135deg,var(--purple),var(--blue))">${initials(m.name)}</div><div style="min-width:0"><div class="font-bold">${escapeHtml(m.name)}</div>${m.nameArabic ? `<div style="font-size:11px;color:var(--text-dim)" dir="rtl">${escapeHtml(m.nameArabic)}</div>` : ''}${isRealPhone(m.phone) ? `<div class="text-mute" style="font-size:10px">${phoneCell(m.phone)}</div>` : ''}</div></div></td>
         <td>${sportBadges}</td>
@@ -21668,12 +21725,16 @@ PAGES.completed = (main) => {
         <td class="text-dim" style="font-size:12px;white-space:nowrap">${startD ? fmtDate(startD) : '—'}</td>
         <td style="font-size:12px;white-space:nowrap;${endD && endD < TODAY ? 'color:var(--red);font-weight:700' : 'color:var(--text-dim)'}">${endD ? fmtDate(endD) : '—'}</td>
         <td class="text-right num">${paid ? fmt(paid) : '—'}</td>
+        <td class="text-center">${remindedLabel}</td>
         <td class="text-right" onclick="event.stopPropagation()" style="white-space:nowrap">
-          ${remindedBtn}
-          ${wl ? `<a class="btn ghost sm" style="color:var(--green);border-color:var(--green)" href="${wl}" target="_blank" title="${t('WhatsApp a renewal reminder — then mark it with the Reminded button', 'إرسال تذكير تجديد عبر واتساب — ثم علّمه بزر «تم التذكير»')}">💬</a>` : ''}
+          ${!wl
+            ? `<span class="text-mute" style="font-size:11px" title="${t('No mobile number on file', 'لا يوجد رقم جوال مسجّل')}">—</span>`
+            : _sent >= 3
+              ? `<span class="btn ghost sm" style="opacity:.5;cursor:default" title="${t('All 3 reminders sent this cycle', 'تم إرسال 3 تذكيرات هذه الدورة')}">✓ ${t('Reminded', 'تم التذكير')}</span>`
+              : `<a class="btn ghost sm" style="text-decoration:none;display:inline-flex;align-items:center;gap:5px;${_lvlColor}" href="${wl}" target="_blank" rel="noopener" onclick="_compRemind(${m.id})" title="${t('Send', 'إرسال')}: ${_lvlLabel}">${_waIcon} ${_lvlLabel}</a>`}
         </td>
       </tr>`;
-    }).join('') : `<tr><td colspan="7" class="text-mute" style="text-align:center;padding:26px">✅ ${t('No members match — try clearing the filters', 'لا يوجد أعضاء مطابقون — جرّب مسح عوامل التصفية')}</td></tr>`;
+    }).join('') : `<tr><td colspan="8" class="text-mute" style="text-align:center;padding:26px">✅ ${t('No members match — try clearing the filters', 'لا يوجد أعضاء مطابقون — جرّب مسح عوامل التصفية')}</td></tr>`;
     $('#comp-tbody').innerHTML = body;
     $$('#comp-tbody tr[data-id]').forEach(tr => tr.addEventListener('click', () => viewMember(parseInt(tr.dataset.id))));
   }
@@ -21717,6 +21778,7 @@ PAGES.completed = (main) => {
           <th>${t('Start', 'البداية')}</th>
           <th>${t('Expiry', 'الانتهاء')}</th>
           <th class="text-right">${t('Paid', 'المدفوع')}</th>
+          <th class="text-center">${t('Reminder', 'التذكير')}</th>
           <th class="text-right">${t('Action', 'إجراء')}</th>
         </tr></thead>
         <tbody id="comp-tbody"></tbody>
@@ -21726,10 +21788,14 @@ PAGES.completed = (main) => {
   $('#comp-sport')?.addEventListener('change', e => { f.sport = e.target.value; refresh(); });
   $('#comp-month')?.addEventListener('change', e => { f.month = e.target.value; refresh(); });
   $('#comp-coach')?.addEventListener('change', e => { f.coach = e.target.value; refresh(); });
-  // Let the Reminded button repaint just these rows (so it turns green instantly, without the
-  // global render() rebuilding the whole page and losing the user's scroll position). (v6.366)
+  // Clicking the WhatsApp icon IS the reminder: mark it silently (no confirm interrupting the
+  // WhatsApp tab opening) and repaint just these rows so the label flips to green — no global
+  // render() rebuilding the page. The repaint is deferred a tick so replacing the <a> mid-click
+  // can't cancel the link opening. (v6.366 · v6.367)
   window._compRemind = function (id) {
-    if (typeof markReminded === 'function' && markReminded(id, { rerender: false })) refresh();
+    if (typeof markReminded === 'function' && markReminded(id, { rerender: false, silent: true })) {
+      setTimeout(() => { try { refresh(); } catch (_) {} }, 0);
+    }
   };
   refresh();
 };
