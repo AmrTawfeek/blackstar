@@ -15167,7 +15167,11 @@ window._expCoachChanged = function() {
   const sel = document.getElementById('f-coach');
   const nm = document.getElementById('f-coach-name');
   if (!sel || !nm) return;
-  if (sel.value) { nm.value = ''; nm.disabled = true; } else { nm.disabled = false; }
+  // Mutually exclusive with the ad-hoc name, but NEVER disable the input — disabling it created a
+  // deadlock (you couldn't type an external name while a coach was selected, and only typing clears
+  // the dropdown). Just clear the ad-hoc text when a registered coach is picked. (v6.371)
+  nm.disabled = false;
+  if (sel.value) nm.value = '';
 };
 window._expCoachNameInput = function() {
   const sel = document.getElementById('f-coach');
@@ -15205,7 +15209,7 @@ function showExpenseForm(id) {
           </select>
         </div>
         <div class="field"><label>or external / ad-hoc coach name</label>
-          <input id="f-coach-name" value="${escapeHtml(cur.coachName || '')}" placeholder="Type a name (not a club coach)" ${cur.coachId ? 'disabled' : ''} oninput="window._expCoachNameInput && window._expCoachNameInput()" />
+          <input id="f-coach-name" value="${escapeHtml(cur.coachName || '')}" placeholder="Type a name (not a club coach)" oninput="window._expCoachNameInput && window._expCoachNameInput()" />
           <div class="text-mute" style="font-size:10px;margin-top:3px">Pick a registered coach OR type an external coach\u2019s name. Either way it shows in the Salaries report; not double-counted in expenses.</div>
         </div>
       </div>
@@ -15378,15 +15382,18 @@ PAGES.salaries = (main) => {
       // DOUBLE-PAY GUARD (v6.369): a duplicate INVOICE yields two identical commission lines, so
       // this coach would be paid twice for the same membership. Warn BEFORE anyone hits Pay —
       // the maths is left untouched (the admin fixes the data in Finance → Duplicate Invoices).
-      const _dups = (p.basis === 'attendance' && p.attendanceLines && typeof duplicateCommissionLines === 'function')
-        ? duplicateCommissionLines(p.attendanceLines.lines) : [];
+      // Duplicate invoice lines are ALREADY excluded from this coach's base/pay by
+      // computeAttendanceCommission (v6.372) — so p.gross below is CORRECT, not overstated. This
+      // badge/note just flags that a duplicate exists in the source data so the admin can clean it.
+      const _dups = (p.basis === 'attendance' && p.attendanceLines && typeof excludedDuplicateLines === 'function')
+        ? excludedDuplicateLines(p.attendanceLines.lines) : [];
       const _dupExtra = _dups.reduce((s, d) => s + (d.extra || 0), 0);
       const _dupPay = _dupExtra * (p.commissionRate || 0) / 100;
       const dupBadge = _dups.length
-        ? ` <span class="badge" style="background:rgba(239,68,68,.15);color:var(--red);font-size:9px;padding:1px 6px;cursor:help" title="${escapeHtml(_dups.map(d => `${d.line.memberName} · ${d.line.sport} ×${d.count}`).join(' | '))} — duplicate invoice(s) in the data are DOUBLE-COUNTING ${fmt(_dupExtra)} of base (≈ ${fmt(_dupPay)} extra pay). Check Finance → Duplicate Invoices before paying.">⚠️ DUPLICATE ×${_dups.length}</span>`
+        ? ` <span class="badge" style="background:rgba(217,119,6,.15);color:var(--accent-2);font-size:9px;padding:1px 6px;cursor:help" title="${escapeHtml(_dups.map(d => `${d.line.memberName} · ${d.line.sport}`).join(' | '))} — duplicate invoice(s) in the data. Already EXCLUDED from pay (${fmt(_dupExtra)} base ≈ ${fmt(_dupPay)} not paid). Clean up in Finance → Duplicate Invoices.">✓ ${_dups.length} DUP EXCLUDED</span>`
         : '';
       const dupNote = _dups.length
-        ? `<div style="color:var(--red);margin-top:2px;font-weight:600">⚠️ Includes ${_dups.length} duplicated line${_dups.length === 1 ? '' : 's'} (${escapeHtml(_dups.map(d => d.line.memberName + ' · ' + d.line.sport).join(', '))}) — overstates base by ${fmt(_dupExtra)} ≈ ${fmt(_dupPay)} extra pay. Fix in Finance → Duplicate Invoices.</div>`
+        ? `<div style="color:var(--accent-2);margin-top:2px;font-weight:600">✓ ${_dups.length} duplicate line${_dups.length === 1 ? '' : 's'} auto-excluded (${escapeHtml(_dups.map(d => d.line.memberName + ' · ' + d.line.sport).join(', '))}) — coach NOT overpaid (${fmt(_dupExtra)} ≈ ${fmt(_dupPay)} excluded). Clean the source in Finance → Duplicate Invoices.</div>`
         : '';
       return `
         <tr>
@@ -16319,6 +16326,7 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
       memberName: l.memberName, sport: l.sport, price: l.amountBase,
       isSwitch: l.kind === 'switch', invoiceRef: l.kind === 'trueup' ? 'expiry true-up' : (l.kind === 'attended' ? (l.classes + ' class' + (l.classes === 1 ? '' : 'es')) : ''),
       invoiceDate: null, start: l.start, end: l.end, attended: l.attended, total: l.total, status: l.status,
+      _dupIgnored: !!l._dupIgnored, _origAmount: l._origAmount,
     }));
     pendingLines = pay.attendanceLines.pendingLines || [];
   }
@@ -16332,18 +16340,18 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
     bySport[k].total += l.price;
   }
 
-  // DOUBLE-PAY GUARD (v6.369): flag identical repeated lines (a duplicate INVOICE in the data)
-  // right on the report, so an inflated subtotal can't be paid unnoticed. Maths untouched.
-  const _rptDups = (pay && pay.basis === 'attendance' && pay.attendanceLines && typeof duplicateCommissionLines === 'function')
-    ? duplicateCommissionLines(pay.attendanceLines.lines) : [];
+  // DUPLICATE-COLLAPSE NOTICE (v6.372): computeAttendanceCommission ALREADY removed duplicate invoice
+  // lines from the base/pay (keyed on member id), so the subtotal below is CORRECT. This banner just
+  // tells the admin which repeats were auto-excluded so they can clean the source invoices.
+  const _rptDups = (pay && pay.basis === 'attendance' && pay.attendanceLines && typeof excludedDuplicateLines === 'function')
+    ? excludedDuplicateLines(pay.attendanceLines.lines) : [];
   const _rptDupExtra = _rptDups.reduce((s, d) => s + (d.extra || 0), 0);
   const dupBanner = _rptDups.length ? `
-    <div style="border:2px solid #dc2626;background:#fef2f2;color:#991b1b;border-radius:8px;padding:10px 12px;margin:10px 0">
-      <div style="font-weight:700;margin-bottom:4px">⚠️ ${_rptDups.length} duplicated line${_rptDups.length === 1 ? '' : 's'} detected — this subtotal is OVERSTATED</div>
+    <div style="border:2px solid #d97706;background:#fffbeb;color:#92400e;border-radius:8px;padding:10px 12px;margin:10px 0">
+      <div style="font-weight:700;margin-bottom:4px">✓ ${_rptDups.length} duplicate line${_rptDups.length === 1 ? '' : 's'} auto-excluded — this subtotal is already correct</div>
       <div style="font-size:12px;line-height:1.5">
-        ${_rptDups.map(d => `<div>• <b>${escapeHtml(d.line.memberName)}</b> · ${escapeHtml(d.line.sport || '')} appears <b>${d.count}×</b> (${fmt(d.line.amountBase)} each)</div>`).join('')}
-        <div style="margin-top:6px">Commission base is overstated by <b>${fmt(_rptDupExtra)} QAR</b> ≈ <b>${fmt(_rptDupExtra * (pay.commissionRate || 0) / 100)} QAR</b> extra pay.
-        This means a <b>duplicate invoice</b> exists in the data — check <b>Finance → Duplicate Invoices</b> and remove it, then re-open this report.</div>
+        ${_rptDups.map(d => `<div>• <b>${escapeHtml(d.line.memberName)}</b> · ${escapeHtml(d.line.sport || '')} appeared twice (${fmt(d.extra)} QAR) — the repeat was NOT paid.</div>`).join('')}
+        <div style="margin-top:6px">A <b>duplicate invoice</b> exists in the data; the coach was <b>not</b> overpaid (${fmt(_rptDupExtra)} QAR ≈ ${fmt(_rptDupExtra * (pay.commissionRate || 0) / 100)} QAR was excluded). Clean it up in <b>Finance → Duplicate Invoices</b> to remove the greyed row below.</div>
       </div>
     </div>` : '';
 
@@ -16422,16 +16430,16 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
         </thead>
         <tbody>
           ${lines.map((l, i) => `
-            <tr>
+            <tr${l._dupIgnored ? ' style="background:#fafafa;color:#b0b0b0"' : ''}>
               <td style="color:#999">${i + 1}</td>
-              <td>${escapeHtml(l.memberName)}${l.isSwitch ? '<span class="badge">SWITCH</span>' : ''}<div style="color:#999;font-size:10px">${escapeHtml(l.invoiceRef || '')}${l.invoiceDate ? ' · ' + fmtDate(l.invoiceDate) : ''}</div></td>
+              <td>${l._dupIgnored ? `<span style="text-decoration:line-through">${escapeHtml(l.memberName)}</span> <span class="badge" style="background:#fee2e2;color:#b91c1c">DUPLICATE — NOT PAID</span>` : escapeHtml(l.memberName)}${l.isSwitch ? '<span class="badge">SWITCH</span>' : ''}<div style="color:#999;font-size:10px">${escapeHtml(l.invoiceRef || '')}${l.invoiceDate ? ' · ' + fmtDate(l.invoiceDate) : ''}</div></td>
               <td>${escapeHtml(l.sport || '—')}</td>
               <td style="font-size:11px">${l.start ? fmtDate(l.start) : '—'}</td>
               <td style="font-size:11px">${l.end ? fmtDate(l.end) : '—'}</td>
               <td style="font-size:11px">${l.attended != null ? l.attended : 0}${l.total ? ' / ' + l.total : ''}</td>
               <td style="font-size:11px">${escapeHtml(l.status || '—')}</td>
-              <td class="num ${l.price < 0 ? 'neg' : ''}">${fmt(l.price)}${l.prorated ? `<div style="color:#999;font-size:9px">of ${fmt(l.fee)} · ${l.attended}/${l.total} attended</div>` : ''}</td>
-              <td class="num ${l.price < 0 ? 'neg' : ''}" style="font-weight:700">${fmt(l.price * pay.commissionRate / 100)}</td>
+              <td class="num ${l.price < 0 ? 'neg' : ''}">${l._dupIgnored ? `<span style="text-decoration:line-through;color:#c0c0c0">${fmt(l._origAmount || 0)}</span> → <b>0</b>` : fmt(l.price)}${l.prorated ? `<div style="color:#999;font-size:9px">of ${fmt(l.fee)} · ${l.attended}/${l.total} attended</div>` : ''}</td>
+              <td class="num ${l.price < 0 ? 'neg' : ''}" style="font-weight:700">${l._dupIgnored ? '<b>0</b>' : fmt(l.price * pay.commissionRate / 100)}</td>
             </tr>
           `).join('')}
           <tr style="background:#f5f5f7;font-weight:700">
@@ -21806,13 +21814,14 @@ PAGES.expiring = (main) => {
   const AVG_RENEWAL = (state.settings && Number(state.settings.avgRenewalValue)) || 350;
   let filter = { sport: 'all', coach: 'all', search: '', bucket: 'all', sort: 'expiry', reminded: 'all' };
   // Which sections are collapsed (default: all open)
-  const collapsed = { soon: false, expired: false, upcoming: false };
+  const collapsed = { soon: false, week: false, expired: false, upcoming: false };
   // Bulk-selected member IDs (across all sections)
   const selectedIds = new Set();
 
   // Bucket members (compute once — only filter the visible lists)
   const expired = [];
   const expiringSoon = [];
+  const week = [];        // (threshold, 7] — "expiring this week", between the ASAP tier and ≤30 (v6.371)
   const upcoming = [];
 
   for (const m of state.members) {
@@ -21832,11 +21841,13 @@ PAGES.expiring = (main) => {
     }
     if (d < 0) expired.push({ m, days: d });
     else if (d <= threshold) expiringSoon.push({ m, days: d });
+    else if (d <= 7) week.push({ m, days: d });        // this week (after the ASAP tier)
     else if (d <= 30) upcoming.push({ m, days: d });
   }
 
   expired.sort((a, b) => b.days - a.days);
   expiringSoon.sort((a, b) => a.days - b.days);
+  week.sort((a, b) => a.days - b.days);
   upcoming.sort((a, b) => a.days - b.days);
 
   // "Recently expired" = expired within the last N days (win-back window), N configurable.
@@ -21844,7 +21855,7 @@ PAGES.expiring = (main) => {
   const recentCount = expired.filter(x => x.days >= -recentDays).length;
 
   // Sports + coaches present in the expiring lists, for the dropdowns
-  const allEntries = [...expired, ...expiringSoon, ...upcoming];
+  const allEntries = [...expired, ...expiringSoon, ...week, ...upcoming];
   const sportsInList = [...new Set(allEntries.flatMap(({m}) =>
     [m.sport, ...((m.enrollments||[]).map(e=>e.sport)), ...((m.subscriptions||[]).map(s=>s.activity))].filter(Boolean)
   ))].sort();
@@ -21907,8 +21918,8 @@ PAGES.expiring = (main) => {
   }
 
   function rowHtml({ m, days, completed }, bucket) {
-    const color = bucket === 'expired' ? 'var(--red)' : bucket === 'soon' ? 'var(--accent-2)' : 'var(--text-dim)';
-    const label = bucket === 'expired' ? `${Math.abs(days)}d ago` : bucket === 'soon' ? `in ${days}d` : `in ${days}d`;
+    const color = bucket === 'expired' ? 'var(--red)' : (bucket === 'soon' || bucket === 'week') ? 'var(--accent-2)' : 'var(--text-dim)';
+    const label = bucket === 'expired' ? `${Math.abs(days)}d ago` : `in ${days}d`;
     const phone = m.phone && !m.phone.startsWith('+9747000') ? m.phone : null;
     const lastR = lastRenewalDate(m);
     const isChecked = selectedIds.has(m.id);
@@ -22030,7 +22041,7 @@ PAGES.expiring = (main) => {
       <div class="kpi blue" style="cursor:pointer" onclick="document.getElementById('exp-bucket').value='upcoming';document.getElementById('exp-bucket').dispatchEvent(new Event('change'))">
         <div class="kpi-icon">📅</div>
         <div class="kpi-label">Expiring in ≤ 30 days</div>
-        <div class="kpi-value num">${upcoming.length}</div>
+        <div class="kpi-value num">${week.length + upcoming.length}</div>
         <div class="kpi-delta flat">On the horizon · click to filter</div>
       </div>
       ${(() => {
@@ -22118,6 +22129,7 @@ PAGES.expiring = (main) => {
       return arr;   // 'expiry' default — already sorted by days
     };
     const sFiltered = applySort(expiringSoon.filter(matchFilter));
+    const wFiltered = applySort(week.filter(matchFilter));
     const eFiltered = applySort(expired.filter(matchFilter));
     const uFiltered = applySort(upcoming.filter(matchFilter));
     const parts = [];
@@ -22127,11 +22139,16 @@ PAGES.expiring = (main) => {
     // "Expiring in ≤ 7 days": spans the soon (0–threshold) + upcoming (threshold–30) buckets,
     // trimmed to 0–7 days by matchFilter's d7 guard, in expiry order. (v6.358)
     if (filter.bucket === 'd7') {
-      const d7List = applySort([...expiringSoon, ...upcoming].filter(matchFilter));
+      const d7List = applySort([...expiringSoon, ...week, ...upcoming].filter(matchFilter));
       parts.push(section('Expiring within 7 days — call ASAP', 'var(--accent-2)', '⏳', d7List, 'soon'));
     }
     if (filter.bucket === 'all' || filter.bucket === 'soon')
       parts.push(section('Expiring within ' + threshold + ' days — call ASAP', 'var(--accent-2)', '⏰', sFiltered, 'soon'));
+    // "Expiring within 7 days" — the tier just after the ASAP one (members expiring in
+    // {threshold+1}–7 days). Shown in the default view, when filtering to this week, and inside the
+    // ≤30 view (so "≤30" still includes 4–7). Only when threshold < 7, else it overlaps. (v6.371)
+    if ((filter.bucket === 'all' || filter.bucket === 'week' || filter.bucket === 'upcoming') && threshold < 7)
+      parts.push(section('Expiring within 7 days', 'var(--accent-2)', '⏳', wFiltered, 'week'));
     if (filter.bucket === 'all' || filter.bucket === 'expired')
       parts.push(section('Already expired', 'var(--red)', '⛔', eFiltered, 'expired'));
     if (filter.bucket === 'all' || filter.bucket === 'upcoming')
@@ -22168,8 +22185,9 @@ PAGES.expiring = (main) => {
         const bucket = e.target.dataset.bucket;
         // The ≤7-day view is ONE section spanning both soon + upcoming, so select-all must
         // cover the whole combined list, not just the 'soon' half. (v6.358)
-        const list = filter.bucket === 'd7' ? [...expiringSoon, ...upcoming].filter(matchFilter)
+        const list = filter.bucket === 'd7' ? [...expiringSoon, ...week, ...upcoming].filter(matchFilter)
                    : bucket === 'soon' ? expiringSoon.filter(matchFilter)
+                   : bucket === 'week' ? week.filter(matchFilter)
                    : bucket === 'expired' ? expired.filter(matchFilter)
                    : upcoming.filter(matchFilter);
         const phoneIds = list.filter(x => x.m.phone && !x.m.phone.startsWith('+9747000')).map(x => x.m.id);
@@ -22188,6 +22206,7 @@ PAGES.expiring = (main) => {
     $$('.exp-section-header').forEach(h => {
       const b = h.dataset.bucket;
       const list = b === 'soon' ? expiringSoon.filter(matchFilter)
+                  : b === 'week' ? week.filter(matchFilter)
                   : b === 'expired' ? expired.filter(matchFilter)
                   : upcoming.filter(matchFilter);
       const sel = list.filter(x => selectedIds.has(x.m.id)).length;

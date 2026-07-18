@@ -1053,10 +1053,17 @@ ${seed}
     ok(!coachTeachesSport(state.coaches[0], 'Zumba'), 'eligible: Abdel does NOT teach Zumba');
     ok(coachTeachesSport(state.coaches[3], 'Zumba'), 'eligible: coach with no sports set is not over-blocked');
     ok(coachTeachesSport(state.coaches[0], 'Art'), 'eligible: non-sport activity (Art) has no constraint');
+    // v6.335: when someone is explicitly assigned to the sport, ONLY they are offered —
+    // an unassigned "legacy" person no longer pads every sport's dropdown.
     var zumba = coachesForSport('Zumba');
-    eq(zumba.length, 2, 'eligible: Zumba → Leina + legacy (Abdel excluded, inactive excluded)');
+    eq(zumba.length, 1, 'eligible: Zumba → Leina only (Abdel, inactive and unassigned excluded)');
     ok(!zumba.some(c => c.id === 91), 'eligible: Abdel not offered for Zumba');
     ok(!zumba.some(c => c.id === 93), 'eligible: inactive coach not offered');
+    ok(!zumba.some(c => c.id === 94), 'eligible: unassigned coach not offered when a real one exists');
+    // ...but a sport nobody is assigned to must not end up with an empty dropdown.
+    var gym = coachesForSport('Gymnastic');
+    eq(gym.length, 1, 'eligible: unassigned sport falls back to the no-sports-recorded coach');
+    ok(gym.some(c => c.id === 94), 'eligible: the fallback offers the legacy coach');
     var box = coachesForSport('Boxing');
     ok(box.some(c => c.id === 91) && !box.some(c => c.id === 93), 'eligible: Boxing → active Abdel, not inactive Old');
     // a currently-assigned (now-ineligible) coach is kept visible so data isn't lost
@@ -2062,7 +2069,8 @@ ${seed}
     eq(recentSearches('invoices').length, 1, 'recent: keys are independent');
     eq(recentSearches('members').length, 2, 'recent: members unaffected by invoices');
     for (var i = 0; i < 12; i++) recordRecentSearch('cap', 'term' + i);
-    eq(recentSearches('cap').length, 8, 'recent: capped at 8');
+    eq(recentSearches('cap').length, 5, 'recent: capped at 5');
+    eq(recentSearches('cap')[0], 'term11', 'recent: newest first after the cap kicks in');
     eq(recentSearches('cap')[0], 'term11', 'recent: newest first');
     clearRecentSearches('members');
     eq(recentSearches('members').length, 0, 'recent: clear empties the list');
@@ -2093,10 +2101,11 @@ ${seed}
   (function () {
     eq(addBusinessDays('2026-06-14', 4), '2026-06-18', 'business days: Sun +4 biz = Thu (same week)');
     eq(addBusinessDays('2026-06-18', 1), '2026-06-21', 'business days: Thu +1 biz skips Fri/Sat to Sun');
-    eq(campEndDate('2026-06-14', 7), '2026-06-21', 'camp: 1 week validity = start + 7 calendar days');
-    eq(campEndDate('2026-06-14', 14), '2026-06-28', 'camp: 2 weeks validity = start + 14 calendar days');
-    eq(campEndDate('2026-06-14', 1), '2026-06-15', 'camp: 1 day validity = start + 1 calendar day');
-    eq(campEndDate('2026-06-14', 30), '2026-07-14', 'camp: 1 month validity = start + 30 calendar days');
+    // v6.357: camp expiry counts BUSINESS days (Sun–Thu), landing on the last class-day.
+    eq(campEndDate('2026-06-14', 7), '2026-06-18', 'camp: 1 week = 5 business days, Sun 14 → Thu 18 Jun');
+    eq(campEndDate('2026-06-14', 14), '2026-06-25', 'camp: 2 weeks = 10 business days, Sun 14 → Thu 25 Jun');
+    eq(campEndDate('2026-06-14', 1), '2026-06-14', 'camp: 1 day = 1 business day, ends same day');
+    eq(campEndDate('2026-06-14', 30), '2026-07-13', 'camp: 1 month = 22 business days, Sun 14 Jun → Mon 13 Jul');
   })();
   // Summer Camp class counts are business-day based
   (function () {
@@ -2114,9 +2123,9 @@ ${seed}
   (function () {
     var priceFor = function (cls) { return (DEFAULT_SUMMER_CAMP_PRICES || []).find(function (p) { return campClassCount(p.days) === cls; }); };
     var row1 = priceFor(5);
-    eq(campEndDate('2026-06-14', row1.days), '2026-06-21', 'camp renew: 1 week validity = +7 calendar days');
+    eq(campEndDate('2026-06-14', row1.days), '2026-06-18', 'camp renew: 1 week = 5 business days → Thu 18 Jun');
     var row2 = priceFor(10);
-    eq(campEndDate('2026-06-14', row2.days), '2026-06-28', 'camp renew: 2 weeks validity = +14 calendar days');
+    eq(campEndDate('2026-06-14', row2.days), '2026-06-25', 'camp renew: 2 weeks = 10 business days → Thu 25 Jun');
   })();
   // Freeze allowance resets after a renewal (new cycle start)
   (function () {
@@ -2222,9 +2231,9 @@ ${seed}
   })();
   // Camp duration (class limit) is independent of validity (time window)
   (function () {
-    // 8 classes within a 1-month (30-day) window.
-    var sub = { activity: 'Summer Camp', totalClasses: 8, start: '2026-06-14', end: addDays('2026-06-14', 30), status: 'active' };
-    eq(sub.end, '2026-07-14', 'camp window: validity 1 month → expiry is start + 30 days');
+    // 8 classes within a 1-month window (v6.357: 22 business days → Mon 13 Jul).
+    var sub = { activity: 'Summer Camp', totalClasses: 8, start: '2026-06-14', end: campEndDate('2026-06-14', 30), status: 'active' };
+    eq(sub.end, '2026-07-13', 'camp window: 1 month = 22 business days → expiry Mon 13 Jul');
     var part = { enrollments: [{ sport: 'Summer Camp' }], subscriptions: [sub],
       dailyAttendance: { '2026-06': { 'Summer Camp': { '14': 'Y', '15': 'Y', '16': 'Y', '17': 'Y', '18': 'Y' } } } };
     eq(campLimitReached(part), false, 'camp window: 5 of 8 classes used → not at limit');
@@ -2386,19 +2395,15 @@ ${seed}
     eq(run({ coachIds: ['5', '6'] }), '1,2', 'msel: coaches match ANY; no-coach invoices excluded');
     eq(run({ activities: ['__camp__'] }), '4', 'msel: Summer Camp activity only');
   })();
-  // Camp invoice validity = start + calendar-days of the duration, not the class count
+  // v6.357: Camp invoice validity = the BUSINESS-day expiry (Sun–Thu), matching the class-days.
   (function () {
-    var PRICES = [{ label: '2 months', days: 60, price: 3000 }, { label: '1 month', days: 30, price: 1750 }, { label: '1 week', days: 7, price: 650 }];
-    var campDaysForLabel = function (label) { var r = PRICES.find(function (p) { return p.label === label; }); return r ? r.days : 0; };
-    var addDays = function (d, n) { var dt = new Date(d + 'T00:00:00'); dt.setDate(dt.getDate() + n); return dt.toISOString().slice(0, 10); };
-    // "2 months" = 60 calendar days. 23 Jun → 22 Aug. Class-day count (44) is separate.
-    eq(addDays('2026-06-23', campDaysForLabel('2 months')), '2026-08-22', 'camp invoice: 2 months validity = 23 Jun → 22 Aug');
-    eq(addDays('2026-06-23', campDaysForLabel('1 month')), '2026-07-23', 'camp invoice: 1 month validity = +30 days');
-    // The recompute path: even if a stored end is wrong, label-days wins.
-    var sub = { durationLabel: '2 months', start: '2026-06-23', totalClasses: 44, end: '2026-08-05' };
-    var labelDays = campDaysForLabel(sub.durationLabel);
-    var endDate = labelDays > 0 ? addDays(sub.start, labelDays) : sub.end;
-    eq(endDate, '2026-08-22', 'camp invoice: recomputed end overrides wrong stored end');
+    // 1 month = 22 business days: Tue 23 Jun → Wed 22 Jul. 2 months = 44 → Sun 23 Aug.
+    eq(campEndDate('2026-06-23', 30), '2026-07-22', 'camp invoice: 1 month = 22 business days, 23 Jun → 22 Jul');
+    eq(campEndDate('2026-06-23', 60), '2026-08-23', 'camp invoice: 2 months = 44 business days, 23 Jun → 23 Aug');
+    // The recompute path: subscriptionValidEnd derives the camp end from the label (business days),
+    // overriding a wrong stored end when it is missing/invalid.
+    var sub = { activity: 'Summer Camp', durationLabel: '1 month', start: '2026-06-23', totalClasses: 22 };
+    eq(subscriptionValidEnd(sub), '2026-07-22', 'camp invoice: subscriptionValidEnd = business-day end from label');
   })();
   // Members list attendance cell uses the class-day LIMIT (10), not validity (14)
   (function () {
@@ -2519,7 +2524,10 @@ ${seed}
   })();
   // Freeze: a date-range freeze shifts expiry, sub ends, and enrolment validity
   (function () {
-    var addDays = function (d, n) { var dt = new Date(d + 'T00:00:00'); dt.setDate(dt.getDate() + parseInt(n)); return dt.toISOString().slice(0, 10); };
+    // Read back LOCAL date parts (like the app's real addDays) — NOT toISOString(),
+    // which would re-serialize local midnight in UTC and shift the date back a day
+    // in any timezone ahead of UTC (e.g. Qatar UTC+3), giving a spurious off-by-one.
+    var addDays = function (d, n) { var dt = new Date(d + 'T00:00:00'); dt.setDate(dt.getDate() + parseInt(n)); return dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0'); };
     var daysBetween = function (a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000); };
     // 18 Jun → 1 Sep = 75 days.
     var days = daysBetween('2026-06-18', '2026-09-01');
@@ -2696,7 +2704,7 @@ ${seed}
         subscriptions: [{ activity: 'Summer Camp', durationLabel: '1 month', totalClasses: 30, start: '2026-06-14', end: '2026-07-14', attendedClasses: 7, status: 'Active' }] },
       { id: 9702, name: 'GoodCamp', sport: 'Summer Camp',
         enrollments: [{ sport: 'Summer Camp', classes: 5, durationLabel: '1 week', start: '2026-06-14' }],
-        subscriptions: [{ activity: 'Summer Camp', durationLabel: '1 week', totalClasses: 5, start: '2026-06-14', end: '2026-06-21', attendedClasses: 0, status: 'Active' }] },
+        subscriptions: [{ activity: 'Summer Camp', durationLabel: '1 week', totalClasses: 5, start: '2026-06-14', end: '2026-06-18', attendedClasses: 0, status: 'Active' }] },
     ];
     var flagged = findCampMembersToRecalc();
     eq(flagged.length, 1, 'camp recalc: only the legacy member is flagged');
@@ -2705,7 +2713,7 @@ ${seed}
     var beforeAtt = sub.attendedClasses;
     recalcCampMember(9701);
     eq(sub.totalClasses, 22, 'camp recalc: 1 month -> 22 classes');
-    eq(sub.end, '2026-07-14', 'camp recalc: end re-dated to calendar-day window');
+    eq(sub.end, '2026-07-13', 'camp recalc: end re-dated to business-day window (22 days → 13 Jul)');
     eq(sub.attendedClasses, beforeAtt, 'camp recalc: attendance unchanged');
     eq(findCampMembersToRecalc().length, 0, 'camp recalc: nothing flagged after fixing');
     // Legacy "1 month" stored as 30 days (no label) must resolve to 22, not 30 (6 weeks).
@@ -3093,22 +3101,28 @@ ${seed}
     // An active (not expired) period gives no carry yet.
     var active = { subscriptions: [{ activity: 'Boxing', totalClasses: 8, attendedClasses: 2, end: '2099-01-01', status: 'active' }], dailyAttendance: {} };
     eq(carryForwardCredit(active, 'Boxing'), 0, 'carry: active period → no credit until finished');
+    // v6.357: Summer Camp NEVER carries unattended days — even with 12 unused it is 0.
+    var camp = { subscriptions: [{ activity: 'Summer Camp', totalClasses: 22, attendedClasses: 10, end: '2026-01-01', status: 'expired' }], dailyAttendance: {} };
+    eq(carryForwardCredit(camp, 'Summer Camp'), 0, 'carry: Summer Camp → never carries (starts fresh)');
   })();
-  // Camp edit-form auto-expiry uses the VALIDITY window, not the class-day count
+  // v6.357: Camp edit-form auto-expiry counts BUSINESS days (via campEndDate), so the form shows
+  // the same expiry the record saves. Non-camp rows stay on calendar validity.
   (function () {
     var autoExp = function (rows) {
       var ends = rows.map(function (r) {
         var isCamp = r.sport === 'Summer Camp';
         var days = isCamp ? (parseInt(r.validity) || parseInt(r.classes) || 0) : (parseInt(r.validity) || 0);
         if (!(r.start && days > 0)) return null;
-        return addDays(r.start, days);
+        return isCamp ? campEndDate(r.start, days) : addDays(r.start, days);
       }).filter(Boolean).sort();
       return ends.length ? ends[ends.length - 1] : '';
     };
-    eq(autoExp([{ sport: 'Summer Camp', start: '2026-06-17', classes: 8, validity: 30 }]), '2026-07-17',
-      'camp expiry: start + 1-month validity (not the 8-day count)');
-    eq(autoExp([{ sport: 'Summer Camp', start: '2026-06-17', classes: 8, validity: 7 }]), '2026-06-24',
-      'camp expiry: start + 1-week validity');
+    eq(autoExp([{ sport: 'Summer Camp', start: '2026-06-17', classes: 8, validity: 30 }]), '2026-07-16',
+      'camp expiry: 1 month = 22 business days, Wed 17 Jun → Thu 16 Jul');
+    eq(autoExp([{ sport: 'Summer Camp', start: '2026-06-17', classes: 8, validity: 7 }]), '2026-06-23',
+      'camp expiry: 1 week = 5 business days, Wed 17 Jun → Tue 23 Jun');
+    eq(autoExp([{ sport: 'Karate', start: '2026-06-17', validity: 30 }]), '2026-07-17',
+      'non-camp expiry: still calendar validity (+30 days)');
   })();
   // Camp attendance over-limit flag: marked >= enrolled day count → flagged
   (function () {
@@ -3408,7 +3422,7 @@ ${seed}
       var e = { sport: 'Summer Camp', start: '2026-06-17', validity: 30, classes: 8 };
       syncSubToEnrollment(sub, e, {}, []);
       eq(sub.validity, 30, 'edit save: subscription validity updated to 30');
-      eq(sub.end, '2026-07-17', 'edit save: subscription end recomputed to 17 Jul');
+      eq(sub.end, '2026-07-16', 'edit save: subscription end recomputed to 16 Jul (22 business days)');
       // Non-camp sport too
       var sub2 = { activity: 'Boxing', start: '2026-06-01', validity: 30, end: '2026-07-01', totalClasses: 12 };
       var e2 = { sport: 'Boxing', start: '2026-06-01', validity: 60, classes: 12 };
@@ -3627,8 +3641,8 @@ ${seed}
     // Joud's case: stored end 28 Aug, but a stale "1 month" label would compute 29 Jul.
     eq(subscriptionValidEnd({ activity: 'Summer Camp', start: '2026-06-29', end: '2026-08-28', validity: 60, durationLabel: '1 month' }), '2026-08-28',
       'valid-end: stored subscription end wins over stale duration label');
-    eq(subscriptionValidEnd({ activity: 'Summer Camp', start: '2026-06-29', end: null, durationLabel: '1 month' }), '2026-07-29',
-      'valid-end: falls back to label when end missing');
+    eq(subscriptionValidEnd({ activity: 'Summer Camp', start: '2026-06-29', end: null, durationLabel: '1 month' }), '2026-07-28',
+      'valid-end: falls back to label (business-day end) when end missing');
     eq(subscriptionValidEnd({ activity: 'Summer Camp', start: '2026-06-29', validity: 60 }), '2026-08-28',
       'valid-end: falls back to validity day-count when no end/label');
     eq(subscriptionValidEnd({ activity: 'Gymnastic', start: '2026-06-09', end: '2026-07-09' }), '2026-07-09',
