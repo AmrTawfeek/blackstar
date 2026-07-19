@@ -324,7 +324,11 @@
     }
     function _scheduleRetry() {
       if (_retryTimer || !_lastState) return;                  // already scheduled / nothing to send
-      const delay = RETRY_DELAYS[Math.min(_retryAttempt, RETRY_DELAYS.length - 1)];
+      // An auth-coded failure (lapsed ID token) is cured by a token refresh, NOT by waiting — so the
+      // FIRST retry fires fast (just long enough to re-mint the token) instead of the 2s backoff. This
+      // shrinks the red "not saved" bar to a blink and lands the write before a reload can lose it. (v6.374)
+      const authFast = _isAuthCode(_lastErrorCode) && _retryAttempt === 0;
+      const delay = authFast ? 350 : RETRY_DELAYS[Math.min(_retryAttempt, RETRY_DELAYS.length - 1)];
       _retryAttempt++;
       console.warn(`[Storage] ↻ auto-retry #${_retryAttempt} in ${Math.round(delay / 1000)}s`);
       _retryTimer = setTimeout(async () => {
@@ -707,6 +711,16 @@
       // copy) — every write is blocked, so the UI must PREVENT creating records that would be
       // lost on reload, not just warn. (v6.331)
       cloudWriteBlocked() { return !!cloudReadFailed; },
+      // PROACTIVE session keep-alive: force-refresh the Firebase ID token so a write attempted
+      // right after a wake-from-sleep / long background doesn't fail on a lapsed token. Called on a
+      // timer and on tab-refocus / reconnect from app.js. Resolves true if a token was refreshed.
+      // Also opportunistically re-sends anything still unsaved once the token is fresh. (v6.374)
+      refreshAuth() {
+        return _refreshAuthToken().then(ok => {
+          try { if (ok && lastWriteFailed && !writeInFlight && _lastState) _flushWrite(_lastState); } catch (_) {}
+          return ok;
+        });
+      },
       // Force an immediate retry of the last failed/queued write; resolves with the
       // cloud result ({ ok:true } once it lands, { ok:false, error } if it fails again).
       retryNow() {
@@ -950,6 +964,16 @@
         if (activeBackend.retryNow) return activeBackend.retryNow();
       } catch (e) { return Promise.resolve({ ok: false, error: String(e) }); }
       return Promise.resolve({ ok: true, noop: true });
+    },
+    // Proactively re-mint the Firebase ID token so a write right after wake-from-sleep / long
+    // background doesn't fail on a lapsed token. No-op (resolves false) on the local backend or
+    // when signed out. Safe to call often. (v6.374)
+    refreshAuth() {
+      try {
+        if (!activeBackend) this.init();
+        if (activeBackend && activeBackend.isCloud && activeBackend.refreshAuth) return activeBackend.refreshAuth();
+      } catch (_) {}
+      return Promise.resolve(false);
     },
     // Local auto-backup ring (IndexedDB) — independent recovery history on this device.
     snapshotBackup(state, reason, force) { return LocalBackups.snapshot(state, reason, force); },

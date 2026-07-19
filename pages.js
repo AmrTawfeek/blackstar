@@ -9740,6 +9740,41 @@ function bindMonthMulti(id, onChange) {
   document.addEventListener('click', onDoc);
 }
 
+// Product line items for a Product invoice — so a sale's CONTENTS are visible right in the invoices
+// LIST (and its PDF / WhatsApp), not only when you open Edit. Authoritative source = the linked SALE
+// record (sales[].items = [{productId,name,qty,unitPrice}]); if that's missing, parse the
+// "Sale: 2× X · 1× Y — Customer" description that completeSale() writes. Returns [{name, qty, unitPrice}]
+// or [] for non-product invoices. (v6.375)
+function invoiceProductLines(inv) {
+  if (!inv) return [];
+  if ((inv.category || 'Membership') !== 'Product' && inv.activityType !== 'sale') return [];
+  const nameOf = (it) => { const p = (state.products || []).find(x => x.id === it.productId); return (p && p.name) || it.name || it.productName || t('Item', 'صنف'); };
+  const sale = (state.sales || []).find(s => s.invoiceId === inv.id);
+  if (sale && Array.isArray(sale.items) && sale.items.length) {
+    return sale.items.map(it => ({ name: nameOf(it), qty: Number(it.qty) || 1, unitPrice: Number(it.unitPrice != null ? it.unitPrice : it.price) || 0 })).filter(x => x.name);
+  }
+  // Fallback: parse the "Sale: 2× Name · 1× Name — Customer" description completeSale() wrote.
+  const m = String(inv.description || '').match(/^\s*Sale:\s*(.+?)(?:\s+—\s+[^·]*)?$/i);
+  if (m) {
+    return m[1].split('·').map(seg => {
+      const q = seg.trim().match(/^(\d+)\s*[×x]\s*(.+)$/);
+      return q ? { name: q[2].trim(), qty: parseInt(q[1]) || 1, unitPrice: 0 } : { name: seg.trim(), qty: 1, unitPrice: 0 };
+    }).filter(x => x.name);
+  }
+  return [];
+}
+if (typeof window !== 'undefined') window.invoiceProductLines = invoiceProductLines;
+
+// A compact one-line "🛍 2× X · 1× Y" summary for a product invoice row (empty for non-product). (v6.375)
+function invoiceProductSummaryHtml(inv) {
+  const lines = invoiceProductLines(inv);
+  if (!lines.length) return '';
+  const shown = lines.slice(0, 3).map(l => `${l.qty}× ${escapeHtml(l.name)}`).join(' · ');
+  const more = lines.length > 3 ? ` <span style="opacity:.85">+${lines.length - 3} ${t('more', 'أخرى')}</span>` : '';
+  const full = lines.map(l => `${l.qty}× ${l.name}`).join(', ');
+  return `<div class="text-mute" style="font-size:10px;margin-top:2px;line-height:1.35" title="${escapeHtml(full)}">🛍 ${shown}${more}</div>`;
+}
+
 // ─── INVOICES ──────────────────────────────────────────────────
 PAGES.invoices = (main) => {
   // Treat every "Summer Camp · <duration>" variant as Summer Camp for filtering.
@@ -9837,14 +9872,17 @@ PAGES.invoices = (main) => {
       // Customer cell — always use LIVE member info if linked. Deleted members
       // show as struck-through; walk-ins fall back to snapshot.
       const cust = customerInfo(i);
+      // Show what was actually bought on a PRODUCT invoice, right here in the list. (v6.375)
+      const prodSummary = (typeof invoiceProductSummaryHtml === 'function') ? invoiceProductSummaryHtml(i) : '';
       const custCell = cust.name ? `
         <div style="display:flex;align-items:center;gap:8px">
           <div class="avatar" style="width:24px;height:24px;font-size:10px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(cust.name)}</div>
           <div>
             <div class="font-bold" style="${cust.isDeleted ? 'text-decoration:line-through;color:var(--text-mute)' : ''}">${escapeHtml(cust.name)}</div>
             ${cust.phone ? `<div class="text-mute" style="font-size:10px">${phoneCell(cust.phone)}</div>` : ''}
+            ${prodSummary}
           </div>
-        </div>` : `<span class="text-mute">${escapeHtml((i.description || '').split(/\s/).slice(0, 2).join(' '))}</span>`;
+        </div>` : `<div><span class="text-mute">${escapeHtml((i.description || '').split(/\s/).slice(0, 2).join(' '))}</span>${prodSummary}</div>`;
       // Service cell — description with sport badge
       const sportBadgeColor = {
         'MMA':'',
@@ -15393,7 +15431,7 @@ PAGES.salaries = (main) => {
         ? ` <span class="badge" style="background:rgba(217,119,6,.15);color:var(--accent-2);font-size:9px;padding:1px 6px;cursor:help" title="${escapeHtml(_dups.map(d => `${d.line.memberName} · ${d.line.sport}`).join(' | '))} — duplicate invoice(s) in the data. Already EXCLUDED from pay (${fmt(_dupExtra)} base ≈ ${fmt(_dupPay)} not paid). Clean up in Finance → Duplicate Invoices.">✓ ${_dups.length} DUP EXCLUDED</span>`
         : '';
       const dupNote = _dups.length
-        ? `<div style="color:var(--accent-2);margin-top:2px;font-weight:600">✓ ${_dups.length} duplicate line${_dups.length === 1 ? '' : 's'} auto-excluded (${escapeHtml(_dups.map(d => d.line.memberName + ' · ' + d.line.sport).join(', '))}) — coach NOT overpaid (${fmt(_dupExtra)} ≈ ${fmt(_dupPay)} excluded). Clean the source in Finance → Duplicate Invoices.</div>`
+        ? `<div style="color:var(--accent-2);margin-top:2px;font-weight:600">✓ ${_dups.length} duplicate line${_dups.length === 1 ? '' : 's'} auto-excluded (${escapeHtml(_dups.map(d => d.line.memberName + ' · ' + d.line.sport).join(', '))}) — coach NOT overpaid (${fmt(_dupExtra)} ≈ ${fmt(_dupPay)} excluded). ${currentRole() === 'admin' ? `<a href="#" onclick="event.preventDefault();navigate('dupinvoices')" style="color:var(--blue);font-weight:700;text-decoration:underline">🧹 ${t('Remove duplicates', 'إزالة المكررات')}</a>` : t('Clean the source in Finance → Duplicate Invoices.', 'نظّف المصدر في الفواتير المكررة.')}</div>`
         : '';
       return `
         <tr>
@@ -16346,12 +16384,23 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
   const _rptDups = (pay && pay.basis === 'attendance' && pay.attendanceLines && typeof excludedDuplicateLines === 'function')
     ? excludedDuplicateLines(pay.attendanceLines.lines) : [];
   const _rptDupExtra = _rptDups.reduce((s, d) => s + (d.extra || 0), 0);
+  // Group the excluded lines by member+sport so the SAME item duplicated 2+ times shows as ONE bullet
+  // ("appeared 3×"), never a repeated identical line. (v6.377)
+  const _rptDupGroups = (() => {
+    const g = {};
+    for (const d of _rptDups) {
+      const k = (d.line.memberName || '') + '|' + (d.line.sport || '');
+      if (!g[k]) g[k] = { name: d.line.memberName || '—', sport: d.line.sport || '', excluded: 0, extra: 0 };
+      g[k].excluded += 1; g[k].extra += (d.extra || 0);
+    }
+    return Object.values(g);
+  })();
   const dupBanner = _rptDups.length ? `
     <div style="border:2px solid #d97706;background:#fffbeb;color:#92400e;border-radius:8px;padding:10px 12px;margin:10px 0">
       <div style="font-weight:700;margin-bottom:4px">✓ ${_rptDups.length} duplicate line${_rptDups.length === 1 ? '' : 's'} auto-excluded — this subtotal is already correct</div>
       <div style="font-size:12px;line-height:1.5">
-        ${_rptDups.map(d => `<div>• <b>${escapeHtml(d.line.memberName)}</b> · ${escapeHtml(d.line.sport || '')} appeared twice (${fmt(d.extra)} QAR) — the repeat was NOT paid.</div>`).join('')}
-        <div style="margin-top:6px">A <b>duplicate invoice</b> exists in the data; the coach was <b>not</b> overpaid (${fmt(_rptDupExtra)} QAR ≈ ${fmt(_rptDupExtra * (pay.commissionRate || 0) / 100)} QAR was excluded). Clean it up in <b>Finance → Duplicate Invoices</b> to remove the greyed row below.</div>
+        ${_rptDupGroups.map(g => `<div>• <b>${escapeHtml(g.name)}</b> · ${escapeHtml(g.sport)} appeared ${g.excluded + 1}× — ${g.excluded} extra copy${g.excluded === 1 ? '' : 'ies'} (${fmt(g.extra)} QAR) NOT paid.</div>`).join('')}
+        <div style="margin-top:6px">A <b>duplicate invoice</b> exists in the data; the coach was <b>not</b> overpaid (${fmt(_rptDupExtra)} QAR ≈ ${fmt(_rptDupExtra * (pay.commissionRate || 0) / 100)} QAR was excluded). Clean it up in one click on <b>Finance → Duplicate Invoices</b> (🧹 Remove all exact duplicates) to remove the greyed row below.</div>
       </div>
     </div>` : '';
 
@@ -28462,6 +28511,7 @@ PAGES.dupinvoices = (main) => {
         <div class="subtitle">${t('Review suspected duplicates side by side before deleting. The oldest copy is kept by default.', 'راجع الفواتير المكررة جنباً إلى جنب قبل الحذف. يتم الاحتفاظ بالأقدم افتراضياً.')}</div>
       </div>
       <div class="topbar-actions">
+        ${exactN ? `<button class="btn primary" onclick="removeExactDuplicatesSafely()" title="${t('Soft-delete every EXACT duplicate in one go. Keeps the paid copy, skips pairs where both were paid, reversible + audited.', 'حذف كل الفواتير المكررة المطابقة دفعة واحدة. يحتفظ بالنسخة المدفوعة، ويتخطى ما دُفع مرتين، قابل للتراجع.')}">🧹 ${t('Remove all exact duplicates', 'حذف كل المكررات المطابقة')} (${exactN})</button>` : ''}
         <button class="btn ghost" onclick="render()">↻ ${t('Refresh', 'تحديث')}</button>
       </div>
     </div>
@@ -28514,6 +28564,51 @@ window.deleteDuplicateInvoicePage = function(id) {
   render();
 };
 
+// ONE-CLICK cleanup of the high-confidence "exact" duplicates (same customer, items, month AND
+// amount = a genuine double-entry). MONEY-SAFE by design (v6.377):
+//   • Within each group we KEEP the copy that holds the payment, so no collected cash is ever lost;
+//     if none is paid we keep the OLDEST. Every other copy is SOFT-deleted (reversible + audited).
+//   • A group where TWO OR MORE copies were separately paid is SKIPPED — that can be a real double
+//     PAYMENT needing a refund decision, not something to delete silently. It stays for manual review.
+//   • "Possible" (within-7-days) duplicates are never touched here — they need human judgement.
+window.removeExactDuplicatesSafely = function() {
+  if (currentRole() !== 'admin') { toast(t('Admins only', 'للمشرفين فقط'), 'error'); return; }
+  const groups = (typeof detectDuplicateInvoices === 'function' ? detectDuplicateInvoices() : []).filter(g => g.tier === 'exact');
+  if (!groups.length) { toast(t('No exact duplicates to remove', 'لا توجد فواتير مكررة مطابقة للحذف')); return; }
+  // "Holds real collected cash" = has an EXPLICIT recorded payment row. We deliberately do NOT use
+  // invoicePaid(), which treats a legacy invoice with NO payment rows as fully paid (assumed) — that
+  // would flag BOTH copies of every duplicate as paid and skip everything. A recorded payment row is
+  // the only signal that deleting a copy would actually lose tracked money. (v6.377)
+  const recordedPaid = (inv) => Array.isArray(inv.payments) && inv.payments.reduce((s, p) => s + (Number(p && p.amount) || 0), 0) > 0.005;
+  const toDelete = []; let skipped = 0, keptPaid = 0;
+  for (const g of groups) {
+    const rows = g.rows.slice();                                   // oldest-first
+    const paidRows = rows.filter(r => recordedPaid(r.inv));
+    if (paidRows.length >= 2) { skipped++; continue; }             // 2+ recorded payments → manual review
+    const keeper = paidRows.length === 1 ? paidRows[0] : rows[0];  // keep the copy holding the payment, else the oldest
+    if (paidRows.length === 1) keptPaid++;
+    for (const r of rows) if (r.inv.id !== keeper.inv.id) toDelete.push(r.inv);
+  }
+  if (!toDelete.length) {
+    toast(skipped ? t(`${skipped} group(s) have two paid copies — please review those manually`, `${skipped} مجموعة بنسختين مدفوعتين — راجعها يدوياً`) : t('Nothing to remove', 'لا شيء للحذف'), 'info');
+    return;
+  }
+  const totalAmt = toDelete.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+  const msg = `${t('Remove', 'حذف')} ${toDelete.length} ${t('duplicate invoice(s)', 'فاتورة مكررة')} (${fmt(totalAmt)} QAR)?\n\n`
+    + (keptPaid ? `• ${t('The PAID copy is kept in each pair — no collected money is lost.', 'يتم الاحتفاظ بالنسخة المدفوعة — لا تُفقد أي أموال محصّلة.')}\n` : '')
+    + (skipped ? `• ${skipped} ${t('group(s) with two paid copies were SKIPPED for manual review.', 'مجموعة بنسختين مدفوعتين تُركت للمراجعة اليدوية.')}\n` : '')
+    + `• ${t('Reversible — this is a soft delete and is audited.', 'قابل للتراجع — حذف مبدئي ومُسجّل في سجل التدقيق.')}`;
+  if (!confirm(msg)) return;
+  for (const inv of toDelete) {
+    inv.deleted = true;
+    stampUpdate(inv);
+    if (typeof audit === 'function') audit('invoice.delete_duplicate', 'invoice:' + inv.id, `Bulk-removed exact duplicate ${inv.ref || inv.id} (${fmt(inv.amount || 0)} QAR)`, { id: inv.id });
+  }
+  save();
+  toast(`✓ ${t('Removed', 'حُذف')} ${toDelete.length} ${t('duplicate(s)', 'مكررة')}` + (skipped ? ` · ${skipped} ${t('left for review', 'تُركت للمراجعة')}` : ''), 'success');
+  render();
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // PRODUCT SALES INSIGHTS  (Finance) — aggregates state.sales[].items by product
 // so the owner can see best-sellers, units sold, revenue per product, current
@@ -28556,6 +28651,12 @@ PAGES.productsales = (main) => {
     for (const sale of (state.sales || [])) {
       if (!inRange(sale)) continue;
       let saleHasItem = false;
+      // WHO bought — resolve the buyer ONCE per sale (member's live name, else the walk-in name).
+      // Accumulated per product so the table can show which members bought each item. (v6.376)
+      const ci = (typeof customerInfo === 'function') ? customerInfo(sale) : null;
+      const buyerName = sale.historical ? t('Historical', 'مستورد') : (((ci && ci.name) || sale.customerName || '').trim() || t('Walk-in', 'زائر'));
+      const buyerIsMember = !!(ci && ci.isMember) || sale.customerType === 'member';
+      const buyerId = (ci && ci.id != null) ? ci.id : (sale.customerId != null ? sale.customerId : null);
       for (const it of (sale.items || [])) {
         const prod = it.productId != null ? (state.products || []).find(p => p.id === it.productId) : null;
         const displayName = (prod && prod.name) || it.name || '—';
@@ -28568,11 +28669,15 @@ PAGES.productsales = (main) => {
           if (sameName.length) {
             stock = sameName.reduce((s, p) => s + (typeof productCurrentStock === 'function' ? productCurrentStock(p.id) : (p.stock || 0)), 0);
           }
-          byProduct[key] = { productId: (prod && prod.id) != null ? prod.id : it.productId, name: displayName, category: (prod && prod.category) || (sameName[0] && sameName[0].category) || '', units: 0, revenue: 0, txns: 0, stock };
+          byProduct[key] = { productId: (prod && prod.id) != null ? prod.id : it.productId, name: displayName, category: (prod && prod.category) || (sameName[0] && sameName[0].category) || '', units: 0, revenue: 0, txns: 0, stock, buyers: new Map() };
         }
         byProduct[key].units += it.qty || 0;
         byProduct[key].revenue += rev;
         byProduct[key].txns += 1;
+        // Track distinct buyers of THIS product with their total qty (for sort + tooltip).
+        const bkey = (buyerId != null ? 'm:' + buyerId : 'n:' + buyerName.toLowerCase());
+        const prevB = byProduct[key].buyers.get(bkey);
+        byProduct[key].buyers.set(bkey, { name: buyerName, member: buyerIsMember, id: buyerId, qty: (prevB ? prevB.qty : 0) + (it.qty || 0) });
         totalUnits += it.qty || 0;
         totalRevenue += rev;
         saleHasItem = true;
@@ -28601,6 +28706,17 @@ PAGES.productsales = (main) => {
       <div class="kpi green"><div class="kpi-label">${t('Revenue', 'الإيراد')}</div><div class="kpi-value num">${fmt(totalRevenue)}</div><div class="kpi-sub">QAR · ${txCount} ${t('sales', 'عملية')}</div></div>
       <div class="kpi"><div class="kpi-label">${t('Best seller', 'الأكثر مبيعاً')}</div><div class="kpi-value" style="font-size:15px">${top ? escapeHtml(top.name) : '—'}</div>${top ? `<div class="kpi-sub">${top.units} ${t('units', 'وحدة')} · ${fmt(top.revenue)} QAR</div>` : ''}</div>`;
 
+    // Buyers cell: distinct buyers of this product, most units first; members get a 🎟, the rest are
+    // walk-ins. Shows the first 3 names inline + "+N more"; the title tooltip lists everyone w/ qty. (v6.376)
+    const buyersCell = (p) => {
+      const list = [...(p.buyers ? p.buyers.values() : [])].sort((a, b) => b.qty - a.qty);
+      if (!list.length) return '<span class="text-mute">—</span>';
+      const chip = (b) => `${b.member ? '🎟 ' : ''}${escapeHtml(b.name)}`;
+      const shown = list.slice(0, 3).map(chip).join(', ');
+      const more = list.length > 3 ? ` <span class="text-mute">+${list.length - 3} ${t('more', 'آخرون')}</span>` : '';
+      const full = list.map(b => `${b.name}${b.member ? ' (member)' : ''} · ${b.qty}`).join('\n');
+      return `<span title="${escapeHtml(full)}">${shown}${more}</span>`;
+    };
     $('#ps-tbody').innerHTML = products.length ? products.map((p, i) => {
       const low = p.stock != null && p.stock <= 3;
       return `<tr>
@@ -28613,15 +28729,17 @@ PAGES.productsales = (main) => {
             <span class="num font-bold" style="white-space:nowrap">${fmt(p.revenue)}</span>
           </div>
         </td>
+        <td style="padding:8px 10px;font-size:12px;max-width:220px">${buyersCell(p)}</td>
         <td style="padding:8px 10px;text-align:right" class="num">${p.txns}</td>
         <td style="padding:8px 10px;text-align:right">${p.stock == null ? '<span class="text-mute">—</span>' : `<span class="${low ? 'badge' : 'num'}" style="${low ? 'background:rgba(239,68,68,.15);color:var(--red);font-weight:700' : ''}">${p.stock}${low ? ' ⚠' : ''}</span>`}</td>
       </tr>`;
-    }).join('') : `<tr><td colspan="6" class="empty"><div class="empty-icon">📦</div>${t('No product sales in this period', 'لا توجد مبيعات منتجات في هذه الفترة')}</td></tr>`;
+    }).join('') : `<tr><td colspan="7" class="empty"><div class="empty-icon">📦</div>${t('No product sales in this period', 'لا توجد مبيعات منتجات في هذه الفترة')}</td></tr>`;
 
     $('#ps-foot').innerHTML = products.length ? `<tr style="border-top:2px solid var(--border);font-weight:800">
       <td></td><td style="padding:8px 10px">${t('Total', 'الإجمالي')}</td>
       <td style="padding:8px 10px;text-align:right" class="num">${totalUnits}</td>
       <td style="padding:8px 10px" class="num font-bold" style="color:var(--green)">${fmt(totalRevenue)} QAR</td>
+      <td></td>
       <td style="padding:8px 10px;text-align:right" class="num">${txCount}</td><td></td>
     </tr>` : '';
 
@@ -28631,8 +28749,11 @@ PAGES.productsales = (main) => {
 
   window._psExportCSV = () => {
     const { products } = build();
-    const rows = [['Rank', 'Product', 'Category', 'Units', 'Revenue', 'Sales', 'Stock']];
-    products.forEach((p, i) => rows.push([i + 1, p.name, p.category, p.units, p.revenue, p.txns, p.stock == null ? '' : p.stock]));
+    const rows = [['Rank', 'Product', 'Category', 'Units', 'Revenue', 'Buyers', 'Sales', 'Stock']];
+    products.forEach((p, i) => {
+      const buyers = [...(p.buyers ? p.buyers.values() : [])].sort((a, b) => b.qty - a.qty).map(b => `${b.name}${b.member ? ' (member)' : ''} x${b.qty}`).join('; ');
+      rows.push([i + 1, p.name, p.category, p.units, p.revenue, buyers, p.txns, p.stock == null ? '' : p.stock]);
+    });
     downloadFile(`product-sales-${TODAY}.csv`, rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n'), 'text/csv');
     toast('Exported product-sales.csv');
   };
@@ -28680,6 +28801,7 @@ PAGES.productsales = (main) => {
             <th>${t('Product', 'المنتج')}</th>
             <th class="text-right">${t('Units', 'الوحدات')}</th>
             <th>${t('Revenue', 'الإيراد')}</th>
+            <th>${t('Buyers', 'المشترون')}</th>
             <th class="text-right">${t('Sales', 'العمليات')}</th>
             <th class="text-right">${t('Stock', 'المخزون')}</th>
           </tr></thead>
