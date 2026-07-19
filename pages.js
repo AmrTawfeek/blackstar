@@ -6502,7 +6502,11 @@ function citadelCompute(selMonths) {
       const amt = liSum > 0 ? (Number(li.price) || 0) * factor : factor;
       if (amt <= 0) continue;
       agg[hit.g.key][hit.type] += amt;
-      const cust = inv.customerName || (() => { const mm = (state.members || []).find(x => x.id === inv.customerId); return mm ? (mm.name || mm.nameArabic || '') : ''; })() || '—';
+      // Resolve the customer via customerInfo() — it recovers a COURT-RENTAL renter's name from the
+      // linked rental record (rentalId), which is why blank "—" rows were showing for rentals whose
+      // name lives on the rental, not the invoice. Falls back to the invoice/member, then "—". (v6.378)
+      const _ci = (typeof customerInfo === 'function') ? customerInfo(inv) : null;
+      const cust = (_ci && _ci.name) || inv.customerName || (() => { const mm = (state.members || []).find(x => x.id === inv.customerId); return mm ? (mm.name || mm.nameArabic || '') : ''; })() || '—';
       details.push({ month: mkey, ref: inv.ref || ('#' + inv.id), date: (inv.date || '').slice(0, 10), customer: cust, group: hit.g, type: hit.type, sport: li.sport, amount: amt });
     }
   }
@@ -6545,7 +6549,8 @@ PAGES.citadel = (main) => {
     <td class="text-right num" style="color:var(--red);font-weight:700">${fmt(groupTotal(g.key) * RATE / 100)}</td>
   </tr>`).join('');
 
-  const detailRows = details.length ? details.map(d => `<tr>
+  const detailRows = details.length ? details.map((d, i) => `<tr>
+    <td class="text-mute" style="text-align:center;font-size:12px">${i + 1}</td>
     <td class="text-mute" style="font-size:12px;white-space:nowrap">${fmtMonth(d.month)}</td>
     <td class="font-bold" style="font-size:12px">${escapeHtml(d.ref)}</td>
     <td style="font-size:12px">${escapeHtml(d.customer)}</td>
@@ -6555,7 +6560,7 @@ PAGES.citadel = (main) => {
       : `<span class="badge" style="background:rgba(16,185,129,.14);color:var(--green);font-size:10px">🎟 ${t('Membership', 'اشتراك')}</span>`}
       <span class="text-mute" style="font-size:10px">${escapeHtml(d.sport)}</span></td>
     <td class="text-right num">${fmt(d.amount)}</td>
-  </tr>`).join('') : `<tr><td colspan="6" class="text-mute" style="text-align:center;padding:16px">${t('No Football / Swimming revenue in the selected month(s).', 'لا يوجد إيراد كرة قدم / سباحة في الأشهر المحددة.')}</td></tr>`;
+  </tr>`).join('') : `<tr><td colspan="7" class="text-mute" style="text-align:center;padding:16px">${t('No Football / Swimming revenue in the selected month(s).', 'لا يوجد إيراد كرة قدم / سباحة في الأشهر المحددة.')}</td></tr>`;
 
   main.innerHTML = `
     <div class="topbar">
@@ -6568,6 +6573,8 @@ PAGES.citadel = (main) => {
           <input id="cit-rate" type="number" min="0" max="100" step="0.5" value="${RATE}" style="width:64px" class="btn ghost" /> %
         </label>
         ${monthMultiHTML('cit-month', months, window._citMonths)}
+        <button class="btn ghost" id="cit-export-xlsx" title="${t('Export the summary + contributing invoices to Excel', 'تصدير الملخص + الفواتير إلى Excel')}">📊 ${t('Excel', 'Excel')}</button>
+        <button class="btn ghost" id="cit-export-pdf" title="${t('Open a printable PDF of this report', 'فتح تقرير PDF قابل للطباعة')}">📄 ${t('PDF', 'PDF')}</button>
       </div>
     </div>
 
@@ -6609,6 +6616,7 @@ PAGES.citadel = (main) => {
       </div></div>
       <div class="table-wrap"><table>
         <thead><tr>
+          <th style="width:36px;text-align:center">#</th>
           <th>${t('Month', 'الشهر')}</th>
           <th>${t('Invoice', 'الفاتورة')}</th>
           <th>${t('Customer', 'العميل')}</th>
@@ -6625,7 +6633,58 @@ PAGES.citadel = (main) => {
     const v = parseFloat(e.target.value);
     if (!isNaN(v) && v >= 0 && v <= 100) { state.settings.citadelRate = v; save(); PAGES.citadel(main); }
   });
+  $('#cit-export-xlsx')?.addEventListener('click', () => citadelExportXlsx(RATE, scopeLabel));
+  $('#cit-export-pdf')?.addEventListener('click', () => citadelExportPdf(RATE, scopeLabel));
 };
+
+// Export the Citadel company-share report — recomputed from the CURRENT month filter so it matches
+// the screen exactly. Two flavours: a real .xlsx (Summary + Invoices sheets) and a printable PDF. (v6.378)
+function citadelExportXlsx(RATE, scopeLabel) {
+  if (!window.XlsxMini || typeof window.XlsxMini.downloadFile !== 'function') { toast(t('Excel export unavailable', 'تصدير Excel غير متاح'), 'error'); return; }
+  const { GROUPS, agg, details, grand } = citadelCompute(window._citMonths);
+  const share = grand * RATE / 100;
+  const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+  const summary = [['Activity', 'Membership', 'Rent', 'Total', `Company (${RATE}%)`]];
+  GROUPS.forEach(g => summary.push([g.label, r2(agg[g.key].membership), r2(agg[g.key].rent), r2(agg[g.key].membership + agg[g.key].rent), r2((agg[g.key].membership + agg[g.key].rent) * RATE / 100)]));
+  summary.push(['TOTAL', r2(GROUPS.reduce((s, g) => s + agg[g.key].membership, 0)), r2(GROUPS.reduce((s, g) => s + agg[g.key].rent, 0)), r2(grand), r2(share)]);
+  const inv = [['#', 'Month', 'Invoice', 'Customer', 'Activity', 'Type', 'Sport', 'Amount (QAR)']];
+  details.forEach((d, i) => inv.push([i + 1, d.month, d.ref, d.customer, d.group.label, d.type === 'rent' ? 'Rent' : 'Membership', d.sport || '', r2(d.amount)]));
+  const tag = (window._citMonths && window._citMonths.length) ? window._citMonths.slice().sort().join('_') : 'all-months';
+  try {
+    window.XlsxMini.downloadFile(`citadel-${tag}.xlsx`, { sheets: [{ name: 'Summary', rows: summary }, { name: 'Invoices', rows: inv }] });
+    toast(t(`Exported ${details.length} lines to Excel`, `تم تصدير ${details.length} بند إلى Excel`), 'success');
+  } catch (err) { toast(t('Excel export failed', 'فشل تصدير Excel') + ': ' + (err && err.message || err), 'error'); }
+}
+function citadelExportPdf(RATE, scopeLabel) {
+  const { GROUPS, agg, details, grand } = citadelCompute(window._citMonths);
+  const share = grand * RATE / 100;
+  const w = window.open('', '_blank');
+  if (!w) { toast(t('Popup blocked — please allow popups', 'المنبثقة محظورة — يرجى السماح بها'), 'error'); return; }
+  const sumRows = GROUPS.map(g => `<tr><td>${escapeHtml(g.label)}</td><td class="n">${fmt(agg[g.key].membership)}</td><td class="n">${fmt(agg[g.key].rent)}</td><td class="n b">${fmt(agg[g.key].membership + agg[g.key].rent)}</td><td class="n" style="color:#dc2626">${fmt((agg[g.key].membership + agg[g.key].rent) * RATE / 100)}</td></tr>`).join('');
+  const detRows = details.map((d, i) => `<tr><td class="mut">${i + 1}</td><td class="mut">${escapeHtml(d.month)}</td><td>${escapeHtml(d.ref)}</td><td>${escapeHtml(d.customer)}</td><td>${escapeHtml(d.group.label)}</td><td>${d.type === 'rent' ? 'Rent' : 'Membership'}${d.sport ? ' · ' + escapeHtml(d.sport) : ''}</td><td class="n">${fmt(d.amount)}</td></tr>`).join('');
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Citadel-${escapeHtml(scopeLabel || '')}</title>
+    <style>body{font-family:'Helvetica Neue',Arial,sans-serif;color:#1a1a1a;padding:36px;max-width:900px;margin:0 auto}
+      .hd{display:flex;justify-content:space-between;border-bottom:3px solid #f26060;padding-bottom:12px;margin-bottom:18px}
+      .logo{font-size:20px;font-weight:800;color:#f26060} h2{font-size:14px;margin:20px 0 8px}
+      table{width:100%;border-collapse:collapse;font-size:12px;margin:4px 0} th{background:#f5f5f7;padding:7px;text-align:left;font-size:11px;text-transform:uppercase;color:#555}
+      td{padding:6px 7px;border-bottom:1px solid #eee} td.n{text-align:right;font-family:'Courier New',monospace} td.b{font-weight:700} td.mut{color:#999}
+      tfoot td{font-weight:800;border-top:2px solid #ddd} .share{background:#fef2f2;border:2px solid #ef4444;padding:12px;margin-top:14px;display:flex;justify-content:space-between;font-size:16px;font-weight:800;color:#dc2626}
+      @media print{body{padding:16px}}</style></head><body>
+    <div class="hd"><div><div class="logo">★ Black Stars</div><div style="color:#666;font-size:11px">Sports Club · Waab, Doha</div></div>
+      <div style="text-align:right"><div style="font-weight:700">🏛 CITADEL — COMPANY SHARE</div><div style="color:#666;font-size:11px">${escapeHtml(scopeLabel || '')} · ${RATE}% · ${t('Generated', 'صدر')} ${fmtDate(TODAY)}</div></div></div>
+    <h2>Summary by activity</h2>
+    <table><thead><tr><th>Activity</th><th>Membership</th><th>Rent</th><th>Total</th><th>Company (${RATE}%)</th></tr></thead>
+      <tbody>${sumRows}</tbody>
+      <tfoot><tr><td>TOTAL</td><td class="n">${fmt(GROUPS.reduce((s, g) => s + agg[g.key].membership, 0))}</td><td class="n">${fmt(GROUPS.reduce((s, g) => s + agg[g.key].rent, 0))}</td><td class="n">${fmt(grand)}</td><td class="n" style="color:#dc2626">${fmt(share)}</td></tr></tfoot></table>
+    <div class="share"><span>🏛 ${t('Company share to pay', 'حصة الشركة المستحقة')}</span><span>${fmt(share)} QAR</span></div>
+    <h2>Contributing invoices (${details.length})</h2>
+    <table><thead><tr><th>#</th><th>Month</th><th>Invoice</th><th>Customer</th><th>Activity</th><th>Type</th><th>Amount</th></tr></thead><tbody>${detRows}</tbody></table>
+    </body></html>`);
+  w.document.close();
+  setTimeout(() => { try { w.print(); } catch (_) {} }, 350);
+  toast(t('Report opened — choose "Save as PDF"', 'فُتح التقرير — اختر "حفظ كـ PDF"'), 'success');
+}
+if (typeof window !== 'undefined') { window.citadelExportXlsx = citadelExportXlsx; window.citadelExportPdf = citadelExportPdf; }
 
 // ─── Due Payment ─────────────────────────────────────────────────────────
 // One screen listing every member who owes money. Pulls from invoice balances
