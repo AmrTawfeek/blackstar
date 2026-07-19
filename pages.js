@@ -1324,10 +1324,11 @@ PAGES.members = (main) => {
       if (_gridEl) _gridEl.style.display = 'none';
       if (_tableEl) _tableEl.style.display = '';
     }
-    $('#members-tbody').innerHTML = rows.length ? rows.map(m => {
+    $('#members-tbody').innerHTML = rows.length ? rows.map((m, _n) => {
       return `
       <tr class="${m.deleted ? 'member-archived' : ''}" style="cursor:pointer${m.deleted ? ';opacity:.55' : ''}" data-id="${m.id}" ${m.deleted ? 'title="Archived member"' : ''}>
         <td style="text-align:center" onclick="event.stopPropagation()"><input type="checkbox" class="member-cb" value="${m.id}" ${selected.has(m.id) ? 'checked' : ''} style="cursor:pointer"></td>
+        <td class="text-mute" style="text-align:center;font-size:12px">${_n + 1}</td>
         ${cols.map(c => `<td>${c.cell(m)}</td>`).join('')}
         <td class="text-right" style="white-space:nowrap">
           ${m.deleted ? `
@@ -1342,7 +1343,7 @@ PAGES.members = (main) => {
           `}
         </td>
       </tr>`;
-    }).join('') : `<tr><td colspan="${cols.length + 2}" class="empty"><div class="empty-icon">👥</div>No members match your filters</td></tr>`;
+    }).join('') : `<tr><td colspan="${cols.length + 3}" class="empty"><div class="empty-icon">👥</div>No members match your filters</td></tr>`;
 
     $('#members-count').textContent = `${allRows.length} of ${activeMembers().length}`;
 
@@ -1567,6 +1568,7 @@ PAGES.members = (main) => {
           <thead>
             <tr>
               <th style="width:36px;text-align:center"><input type="checkbox" id="members-select-all" title="Select/clear all on this page" style="cursor:pointer"></th>
+              <th style="width:36px;text-align:center">#</th>
               ${visibleColumns().map(c => `
                 <th data-sortkey="${c.key}" style="cursor:pointer;user-select:none" title="Sort by ${escapeHtml(c.label)}">
                   <div style="display:flex;align-items:center;gap:4px;white-space:nowrap">${escapeHtml(c.label)} <span class="sort-ind" data-k="${c.key}" style="opacity:.35;font-size:10px">⇅</span></div>
@@ -6865,10 +6867,11 @@ Black Stars Academy`;
     return `https://wa.me/${digits}?text=${encodeURIComponent(msg)}`;
   };
 
-  const rowHtml = list.length ? list.map(r => {
+  const rowHtml = list.length ? list.map((r, i) => {
     const wa = waLink(r.m, r.total);
     const sportChips = Object.entries(r.bySport).map(([sp, amt]) => `<span class="badge" style="font-size:10px;background:rgba(242,163,60,.15);color:var(--accent-2)" title="${escapeHtml(sp)}: ${fmt(amt)} QAR due">${escapeHtml(sp)} · ${fmt(amt)}</span>`).join(' ');
     return `<tr>
+      <td class="text-mute" style="text-align:center;font-size:12px">${i + 1}</td>
       <td><div class="font-bold">${escapeHtml(r.m.name)}</div>${r.m.nameArabic ? `<div class="text-mute" style="font-size:11px" dir="rtl">${escapeHtml(r.m.nameArabic)}</div>` : ''}</td>
       <td style="font-size:12px">${phoneCell(r.m.phone)}</td>
       <td><span class="badge ${r.st.toLowerCase()}" style="font-size:10px">${r.st}</span></td>
@@ -6896,7 +6899,7 @@ Black Stars Academy`;
         <button class="btn ghost sm" onclick="viewMember(${r.m.id})" title="${t('Open profile', 'فتح الملف')}">👁</button>
       </td>
     </tr>`;
-  }).join('') : `<tr><td colspan="8" class="empty"><div class="empty-icon">🎉</div>${filtersOn ? t('No members match these filters', 'لا يوجد أعضاء يطابقون المرشحات') : t('All settled — no outstanding balances', 'كل شيء مسوّى — لا توجد مبالغ مستحقة')}</td></tr>`;
+  }).join('') : `<tr><td colspan="9" class="empty"><div class="empty-icon">🎉</div>${filtersOn ? t('No members match these filters', 'لا يوجد أعضاء يطابقون المرشحات') : t('All settled — no outstanding balances', 'كل شيء مسوّى — لا توجد مبالغ مستحقة')}</td></tr>`;
 
   main.innerHTML = `
     <div class="topbar">
@@ -6934,6 +6937,7 @@ Black Stars Academy`;
       <div class="table-wrap">
         <table>
           <thead><tr>
+            <th style="width:36px;text-align:center" data-sortable="0">#</th>
             <th>${t('Member', 'العضو')}</th>
             <th>${t('Phone', 'الهاتف')}</th>
             <th>${t('Status', 'الحالة')}</th>
@@ -6945,7 +6949,7 @@ Black Stars Academy`;
           </tr></thead>
           <tbody>${rowHtml}</tbody>
           ${list.length ? `<tfoot><tr style="border-top:2px solid var(--border);font-weight:800">
-            <td colspan="5">${t('Total', 'الإجمالي')} (${list.length} ${t('members', 'عضو')})</td>
+            <td colspan="6">${t('Total', 'الإجمالي')} (${list.length} ${t('members', 'عضو')})</td>
             <td class="text-right num" style="color:var(--red);font-size:15px">${fmt(grandTotal)} QAR</td>
             <td colspan="2"></td>
           </tr></tfoot>` : ''}
@@ -6992,12 +6996,13 @@ PAGES.reminders = (main) => {
     return `https://wa.me/${digits}?text=${encodeURIComponent(msg)}`;
   };
 
-  const rowHtml = rows.length ? rows.map(({ m, d, kind }) => {
+  const rowHtml = rows.length ? rows.map(({ m, d, kind }, i) => {
     const wa = waLink(m);
     const rInfo = reminderInfo(m);
     const remindedLabel = rInfo.count ? `${rInfo.count}/2${rInfo.last === TODAY ? ' · ' + t('today', 'اليوم') : rInfo.last ? ' · ' + fmtDate(rInfo.last) : ''}` : null;
     const out = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : 0;
     return `<tr>
+      <td class="text-mute" style="text-align:center;font-size:12px">${i + 1}</td>
       <td><div class="font-bold">${escapeHtml(m.name)}</div>${m.nameArabic ? `<div class="text-mute" style="font-size:11px" dir="rtl">${escapeHtml(m.nameArabic)}</div>` : ''}</td>
       <td>${kind === 'expired'
         ? `<span class="badge" style="background:rgba(239,68,68,.15);color:var(--red)">⛔ ${t('expired', 'منتهٍ')}${d > -900 ? ' ' + Math.abs(d) + t('d ago', ' يوم') : ''}</span>`
@@ -7013,7 +7018,7 @@ PAGES.reminders = (main) => {
         <button class="btn ghost sm" onclick="viewMember(${m.id})">👁</button>
       </td>
     </tr>`;
-  }).join('') : `<tr><td colspan="6" class="empty"><div class="empty-icon">🎉</div>${t('Nobody needs a reminder right now', 'لا أحد يحتاج تذكيراً الآن')}</td></tr>`;
+  }).join('') : `<tr><td colspan="7" class="empty"><div class="empty-icon">🎉</div>${t('Nobody needs a reminder right now', 'لا أحد يحتاج تذكيراً الآن')}</td></tr>`;
 
   main.innerHTML = `
     <div class="topbar">
@@ -7035,7 +7040,7 @@ PAGES.reminders = (main) => {
     <div class="card">
       <div class="table-wrap">
         <table>
-          <thead><tr><th>${t('Member', 'العضو')}</th><th>${t('Status', 'الحالة')}</th><th>${t('Expiry', 'الانتهاء')}</th><th class="text-right">${t('Balance', 'الرصيد')}</th><th>${t('Last reminded', 'آخر تذكير')}</th><th></th></tr></thead>
+          <thead><tr><th style="width:36px;text-align:center">#</th><th>${t('Member', 'العضو')}</th><th>${t('Status', 'الحالة')}</th><th>${t('Expiry', 'الانتهاء')}</th><th class="text-right">${t('Balance', 'الرصيد')}</th><th>${t('Last reminded', 'آخر تذكير')}</th><th></th></tr></thead>
           <tbody>${rowHtml}</tbody>
         </table>
       </div>
@@ -9927,7 +9932,7 @@ PAGES.invoices = (main) => {
     const rowPaidOf = (i) => selMonths.length ? selMonths.reduce((s,m) => s + invoicePaidInMonth(i, m), 0) : invoicePaid(i);
     const total = allRows.reduce((s,r) => s + rowAmtOf(r), 0);
     const rows = paginate(allRows, pg);
-    $('#inv-tbody').innerHTML = rows.length ? rows.map(i => {
+    $('#inv-tbody').innerHTML = rows.length ? rows.map((i, _n) => {
       // Customer cell — always use LIVE member info if linked. Deleted members
       // show as struck-through; walk-ins fall back to snapshot.
       const cust = customerInfo(i);
@@ -9960,6 +9965,7 @@ PAGES.invoices = (main) => {
       return `
       <tr>
         <td style="text-align:center" onclick="event.stopPropagation()"><input type="checkbox" class="inv-cb" value="${i.id}" data-cust="${i.customerId || ''}" ${selected.has(i.id) ? 'checked' : ''} style="cursor:pointer"></td>
+        <td class="text-mute" style="text-align:center;font-size:12px">${_n + 1}</td>
         <td class="font-mono" style="font-size:11px">${i.ref || `#${i.id}`}</td>
         <td class="text-dim" style="white-space:nowrap">${fmtDate(i.date)}</td>
         <td>${custCell}</td>
@@ -10012,7 +10018,7 @@ PAGES.invoices = (main) => {
           <button class="btn ghost sm" onclick="deleteInvoice(${i.id})" title="${t('Delete (archive — recoverable by an admin)', 'حذف (أرشفة — يمكن للمشرف الاسترجاع)')}">🗑</button>`}
         </td>
       </tr>`;
-    }).join('') : `<tr><td colspan="10" class="empty"><div class="empty-icon">📄</div>No invoices match</td></tr>`;
+    }).join('') : `<tr><td colspan="11" class="empty"><div class="empty-icon">📄</div>No invoices match</td></tr>`;
     // The headline number is total CHARGED (billed) across the filtered invoices,
     // all-time — distinct from the Dashboard's "Total Revenue", which is cash
     // COLLECTED in a given month. Show collected + outstanding too so the figures
@@ -10132,6 +10138,7 @@ PAGES.invoices = (main) => {
           <thead>
             <tr>
               <th style="width:34px;text-align:center"><input type="checkbox" id="inv-select-all" title="Select/clear all on this page" style="cursor:pointer"></th>
+              <th style="width:36px;text-align:center">#</th>
               <th>Ref</th>
               <th>Date</th>
               <th>Customer</th>
@@ -15117,8 +15124,9 @@ PAGES.expenses = (main) => {
     // Show the "Clear filters" button only while a filter is active.
     const _clr = $('#exp-clear'); if (_clr) _clr.style.display = anyFilter ? '' : 'none';
 
-    $('#exp-tbody').innerHTML = rows.length ? rows.map(e => `
+    $('#exp-tbody').innerHTML = rows.length ? rows.map((e, i) => `
       <tr ${e.autoBankCommission ? 'style="background:rgba(91,141,239,.05)"' : ''}>
+        <td class="text-mute" style="text-align:center;font-size:12px">${i + 1}</td>
         <td class="text-dim" style="white-space:nowrap">${fmtDate(e.date)}</td>
         <td>${escapeHtml(e.description)}${e.autoBankCommission ? ` <span class="badge blue" style="font-size:9px" title="Auto-calculated from card payments × ${BANK_COMMISSION_RATE}%. Edit to override.">${e.edited ? '✏️ overridden' : '⚙️ auto'}</span>${e.cardBase ? `<div class="text-mute" style="font-size:10px">${fmt(e.cardBase)} card × ${BANK_COMMISSION_RATE}%</div>` : ''}` : ''}</td>
         <td><span class="badge">${escapeHtml(e.category || 'Others')}</span></td>
@@ -15126,18 +15134,18 @@ PAGES.expenses = (main) => {
         <td class="text-right num font-bold">${fmt(e.amount)}</td>
         <td class="text-right" style="white-space:nowrap"><button class="btn ghost sm" onclick="editExpense(${e.id})" title="Edit">✏️</button> ${e.autoBankCommission ? `<button class="btn ghost sm" onclick="resetBankCommission(${e.id})" title="Reset to auto-calculated value">↻</button>` : `<button class="btn ghost sm" onclick="deleteExpense(${e.id})" title="Delete">🗑</button>`}</td>
       </tr>
-    `).join('') : `<tr><td colspan="6" class="empty"><div class="empty-icon">💸</div>No expenses match</td></tr>`;
+    `).join('') : `<tr><td colspan="7" class="empty"><div class="empty-icon">💸</div>No expenses match</td></tr>`;
     const footEl = $('#exp-tfoot');
     if (footEl) {
       // Reception sees only the count in the footer — never the total sum.
       footEl.innerHTML = isViewerRole()
-        ? `<tr style="border-top:2px solid var(--border);font-weight:800"><td colspan="6">${allRows.length} ${allRows.length === 1 ? 'entry' : 'entries'}</td></tr>`
+        ? `<tr style="border-top:2px solid var(--border);font-weight:800"><td colspan="7">${allRows.length} ${allRows.length === 1 ? 'entry' : 'entries'}</td></tr>`
         : `<tr style="border-top:2px solid var(--border);font-weight:800">
-        <td colspan="4">${anyFilter ? 'Filtered total' : 'Total'} · ${allRows.length} ${allRows.length === 1 ? 'entry' : 'entries'}</td>
+        <td colspan="5">${anyFilter ? 'Filtered total' : 'Total'} · ${allRows.length} ${allRows.length === 1 ? 'entry' : 'entries'}</td>
         <td class="text-right num" style="color:var(--red)">${fmt(total)}</td>
         <td></td>
       </tr>${anyFilter ? `<tr style="font-weight:600;color:var(--text-mute)">
-        <td colspan="4" style="font-size:12px">All expenses (unfiltered)</td>
+        <td colspan="5" style="font-size:12px">All expenses (unfiltered)</td>
         <td class="text-right num" style="font-size:12px">${fmt(grandTotal)}</td>
         <td></td>
       </tr>` : ''}`;
@@ -15186,7 +15194,7 @@ PAGES.expenses = (main) => {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Method</th><th class="text-right">Amount</th><th></th></tr></thead>
+          <thead><tr><th style="width:36px;text-align:center">#</th><th>Date</th><th>Description</th><th>Category</th><th>Method</th><th class="text-right">Amount</th><th></th></tr></thead>
           <tbody id="exp-tbody"></tbody>
           <tfoot id="exp-tfoot"></tfoot>
         </table>
@@ -15457,7 +15465,7 @@ PAGES.salaries = (main) => {
     const totalPending = people.reduce((s,p) => s + ((p.basis === 'attendance' ? p.commissionPending : 0) || 0), 0);
     const paidCount = people.filter(p => p.paidStatus === 'paid').length;
 
-    $('#sal-tbody').innerHTML = people.length ? people.map(p => {
+    $('#sal-tbody').innerHTML = people.length ? people.map((p, _n) => {
       const isStaff = p.role === 'staff';
       const breakdown = [];
       if (p.fixed > 0) breakdown.push(`Fixed ${fmt(p.fixed)}${p.uptoDate && p.fixedFull !== p.fixed ? ` (prorated from ${fmt(p.fixedFull)})` : ''}`);
@@ -15494,6 +15502,7 @@ PAGES.salaries = (main) => {
         : '';
       return `
         <tr>
+          <td class="text-mute" style="text-align:center;font-size:12px">${_n + 1}</td>
           <td>
             <div class="font-bold">${escapeHtml(p.name)}${netNegative ? ' <span class="badge" style="background:rgba(242,96,96,.15);color:var(--red);font-size:9px;padding:1px 6px" title="Net pay is negative — admin should reconcile">⚠️ NEGATIVE</span>' : ''}${dupBadge}</div>
             <div class="text-mute" style="font-size:10px">${isStaff ? '👔 Staff' : '🥋 Coach'} · ${p.uptoDate ? 'up to ' + fmtDate(p.uptoDate) : fmtMonth(p.month)}</div>
@@ -15531,12 +15540,13 @@ PAGES.salaries = (main) => {
           </td>
         </tr>
       `;
-    }).join('') : `<tr><td colspan="8" class="empty">No active coaches/staff. Add them on the Team page.</td></tr>`;
+    }).join('') : `<tr><td colspan="9" class="empty">No active coaches/staff. Add them on the Team page.</td></tr>`;
 
     const foot = $('#sal-tfoot');
     if (foot) {
       foot.innerHTML = people.length ? `
         <tr style="border-top:2px solid var(--border);font-weight:700">
+          <td></td>
           <td>TOTAL · ${people.length} ${people.length === 1 ? 'person' : 'people'}</td>
           <td></td>
           <td class="text-right num">${fmt(totalGross)}</td>
@@ -15636,6 +15646,7 @@ PAGES.salaries = (main) => {
       <div class="table-wrap">
         <table>
           <thead><tr>
+            <th style="width:36px;text-align:center">#</th>
             <th>Name</th>
             <th>Breakdown</th>
             <th class="text-right">Gross (QAR)</th>
@@ -16537,9 +16548,12 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
           </tr>
         </thead>
         <tbody>
-          ${lines.map((l, i) => `
+          ${(() => {
+            const rate = pay.commissionRate;
+            // One member row. `n` = the running index shown in the "#" column. (v6.380)
+            const rowTr = (l, n) => `
             <tr${l._dupIgnored ? ' style="background:#fafafa;color:#b0b0b0"' : ''}>
-              <td style="color:#999">${i + 1}</td>
+              <td style="color:#999">${n}</td>
               <td>${l._dupIgnored ? `<span style="text-decoration:line-through">${escapeHtml(l.memberName)}</span> <span class="badge" style="background:#fee2e2;color:#b91c1c">DUPLICATE — NOT PAID</span>` : escapeHtml(l.memberName)}${l.isSwitch ? '<span class="badge">SWITCH</span>' : ''}<div style="color:#999;font-size:10px">${escapeHtml(l.invoiceRef || '')}${l.invoiceDate ? ' · ' + fmtDate(l.invoiceDate) : ''}</div></td>
               <td>${escapeHtml(l.sport || '—')}</td>
               <td style="font-size:11px">${l.start ? fmtDate(l.start) : '—'}</td>
@@ -16547,14 +16561,25 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
               <td style="font-size:11px">${l.attended != null ? l.attended : 0}${l.total ? ' / ' + l.total : ''}</td>
               <td style="font-size:11px">${escapeHtml(l.status || '—')}</td>
               <td class="num ${l.price < 0 ? 'neg' : ''}">${l._dupIgnored ? `<span style="text-decoration:line-through;color:#c0c0c0">${fmt(l._origAmount || 0)}</span> → <b>0</b>` : fmt(l.price)}${l.prorated ? `<div style="color:#999;font-size:9px">of ${fmt(l.fee)} · ${l.attended}/${l.total} attended</div>` : ''}</td>
-              <td class="num ${l.price < 0 ? 'neg' : ''}" style="font-weight:700">${l._dupIgnored ? '<b>0</b>' : fmt(l.price * pay.commissionRate / 100)}</td>
-            </tr>
-          `).join('')}
-          <tr style="background:#f5f5f7;font-weight:700">
-            <td colspan="7">Subtotal · Commission base</td>
-            <td class="num">${fmt(lines.reduce((s, l) => s + l.price, 0))}</td>
-            <td class="num">${fmt(lines.reduce((s, l) => s + l.price, 0) * pay.commissionRate / 100)}</td>
-          </tr>
+              <td class="num ${l.price < 0 ? 'neg' : ''}" style="font-weight:700">${l._dupIgnored ? '<b>0</b>' : fmt(l.price * rate / 100)}</td>
+            </tr>`;
+            const grand = lines.reduce((s, l) => s + l.price, 0);
+            const grandRow = (label) => `<tr style="background:#f5f5f7;font-weight:700"><td colspan="7">${label}</td><td class="num">${fmt(grand)}</td><td class="num">${fmt(grand * rate / 100)}</td></tr>`;
+            const sports = [...new Set(lines.map(l => l.sport || '—'))];
+            let n = 0;
+            // Single sport → simple flat list. MORE THAN ONE sport → group the members under a header
+            // per sport with its own subtotal, then a grand total (the owner asked for this). (v6.380)
+            if (sports.length <= 1) return lines.map(l => rowTr(l, ++n)).join('') + grandRow('Subtotal · Commission base');
+            const bySp = {};
+            for (const l of lines) (bySp[l.sport || '—'] = bySp[l.sport || '—'] || []).push(l);
+            return Object.keys(bySp).sort().map(sp => {
+              const grp = bySp[sp];
+              const spBase = grp.reduce((s, l) => s + l.price, 0);
+              return `<tr style="background:#eef2ff"><td colspan="9" style="font-weight:800;color:#3730a3;padding:8px 8px">🏷 ${escapeHtml(sp)} · ${grp.length} member${grp.length === 1 ? '' : 's'}</td></tr>`
+                + grp.map(l => rowTr(l, ++n)).join('')
+                + `<tr style="background:#f5f5f7;font-weight:700"><td colspan="7" style="text-align:right">${escapeHtml(sp)} subtotal</td><td class="num">${fmt(spBase)}</td><td class="num">${fmt(spBase * rate / 100)}</td></tr>`;
+            }).join('') + `<tr style="background:#e8eaed;font-weight:800"><td colspan="7">TOTAL · Commission base (all sports)</td><td class="num">${fmt(grand)}</td><td class="num">${fmt(grand * rate / 100)}</td></tr>`;
+          })()}
         </tbody>
       </table>
       ` : '<div style="padding:14px;background:#f5f5f7;border-radius:6px;color:#666;text-align:center">No commission-generating revenue this month.</div>'}
@@ -21811,7 +21836,7 @@ PAGES.completed = (main) => {
     if ($('#comp-kpi-members')) $('#comp-kpi-members').textContent = rows.length;
     if ($('#comp-kpi-sports')) $('#comp-kpi-sports').textContent = totalSports;
     if ($('#comp-kpi-potential')) $('#comp-kpi-potential').textContent = fmt(totalSports * AVG_RENEWAL);
-    const body = rows.length ? rows.map(({ m, shown }) => {
+    const body = rows.length ? rows.map(({ m, shown }, i) => {
       const sportBadges = shown.map(d => `<span class="badge" style="background:rgba(139,92,246,.14);color:#7c3aed;font-weight:700;margin:1px 2px;white-space:nowrap">✓ ${escapeHtml(d.sport)} ${d.attended}/${d.total}${d.expired ? ' · <span style="color:var(--red)">expired</span>' : ''}</span>`).join(' ');
       const paid = shown.reduce((s, d) => s + (Number(d.sub.amountPaid) || 0), 0);
       const coaches = [...new Set(shown.map(coachNameOf).filter(Boolean))].join(', ');
@@ -21835,6 +21860,7 @@ PAGES.completed = (main) => {
       const _lvlColor = _lvl === 1 ? 'color:var(--green);border-color:var(--green)' : _lvl === 2 ? 'color:var(--accent-2);border-color:var(--accent-2)' : 'color:var(--red);border-color:var(--red)';
       const _waIcon = (typeof waIconSvg === 'function') ? waIconSvg(14) : '💬';
       return `<tr data-id="${m.id}" style="cursor:pointer">
+        <td class="text-mute" style="text-align:center;font-size:12px">${i + 1}</td>
         <td><div style="display:flex;align-items:center;gap:8px"><div class="avatar" style="width:26px;height:26px;font-size:10px;background:linear-gradient(135deg,var(--purple),var(--blue))">${initials(m.name)}</div><div style="min-width:0"><div class="font-bold">${escapeHtml(m.name)}</div>${m.nameArabic ? `<div style="font-size:11px;color:var(--text-dim)" dir="rtl">${escapeHtml(m.nameArabic)}</div>` : ''}${isRealPhone(m.phone) ? `<div class="text-mute" style="font-size:10px">${phoneCell(m.phone)}</div>` : ''}</div></div></td>
         <td>${sportBadges}</td>
         <td class="text-dim" style="font-size:12px">${escapeHtml(coaches || '—')}</td>
@@ -21850,7 +21876,7 @@ PAGES.completed = (main) => {
               : `<a class="btn ghost sm" style="text-decoration:none;display:inline-flex;align-items:center;gap:5px;${_lvlColor}" href="${wl}" target="_blank" rel="noopener" onclick="_compRemind(${m.id})" title="${t('Send', 'إرسال')}: ${_lvlLabel}">${_waIcon} ${_lvlLabel}</a>`}
         </td>
       </tr>`;
-    }).join('') : `<tr><td colspan="8" class="text-mute" style="text-align:center;padding:26px">✅ ${t('No members match — try clearing the filters', 'لا يوجد أعضاء مطابقون — جرّب مسح عوامل التصفية')}</td></tr>`;
+    }).join('') : `<tr><td colspan="9" class="text-mute" style="text-align:center;padding:26px">✅ ${t('No members match — try clearing the filters', 'لا يوجد أعضاء مطابقون — جرّب مسح عوامل التصفية')}</td></tr>`;
     $('#comp-tbody').innerHTML = body;
     $$('#comp-tbody tr[data-id]').forEach(tr => tr.addEventListener('click', () => viewMember(parseInt(tr.dataset.id))));
   }
@@ -21888,6 +21914,7 @@ PAGES.completed = (main) => {
     <div class="card table-wrap">
       <table>
         <thead><tr>
+          <th style="width:36px;text-align:center">#</th>
           <th>${t('Member', 'العضو')}</th>
           <th>${t('Finished (classes)', 'مكتمل (الحصص)')}</th>
           <th>${t('Coach', 'المدرب')}</th>
@@ -22025,7 +22052,13 @@ PAGES.expiring = (main) => {
     return `<span style="font-weight:700;cursor:help;border-bottom:1px dotted var(--text-mute)" title="${escapeHtml(tip)}">🏅 ${total} <span class="text-mute" style="font-weight:400;font-size:11px">(${list.length} ${t('sports', 'رياضات')}) ⓘ</span></span>`;
   }
 
-  function rowHtml({ m, days, completed }, bucket) {
+  // Members who FINISHED all their classes (live attendance ≥ the class limit) — for these the
+  // WhatsApp reminder should use the CONGRATULATION/completed tone ("you finished your classes, come
+  // renew"), not the plain "your membership expired" wording. Same source as the Ready-to-Renew
+  // screen, so the two screens agree on who's "completed". (v6.380)
+  const _completedRenewIds = new Set(((typeof membersReadyToRenew === 'function') ? membersReadyToRenew() : []).map(r => r.m && r.m.id).filter(v => v != null));
+
+  function rowHtml({ m, days, completed }, bucket, _n) {
     const color = bucket === 'expired' ? 'var(--red)' : (bucket === 'soon' || bucket === 'week') ? 'var(--accent-2)' : 'var(--text-dim)';
     const label = bucket === 'expired' ? `${Math.abs(days)}d ago` : `in ${days}d`;
     const phone = m.phone && !m.phone.startsWith('+9747000') ? m.phone : null;
@@ -22034,7 +22067,9 @@ PAGES.expiring = (main) => {
     // Pre-build the WhatsApp reminder link (bilingual template, EN + AR)
     let reminderHref = '';
     if (phone) {
-      const kind = completed ? 'completed' : (bucket === 'expired' ? 'expired' : 'expiring');
+      // 'completed' when the member finished their classes (camp limit reached OR live attendance
+      // completed a sport) — a more accurate, congratulatory message; else expired/expiring by date.
+      const kind = (completed || _completedRenewIds.has(m.id)) ? 'completed' : (bucket === 'expired' ? 'expired' : 'expiring');
       const msg = buildReminderMessage(m, kind, days);
       const cleanPhone = String(phone).replace(/[^\d]/g, '');
       reminderHref = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
@@ -22044,6 +22079,7 @@ PAGES.expiring = (main) => {
         <td style="width:32px;text-align:center" onclick="event.stopPropagation()">
           <input type="checkbox" class="exp-row-cb" data-id="${m.id}" ${isChecked ? 'checked' : ''} ${phone ? '' : 'disabled title="No phone — cannot include in WhatsApp/SMS"'} style="cursor:${phone ? 'pointer' : 'not-allowed'}" />
         </td>
+        <td class="text-mute" style="text-align:center;font-size:12px">${(_n || 0) + 1}</td>
         <td>
           <div style="display:flex;align-items:center;gap:10px">
             <div class="avatar" style="width:32px;height:32px;font-size:11px;background:linear-gradient(135deg,var(--blue),var(--purple))">${initials(m.name)}</div>
@@ -22110,9 +22146,10 @@ PAGES.expiring = (main) => {
                   <th style="width:32px;text-align:center" onclick="event.stopPropagation()">
                     <input type="checkbox" class="exp-select-all" data-bucket="${bucket}" ${allPhonesSelected ? 'checked' : ''} ${phoneIds.length === 0 ? 'disabled' : ''} title="Select all in this section (with phone)" />
                   </th>
+                  <th style="width:36px;text-align:center">#</th>
                   <th>Member</th><th>Mobile</th><th>Last Renewal</th><th>Expiry</th><th>When</th><th class="text-right">Attended</th><th class="text-right">💰 Due</th><th class="text-right">Actions</th>
                 </tr></thead>
-                <tbody>${list.map(x => rowHtml(x, bucket)).join('')}</tbody>
+                <tbody>${list.map((x, i) => rowHtml(x, bucket, i)).join('')}</tbody>
               </table>
             </div>
           ` : `<div class="empty" style="padding:24px;font-size:13px">No members in this group 🎉</div>`}
