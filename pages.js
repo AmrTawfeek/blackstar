@@ -707,7 +707,7 @@ function drawCoachLeaderboard() {
 // ─── Recent invoices ────────────────────────────────────────
 function drawRecentInvoices() {
   const container = $('#recent-invoices');
-  const recent = [...state.invoices].sort((a,b) => b.date.localeCompare(a.date)).slice(0, 8);
+  const recent = [...state.invoices].sort((a,b) => String(b.date||'').localeCompare(String(a.date||''))).slice(0, 8);
 
   container.innerHTML = `
     <div class="table-wrap">
@@ -2671,8 +2671,8 @@ window.permanentlyDeleteMember = function(id) {
     }
     audit('member.purge', `member:${id}`, `Permanently deleted ${m.name}${alsoRecords ? ' + linked records' : ' (records kept)'}`,
       { memberId: id, name: m.name, alsoRecords, invoices: invs, sales, rentals });
-    save(); closeModal(); render();
-    toast(`Permanently deleted ${m.name}`);
+    closeModal(); render();
+    confirmSaved(`Permanently deleted ${m.name}`);   // v6.387: success only after the CLOUD confirms
   };
   const linkedBits = [invs ? `${invs} invoice${invs > 1 ? 's' : ''}` : '', sales ? `${sales} sale${sales > 1 ? 's' : ''}` : '', rentals ? `${rentals} rental${rentals > 1 ? 's' : ''}` : ''].filter(Boolean);
   showModal({
@@ -5327,8 +5327,8 @@ window.deleteMemberSport = function(memberId, sport) {
         if (m.sport === sport) m.sport = (m.enrollments[0]?.sport) || '';
         if (typeof stampUpdate === 'function') stampUpdate(m);
         if (typeof audit === 'function') audit('member.sport.delete', 'member:' + m.id, `Deleted sport "${sport}" — removed ${revenueRemoved.toFixed(2)} QAR revenue, ${removedAtt} attendance mark(s), ${invoicesDeleted} invoices dropped, ${invoicesShrunk} shrunk`);
-        save(); closeModal(); render();
-        toast(`✓ ${sport} removed from history${removedAtt ? ' · ' + removedAtt + ' attendance removed' : ''}`);
+        closeModal(); render();
+        confirmSaved(`✓ ${sport} removed from history${removedAtt ? ' · ' + removedAtt + ' attendance removed' : ''}`);
       }},
     ],
   });
@@ -9920,7 +9920,7 @@ PAGES.invoices = (main) => {
 
   function refresh() {
     saveFilter('invoices', filter);
-    const allRows = applyFilter().sort((a,b) => b.date.localeCompare(a.date));
+    const allRows = applyFilter().sort((a,b) => String(b.date||'').localeCompare(String(a.date||'')));
     // Whole-month filter → show each invoice's SHARE for that month (each sport bills
     // in its start month), so a cross-month invoice contributes its portion per month
     // and the totals never double-count. 'all' shows full invoice amounts. Paid/Due use
@@ -9970,7 +9970,15 @@ PAGES.invoices = (main) => {
         <td class="text-dim" style="white-space:nowrap">${fmtDate(i.date)}</td>
         <td>${custCell}</td>
         <td>${i.category ? `<span class="badge ${i.category==='Court Rental'||i.category==='Boxing Room'?'pending':i.category==='Product'?'purple':'green'}" style="font-size:10px">${escapeHtml(i.category)}</span>` : '<span class="text-mute">—</span>'}</td>
-        <td>${i.sport ? `<span class="badge ${sportBadgeColor}">${escapeHtml(sportLabel)}</span>` : '<span class="text-mute">—</span>'}</td>
+        <td>${i.sport
+          ? `<span class="badge ${sportBadgeColor}">${escapeHtml(sportLabel)}</span>`
+          : (() => {
+              // A PRODUCT invoice has no sport — show WHAT was bought here instead of a bare "—",
+              // so the Activity column always says what the invoice is for. (v6.380)
+              const _pl = (typeof invoiceProductLines === 'function') ? invoiceProductLines(i) : [];
+              if (_pl.length) return _pl.slice(0, 2).map(l => `<span class="badge purple" style="font-size:10px">🛍 ${l.qty}× ${escapeHtml(l.name)}</span>`).join(' ') + (_pl.length > 2 ? ` <span class="text-mute" style="font-size:10px">+${_pl.length - 2}</span>` : '');
+              return '<span class="text-mute">—</span>';
+            })()}</td>
         <td>${i.coach ? `<span class="text-dim">${escapeHtml(i.coach)}</span>` : '<span class="text-mute">—</span>'}</td>
         <td><span class="badge ${i.method === 'card' ? 'blue' : ''}">${i.method}</span></td>
         <td class="text-right num font-bold">${(() => {
@@ -10313,7 +10321,7 @@ PAGES.invoices = (main) => {
   $('#quick-rental-inv').addEventListener('click', () => addRental(refresh));
   $('#export-inv')?.addEventListener('click', () => {   // hidden for viewer/receptionist role
     // Export the CURRENT filtered set (was: all invoices regardless of filter)
-    const all = applyFilter().sort((a,b) => b.date.localeCompare(a.date));
+    const all = applyFilter().sort((a,b) => String(b.date||'').localeCompare(String(a.date||'')));
     if (!all.length) { toast('No invoices to export', 'error'); return; }
     // Match the on-screen totals: month filter → each invoice's SHARE summed over
     // the ticked months (no months ticked → full amounts).
@@ -10334,7 +10342,8 @@ PAGES.invoices = (main) => {
         cust.name || '',
         cust.phone || '',
         cust.qid || '',
-        i.sport || '',
+        // Activity column: sport for memberships, the bought product(s) for a Product invoice. (v6.380)
+        i.sport || ((typeof invoiceProductLines === 'function' ? invoiceProductLines(i) : []).map(l => `${l.qty}× ${l.name}`).join(', ')) || '',
         i.coach || '',
         i.description || '',
         i.method || '',
@@ -10632,7 +10641,7 @@ window.showInvoiceHistory = function(customerId) {
   if (!m) return;
   const invs = state.invoices
     .filter(i => i.customerId === customerId)
-    .sort((a, b) => b.date.localeCompare(a.date));
+    .sort((a, b) => String(b.date||'').localeCompare(String(a.date||'')));
   const total = invs.reduce((s, i) => s + invoiceTotal(i), 0);   // canonical total (Σ lines)
   showModal({
     title: `Invoice history: ${escapeHtml(m.name)}`,
@@ -13130,8 +13139,7 @@ window.findDuplicateInvoices = function() {
 window.deleteDuplicateInvoice = function(id) {
   if (!confirm('Delete this duplicate invoice? This cannot be undone.')) return;
   state.invoices = state.invoices.filter(i => i.id !== id);
-  save();
-  toast('Duplicate invoice deleted');
+  confirmSaved('Duplicate invoice deleted');
   findDuplicateInvoices();   // refresh the list in place
 };
 
@@ -15102,7 +15110,7 @@ PAGES.expenses = (main) => {
     }).sort((a,b) => {
       // Pin Bank Commission rows to the very top, then newest-first by date.
       if (!!a.autoBankCommission !== !!b.autoBankCommission) return a.autoBankCommission ? -1 : 1;
-      return b.date.localeCompare(a.date);
+      return String(b.date||'').localeCompare(String(a.date||''));
     });
     const rows = paginate(allRows, pg);
 
@@ -15412,9 +15420,8 @@ window.resetBankCommission = function(id) {
 window.deleteExpense = function(id) {
   if (!confirm('Delete this expense?')) return;
   state.expenses = state.expenses.filter(e => e.id !== id);
-  save();
   render();
-  toast('Expense deleted');
+  confirmSaved('Expense deleted');
 };
 
 // ─── SALARIES ──────────────────────────────────────────────────
@@ -15965,11 +15972,21 @@ window._salToggleSettle = function(checked, net, pending) {
 
 window._salAddPay = function(coachId, monthKey) {
   const amount = parseFloat(($('#sp-add-amt') || {}).value);
-  if (isNaN(amount) || amount <= 0) { toast(t('Enter a payment amount', 'أدخل مبلغ الدفعة'), 'error'); return; }
-  const date = (($('#sp-add-date') || {}).value) || TODAY;
-  const method = (($('#sp-add-method') || {}).value) || 'cash';
   const tEl = $('#sp-target');
   const target = (tEl && tEl.value !== '') ? parseFloat(tEl.value) : null;
+  // ZERO-VALUE SETTLEMENT (v6.383): a coach who earned NOTHING this month (no fixed salary, no
+  // commission → net 0) must still be settleable at 0 QAR so the month reads "paid" instead of
+  // hanging as "Not paid yet" forever. So 0 is accepted when nothing is owed; a 0 against a REAL
+  // outstanding balance is still rejected (that's a mis-entry, not a settlement).
+  const _pay = (typeof computeMonthlyPay === 'function') ? computeMonthlyPay(coachId, monthKey) : null;
+  const _owed = (target != null && !isNaN(target)) ? target : (_pay ? (Number(_pay.net) || 0) : 0);
+  if (isNaN(amount) || amount < 0) { toast(t('Enter a payment amount', 'أدخل مبلغ الدفعة'), 'error'); return; }
+  if (amount === 0 && Math.abs(_owed) > 0.5) {
+    toast(t(`This coach is owed ${fmt(_owed)} QAR — enter the amount paid (0 is only for a coach with nothing due)`, `المستحق ${fmt(_owed)} ر.ق — أدخل المبلغ المدفوع (0 فقط لمن لا مستحق له)`), 'error');
+    return;
+  }
+  const date = (($('#sp-add-date') || {}).value) || TODAY;
+  const method = (($('#sp-add-method') || {}).value) || 'cash';
   const settle = !!(document.getElementById('sp-settle') && document.getElementById('sp-settle').checked);
   const c = state.coaches.find(x => x.id === coachId);
   const rec = _salEnsureRec(coachId, monthKey, target, settle);
@@ -15985,16 +16002,25 @@ window._salAddPay = function(coachId, monthKey) {
     description: `Coach salary — ${c ? c.name : ''} · ${fmtMonth(monthKey)} · payment ${rec.payments.length} (${method})`,
     coachId, coachName: c ? c.name : '', _salaryAutoExpense: true, salaryId: rec.id, salaryPaymentId: payId,
   };
-  state.expenses.push(_salExpense);
-  audit('salary.payment', `coach:${coachId}`, `Paid ${c ? c.name : ''} ${fmt(amount)} QAR (${method}) toward ${fmtMonth(monthKey)} salary`, { coachId, month: monthKey, amount, method, date });
+  // A 0 QAR settlement moves NO money — don't write a zero expense row (it would clutter the
+  // expenses ledger, the Salary category total and the monthly reports with an empty entry). The
+  // payment record itself is still stored, so the month correctly reads as settled. (v6.383)
+  if (amount > 0.005) state.expenses.push(_salExpense);
+  audit('salary.payment', `coach:${coachId}`, amount > 0.005
+    ? `Paid ${c ? c.name : ''} ${fmt(amount)} QAR (${method}) toward ${fmtMonth(monthKey)} salary`
+    : `Settled ${c ? c.name : ''} at 0 QAR for ${fmtMonth(monthKey)} (nothing due)`, { coachId, month: monthKey, amount, method, date });
   render();
   // Write-through: WAIT for the cloud to confirm the payment, show the salary + its expense
   // exactly as the SERVER holds them, and only re-open the manager once the user clicks OK —
   // otherwise the manager's own modal would replace the confirmation popup. (v6.344)
   if (typeof withCloudConfirm === 'function') {
     withCloudConfirm({
-      verify: [{ collection: 'salaries', id: rec.id }, { collection: 'expenses', id: _salExpense.id }],
-      okMsg: t('Payment saved to cloud', 'تم حفظ الدفعة في السحابة'),
+      // A 0 QAR settlement writes NO expense, so only verify the salary record — otherwise the
+      // read-back would look for an expense that was intentionally never created. (v6.383)
+      verify: amount > 0.005
+        ? [{ collection: 'salaries', id: rec.id }, { collection: 'expenses', id: _salExpense.id }]
+        : [{ collection: 'salaries', id: rec.id }],
+      okMsg: amount > 0.005 ? t('Payment saved to cloud', 'تم حفظ الدفعة في السحابة') : t('Settled at 0 — saved to cloud', 'تمت التسوية بصفر — حُفظت في السحابة'),
       afterOk: () => markPaid(coachId, monthKey),
       onFail: () => markPaid(coachId, monthKey),
     });
@@ -17721,8 +17747,8 @@ window.toggleSport = function(name) {
 window.deleteSport = function(name) {
   if (!confirm(`Delete sport "${name}"? This is only allowed because no member is currently enrolled in it. This cannot be undone.`)) return;
   state.settings.sports = state.settings.sports.filter(s => s.name !== name);
-  save(); render();
-  toast(`Deleted: ${name}`);
+  render();
+  confirmSaved(`Deleted: ${name}`);
 };
 
 window.moveSport = function(name, delta) {
@@ -18723,10 +18749,15 @@ PAGES.attendance = (main) => {
     filter.days = [_now.getDate()];
     filter.search = '';
   }
+  // Every sport of THIS member that the given coach teaches. Must consider the same three sources
+  // the row's own coach-resolution uses — enrollment, SUBSCRIPTION, then the primary coach —
+  // otherwise a sport whose coach is recorded only on the subscription (legacy / imported rows)
+  // looks uncoached and the member drops out of a coach filter that should include them. (v6.385)
   function coachSportsFor(m, cid) {
     const set = new Set();
     if (m.coachId === cid && m.sport) set.add(m.sport);
     (m.enrollments || []).forEach(e => { if (e.coachId === cid && e.sport) set.add(e.sport); });
+    (m.subscriptions || []).forEach(s => { if (s.coachId === cid && s.activity) set.add(s.activity); });
     return set;
   }
 
@@ -18748,11 +18779,23 @@ PAGES.attendance = (main) => {
     const rows = [];
     for (const m of state.members) {
       if (m.deleted) continue;  // archived members are out of the active roster
-      if (filter.coach !== 'all' && m.coachId !== parseInt(filter.coach)) continue;
+      // COACH FILTER (v6.385 — was a real bug): this used to test the member's HEADLINE
+      // `m.coachId`, but each row resolves its coach PER SPORT from the enrollment/subscription.
+      // A member whose primary sport is Summer Camp (no coach at all) yet who also does Kick
+      // Boxing with Abdel Salam was skipped entirely — the row plainly showed "Kick Boxing ·
+      // Abdel Salam" but filtering by that coach returned "No members match". Match on the coach
+      // of ANY of the member's sports instead (same primitive the coach-login scoping uses), then
+      // narrow the shown sports to that coach's — so the filter lists exactly their students.
+      let _coachSports = null;
+      if (filter.coach !== 'all') {
+        _coachSports = coachSportsFor(m, parseInt(filter.coach));
+        if (!_coachSports || !_coachSports.size) continue;   // this coach teaches none of their sports
+      }
       if (filter.memberId != null && m.id !== filter.memberId) continue;
       const sports = memberSports(m);
       if (!sports.length) sports.push(m.sport || '—');
       let wanted = filter.sports.length ? sports.filter(s => filter.sports.includes(s)) : sports;
+      if (_coachSports) wanted = wanted.filter(s => _coachSports.has(s));
       if (myCoachId != null) {
         const mine = coachSportsFor(m, myCoachId);
         wanted = wanted.filter(s => mine.has(s));
@@ -19393,7 +19436,7 @@ PAGES.attendance = (main) => {
             ${SPORTS.map(s => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="att-sport-cb" value="${s}" /> ${s}</label>`).join('')}
           </div>
         </div>
-        <div style="min-width:260px;flex:1;max-width:340px">${memberPickerHtml('att-student', { placeholder: 'All students (type to search)' })}${recentSearchChipsHtml('attendance', 'att-recent-search')}</div>
+        <div style="min-width:260px;flex:1;max-width:340px">${memberPickerHtml('att-student', { placeholder: 'All students (type to search)' })}${recentSearchChipsHtml('attendance', 'att-recent-search', 3)}</div>
         <div class="text-mute" style="margin-left:auto;font-size:11px;align-self:center">
           <span class="att-cell att-y" style="display:inline-block;padding:2px 6px;border-radius:3px">Y</span> present ·
           <span class="att-cell att-n" style="display:inline-block;padding:2px 6px;border-radius:3px">N</span> absent ·
@@ -21676,10 +21719,25 @@ window.deleteSportFull = function(memberId, sid) {
   if (typeof audit === 'function') audit('member.sport.delete', 'member:' + memberId,
     `Deleted sport ${label} from ${m.name} — removed ${removedAtt} attendance mark(s)${!stillHasSport ? ' + enrollment' : ''}`,
     { memberId, sport, removedAttendance: removedAtt });
-  save();
   render();
-  if (typeof viewMember === 'function') viewMember(memberId);   // re-open the card
-  toast(`Deleted ${sport} · ${removedAtt} attendance removed`);
+  // WRITE-THROUGH (v6.387): this used to be a bare `save()` + an immediate success toast. `save()`
+  // is DEBOUNCED (~1.5s) and fire-and-forget, so the toast claimed success before the write had
+  // even left the browser — refresh inside that window (or any throw in the re-render) and the
+  // delete was silently lost while the user had been told it worked. Now the delete is confirmed
+  // against the SERVER (member doc written + read back) before anything says "deleted"; on failure
+  // the standard error path tells the user it is NOT saved instead of a false success.
+  if (typeof withCloudConfirm === 'function') {
+    withCloudConfirm({
+      verify: [{ collection: 'members', id: memberId }],
+      okMsg: `Deleted ${sport} · ${removedAtt} attendance removed`,
+      afterOk: () => { if (typeof viewMember === 'function') viewMember(memberId); },
+      onFail: () => { if (typeof viewMember === 'function') viewMember(memberId); },
+    });
+  } else {
+    save();
+    if (typeof viewMember === 'function') viewMember(memberId);
+    toast(`Deleted ${sport} · ${removedAtt} attendance removed`);
+  }
 };
 
 window.deleteRenewal = function(memberId, rid) {
@@ -21687,9 +21745,8 @@ window.deleteRenewal = function(memberId, rid) {
   if (!m || !m.renewals) return;
   if (!confirm('Delete this renewal record?')) return;
   m.renewals = m.renewals.filter(r => r._rid !== rid);
-  save();
   render();
-  toast('Renewal deleted');
+  confirmSaved('Renewal deleted');
 };
 
 // Add eligible carry-forward credit (unused classes from the previous finished period,
@@ -22005,7 +22062,16 @@ PAGES.expiring = (main) => {
       const ms = new Set([m.sport, ...((m.enrollments||[]).map(e=>e.sport)), ...((m.subscriptions||[]).map(s=>s.activity))].filter(Boolean));
       if (!ms.has(filter.sport)) return false;
     }
-    if (filter.coach !== 'all' && m.coachId !== parseInt(filter.coach)) return false;
+    // SAME fix as the Attendance grid (v6.385): match the coach of ANY of the member's sports.
+    // The headline `m.coachId` misses a multi-sport member whose PRIMARY sport has a different (or
+    // no) coach — e.g. primary Summer Camp with no coach, plus Kick Boxing with Abdel Salam — so
+    // that coach's own student vanished from their filtered list. Mirrors the sport filter below,
+    // which already reads primary + enrollments + subscriptions.
+    if (filter.coach !== 'all') {
+      const _cid = parseInt(filter.coach);
+      const _mc = new Set([m.coachId, ...((m.enrollments || []).map(e => e.coachId)), ...((m.subscriptions || []).map(s => s.coachId))].filter(v => v != null));
+      if (!_mc.has(_cid)) return false;
+    }
     // Reminded filter: show only reminded, only not-yet-reminded, or all.
     if (filter.reminded && filter.reminded !== 'all') {
       const rc = (typeof reminderInfo === 'function') ? reminderInfo(m).count : 0;
@@ -22959,7 +23025,7 @@ PAGES.mymembership = (main) => {
       }
     }
   }
-  attRows.sort((a, b) => b.date.localeCompare(a.date));
+  attRows.sort((a, b) => String(b.date||'').localeCompare(String(a.date||'')));
   const attendedTotal = attRows.filter(r => r.present).length;
   const attHtml = attRows.length
     ? attRows.map(r => `<tr style="border-top:1px solid var(--border)">
@@ -28655,9 +28721,8 @@ window.deleteDuplicateInvoicePage = function(id) {
   // Soft-delete keeps the audit trail and lets revenue reports exclude it cleanly.
   inv.deleted = true;
   if (typeof audit === 'function') audit('invoice.delete_duplicate', 'invoice:' + id, `Deleted duplicate ${inv.ref || id} (${fmt(inv.amount || 0)} QAR)`, { id });
-  save();
-  toast(t('Duplicate invoice deleted', 'تم حذف الفاتورة المكررة'));
   render();
+  confirmSaved(t('Duplicate invoice deleted', 'تم حذف الفاتورة المكررة'));
 };
 
 // ONE-CLICK cleanup of the high-confidence "exact" duplicates (same customer, items, month AND
@@ -28700,9 +28765,8 @@ window.removeExactDuplicatesSafely = function() {
     stampUpdate(inv);
     if (typeof audit === 'function') audit('invoice.delete_duplicate', 'invoice:' + inv.id, `Bulk-removed exact duplicate ${inv.ref || inv.id} (${fmt(inv.amount || 0)} QAR)`, { id: inv.id });
   }
-  save();
-  toast(`✓ ${t('Removed', 'حُذف')} ${toDelete.length} ${t('duplicate(s)', 'مكررة')}` + (skipped ? ` · ${skipped} ${t('left for review', 'تُركت للمراجعة')}` : ''), 'success');
   render();
+  confirmSaved(`✓ ${t('Removed', 'حُذف')} ${toDelete.length} ${t('duplicate(s)', 'مكررة')}` + (skipped ? ` · ${skipped} ${t('left for review', 'تُركت للمراجعة')}` : ''));
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
