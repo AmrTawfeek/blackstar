@@ -14,7 +14,9 @@ const LS_VERSION_KEY = 'blackstars-crm-dataver';
 //                a required field that needs back-filling on existing data).
 //                A bump here triggers the runMigrations() pipeline which
 //                MUTATES existing data in place rather than wiping it.
-const APP_VERSION = '6.392.0';   // 6.392.0 CRUD DELETE SAFETY, SWEPT APP-WIDE. An audit of every delete found 21 nested-array element removals with NO tombstone and 32 top-level records HARD-REMOVED from their collection. Both are resurrectable: the merge only honours a delete when the still-present remote copy is BYTE-IDENTICAL to our base, so the moment any other device touched that record (even a stamp) the delete was ignored and the row came back. Nested arrays have had tombstones since v6.303 but ONLY for unique-id rows; top-level collections had NO tombstone mechanism at all, leaving every hard delete in the app (expenses, salaries, sales, products, trials, rentals, schedule, advices, cash counts, families, coaches, drivers, swim groups) able to reappear. Fixed generically rather than with 53 hand-edits: (1) _mergeCollection now tombstones any record that was in base and is gone locally, and honours that tombstone when the remote still holds it - this covers every collection delete site at once WITHOUT changing what any screen reads (no consumer needs a new !deleted filter, so no report can silently start counting deleted rows); (2) _mergeArrayById now also auto-tombstones CONTENT-keyed rows (enrollments, invoice line items, id-less payments), scoped per record+field so they cannot collide - previously only id-keyed rows were protected. The 2-strike guard that protects a confirmed record from a partial snapshot is untouched, and a genuine remote ADD is still accepted. ALSO swept the last 24 optimistic success messages (settings, camp prices, sport catalog, categories, templates, preferences, facility rates, swim groups, schedule, coach advice, checkpoint, Save-to-cloud-now) through confirmSaved, so no screen claims success the cloud has not confirmed; only device-only session state (role preview) is deliberately left, as it never syncs. Tests: test-delete-tombstones 19/19, control-verified (strip the collection tombstone and a deleted expense returns). app.js + pages.js changed.
+const APP_VERSION = '6.394.0';   // 6.394.0 STOP ASKING STAFF TO SIGN IN FOR A PROBLEM SIGNING IN CANNOT FIX. Reported with a console showing storage.js v6.392 writing {members:1, invoices:3, sales:1, auditLog:3} and failing permission-denied on retry after retry, while an in-place 'Sign in to continue' card kept appearing. Two separate things: the DENIAL itself is the immutable-auditLog batch poison fixed in v6.393 (that build was not yet deployed - the payload in the console literally shows the 3 audit docs riding along in the same atomic batch). The CARD was my own bug: showSessionResumePrompt() never checked whether a signed-in user still existed. It tried a token refresh, then a retry, and on failure fell straight through to the sign-in card - but a security-rule rejection ALSO surfaces as permission-denied and its retry can never succeed, so staff were asked to sign in again and again for something sign-in cannot repair. Now the prompt checks for a current user first: if one is present the session is fine and the SERVER refused the write, so it shows an honest 'The server refused this change - you are still signed in, so signing in again will not help; your work is saved on this device and keeps retrying' bar with a manual Retry, and the sign-in card is reached ONLY when no user remains. Tests: test-audit-batch-poison 27/27. app.js changed.
+// prior: 6.393.0 THE FREQUENT permission-denied ON ADD - REAL CAUSE FOUND (immutable auditLog poisoning the atomic batch).
+// prior: 6.392.0 CRUD DELETE SAFETY, SWEPT APP-WIDE.
 // prior: 6.391.0 DELETE A SPORT AND IT STAYS DELETED.
 // prior: 6.390.0 SEARCH NO LONGER OVERRIDES THE STATUS FILTER.
 // prior: 6.389.0 NO MORE LOST WORK + SEAMLESS SESSION. Staff complained daily that new members vanished and a red "session expired" bar kept appearing. Root cause found: in cloud mode a FAILED write left the change only in memory and in the LS_KEY cache — and on the next boot the successful cloud read calls _refreshLocalFromCloud(), which OVERWRITES LS_KEY with cloud data that never had the record. Both copies gone. Worse, the red bar told the user to RELOAD to fix it, which is precisely the action that destroyed the unsaved record. Fixes: (1) UNSAVED-WRITE JOURNAL — on every write failure the full state is written SYNCHRONOUSLY to its own localStorage key (survives a hard close/crash, unlike the ASYNC IndexedDB exit-snapshot that may never commit) and cleared ONLY by a CONFIRMED write, so it outlives the cloud-read overwrite; app.js replays it on boot. Recovery restores ONLY records the cloud is MISSING (pure additions — can never overwrite anything); a record present in both but differing is NOT auto-applied, it is surfaced for admin review per the never-silently-merge-money rule. A BLOCKED (suspected-wipe) save is deliberately NOT journaled so a wipe can never be replayed. (2) SEAMLESS SESSION — auth persistence pinned to LOCAL; the ID token is now renewed BEFORE a write when within 10 min of expiry (previously purely reactive: fail, then refresh, then retry, flashing the bar), with the common path kept SYNCHRONOUS so tab-close writes still land, and the expiry learned in the background for restored sessions. (3) NO RED BAR for auth — an auth failure now tries a silent refresh + retry first (resolves nearly every real case invisibly) and only then shows a small in-place "Sign in to continue" card that re-authenticates and immediately flushes the pending write — no reload, and signIn() itself re-sends whatever a dead session left behind. Tests: test-pending-journal 32/32, control-verified (proves the cloud read erases the old cache but cannot touch the journal). app.js + storage.js changed.
@@ -1293,22 +1295,65 @@ window.assertCloudWritable = assertCloudWritable;
 // re-render) and the change was silently lost while the UI had said it worked. Destructive actions
 // use this instead: it flushes, WAITS for the server, and reports the REAL outcome — success only
 // on a confirmed write, otherwise an explicit "not saved" so the user is never misled. (v6.387)
+// ─── PENDING INDICATOR (v6.393) ──────────────────────────────────────────────
+// Every CRUD must visibly report the REAL server outcome, so the wait itself has to be
+// visible too — otherwise a slow write looks like nothing happened and staff click again.
+// This is a small non-blocking bar (the heavier locked popup stays for destructive actions,
+// which use withCloudConfirm). It appears only if the write takes long enough to notice.
+let _savingEl = null, _savingTimer = null, _savingDepth = 0;
+function _showSaving() {
+  _savingDepth++;
+  if (_savingTimer || _savingEl) return;
+  _savingTimer = setTimeout(() => {
+    _savingTimer = null;
+    if (_savingDepth <= 0) return;
+    try {
+      _savingEl = document.createElement('div');
+      _savingEl.id = 'saving-indicator';
+      _savingEl.setAttribute('role', 'status');
+      _savingEl.setAttribute('aria-live', 'polite');
+      _savingEl.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:22px;z-index:10002;' +
+        'background:var(--surface,#111);color:var(--text,#fff);border:1px solid var(--border,#333);' +
+        'border-radius:99px;padding:9px 18px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:9px;' +
+        'box-shadow:0 8px 28px rgba(0,0,0,.28)';
+      _savingEl.innerHTML = '<span style="width:13px;height:13px;border:2px solid currentColor;border-right-color:transparent;' +
+        'border-radius:50%;display:inline-block;animation:sv-spin .7s linear infinite"></span>' +
+        '<span>' + t('Saving to the cloud…', 'جارٍ الحفظ في السحابة…') + '</span>';
+      if (!document.getElementById('sv-spin-style')) {
+        const st = document.createElement('style'); st.id = 'sv-spin-style';
+        st.textContent = '@keyframes sv-spin{to{transform:rotate(360deg)}}' +
+          '@media (prefers-reduced-motion:reduce){#saving-indicator span{animation:none!important}}';
+        document.head.appendChild(st);
+      }
+      document.body.appendChild(_savingEl);
+    } catch (_) {}
+  }, 400);   // only surfaces when the write is slow enough to be worth showing
+}
+function _hideSaving() {
+  _savingDepth = Math.max(0, _savingDepth - 1);
+  if (_savingDepth > 0) return;
+  if (_savingTimer) { clearTimeout(_savingTimer); _savingTimer = null; }
+  if (_savingEl) { try { _savingEl.remove(); } catch (_) {} _savingEl = null; }
+}
+
 function confirmSaved(okMsg, opts) {
   const o = opts || {};
   const fail = (why) => {
     try { toast(t('NOT saved to the cloud — the change is only on this device and will keep retrying. Do not close the app.', 'لم يُحفظ في السحابة — التغيير على هذا الجهاز فقط وستستمر إعادة المحاولة. لا تغلق التطبيق.') + (why ? ' (' + why + ')' : ''), 'error'); } catch (_) {}
     if (o.onFail) { try { o.onFail(); } catch (_) {} }
   };
+  _showSaving();   // v6.393: the wait is visible, so a slow write never looks like nothing happened
   return Promise.resolve()
     .then(() => (typeof saveConfirmed === 'function' ? saveConfirmed() : { ok: true }))
     .then(r => {
+      _hideSaving();
       if (r && r.ok) {
         if (okMsg) { try { toast(okMsg, 'success'); } catch (_) {} }
         if (o.onOk) { try { o.onOk(); } catch (_) {} }
       } else fail(r && r.error);
       return r;
     })
-    .catch(e => { fail((e && (e.code || e.message)) || String(e)); return { ok: false }; });
+    .catch(e => { _hideSaving(); fail((e && (e.code || e.message)) || String(e)); return { ok: false }; });
 }
 if (typeof window !== 'undefined') window.confirmSaved = confirmSaved;
 
@@ -1560,23 +1605,44 @@ async function withCloudConfirm(opts) {
   // write). "Check your connection" was misleading. Show the real cause + the real fix, and
   // reassure the user their change is safe locally: storage auto-refreshes the token and retries,
   // so it usually saves on its own within seconds; a reload + sign-in guarantees it. (v6.354)
+  // v6.393: 'permission-denied' was ALWAYS reported as "your session expired". That is often
+  // wrong and it sent staff to reload+sign-in for a problem signing in cannot fix — the real
+  // cause was usually the server REFUSING one document in the write (the immutable audit log),
+  // while the session was perfectly valid. Distinguish the two by asking whether we still hold
+  // a signed-in user: no user = a genuine session lapse; user present = the server refused it.
+  const _stillSignedIn = (() => {
+    try { return !!(window.Storage && window.Storage.currentUser && window.Storage.currentUser()); } catch (_) { return false; }
+  })();
   const _isAuthReason = (reason === 'permission-denied' || reason === 'unauthenticated');
-  const _failHeadline = _isAuthReason
+  const _sessionLapsed = _isAuthReason && !_stillSignedIn;
+  const _serverRefused = _isAuthReason && _stillSignedIn;
+  const _failHeadline = _sessionLapsed
     ? t('Your session expired — not saved yet', 'انتهت جلستك — لم يُحفظ بعد')
+    : _serverRefused
+    ? t('The server refused this change — not saved yet', 'رفض الخادم هذا التغيير — لم يُحفظ بعد')
     : t('NOT saved to the cloud', 'لم يُحفظ في السحابة');
-  const _failHelp = _isAuthReason
-    ? t('Your change is safe on this device. It will save automatically in a moment — if it does not, reload the page and sign in again.', 'تغييرك محفوظ على هذا الجهاز. سيُحفظ تلقائياً بعد لحظات — وإن لم يحدث، أعد تحميل الصفحة وسجّل الدخول مجدداً.')
+  const _failHelp = _sessionLapsed
+    ? t('Your change is safe on this device. Sign in again and it will be saved straight away.', 'تغييرك محفوظ على هذا الجهاز. سجّل الدخول مجدداً وسيُحفظ فوراً.')
+    : _serverRefused
+    ? t('You are still signed in, so signing in again will not help. Your change is safe on this device and keeps retrying. If it repeats, send this code to support.', 'ما زلت مسجّل الدخول، لذا لن تفيد إعادة تسجيل الدخول. تغييرك محفوظ على هذا الجهاز وتتم إعادة المحاولة. إذا تكرر ذلك، أرسل هذا الرمز للدعم.')
     : t('Check your connection and try again.', 'تحقق من الاتصال وحاول مرة أخرى.');
   popup({
     okay: false,
     title: '⚠ ' + t('NOT saved in the cloud', 'لم يُحفظ في السحابة'),
     body: `<div style="text-align:center;padding:8px 0">
-        <div style="font-size:46px;line-height:1">${_isAuthReason ? '🔑' : '⚠️'}</div>
+        <div style="font-size:46px;line-height:1">${_sessionLapsed ? '🔑' : _serverRefused ? '🛑' : '⚠️'}</div>
         <div style="font-size:16px;font-weight:800;color:var(--red);margin-top:8px">${escapeHtml(_failHeadline)}</div>
         <div style="font-size:12px;color:var(--text-mute);margin-top:8px">${escapeHtml(String(reason))}</div>
         <div style="font-size:13px;color:var(--text);margin-top:10px">${escapeHtml(_failHelp)}</div>
       </div>`,
-    onClose: opts.afterOk,
+    onClose: () => {
+      try { if (typeof opts.afterOk === 'function') opts.afterOk(); } catch (_) {}
+      // A genuine session lapse is recoverable in place — offer the sign-in card that
+      // re-authenticates and immediately flushes this pending write. No reload. (v6.393)
+      if (_sessionLapsed && typeof window.showSessionResumePrompt === 'function') {
+        try { window.showSessionResumePrompt(); } catch (_) {}
+      }
+    },
   });
   if (typeof opts.onFail === 'function') { try { opts.onFail(res); } catch (_) {} }
   return false;
@@ -7832,6 +7898,38 @@ async function init() {
   //      reload is what used to destroy the unsaved record.
   // The user is never told to reload, and never sees a scary bar for a recoverable hiccup.
   let _sessionPromptOpen = false;
+
+  // The server REFUSED the write while the session is perfectly valid (a security-rule
+  // rejection). Signing in cannot help, so say so plainly, keep it out of the way, and make
+  // clear the work is safe and still retrying. (v6.394)
+  function showServerRefusedBar() {
+    try {
+      let bar = document.getElementById('cloud-save-fail-bar');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'cloud-save-fail-bar';
+        bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:10000;background:#7c2d12;color:#fff;' +
+          'padding:12px 16px;font-size:13px;line-height:1.45;box-shadow:0 -4px 18px rgba(0,0,0,.4);' +
+          'display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;text-align:center';
+        document.body.appendChild(bar);
+      }
+      bar.innerHTML =
+        `<span style="flex:1 1 auto;min-width:220px">🛑 <b>${t('The server refused this change', 'رفض الخادم هذا التغيير')}</b> — ` +
+        `${t('you are still signed in, so signing in again will not help. Your work is saved on this device and keeps retrying.', 'ما زلت مسجّل الدخول، لذا لن تفيد إعادة تسجيل الدخول. عملك محفوظ على هذا الجهاز وتتم إعادة المحاولة.')}</span>` +
+        `<button id="cloud-retry-now" style="background:#fff;color:#7c2d12;border:none;border-radius:8px;padding:8px 16px;font-weight:800;cursor:pointer;white-space:nowrap">↻ ${t('Retry now', 'أعد المحاولة الآن')}</button>`;
+      const btn = document.getElementById('cloud-retry-now');
+      if (btn) btn.onclick = () => {
+        btn.disabled = true; btn.style.opacity = '.6';
+        Promise.resolve(window.Storage && window.Storage.retryNow ? window.Storage.retryNow() : { ok: false })
+          .then(r => {
+            if (r && r.ok) { try { bar.remove(); } catch (_) {} try { toast('✅ ' + t('Saved to cloud', 'حُفظ في السحابة'), 'success'); } catch (_) {} }
+            else { btn.disabled = false; btn.style.opacity = '1'; }
+          })
+          .catch(() => { btn.disabled = false; btn.style.opacity = '1'; });
+      };
+    } catch (_) {}
+  }
+
   async function showSessionResumePrompt() {
     if (_sessionPromptOpen) return;
     // 1) silent recovery first
@@ -7844,7 +7942,15 @@ async function init() {
       if (retry && retry.ok) { try { document.getElementById('cloud-save-fail-bar')?.remove(); } catch (_) {} return; }
     } catch (_) {}
 
-    // 2) genuinely signed out — ask, in place, without losing anything
+    // 2) Is this actually a SESSION problem at all? (v6.394)
+    // A rules rejection also surfaces as permission-denied, and its retry never succeeds — so the
+    // old code fell through to the sign-in card and asked staff to sign in over and over for
+    // something signing in cannot fix. If a signed-in user is still present the session is fine
+    // and the SERVER refused the write; say that instead, and never show the sign-in card.
+    const _who = (() => { try { return window.Storage.currentUser && window.Storage.currentUser(); } catch (_) { return null; } })();
+    if (_who) { showServerRefusedBar(); return; }
+
+    // 3) genuinely signed out — ask, in place, without losing anything
     _sessionPromptOpen = true;
     try { document.getElementById('cloud-save-fail-bar')?.remove(); } catch (_) {}
     const email = (() => { try { return (window.Storage.currentUser() || {}).email || (state.user && state.user.email) || ''; } catch (_) { return ''; } })();

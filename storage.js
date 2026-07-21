@@ -334,6 +334,14 @@
     const parentRef = () => db.doc(PARENT);
     const colRef = name => db.collection(PARENT + '/' + name);
 
+    // Audit ids the SERVER is known to hold. The rules make auditLog immutable (create-only),
+    // so re-sending one as a merge-set is an UPDATE and Firestore denies it — which, because a
+    // batch is atomic, failed the entire write. Anything that arrives from the server is recorded
+    // here so it can never be written again. (v6.393)
+    const _auditKnown = new Set();
+    const noteAuditFromServer = arr => {
+      try { for (const r of (arr || [])) if (r && r.id != null) _auditKnown.add(String(r.id)); } catch (_) {}
+    };
     const _base = {};                  // collection → Map<id, jsonString> (last server truth)
     for (const name of COLLECTIONS) _base[name] = new Map();
     let _baseMeta = '';
@@ -456,6 +464,22 @@
           snap.set(id, now);   // frozen string — what this write actually carries
           const prevStr = baseMap.get(id);
           if (prevStr === now) continue;
+          // ── AUDIT LOG IS APPEND-ONLY (v6.393) ────────────────────────────────────────
+          // THE cause of the frequent "permission-denied / session expired" popup on ADD.
+          // The security rules make auditLog immutable: `allow create` but `allow update: if
+          // false`. Every op here is written as set(…, {merge:true}), and a merge-set on a
+          // document that ALREADY EXISTS is an UPDATE in rules terms. A colleague's audit row
+          // arrives on this device through the snapshot listener, lands in `state` but not in
+          // our `_base`, and the very next save re-sends it — as an update — which Firestore
+          // denies. Batches are ATOMIC, so that one denied row killed the WHOLE write and took
+          // the new member/invoice with it. It looked like an expired session; the session was
+          // fine. An audit entry is never edited, so: only ever CREATE one we have not already
+          // sent, and never re-send one the server is known to hold.
+          if (name === 'auditLog') {
+            if (prevStr !== undefined || _auditKnown.has(id)) continue;   // already on the server → never update
+            ops.push({ kind: 'set', name, id, data: rec, _audit: true });
+            continue;
+          }
           if (prevStr === undefined) { ops.push({ kind: 'set', name, id, data: rec }); continue; }
           const prev = JSON.parse(prevStr);
           const delta = fieldDelta(prev, rec);
@@ -556,15 +580,33 @@
           if (typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'saving', records: ops.length, byCollection: perCol });
         }
       } catch (_) {}
+      // AUDIT WRITES ARE ISOLATED AND NON-FATAL (v6.393). A Firestore batch is ATOMIC: one
+      // rejected op fails every other op in it. Audit entries are a bookkeeping side-effect, so
+      // they must never be able to take a member/invoice/payment down with them. They go in
+      // their own commit, and a failure there is logged but does NOT fail the save.
       const batchCommits = batches.map((group, bi) => {
-        const batch = db.batch();
-        for (const op of group) {
-          const ref = colRef(op.name).doc(op.id);
-          if (op.kind === 'del') batch.delete(ref);
-          else batch.set(ref, op.data, { merge: true });
+        const bizOps = group.filter(op => !op._audit);
+        const auditOps = group.filter(op => op._audit);
+        const commits = [];
+        if (bizOps.length || (bi === 0 && metaChanged)) {
+          const batch = db.batch();
+          for (const op of bizOps) {
+            const ref = colRef(op.name).doc(op.id);
+            if (op.kind === 'del') batch.delete(ref);
+            else batch.set(ref, op.data, { merge: true });
+          }
+          if (bi === 0 && metaChanged) batch.set(parentRef(), metaWrite, { merge: true });
+          commits.push(batch.commit());
         }
-        if (bi === 0 && metaChanged) batch.set(parentRef(), metaWrite, { merge: true });
-        return batch.commit();
+        if (auditOps.length) {
+          const ab = db.batch();
+          // create-only: no merge, so this is a CREATE and never trips the immutability rule.
+          for (const op of auditOps) ab.set(colRef(op.name).doc(op.id), op.data);
+          commits.push(ab.commit()
+            .then(() => { for (const op of auditOps) _auditKnown.add(String(op.id)); })
+            .catch(e => { console.warn('[Storage] audit entry not written (non-fatal):', (e && e.code) || e); }));
+        }
+        return Promise.all(commits);
       });
       // Each list-changing record: a TRANSACTION that re-reads the live cloud record and
       // element-merges its list(s) (window._mergeArrayById), so a concurrent add/edit on
@@ -712,6 +754,7 @@
           try { console.log(`%c[Storage] ✅ loaded from Firestore — ${(result.members || []).length} members, ${(result.invoices || []).length} invoices from ${PARENT}`, 'color:#16a34a;font-weight:600'); } catch (_) {}
           setBaseFromState(result);
           _liveMeta = pickMeta(result);
+          noteAuditFromServer(result.auditLog);   // never re-write an audit row the server has (v6.393)
           for (const name of COLLECTIONS) { _live[name] = new Map(); for (const r of (assembled[name] || [])) if (r && r.id != null) _live[name].set(String(r.id), r); }
           return result;
         } catch (e) {
@@ -865,7 +908,15 @@
             qs.docChanges().forEach(ch => {
               const id = String(ch.doc.id);
               if (ch.type === 'removed') _live[name].delete(id);
-              else _live[name].set(id, ch.doc.data());
+              else {
+                _live[name].set(id, ch.doc.data());
+                // THIS is the path that caused the frequent permission-denied: a colleague's
+                // audit row arrives here, gets merged into local state, and our next save
+                // re-sent it as an update — which the immutable-auditLog rule denies, failing
+                // the whole atomic batch and with it the member being added. Record it as
+                // server-held so it is never written again. (v6.393)
+                if (name === 'auditLog') _auditKnown.add(id);
+              }
             });
             const fromLocalWrite = qs.metadata && qs.metadata.hasPendingWrites;
             if (!_seeded[name]) { _seeded[name] = true; return; }
