@@ -11017,6 +11017,38 @@ function _icAmountIssue(inv) {
   return null;
 }
 
+// ── PAID-VS-LEDGER DRIFT (v6.395) ────────────────────────────────────────────
+// An invoice carries the paid figure TWICE: the scalar `amountPaid`, and the installment rows
+// in `payments[]`. recordPayment() keeps them equal, but several older paths set the scalar on
+// its own. When they disagree the app contradicts itself — invoicePaid() reads the scalar (so
+// the invoice row, the balance and the Paid/Partial badge use it) while invoicePaymentsSum()
+// and the per-month collected figures read the ROWS. That is the "installments make invoices
+// inaccurate" report: one screen says 900 paid, another says 600.
+// Nothing detected this before. Reported for REVIEW only — never auto-corrected, because
+// choosing which number is true is a money decision for the admin, not for the app.
+function _icPaidLedgerIssue(inv) {
+  if (!inv || inv.deleted) return null;
+  const rows = Array.isArray(inv.payments) ? inv.payments : [];
+  if (!rows.length) return null;                       // no ledger → nothing to disagree with
+  if (inv.amountPaid == null) return null;             // scalar absent → rows are used anyway
+  const ledger = Math.round(rows.reduce((s, p) => s + (Number(p.amount) || 0), 0) * 100) / 100;
+  const scalar = Math.round((Number(inv.amountPaid) || 0) * 100) / 100;
+  if (Math.abs(ledger - scalar) <= 0.01) return null;
+  return { ledger, scalar, diff: Math.round((scalar - ledger) * 100) / 100, rows: rows.length };
+}
+window._icPaidLedgerIssue = _icPaidLedgerIssue;
+
+// All drifted invoices, worst first — drives the review list and lets the owner see the scale.
+function findPaidLedgerDrift() {
+  const out = [];
+  for (const inv of (state.invoices || [])) {
+    const d = _icPaidLedgerIssue(inv);
+    if (d) out.push({ inv, ...d });
+  }
+  return out.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+}
+window.findPaidLedgerDrift = findPaidLedgerDrift;
+
 // ── MEMBER INVOICE HEALTH (v6.304.0) ────────────────────────────────────────
 // A per-member light for the Members screen so reception can spot at a glance whether
 // a member's membership invoice matches their current sports & prices. READ-ONLY — it
@@ -12637,6 +12669,47 @@ window._applyDuplicatePaymentFix = function (list) {
   else { save(); render(); toast(okMsg); }
 };
 
+// ── Installments already collected on this invoice (v6.395) ──────────────────
+// The Pay panel showed only three totals, so staff taking installment #3 could not see #1 and
+// #2 — no dates, no methods, no who-took-it — and had to leave the screen to check. Showing the
+// ledger here is also the fastest way to SPOT a wrong entry at the moment it matters.
+// A correction row (posted by Edit invoice) is labelled as such rather than looking like a
+// payment the customer made.
+function invoiceInstallmentHistoryHtml(inv) {
+  const rows = (inv && Array.isArray(inv.payments)) ? inv.payments.filter(p => p && Number(p.amount) !== 0) : [];
+  if (!rows.length) return '';
+  const total = rows.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const METH = { cash: '💵', card: '💳', fawran: '📲', transfer: '🏦' };
+  const body = rows.map((p, i) => {
+    const amt = Number(p.amount) || 0;
+    const isCorr = !!p._correction || amt < 0;
+    return `<tr>
+      <td style="padding:5px 8px;color:var(--text-mute);font-size:11px">${i + 1}</td>
+      <td style="padding:5px 8px;white-space:nowrap">${escapeHtml(typeof fmtDate === 'function' ? fmtDate(p.date) : (p.date || ''))}</td>
+      <td style="padding:5px 8px">${METH[normalizeMethod(p.method)] || ''} ${escapeHtml(normalizeMethod(p.method))}</td>
+      <td style="padding:5px 8px;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${isCorr ? 'color:var(--accent-2)' : ''}">${fmt(amt)}</td>
+      <td style="padding:5px 8px;font-size:11px;color:var(--text-mute)">${escapeHtml(p.note || p.byName || '')}</td>
+    </tr>`;
+  }).join('');
+  return `
+    <details style="margin-top:12px;border:1px solid var(--border);border-radius:10px;overflow:hidden" open>
+      <summary style="cursor:pointer;padding:9px 12px;background:var(--surface-2);font-size:13px;font-weight:700">
+        🧾 ${t('Already collected', 'المُحصّل سابقاً')} — ${rows.length} ${rows.length === 1 ? t('payment', 'دفعة') : t('payments', 'دفعات')} · ${fmt(total)}
+      </summary>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12.5px">
+        <thead><tr style="color:var(--text-mute);font-size:10.5px;text-transform:uppercase">
+          <th style="padding:5px 8px;text-align:left">#</th>
+          <th style="padding:5px 8px;text-align:left">${t('Date', 'التاريخ')}</th>
+          <th style="padding:5px 8px;text-align:left">${t('Method', 'الطريقة')}</th>
+          <th style="padding:5px 8px;text-align:right">${t('Amount', 'المبلغ')}</th>
+          <th style="padding:5px 8px;text-align:left">${t('Note / by', 'ملاحظة / بواسطة')}</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table></div>
+    </details>`;
+}
+window.invoiceInstallmentHistoryHtml = invoiceInstallmentHistoryHtml;
+
 window.recordPaymentUI = function(id) {
   const inv = state.invoices.find(i => i.id === id);
   if (!inv) return;
@@ -12674,6 +12747,7 @@ window.recordPaymentUI = function(id) {
           <div class="field" style="margin:0"><label>${t('Date', 'التاريخ')}</label><input id="pay-date" type="date" value="${TODAY}" /></div>
           <div class="field" id="pay-method-field" style="margin:0"><label>${t('Method', 'الطريقة')}</label><select id="pay-method"><option value="cash">💵 ${t('Cash', 'نقداً')}</option><option value="card">💳 ${t('Card', 'بطاقة')}</option><option value="fawran">📲 ${t('Fawran', 'فوران')}</option></select></div>
         </div>
+        ${invoiceInstallmentHistoryHtml(inv)}
         <label class="pay-split-toggle"><input type="checkbox" id="pay-split" /> ${t('Split between cash + card', 'تقسيم بين النقد والبطاقة')}</label>
         <div id="pay-single" style="margin-top:12px">
           <div class="field" style="margin:0"><label>${t('Amount (QAR)', 'المبلغ (ر.ق)')}</label><input id="pay-amt" type="number" min="0" step="0.01" value="${bal.toFixed(2)}" /></div>
@@ -12901,9 +12975,35 @@ window.editInvoiceQuick = function(id) {
         let newPaid = parseFloat($('#ef-paid').value);
         if (isNaN(newPaid)) newPaid = invoicePaid(inv);
         newPaid = Math.max(0, Math.min(newPaid, inv.amount));   // can't collect more than the total
-        if (Math.abs(newPaid - invoicePaid(inv)) > 0.001) {
-          inv.amountPaid = newPaid;
-          inv.payments = newPaid > 0 ? [{ date: inv.date, month: inv.month, amount: newPaid, method: inv.method || 'cash' }] : [];
+        const _curPaid = invoicePaid(inv);
+        if (Math.abs(newPaid - _curPaid) > 0.001) {
+          // INSTALLMENTS ARE NEVER DESTROYED (v6.395). This used to overwrite inv.payments with a
+          // SINGLE row dated the invoice date. For a customer paying in installments that wiped
+          // the whole history in one click: the individual payments vanished, the "who took it"
+          // stamps went with them, per-sport tags were lost, and — because collected-per-month is
+          // summed from each row's OWN month — all the money jumped into the invoice's month, so
+          // two months of revenue reported wrong. Just LOWERING the total triggered it, via the
+          // clamp above, without the admin touching the paid field at all.
+          // A correction now posts a dated adjustment row and leaves every installment intact.
+          const _rows = Array.isArray(inv.payments) ? inv.payments : [];
+          if (_rows.length) {
+            const delta = Math.round((newPaid - _curPaid) * 100) / 100;
+            // Date the correction in the month the money actually belongs to (the last real
+            // payment), not today — otherwise fixing a June typo would move money into July.
+            const _last = _rows[_rows.length - 1] || {};
+            const _cd = _last.date || inv.date || TODAY;
+            inv.payments.push({
+              date: _cd, month: String(_cd).slice(0, 7), amount: delta,
+              method: _last.method || inv.method || 'cash',
+              note: t('Correction via Edit invoice', 'تصحيح عبر تعديل الفاتورة'),
+              by: currentUserId(), byName: currentUserName(), at: new Date().toISOString(), _correction: true,
+            });
+            inv.amountPaid = inv.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+          } else {
+            // No ledger at all (legacy invoice) — there is nothing to preserve, so seed one.
+            inv.amountPaid = newPaid;
+            inv.payments = newPaid > 0 ? [{ date: inv.date, month: inv.month, amount: newPaid, method: inv.method || 'cash' }] : [];
+          }
         }
         save();
         closeModal();
