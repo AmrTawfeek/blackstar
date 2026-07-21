@@ -39,6 +39,40 @@
   const LS_LEGACY_KEYS = ['blackstars-crm-v1'];
   const SAVE_THROTTLE_MS = 1500;   // per-record writes are cheap → snappier multi-user sync
 
+  // ─── UNSAVED-WRITE JOURNAL (v6.389) ──────────────────────────────────────────
+  // THE data-loss bug staff hit: in cloud mode the ONLY durable local copy was written by
+  // _refreshLocalFromCloud(), and that runs solely after a SUCCESSFUL SERVER READ. So when a
+  // write FAILED (lapsed session, dropped link) the change existed only in the page's memory —
+  // and the red bar told the user to RELOAD, which threw that memory away. A just-registered
+  // member disappeared for good. The IndexedDB exit-snapshot was the only net, and IndexedDB is
+  // ASYNC: on a hard close the page can die before the transaction commits.
+  //
+  // This journal is the fix. localStorage.setItem is SYNCHRONOUS — it is already on disk the
+  // instant the call returns, so it survives a hard close, a crash, or a reload. We write the
+  // full pending state here on every write failure and clear it the moment a write confirms.
+  // On boot the app replays it (see Storage.getPending / app.js recovery).
+  const PENDING_KEY = 'blackstars-crm-pending-v1';
+  function writePendingJournal(state, reason) {
+    try {
+      if (!state) return false;
+      const persistable = { ...state };
+      for (const k of DEVICE_ONLY) delete persistable[k];
+      localStorage.setItem(PENDING_KEY, JSON.stringify({
+        at: new Date().toISOString(), reason: reason || 'write-failed', state: persistable,
+      }));
+      return true;
+    } catch (e) {
+      // Quota is the only realistic failure; surface it because it means the safety net is off.
+      console.error('[Storage] ⚠ could not journal the unsaved change locally:', e);
+      return false;
+    }
+  }
+  function clearPendingJournal() { try { localStorage.removeItem(PENDING_KEY); } catch (_) {} }
+  function readPendingJournal() {
+    try { const raw = localStorage.getItem(PENDING_KEY); return raw ? JSON.parse(raw) : null; }
+    catch (_) { return null; }
+  }
+
   // Per-record collections (each becomes a subcollection). Anything else in the
   // saved state (settings, campSchedule, recentSearches, schema/version meta) is
   // stored on the parent "meta" document.
@@ -269,6 +303,16 @@
       if (!cfg.useEmulator) _fsSettings.experimentalAutoDetectLongPolling = true;
       try { db.settings(_fsSettings); } catch (e) { console.warn('[Storage:firebase] settings() failed:', e); }
       auth = window.firebase.auth();
+      // SESSION DURABILITY (v6.389): pin auth persistence to LOCAL explicitly. The compat SDK
+      // already defaults to LOCAL, but leaving it implicit means any future config/SDK change
+      // could silently drop the session to in-memory — which logs the user out on every reload
+      // and was a candidate cause of the "session expired" red bar staff hit daily.
+      try {
+        if (window.firebase.auth.Auth && window.firebase.auth.Auth.Persistence) {
+          auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL)
+            .catch(e => console.warn('[Storage:firebase] setPersistence failed (non-fatal):', e));
+        }
+      } catch (e) { console.warn('[Storage:firebase] setPersistence unavailable:', e); }
       // ── LOCAL EMULATOR support (test the cloud path before deployment). Only when
       // firebase-config.js sets useEmulator:true; production is untouched. ──
       if (cfg.useEmulator) {
@@ -318,9 +362,41 @@
     async function _refreshAuthToken() {
       try {
         const u = (typeof window !== 'undefined' && window.firebase && window.firebase.auth) ? window.firebase.auth().currentUser : null;
-        if (u && typeof u.getIdToken === 'function') { await u.getIdToken(true); return true; }
+        if (u && typeof u.getIdToken === 'function') { await u.getIdToken(true); _tokenExpAt = 0; await _noteTokenExpiry(u); return true; }
       } catch (_) {}
       return false;
+    }
+
+    // ─── PRE-EMPTIVE TOKEN FRESHNESS (v6.389) ─────────────────────────────────
+    // Staff were hitting "your sign-in session expired" daily. The old design was REACTIVE: let
+    // the write fail on a stale token, then refresh and retry — which flashes the red bar and,
+    // before the journal existed, risked the change. Now we refresh BEFORE writing whenever the
+    // token is close to expiry, so in normal use the token is never stale and the bar never
+    // appears at all. Firebase ID tokens live ~1h; we renew with 10 min to spare.
+    let _tokenExpAt = 0;                       // epoch ms when the current ID token expires
+    const TOKEN_SKEW_MS = 10 * 60 * 1000;      // renew this long before expiry
+    async function _noteTokenExpiry(u) {
+      try {
+        if (u && typeof u.getIdTokenResult === 'function') {
+          const r = await u.getIdTokenResult();
+          if (r && r.expirationTime) _tokenExpAt = new Date(r.expirationTime).getTime() || 0;
+        }
+      } catch (_) {}
+    }
+    // Returns true when the session looks usable. Never throws — a failure here must not block
+    // the write; the write's own error path (+ journal) still protects the data.
+    async function _ensureFreshToken() {
+      try {
+        const fb = (typeof window !== 'undefined' && window.firebase && window.firebase.auth) ? window.firebase.auth() : null;
+        const u = fb && fb.currentUser;
+        if (!u) return false;                                   // genuinely signed out
+        if (!_tokenExpAt) { await _noteTokenExpiry(u); }
+        if (_tokenExpAt && Date.now() > _tokenExpAt - TOKEN_SKEW_MS) {
+          await u.getIdToken(true);                             // renew ahead of expiry
+          _tokenExpAt = 0; await _noteTokenExpiry(u);
+        }
+        return true;
+      } catch (_) { return true; }   // unknown → let the write proceed and use its normal error path
     }
     function _scheduleRetry() {
       if (_retryTimer || !_lastState) return;                  // already scheduled / nothing to send
@@ -521,6 +597,8 @@
       Promise.all([...batchCommits, ...txnCommits])
         .then(() => {
           lastWriteFailed = false; _lastErrorCode = null; _clearRetry();
+          // The cloud now HAS this state — the local safety journal is obsolete. (v6.389)
+          clearPendingJournal();
           // Advance the base from the SENT snapshot (frozen at flush time), NOT setBaseFromState(state)
           // — `state` is the live object and has kept mutating during this round-trip. Using it here
           // was silently swallowing in-flight edits (same-day data loss). Anything edited during the
@@ -533,7 +611,12 @@
         })
         .catch(e => {
           lastWriteFailed = true; _lastErrorCode = (e && e.code) || null; _lastFlushResult = { ok: false, error: (e && e.code) || String(e) };
-          console.error('[Storage] ❌ save FAILED (kept locally, will retry on next change):', (e && e.code) || e, e);
+          // DURABILITY FIRST (v6.389): before anything else, put the unsaved state on disk
+          // SYNCHRONOUSLY. Until this line existed, a failed write lived only in the page's
+          // memory, so a reload/close/crash destroyed it (the "my new member vanished" bug).
+          // This runs before the UI is told anything, so even an immediate reload is safe.
+          writePendingJournal(state, (e && e.code) || 'write-failed');
+          console.error('[Storage] ❌ save FAILED (journaled locally, will retry):', (e && e.code) || e, e);
           try {
             if (typeof window !== 'undefined') {
               const L = window.__cloudWriteLog; if (L && L.length) L[L.length - 1].ok = false;
@@ -679,11 +762,31 @@
           // could be lost on refresh. Now flag it UNSAVED so the leave-page guard blocks and
           // the persistent error banner shows — the user is warned, never silently dropped.
           lastWriteFailed = true;
+          // v6.389: deliberately NOT journaled. blockEmptyWrite() fires when the state looks
+          // empty/corrupt (a suspected wipe), and replaying that on the next boot would destroy
+          // good data. The unsaved flag + banner + leave-page guard already protect this case.
           try { if (typeof window !== 'undefined' && typeof window.__onCloudSaveStatus === 'function') window.__onCloudSaveStatus({ phase: 'error' }); } catch (_) {}
           return;
         }
         try { localBackend.save(state); } catch (e) { console.warn('[Storage:firebase] local safety-net save failed:', e); }
         if (writeInFlight) { pendingAfterWrite = state; return; }
+        // v6.389: renew a near-expired ID token BEFORE sending, so a long-open tab stops failing
+        // its first write of the day and flashing the "session expired" bar. The check is
+        // SYNCHRONOUS in the normal case (cached expiry, nothing due) — critical because
+        // flushPending() calls save() on tab close, where deferring to a promise would let the
+        // page die before the write was ever handed to Firestore. Only a genuinely near-expired
+        // token takes the async path.
+        //
+        // A RESTORED session (plain page reload) never went through signIn(), so the expiry is
+        // unknown and _tokenExpAt is 0. Learn it in the background — without this the check below
+        // could never fire for exactly the long-open tab that was failing every morning.
+        if (!_tokenExpAt) { try { const u = auth && auth.currentUser; if (u) Promise.resolve(_noteTokenExpiry(u)).catch(() => {}); } catch (_) {} }
+        if (_tokenExpAt && Date.now() > _tokenExpAt - TOKEN_SKEW_MS) {
+          Promise.resolve(_ensureFreshToken())
+            .catch(() => {})
+            .then(() => { if (writeInFlight) pendingAfterWrite = state; else _flushWrite(state); });
+          return;
+        }
         _flushWrite(state);
       },
       // WRITE-THROUGH: persist `state` and return a Promise that resolves ONLY when the
@@ -816,6 +919,9 @@
           const e = email.includes('@') ? email : (email + '@blackstars.qa');
           const cred = await auth.signInWithEmailAndPassword(e, password);
           lastUser = { email: cred.user.email, uid: cred.user.uid, isAdmin: true };
+          _tokenExpAt = 0; try { await _noteTokenExpiry(cred.user); } catch (_) {}   // seed pre-emptive refresh (v6.389)
+          // A fresh sign-in is exactly the moment to push anything a dead session left behind.
+          try { if (lastWriteFailed && _lastState && !writeInFlight) _flushWrite(_lastState); } catch (_) {}
           return lastUser;
         } catch (e) {
           console.warn('[Storage:firebase] signIn failed:', e.code, e.message);
@@ -976,6 +1082,14 @@
       return Promise.resolve(false);
     },
     // Local auto-backup ring (IndexedDB) — independent recovery history on this device.
+    // ─── Unsaved-write journal (v6.389) ──────────────────────────────────────
+    // The cloud read overwrites the LS_KEY cache with cloud data, so a change that never
+    // reached the cloud used to be erased from disk on the next boot. The journal lives under
+    // its OWN key and is cleared only by a CONFIRMED write, so it outlives that overwrite and
+    // the app can replay it. See app.js recoverPendingWrite().
+    getPending() { return readPendingJournal(); },
+    hasPending() { return !!readPendingJournal(); },
+    clearPending() { clearPendingJournal(); },
     snapshotBackup(state, reason, force) { return LocalBackups.snapshot(state, reason, force); },
     listBackups() { return LocalBackups.list(); },
     getBackup(ts) { return LocalBackups.get(ts); },

@@ -829,9 +829,12 @@ window.restoreLocalBackup = async function (ts) {
   const incoming = { ...data }; delete incoming.user; delete incoming.route; delete incoming.session; delete incoming.__appVersion;
   Object.assign(state, incoming);
   if (typeof audit === 'function') audit('data.restore', 'auto-backup', `Restored on-device auto-backup from ${when} (${summary})`, { ts });
-  window.__allowEmptySave = true; save(); window.__allowEmptySave = false;
   closeModal(); render();
-  toast(`✓ ${t('Restored from', 'تم الاسترجاع من')} ${when} · ${state.members.length} ${t('members', 'عضو')}`);
+  // v6.388: a restore REPLACES everything — confirm it reached the cloud before saying "restored".
+  // Keep __allowEmptySave set across the whole confirm (the restored set may be smaller than local).
+  window.__allowEmptySave = true;
+  try { await confirmSaved(`✓ ${t('Restored from', 'تم الاسترجاع من')} ${when} · ${state.members.length} ${t('members', 'عضو')}`); }
+  finally { window.__allowEmptySave = false; }
 };
 
 // ─── SYNC CHECK: compare THIS device's data against the authoritative cloud ────
@@ -889,7 +892,7 @@ window.runSyncCheck = async function () {
           <div class="text-mute" style="margin-top:6px">${localOnlySamples.join(' · ')}${totLocalOnly > localOnlySamples.length ? ' …' : ''}</div></div>` : ''}
         ${totCloudOnly ? `<div style="margin-top:8px;font-size:12px;color:var(--text-mute)">☁ ${totCloudOnly} ${t('record(s) in the cloud (added on another device) aren’t loaded here — refresh to pull them in.', 'سجل في السحابة (من جهاز آخر) غير محمّلة هنا — حدّث للجلب.')}</div>` : ''}`,
     actions: [
-      ...(totLocalOnly ? [{ label: '💾 ' + t('Save to cloud now', 'احفظ في السحابة الآن'), class: 'btn primary', onclick: () => { try { save(); } catch (_) {} closeModal(); toast(t('Pushing your data to the cloud…', 'جارٍ حفظ بياناتك في السحابة…'), 'success'); } }] : []),
+      ...(totLocalOnly ? [{ label: '💾 ' + t('Save to cloud now', 'احفظ في السحابة الآن'), class: 'btn primary', onclick: () => { closeModal(); confirmSaved(t('✅ Your data is now saved in the cloud', '✅ بياناتك محفوظة في السحابة الآن')); } }] : []),
       ...((totCloudOnly || totDiff) ? [{ label: '🔄 ' + t('Refresh from cloud', 'تحديث من السحابة'), class: 'btn ghost', onclick: () => location.reload() }] : []),
       { label: t('Close', 'إغلاق'), class: clean ? 'btn primary' : 'btn ghost', onclick: closeModal },
     ],
@@ -1153,14 +1156,21 @@ PAGES.members = (main) => {
 
   function applyFilter(f = filter) {
     return state.members.filter(m => {
-      // Archived (soft-deleted) members show when 'Archived' is selected OR when the
-      // user is actively SEARCHING (so a search finds everyone). They get a visual
-      // "📦 Archived" indicator in the row either way.
+      // Archived (soft-deleted) members show when 'Archived' is selected, or when the user is
+      // searching WITHOUT having asked for a specific status (so a plain search still finds
+      // everyone). They get a visual "📦 Archived" indicator in the row either way.
+      //
+      // v6.390: searching used to disable the archived-exclusion outright, so filtering to
+      // "Active" and then typing a name listed archived members as if they were active —
+      // the search silently overrode the status filter the user had explicitly set. An
+      // explicit status choice now always wins; the search-finds-everyone convenience
+      // applies only when no status was chosen.
       const wantArchived = (f.statuses || []).includes('Archived');
       const statusSel = (f.statuses || []).filter(s => s !== 'Archived');
       const isSearching = !!(f.search && f.search.trim());
-      if (m.deleted && !wantArchived && !isSearching) return false;
-      if (!m.deleted && wantArchived && statusSel.length === 0 && !isSearching) return false; // only Archived chosen
+      const searchingUnfiltered = isSearching && statusSel.length === 0 && !wantArchived;
+      if (m.deleted && !wantArchived && !searchingUnfiltered) return false;
+      if (!m.deleted && wantArchived && statusSel.length === 0) return false; // only Archived chosen
       // Similar-name filter: keep only members flagged as a likely duplicate.
       if (f.dupNames && dupNameInfo && !dupNameInfo.ids.has(m.id)) return false;
       if (f.search) {
@@ -1670,9 +1680,9 @@ PAGES.members = (main) => {
       audit('member.archive', `member:${m.id}`, `Archived ${m.name} (bulk)`, { memberId: m.id, name: m.name, reason: 'Bulk archive' });
     });
     selected.clear();
-    save();
     refresh();
-    toast(`📦 Archived ${list.length} member${list.length === 1 ? '' : 's'} · history preserved`);
+    // v6.388: confirm the archive reached the cloud before saying so.
+    confirmSaved(`📦 Archived ${list.length} member${list.length === 1 ? '' : 's'} · history preserved`);
   });
 
   refresh();
@@ -3047,10 +3057,19 @@ window.removeEnrollmentMistake = function(memberId, sport) {
   if (!m || !sport) return;
   if (!confirm(`Delete the "${sport}" enrollment as a MISTAKE?\n\nThis removes the enrollment, its subscription and its invoice line entirely — with NO refund record. If the member actually paid and needs money back, use ↩ Withdraw instead.`)) return;
   removeEnrollmentData(m, sport);
-  save();
   closeModal();
   render();
-  toast(`"${sport}" enrollment removed`);
+  // v6.391: a toast wasn't enough for a destructive action. This now READS THE MEMBER BACK FROM
+  // THE SERVER and shows the cloud's own copy in a locked popup, so "deleted" is proof, not a
+  // claim. Matches deleteSportFull. On failure the popup says it is NOT saved and why.
+  if (typeof withCloudConfirm === 'function') {
+    withCloudConfirm({
+      verify: [{ collection: 'members', id: memberId }],
+      okMsg: `"${sport}" enrollment removed`,
+    });
+  } else {
+    confirmSaved(`"${sport}" enrollment removed`);
+  }
 };
 
 function showMemberForm(m) {
@@ -4408,8 +4427,9 @@ window.transferCoachStudents = function(fromId) {
           }
         }
         audit('coach.transfer', 'coach:' + fromId, `Transferred ${from.name} → ${to.name} (${basis}, eff ${eff})`, { fromId, toId, basis, eff, moved, movedSched, movedInv });
-        save(); closeModal(); render();
-        toast(`Transferred ${from.name}'s students to ${to.name}${basis === 'registration' ? ' (incl. past invoices)' : ''}`);
+        closeModal(); render();
+        // v6.388: confirm the transfer (students + invoices) reached the cloud before saying so.
+        confirmSaved(`Transferred ${from.name}'s students to ${to.name}${basis === 'registration' ? ' (incl. past invoices)' : ''}`);
       } },
     ],
   });
@@ -4698,7 +4718,7 @@ PAGES.campschedule = (main) => {
     const b = cs.days[tday][tr][tg] || { activity: '', coach: '' };
     cs.days[fday][fr][fg] = b;
     cs.days[tday][tr][tg] = a;
-    save(); rerender(); toast('Class moved');
+    rerender(); confirmSaved('Class moved');
   }
   function editCampCell(dayKey, rowIdx, gkey) {
     const g = groups.find(x => x.key === gkey);
@@ -4721,7 +4741,7 @@ PAGES.campschedule = (main) => {
         { label: 'Clear', class: 'btn ghost', onclick: () => { cs.days[dayKey][rowIdx][gkey] = { activity: '', coach: '' }; save(); closeModal(); rerender(); } },
         { label: 'Save', class: 'btn primary', onclick: () => {
             cs.days[dayKey][rowIdx][gkey] = { activity: ($('#cc-act').value || '').trim(), coach: ($('#cc-coach').value || '').trim() };
-            save(); closeModal(); rerender(); toast('Class updated');
+            closeModal(); rerender(); confirmSaved('Class updated');
           } },
       ],
     });
@@ -4846,7 +4866,7 @@ PAGES.campschedule = (main) => {
   if (resetBtn) resetBtn.addEventListener('click', () => {
     if (!confirm('Reset the Summer Camp schedule for all five days back to the original?')) return;
     state.campSchedule = defaultCampSchedule();
-    save(); toast('Summer Camp schedule reset'); navigate('campschedule');
+    confirmSaved('Summer Camp schedule reset'); navigate('campschedule');
   });
   wireCells();
   updateDateLabel();
@@ -4909,8 +4929,9 @@ window.assignFamilyBulk = function(memberIds) {
         }
         for (const m of members) m.familyId = famId;
         if (typeof audit === 'function') audit('family.bulk_assign', 'family:' + famId, `Added ${members.length} members to ${familyName(famId)}`, { ids });
-        save(); closeModal(); render();
-        toast(`${members.length} ${t('members added to', 'عضو أُضيف إلى')} ${familyName(famId)}`);
+        closeModal(); render();
+        // v6.388: confirm the household assignment reached the cloud before saying so.
+        confirmSaved(`${members.length} ${t('members added to', 'عضو أُضيف إلى')} ${familyName(famId)}`);
       } },
     ],
   });
@@ -4940,7 +4961,8 @@ window.assignFamily = function(memberId) {
       </div>`,
     actions: [
       m.familyId ? { label: '✕ ' + t('Remove from family', 'إزالة من العائلة'), class: 'btn ghost', onclick: () => {
-        m.familyId = null; save(); closeModal(); render(); toast(t('Removed from household', 'تمت الإزالة من العائلة'));
+        m.familyId = null; closeModal(); render();
+        confirmSaved(t('Removed from household', 'تمت الإزالة من العائلة'));   // v6.388: confirm before success
       } } : null,
       { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
       { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
@@ -4957,8 +4979,9 @@ window.assignFamily = function(memberId) {
           toast(t('Pick a household or enter a new name', 'اختر عائلة أو أدخل اسماً جديداً'), 'error'); return;
         }
         if (typeof audit === 'function') audit('member.family', 'member:' + m.id, 'set family ' + m.familyId);
-        save(); closeModal(); render();
-        toast(t('Saved to household', 'تم الحفظ في العائلة') + ': ' + familyName(m.familyId));
+        closeModal(); render();
+        // v6.388: confirm the household assignment reached the cloud before saying so.
+        confirmSaved(t('Saved to household', 'تم الحفظ في العائلة') + ': ' + familyName(m.familyId));
       } },
     ].filter(Boolean),
   });
@@ -5011,7 +5034,8 @@ window.editFamily = function(famId) {
         for (const m of familyMembers(famId, true)) m.familyId = null;
         state.families = state.families.filter(f => f.id !== famId);
         if (typeof audit === 'function') audit('family.delete', 'family:' + famId, 'disbanded household');
-        save(); closeModal(); render(); toast(t('Household disbanded', 'تم حلّ العائلة'));
+        closeModal(); render();
+        confirmSaved(t('Household disbanded', 'تم حلّ العائلة'));   // v6.388: confirm before success
       } },
       { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
       { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
@@ -5020,7 +5044,8 @@ window.editFamily = function(famId) {
         fam.name = name;
         fam.phone = $('#ef-phone').value.trim() || null;
         if (typeof audit === 'function') audit('family.update', 'family:' + famId, 'renamed to ' + name);
-        save(); closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
+        closeModal(); render();
+        confirmSaved(t('Saved', 'تم الحفظ'));   // v6.388: confirm before success
       } },
     ],
   });
@@ -5637,7 +5662,9 @@ window.editMemberPricing = function(memberId) {
                 }
               }
               applyPricingSafe(rowVals, groupPays, payDate, payMethod, groupPayMeta);
-              closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
+              closeModal(); render();
+              // v6.388: money (pricing + payments + refunds) — confirm it reached the cloud before "saved".
+              confirmSaved(t('Saved', 'تم الحفظ'));
             } },
           ],
         });
@@ -5849,7 +5876,9 @@ window.editInvoicePayments = function(invoiceId) {
         inv.lastUpdated = TODAY;
         stampUpdate(inv);
         if (typeof audit === 'function') audit('invoice.payments', 'invoice:' + inv.id, 'edit payments (date/method/rows)', { recordName: inv.customerName || '' });
-        save(); closeModal(); render(); toast(t('Saved', '\u062a\u0645 \u0627\u0644\u062d\u0641\u0638'));
+        closeModal(); render();
+        // v6.388: money \u2014 confirm the edited payments reached the cloud before saying "saved".
+        confirmSaved(t('Saved', '\u062a\u0645 \u0627\u0644\u062d\u0641\u0638'));
       } },
     ],
   });
@@ -6016,7 +6045,9 @@ window.editCampMember = function(id) {
           }
         }
         if (typeof audit === 'function') audit('member.update', 'member:' + m.id, 'camp edit: ' + label + ', price ' + price + ', paid ' + paid + ', due ' + (net - paid));
-        save(); closeModal(); render(); toast(t('Saved', 'تم الحفظ'));
+        closeModal(); render();
+        // v6.388: money — confirm the camp price/paid edit reached the cloud before saying "saved".
+        confirmSaved(t('Saved', 'تم الحفظ'));
       } },
     ],
   });
@@ -8620,8 +8651,9 @@ window._swimDeleteGroup = function(gid) {
   if (!confirm(`${t('Delete group', 'حذف مجموعة')} "${g.name || ''}"?${note}`)) return;
   state.swimGroups = (state.swimGroups || []).filter(x => x.id !== gid);
   if (typeof audit === 'function') audit('swim.group.delete', 'swimgroup', `Deleted swimming group ${g.name}`);
-  save(); _swimRerender();
-  toast(t('Group deleted', 'تم حذف المجموعة'));
+  _swimRerender();
+  // v6.388: confirm the group deletion reached the cloud before saying so.
+  confirmSaved(t('Group deleted', 'تم حذف المجموعة'));
 };
 
 window._swimMove = function(mid, fromGid, toGid) {
@@ -8652,8 +8684,8 @@ window._swimAssign = function(gid, ids) {
     if (other.id !== gid) other.memberIds = (other.memberIds || []).filter(id => !ids.includes(id));
   });
   ids.forEach(id => { if (!g.memberIds.includes(id)) g.memberIds.push(id); });
-  save(); _swimRerender();
-  toast(`${ids.length} ${t('assigned to', 'أُسند إلى')} ${escapeHtml(g.name || '')}`);
+  _swimRerender();
+  confirmSaved(`${ids.length} ${t('assigned to', 'أُسند إلى')} ${escapeHtml(g.name || '')}`);
 };
 
 window._swimRemove = function(gid, mid) {
@@ -8683,8 +8715,8 @@ window._swimAuto = function() {
   const newGroups = state.swimGroups.slice(base);
   pool.forEach((mid, idx) => { newGroups[idx % numGroups].memberIds.push(mid); });
   if (typeof audit === 'function') audit('swim.group.auto', 'swimgroup', `Auto-grouped ${pool.length} swimmers into ${numGroups} groups`);
-  save(); _swimRerender();
-  toast(`${t('Created', 'تم إنشاء')} ${numGroups} ${t('groups', 'مجموعات')}`);
+  _swimRerender();
+  confirmSaved(`${t('Created', 'تم إنشاء')} ${numGroups} ${t('groups', 'مجموعات')}`);
 };
 
 // Build a shareable text block for a group (bilingual).
@@ -9025,8 +9057,8 @@ PAGES.schedule = (main) => {
         ...(existing ? [{ label: 'Remove class', class: 'btn ghost', onclick: () => {
           if (!confirm('Remove this class from the schedule?')) return;
           state.schedule = state.schedule.filter(c => c.id !== existing.id);
-          save(); closeModal(); refresh();
-          toast('Class removed');
+          closeModal(); refresh();
+          confirmSaved('Class removed');   // v6.388: confirm before success
         } }] : []),
         { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
         { label: existing ? 'Save' : 'Add Class', class: 'btn primary', onclick: () => {
@@ -9047,8 +9079,8 @@ PAGES.schedule = (main) => {
               day, slot, sport, coachId,
             });
           }
-          save(); closeModal(); refresh();
-          toast(existing ? 'Class updated' : 'Class added');
+          closeModal(); refresh();
+          confirmSaved(existing ? 'Class updated' : 'Class added');
         }},
       ],
     });
@@ -9446,8 +9478,8 @@ PAGES.schedule = (main) => {
                 if (currentRole() !== 'admin') { toast('Only an admin can clear the schedule', 'error'); closeModal(); return; }
                 if (typeof audit === 'function') audit('schedule.clear_all', 'schedule', `Cleared all ${count} scheduled classes`);
                 state.schedule = [];
-                save(); closeModal(); refresh();
-                toast('Schedule cleared');
+                closeModal(); refresh();
+                confirmSaved('Schedule cleared');   // v6.388: confirm before success
               }},
             ],
           }), 60);
@@ -10227,9 +10259,9 @@ PAGES.invoices = (main) => {
     for (const i of state.invoices) { if (ids.has(i.id)) { i.deleted = true; i.deletedAt = _now; } }
     if (typeof audit === 'function') audit('invoice.delete_bulk', 'invoices', `Bulk-deleted ${invs.length} invoices — ${fmt(totalAmt)} QAR (${fmt(paidAmt)} paid)`);
     selected.clear();
-    save();
-    toast(`✓ ${invs.length} invoice${invs.length === 1 ? '' : 's'} deleted`);
     refresh();
+    // v6.388: success only after the SERVER confirms the tombstones landed (was bare save()+toast).
+    confirmSaved(`✓ ${invs.length} invoice${invs.length === 1 ? '' : 's'} deleted`);
   }
 
   function mergeSelectedInvoices() {
@@ -10308,10 +10340,10 @@ PAGES.invoices = (main) => {
           state.invoices.push(merged);
           audit('invoice.merge', `invoice:${merged.id}`, `Merged ${invs.length} invoices (${refs.join(', ')}) into ${merged.ref} · ${fmt(totalAmt)} QAR`, { customerId: custId, refs, total: totalAmt });
           selected.clear();
-          save();
           closeModal();
           refresh();
-          toast(`🔗 Merged ${invs.length} invoices into one · ${fmt(totalAmt)} QAR`);
+          // v6.388: confirm the merge landed on the server before claiming success.
+          confirmSaved(`🔗 Merged ${invs.length} invoices into one · ${fmt(totalAmt)} QAR`);
         } },
       ],
     });
@@ -11148,9 +11180,9 @@ window._icFix = function (invId) {
   if (!changed.length) { toast(t('Nothing to update on this invoice', 'لا شيء للتحديث في هذه الفاتورة')); return; }
   if (typeof stampUpdate === 'function') stampUpdate(inv);
   if (typeof audit === 'function') audit('invoice.sync', 'invoice:' + inv.id, `Synced ${inv.ref || '#' + inv.id} to member data — ${changed.join(', ')}`, { fields: changed });
-  save();
-  toast('✔ ' + (inv.ref || ('INV' + inv.id)) + ' — ' + t('updated', 'تم التحديث') + ': ' + changed.join(', '));
   render();
+  // v6.388: confirm the invoice sync reached the cloud before saying "updated".
+  confirmSaved('✔ ' + (inv.ref || ('INV' + inv.id)) + ' — ' + t('updated', 'تم التحديث') + ': ' + changed.join(', '));
 };
 
 // Re-point an orphan invoice (its member was archived / the link broke — e.g. a
@@ -11191,8 +11223,9 @@ window._icRelink = function (invId) {
         if (m.qid) inv.customerQid = m.qid;
         if (typeof stampUpdate === 'function') stampUpdate(inv);
         if (typeof audit === 'function') audit('invoice.relink', 'invoice:' + inv.id, `Re-linked ${inv.ref || '#' + inv.id} → ${m.name} (id ${m.id}, was member ${old})`, { from: old, to: m.id, name: m.name });
-        save(); closeModal(); render();
-        toast('🔗 ' + (inv.ref || ('INV' + inv.id)) + ' → ' + m.name);
+        closeModal(); render();
+        // v6.388: confirm the re-link reached the cloud before saying it linked.
+        confirmSaved('🔗 ' + (inv.ref || ('INV' + inv.id)) + ' → ' + m.name);
       } },
     ],
   });
@@ -11247,9 +11280,9 @@ window._icFixAll = function () {
     if (touched) { if (typeof stampUpdate === 'function') stampUpdate(inv); n++; }
   }
   if (typeof audit === 'function') audit('invoice.sync_bulk', 'invoices', `Bulk-synced ${n} invoices to current member data`, { count: n });
-  save();
-  toast('✔ ' + n + ' ' + t('invoices updated', 'فاتورة محدّثة'));
   render();
+  // v6.388: confirm the bulk sync reached the cloud before saying "updated".
+  confirmSaved('✔ ' + n + ' ' + t('invoices updated', 'فاتورة محدّثة'));
 };
 
 window._icOpen = (invId) => { if (typeof printInvoicePDF === 'function') printInvoicePDF(invId); };
@@ -11812,10 +11845,10 @@ function generateLatestInvoice(onDone) {
           })),
         };
         stampUpdate(newInv); state.invoices.push(newInv);
-        save();
         closeModal();
-        toast(`Invoice ${newInv.ref} created — ${fmt(totalAmt)} QAR`, 'success');
         if (onDone) onDone(); else render();
+        // v6.388: confirm the new invoice reached the cloud before saying "created".
+        confirmSaved(`Invoice ${newInv.ref} created — ${fmt(totalAmt)} QAR`);
       }},
     ],
   });
@@ -12108,9 +12141,9 @@ window.fixNameCapitalization = function() {
   if (!confirm(`Fix capitalisation on ${changes.length} member name${changes.length === 1 ? '' : 's'}?\n\n${samples}${changes.length > 6 ? '\n…and ' + (changes.length - 6) + ' more' : ''}\n\nThis updates the saved English names. Back up first if unsure.`)) return;
   changes.forEach(c => { c.m.name = c.fixed; });
   if (typeof audit === 'function') audit('members.fix_names', 'members', `Title-cased ${changes.length} member name(s)`, { count: changes.length });
-  save();
+  
   render();
-  toast(`Fixed ${changes.length} name${changes.length === 1 ? '' : 's'}`);
+  confirmSaved(`Fixed ${changes.length} name${changes.length === 1 ? '' : 's'}`);
 };
 
 // ── Duplicate-subscription cleanup (v6.295.0) ─────────────────────────────────
@@ -12238,8 +12271,8 @@ window._setDataCheckpoint = function (reopen) {
   if (!state.settings) state.settings = {};
   state.settings.dataCheckpoint = { at: Date.now(), by: (state.user && state.user.name) || currentRole() || '', counts: window._safetyCounts() };
   try { if (typeof audit === 'function') audit('data.checkpoint.set', 'Set a data-safety checkpoint'); } catch (_) {}
-  save();
-  toast(t('📌 Checkpoint set — I will track that nothing is lost from here.', '📌 تم ضبط نقطة التحقق — سأتابع ألا تُفقد أي بيانات من الآن.'), 'success');
+  
+  confirmSaved(t('📌 Checkpoint set — I will track that nothing is lost from here.', '📌 تم ضبط نقطة التحقق — سأتابع ألا تُفقد أي بيانات من الآن.'));
   if (reopen !== false) { closeModal(); window.showDataSafety(); }
 };
 window._safetyTimeAgo = function (ms) {
@@ -12965,10 +12998,10 @@ window.restoreInvoice = function(id) {
   if (!inv) { toast('Invoice not found', 'error'); return; }
   delete inv.deleted; delete inv.deletedAt; delete inv.deletedBy;
   if (typeof audit === 'function') audit('invoice.restore', 'invoice:' + id, `Restored ${inv.ref || '#' + id}`);
-  save();
   if (typeof window._invoicesRefresh === 'function' && state.route === 'invoices') window._invoicesRefresh();
   else render();
-  toast(`↩ ${t('Invoice restored', 'تم استرجاع الفاتورة')} · ${inv.ref || '#' + id}`);
+  // v6.388: confirm the restore reached the cloud before saying "restored".
+  confirmSaved(`↩ ${t('Invoice restored', 'تم استرجاع الفاتورة')} · ${inv.ref || '#' + id}`);
 };
 // Permanently remove a soft-deleted invoice from the archive (admin only).
 window.hardDeleteInvoice = function(id) {
@@ -13087,8 +13120,9 @@ window.regenerateInvoice = function(id) {
           ? (labelList || newLineItems[0].sport || inv.description || '')
           : `${newLineItems.length} sports: ${labelList || newLineItems.map(li => li.sport).filter(Boolean).join(', ')}`;
         if (typeof audit === 'function') audit('invoice.regenerate', 'invoice:' + inv.id, `Regenerated ${inv.ref || '#' + inv.id} for ${m.name} — ${fmt(oldAmount)} → ${fmt(newAmount)} QAR`);
-        save(); closeModal(); render();
-        toast(`✓ Invoice regenerated · new balance ${fmt(newBalance)} QAR`);
+        closeModal(); render();
+        // v6.388: confirm the regenerated amounts reached the cloud before saying "regenerated".
+        confirmSaved(`✓ Invoice regenerated · new balance ${fmt(newBalance)} QAR`);
       }}]),
     ],
   });
@@ -14266,8 +14300,9 @@ window.openCashCollectionModal = function(existingId) {
           (state.expenses || (state.expenses = [])).push(row);
           if (typeof audit === 'function') audit('cash.collection.create', 'expense:' + row.id, `Cash collected ${fmt(amt)} QAR${by ? ' by ' + by : ''}`);
         }
-        save(); closeModal(); render();
-        toast(ex ? t('Cash collection updated', 'تم تحديث تحصيل النقدية') : '✓ ' + t('Cash collection recorded', 'تم تسجيل تحصيل النقدية'));
+        closeModal(); render();
+        // v6.388: confirm the cash-collection expense reached the cloud before saying it recorded.
+        confirmSaved(ex ? t('Cash collection updated', 'تم تحديث تحصيل النقدية') : '✓ ' + t('Cash collection recorded', 'تم تسجيل تحصيل النقدية'));
       }},
     ],
   });
@@ -14347,8 +14382,9 @@ PAGES.cashinhand = (main) => {
     if (!Array.isArray(state.cashCounts)) state.cashCounts = [];
     state.cashCounts.push(entry);
     if (typeof audit === 'function') audit('cash.count', 'cashinhand', `Recorded cash count ${fmt(amount)} QAR (quick)`);
-    save(); render();
-    toast(`✓ ${t('Cash count recorded', 'تم تسجيل الجرد')}: ${fmt(amount)} QAR`);
+    render();
+    // v6.388: confirm the cash count reached the cloud before saying it recorded.
+    confirmSaved(`✓ ${t('Cash count recorded', 'تم تسجيل الجرد')}: ${fmt(amount)} QAR`);
   };
   $('#cih-quick-save')?.addEventListener('click', quickSave);
   $('#cih-quick')?.addEventListener('keydown', e => { if (e.key === 'Enter') quickSave(); });
@@ -15690,9 +15726,9 @@ PAGES.salaries = (main) => {
       }
     }
     state.settings.commissionBasis = next;
-    save();
+    
     refresh();
-    toast('Commission basis: ' + (state.settings.commissionBasis === 'attendance' ? 'by attendance ✅' : 'by payment'));
+    confirmSaved('Commission basis: ' + (state.settings.commissionBasis === 'attendance' ? 'by attendance ✅' : 'by payment'));
   });
   const salCommStart = $('#sal-comm-start');
   if (salCommStart) salCommStart.addEventListener('change', e => {
@@ -15885,8 +15921,9 @@ window.manageCoachStudents = function(coachId) {
           if (excludedIds.length) state.settings.salaryExclusions[coachId] = excludedIds;
           else delete state.settings.salaryExclusions[coachId];
           audit('salary.exclusions', `coach:${coachId}`, `Updated commission exclusions for ${c.name} (${excludedIds.length} excluded)`, { coachId, excluded: excludedIds });
-          save(); closeModal(); render();
-          toast(excludedIds.length ? `${excludedIds.length} member${excludedIds.length === 1 ? '' : 's'} excluded from ${c.name}'s commission` : `No members excluded from ${c.name}'s commission`);
+          closeModal(); render();
+          // v6.388: commission — confirm the exclusion list reached the cloud before saying so.
+          confirmSaved(excludedIds.length ? `${excludedIds.length} member${excludedIds.length === 1 ? '' : 's'} excluded from ${c.name}'s commission` : `No members excluded from ${c.name}'s commission`);
         } },
     ],
   });
@@ -16129,7 +16166,9 @@ window.markPaid = function(coachId, monthKey) {
         state.salaries = state.salaries.filter(s => s.id !== rec.id);
         state.expenses = (state.expenses || []).filter(e => !(e._salaryAutoExpense && String(e.salaryId) === String(rec.id)));
         audit('salary.unpaid', `coach:${coachId}`, `Cleared all payments for ${c.name} · ${fmtMonth(monthKey)}`, { coachId, month: monthKey, coachName: c.name });
-        save(); closeModal(); render(); toast(t('Payments cleared', 'تم حذف الدفعات'));
+        closeModal(); render();
+        // v6.388: money — confirm the cleared salary + expenses reached the cloud before saying so.
+        confirmSaved(t('Payments cleared', 'تم حذف الدفعات'));
       } }] : []),
     ],
   });
@@ -16966,10 +17005,10 @@ window.restockProduct = function(id) {
             method: 'cash',
           });
         }
-        save();
         closeModal();
-        toast(`+${qty} ${p.name}` + (cost > 0 ? ` · expense ${fmt(qty*cost)} QAR logged` : ''));
         render();
+        // v6.388: confirm the restock (+ any expense) reached the cloud before saying so.
+        confirmSaved(`+${qty} ${p.name}` + (cost > 0 ? ` · expense ${fmt(qty*cost)} QAR logged` : ''));
       }},
     ],
   });
@@ -17597,8 +17636,8 @@ PAGES.sports = (main) => {
       state.settings.summerCampPrices = state.settings.summerCampPrices.filter(p =>
         p.label && p.label.trim() && p.days > 0
       );
-      save();
-      toast(`Saved ${state.settings.summerCampPrices.length} Summer Camp tiers`);
+      
+      confirmSaved(`Saved ${state.settings.summerCampPrices.length} Summer Camp tiers`);
       refreshCampPrices();
     });
     $('#camp-reset').addEventListener('click', () => {
@@ -17639,8 +17678,8 @@ window.addSport = function() {
         }
         const maxOrder = Math.max(0, ...state.settings.sports.map(s => s.order ?? 0));
         state.settings.sports.push({ name, enabled: true, order: maxOrder + 1 });
-        save(); closeModal(); render();
-        toast(`Sport added: ${name}`);
+        closeModal(); render();
+        confirmSaved(`Sport added: ${name}`);
       }},
     ],
   });
@@ -17655,8 +17694,8 @@ window.makePrivateVariant = function(name) {
   const maxOrder = Math.max(0, ...state.settings.sports.map(s => s.order ?? 0));
   state.settings.sports.push({ name: variant, enabled: true, order: maxOrder + 1 });
   if (typeof audit === 'function') audit('sport.create', 'sport:' + variant, 'private variant of ' + name);
-  save(); render();
-  toast(`Added ${variant} 🔒`);
+  render();
+  confirmSaved(`Added ${variant} 🔒`);
 };
 
 window.editSport = function(oldName) {
@@ -17729,8 +17768,8 @@ window.editSport = function(oldName) {
         for (const sc of (state.schedule || [])) {
           if (sc.sport === oldName) sc.sport = newName;
         }
-        save(); closeModal(); render();
-        toast(`Renamed → "${newName}" (${changedCount} record${changedCount === 1 ? '' : 's'} updated)`);
+        closeModal(); render();
+        confirmSaved(`Renamed → "${newName}" (${changedCount} record${changedCount === 1 ? '' : 's'} updated)`);
       }},
     ],
   });
@@ -18280,8 +18319,8 @@ PAGES.settings = (main, section) => {
         if (typeof _idleReset === 'function') _idleReset();  // apply the new timeout immediately
       }
     }
-    save();
-    toast(`Preferences saved (alert ${days} days before expiry)`);
+    
+    confirmSaved(`Preferences saved (alert ${days} days before expiry)`);
   });
 
   // Theme picker
@@ -18308,9 +18347,9 @@ PAGES.settings = (main, section) => {
     const newBasis = basisSel && basisSel.value === 'attendance' ? 'attendance' : 'payment';
     const basisChanged = state.settings.commissionBasis !== newBasis;
     state.settings.commissionBasis = newBasis;
-    save();
+    
     render();
-    toast(changed || basisChanged ? `Saved${changed ? ` · ${changed} rate${changed !== 1 ? 's' : ''}` : ''}${basisChanged ? ` · basis: ${newBasis}` : ''}` : 'No changes to save');
+    confirmSaved(changed || basisChanged ? `Saved${changed ? ` · ${changed} rate${changed !== 1 ? 's' : ''}` : ''}${basisChanged ? ` · basis: ${newBasis}` : ''}` : 'No changes to save');
   });
 
   // ── Expense categories management ─────────────────────────────
@@ -18333,9 +18372,9 @@ PAGES.settings = (main, section) => {
       return;
     }
     state.settings.expenseCategories.push(name);
-    save();
+    
     render();
-    toast(`Added category: ${name}`);
+    confirmSaved(`Added category: ${name}`);
   });
   document.querySelectorAll('[data-cat-delete]').forEach(btn => {
     btn.addEventListener('click', e => {
@@ -18352,9 +18391,9 @@ PAGES.settings = (main, section) => {
       if (!confirm(`Delete category "${name}"?\n\nThis only removes it from the dropdown. No expense data is affected.`)) return;
       ensureCategories();
       state.settings.expenseCategories = state.settings.expenseCategories.filter(c => c !== name);
-      save();
+      
       render();
-      toast(`Deleted: ${name}`);
+      confirmSaved(`Deleted: ${name}`);
     });
   });
   // Allow Enter key in the new-category input to trigger Add
@@ -18375,8 +18414,8 @@ PAGES.settings = (main, section) => {
       trial_en: $('#tpl-trial-en')?.value ?? reminderTemplate('trial_en'),
       trial_ar: $('#tpl-trial-ar')?.value ?? reminderTemplate('trial_ar'),
     };
-    save();
-    toast('💬 Reminder templates saved');
+    
+    confirmSaved('💬 Reminder templates saved');
   });
   $('#reset-tpls')?.addEventListener('click', () => {
     if (!confirm('Restore default reminder templates?\n\nYour current customizations will be replaced with the bundled English + Arabic defaults.')) return;
@@ -18523,12 +18562,12 @@ PAGES.settings = (main, section) => {
               delete incoming.user; delete incoming.route;
               Object.assign(state, incoming);
               if (typeof audit === 'function') audit('data.restore', 'backup', `Restored backup (${summary})`, { file: file.name, exported: data.exported });
-              window.__allowEmptySave = true;   // explicit restore — honor even if the backup is small
-              save();
-              window.__allowEmptySave = false;
               render();
-              toast(`✓ Restored · ${state.members.length} members · ${state.invoices.length} invoices`);
               e.target.value = '';
+              // v6.388: a restore REPLACES everything — confirm it reached the cloud before saying "restored".
+              window.__allowEmptySave = true;   // explicit restore — honor even if the backup is small
+              Promise.resolve(confirmSaved(`✓ Restored · ${state.members.length} members · ${state.invoices.length} invoices`))
+                .finally(() => { window.__allowEmptySave = false; });
             } },
         ],
       });
@@ -20883,8 +20922,9 @@ window.switchSport = function(memberId) {
           for (const tr of resolved) m.enrollments.push({ sport: tr.sport, coachId: tr.coachId, classes: tr.classes, price: tr.value, start: srcEnroll.start || switchDate, validity: srcEnroll.validity || DEFAULT_VALIDITY });
           if (m.sport === from.sport && m.coachId === from.coachId) { m.sport = resolved[0].sport; m.coachId = resolved[0].coachId; }
           audit('sport.switch', 'member:' + m.id, 'Distributed ' + from.sport + ' → ' + tgs.map(t => t.sport).join(', ') + ' for ' + (m.name || m.nameArabic), { memberId: m.id });
-          save(); closeModal(); render();
-          toast('Switched · ' + from.sport + ' distributed into ' + tgs.length + ' sports · ' + coachName(from.coachId) + ' keeps ' + fmt(aShare));
+          closeModal(); render();
+          // v6.388: confirm the switch (enrollments + credit invoice) reached the cloud before saying so.
+          confirmSaved('Switched · ' + from.sport + ' distributed into ' + tgs.length + ' sports · ' + coachName(from.coachId) + ' keeps ' + fmt(aShare));
           return;
         }
 
@@ -21787,10 +21827,10 @@ window.applyCarryForwardToActive = function(memberId) {
     if (enr && p.sp !== SUMMER_CAMP) enr.classes = (parseInt(enr.classes) || before) + p.credit;
   }
   if (typeof audit === 'function') audit('member.carry.apply', `member:${m.id}`, `Applied ${applied} carry-forward class(es) to ${m.name}`);
-  save();
-  toast(`✅ Added ${applied} carried class${applied === 1 ? '' : 'es'} to ${m.name}`);
   closeModal();
   viewMember(memberId);
+  // v6.388: confirm the carried classes (member + invoice + enrollment) reached the cloud first.
+  confirmSaved(`✅ Added ${applied} carried class${applied === 1 ? '' : 'es'} to ${m.name}`, { onFail: () => viewMember(memberId) });
 };
 
 window.openMemberHistory = function(memberId) {
@@ -22929,8 +22969,9 @@ window.studentFreeze = function(memberId) {
         days = Math.max(1, Math.min(days, maxReq));
         applyFreeze(m, days, 'Self-service freeze');
         if (typeof audit === 'function') audit('member.freeze', 'member:' + m.id, `student froze ${days}d`);
-        save(); closeModal(); render();
-        toast(t(`Membership frozen for ${days} day${days === 1 ? '' : 's'}`, `تم تجميد العضوية لمدة ${days} يوم`));
+        closeModal(); render();
+        // v6.388: freeze changes billing/expiry — confirm it reached the cloud before saying so.
+        confirmSaved(t(`Membership frozen for ${days} day${days === 1 ? '' : 's'}`, `تم تجميد العضوية لمدة ${days} يوم`));
       }},
     ],
   });
@@ -23762,7 +23803,7 @@ PAGES.advice = (main) => {
         : (coachName(a.coachId) || 'Coach');
       a.comments.push({ by: role, name, text, date: TODAY });
       if (typeof audit === 'function') audit('advice.comment', `advice:${aid}`, `${role} reply`);
-      save(); render(); toast(t('Reply posted', 'تم نشر الرد'));
+      render(); confirmSaved(t('Reply posted', 'تم نشر الرد'));
     }));
   };
 
@@ -23819,7 +23860,7 @@ PAGES.advice = (main) => {
     if (!text) { toast('Write some advice first', 'error'); return; }
     state.advices.push({ id: nextId(state.advices), memberId: mid, coachId, text, date: TODAY });
     if (typeof audit === 'function') audit('advice.create', `member:${mid}`, `Advice to ${(state.members.find(x => x.id === mid) || {}).name || mid}`);
-    save(); render(); toast('Advice sent');
+    render(); confirmSaved('Advice sent');
   });
   main.querySelectorAll('[data-del-advice]').forEach(btn => btn.addEventListener('click', () => {
     const id = parseInt(btn.dataset.delAdvice);
@@ -24020,7 +24061,7 @@ PAGES.posts = (main) => {
       : t('Club Admin', 'إدارة النادي');
     p.comments.push({ by, name, text, date: TODAY });
     if (typeof audit === 'function') audit('post.comment', `post:${pid}`, `${by} reply`);
-    save(); render(); toast(t('Reply posted', 'تم نشر الرد'));
+    render(); confirmSaved(t('Reply posted', 'تم نشر الرد'));
   }));
 
   // ── Wire delete ──
@@ -27415,10 +27456,9 @@ window.editRentalCustomer = function(rcustId) {
             if (c.qid) r.customerQid = c.qid;
           }
         }
-        save();
         closeModal();
         render();
-        toast('Customer updated');
+        confirmSaved('Customer updated');   // v6.388: confirm before success
       }},
     ],
   });
@@ -27607,10 +27647,10 @@ function saveRental(existingId, onDone) {
         inv.category = facility === 'Boxing Room' ? 'Boxing Room' : 'Court Rental';
       }
     }
-    save();
     closeModal();
-    toast('Booking updated');
     if (onDone) onDone(); else render();
+    // v6.388: rental money — confirm the booking edit reached the cloud before saying so.
+    confirmSaved('Booking updated');
     return;
   }
 
@@ -27671,9 +27711,9 @@ function editFacilityRates() {
           const v = parseFloat(document.getElementById('fr-' + f.replace(/\s+/g,'-')).value) || 0;
           state.settings.facilityRates[f] = v;
         }
-        save();
+        
         closeModal();
-        toast('Facility rates saved');
+        confirmSaved('Facility rates saved');
         render();
       }},
     ],
@@ -29030,8 +29070,9 @@ window.fixAllMessyLedgersUI = function () {
         let n = 0;
         for (const inv of findMessyLedgers()) { if (_collapseLedger(inv)) n++; }
         try { if (typeof audit === 'function') audit('invoice.cleanup', 'bulk', `collapsed ${n} messy payment ledger(s)`); } catch (_) {}
-        save(); closeModal(); render();
-        toast('✅ ' + t(`Fixed ${n} messy ledger(s)`, `تم إصلاح ${n} دفعة`), 'success');
+        closeModal(); render();
+        // v6.388: confirm the collapsed ledgers reached the cloud before saying "fixed".
+        confirmSaved('✅ ' + t(`Fixed ${n} messy ledger(s)`, `تم إصلاح ${n} دفعة`));
       } },
     ],
   });
@@ -29086,8 +29127,9 @@ window.fixInvoiceTotalUI = function (invoiceId) {
   )) return;
   _fixInvoiceTotal(inv);
   if (typeof audit === 'function') audit('invoice.fix_total', 'invoice:' + inv.id, `total ${fmt(oldAmt)} → ${fmt(lineSum)} (from line items)`);
-  save(); render();
-  toast('✅ ' + t('Invoice total corrected', 'تم تصحيح إجمالي الفاتورة'), 'success');
+  render();
+  // v6.388: confirm the corrected total reached the cloud before saying "corrected".
+  confirmSaved('✅ ' + t('Invoice total corrected', 'تم تصحيح إجمالي الفاتورة'));
 };
 
 // ── Non-canonical payment-method labels ("Cash" vs "cash", "Bank transfer" …) ──
@@ -29122,8 +29164,9 @@ window.normalizeAllMethodsUI = function () {
     i.lastUpdated = TODAY; n++;
   }
   if (typeof audit === 'function') audit('invoice.normalize_methods', 'bulk', `normalised payment-method labels on ${n} invoice(s)`);
-  save(); render();
-  toast('✅ ' + t(`Normalised ${n} invoice method(s)`, `تم توحيد طرق الدفع في ${n} فاتورة`), 'success');
+  render();
+  // v6.388: confirm the relabelled methods reached the cloud before saying "normalised".
+  confirmSaved('✅ ' + t(`Normalised ${n} invoice method(s)`, `تم توحيد طرق الدفع في ${n} فاتورة`));
 };
 
 PAGES.cleanup = (main) => {
@@ -29316,9 +29359,8 @@ window.dedupeMemberEnrollment = function(memberId, sport) {
     return false;
   });
   if (typeof audit === 'function') audit('cleanup.dedupe_enrollment', 'member:' + memberId, `Removed ${matches.length - 1} duplicate ${sport} enrollment(s)`);
-  save();
-  toast(`Kept one ${sport} enrollment for ${m.name}`, 'success');
   render();
+  confirmSaved(`Kept one ${sport} enrollment for ${m.name}`);   // v6.388: confirm before success
 };
 
 window.resyncMemberEnrollmentsUI = function(memberId) {
@@ -29328,9 +29370,8 @@ window.resyncMemberEnrollmentsUI = function(memberId) {
   if (!confirm(`Re-sync ${m.name}'s enrollments from their subscriptions?\n\nCurrent sport rows: ${before}\n\nThe sport rows will be rebuilt to match the active subscriptions (correct sports and coaches). Classes, price and dates are kept; attendance and subscriptions are NOT changed.`)) return;
   if (!resyncMemberEnrollments(memberId)) { toast('Nothing to re-sync', 'info'); return; }
   if (typeof audit === 'function') audit('cleanup.resync_enrollments', 'member:' + memberId, `Re-synced enrollments from subscriptions for ${m.name}`);
-  save();
-  toast(`Re-synced ${m.name}'s enrollments`, 'success');
   render();
+  confirmSaved(`Re-synced ${m.name}'s enrollments`);   // v6.388: confirm before success
 };
 
 window.resyncAllEnrollmentsUI = function() {
@@ -29340,9 +29381,8 @@ window.resyncAllEnrollmentsUI = function() {
   let n = 0;
   for (const d of list) { if (resyncMemberEnrollments(d.member.id)) n++; }
   if (typeof audit === 'function') audit('cleanup.resync_enrollments_bulk', 'members', `Re-synced enrollments for ${n} members`);
-  save();
-  toast(`Re-synced ${n} member${n === 1 ? '' : 's'}`, 'success');
   render();
+  confirmSaved(`Re-synced ${n} member${n === 1 ? '' : 's'}`);   // v6.388: confirm before success
 };
 
 window.recalcCampMemberUI = function(memberId) {
@@ -29351,9 +29391,8 @@ window.recalcCampMemberUI = function(memberId) {
   const n = recalcCampMember(memberId);
   if (!n) { toast('Nothing to recalculate', 'info'); return; }
   if (typeof audit === 'function') audit('cleanup.recalc_camp', 'member:' + memberId, `Recalculated camp business-day counts for ${m.name}`);
-  save();
-  toast(`Recalculated camp for ${m.name}`, 'success');
   render();
+  confirmSaved(`Recalculated camp for ${m.name}`);   // v6.388: confirm before success
 };
 
 window.recalcAllCampUI = function() {
@@ -29363,9 +29402,8 @@ window.recalcAllCampUI = function() {
   let n = 0;
   for (const d of list) { if (recalcCampMember(d.member.id)) n++; }
   if (typeof audit === 'function') audit('cleanup.recalc_camp_bulk', 'members', `Recalculated camp business-day counts for ${n} members`);
-  save();
-  toast(`Recalculated ${n} camp member${n === 1 ? '' : 's'}`, 'success');
   render();
+  confirmSaved(`Recalculated ${n} camp member${n === 1 ? '' : 's'}`);   // v6.388: confirm before success
 };
 
 window.mergeDuplicateProductsUI = function(name) {
@@ -29376,9 +29414,8 @@ window.mergeDuplicateProductsUI = function(name) {
   const kept = mergeDuplicateProducts(grp.name);
   if (!kept) { toast('Merge failed', 'error'); return; }
   if (typeof audit === 'function') audit('cleanup.merge_products', 'product:' + kept.id, `Merged ${grp.count} "${grp.name}" records into #${kept.id}`);
-  save();
-  toast(`Merged into one "${kept.name}" — ${productCurrentStock(kept.id)} in stock`, 'success');
   render();
+  confirmSaved(`Merged into one "${kept.name}" — ${productCurrentStock(kept.id)} in stock`);   // v6.388: confirm before success
 };
 
 window.fixInvoiceDateUI = function(invId) {
@@ -29388,9 +29425,8 @@ window.fixInvoiceDateUI = function(invId) {
   const fixed = fixInvoiceDateToStart(invId);
   if (!fixed) { toast('Could not determine a start date for this invoice', 'error'); return; }
   if (typeof audit === 'function') audit('cleanup.fix_invoice_date', 'invoice:' + invId, `Re-dated ${inv.ref || ('INV' + invId)} from ${before} to ${fixed.date}`);
-  save();
-  toast(`${fixed.ref || ('INV' + invId)} re-dated to ${fmtDate(fixed.date)}`, 'success');
   render();
+  confirmSaved(`${fixed.ref || ('INV' + invId)} re-dated to ${fmtDate(fixed.date)}`);   // v6.388: confirm before success
 };
 
 window.fixAllInvoiceDatesUI = function() {
@@ -29400,9 +29436,8 @@ window.fixAllInvoiceDatesUI = function() {
   let n = 0;
   for (const d of list) { if (fixInvoiceDateToStart(d.inv.id)) n++; }
   if (typeof audit === 'function') audit('cleanup.fix_invoice_date_bulk', 'invoices', `Re-dated ${n} invoices to start dates`);
-  save();
-  toast(`Re-dated ${n} invoice${n === 1 ? '' : 's'} to their start dates`, 'success');
   render();
+  confirmSaved(`Re-dated ${n} invoice${n === 1 ? '' : 's'} to their start dates`);   // v6.388: confirm before success
 };
 
 window.mergeMemberInvoicesUI = function(memberId) {
@@ -29414,9 +29449,8 @@ window.mergeMemberInvoicesUI = function(memberId) {
   const kept = mergeMemberInvoices(memberId);
   if (!kept) { toast('Merge failed', 'error'); return; }
   if (typeof audit === 'function') audit('cleanup.merge_invoices', 'member:' + memberId, `Merged ${invs.length} invoices into ${kept.ref || ('INV' + kept.id)}`);
-  save();
-  toast(`Merged into ${kept.ref || ('INV' + kept.id)} — ${fmt(kept.amount)} QAR`, 'success');
   render();
+  confirmSaved(`Merged into ${kept.ref || ('INV' + kept.id)} — ${fmt(kept.amount)} QAR`);   // v6.388: confirm before success
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

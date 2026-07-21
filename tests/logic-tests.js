@@ -497,7 +497,13 @@ ${seed}
   eq(comb.expiryDate, '2026-08-01', 'mistake-delete: member expiry recomputed to the remaining sport');
   const solo = state.members.find(x => x.id === 91);
   removeEnrollmentData(solo, 'Karate');
-  ok(!state.invoices.find(i => i.id === 901), 'mistake-delete: single-sport invoice fully removed');
+  // v6.391: the invoice is now SOFT-deleted rather than spliced out of state.invoices. Same
+  // outcome for every consumer (they all skip i.deleted), but it leaves a tombstone so a stale
+  // sync can't resurrect it — the resurrection bug this release fixes — and an admin can still
+  // restore it from the Archived view. The assertion below checks that stronger contract.
+  const inv901 = state.invoices.find(i => i.id === 901);
+  ok(inv901 && inv901.deleted === true, 'mistake-delete: single-sport invoice is soft-deleted (tombstoned, not spliced away)');
+  ok(state.invoices.filter(i => !i.deleted).every(i => i.id !== 901), 'mistake-delete: ...so it no longer counts anywhere');
   eq(solo.enrollments.length, 0, 'mistake-delete: last enrollment removed cleanly');
   ok(duplicateEnrollmentSport([{ sport: 'Summer Camp' }, { sport: 'Summer Camp' }]) === 'Summer Camp', 'enroll: duplicate Summer Camp also blocked');
   ok(duplicateEnrollmentSport([{ sport: 'Summer Camp' }, { sport: 'Boxing' }]) === null, 'enroll: Summer Camp + another sport is allowed');
