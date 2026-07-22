@@ -723,7 +723,7 @@ function drawRecentInvoices() {
                 <td class="text-dim" style="white-space:nowrap">${fmtDate(i.date)}</td>
                 <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(cust)}</td>
                 <td>${i.sport ? `<span class="badge ${isRental ? 'pending' : ''}" style="font-size:10px">${escapeHtml(sportLabel)}</span>` : '<span class="text-mute">—</span>'}</td>
-                <td class="text-right num font-bold">${fmt(i.amount)}</td>
+                <td class="text-right num font-bold">${fmt(invoiceTotal(i))}</td>
               </tr>
             `;
           }).join('')}
@@ -3913,8 +3913,10 @@ function showNewMemberInvoiceModal(invoiceId, customerName) {
   const inv = state.invoices.find(i => i.id === invoiceId);
   const bal = inv ? invoiceBalance(inv) : 0;
   const payLine = inv ? (bal > 0.001
-    ? `<div style="font-size:14px;margin:8px 0 4px"><b style="color:var(--green)">${fmt(invoicePaid(inv))} QAR</b> paid · <b style="color:var(--accent-2)">${fmt(bal)} QAR due</b> <span class="text-mute">(total ${fmt(inv.amount)})</span></div>`
-    : `<div style="font-size:14px;margin:8px 0 4px"><b style="color:var(--green)">${fmt(inv.amount)} QAR</b> paid in full</div>`) : '';
+    // v6.397: totals shown here must be invoiceTotal — `bal` is derived from it, so using the raw
+    // amount made "paid + due" fail to equal the stated total on a drifted invoice.
+    ? `<div style="font-size:14px;margin:8px 0 4px"><b style="color:var(--green)">${fmt(invoicePaid(inv))} QAR</b> paid · <b style="color:var(--accent-2)">${fmt(bal)} QAR due</b> <span class="text-mute">(total ${fmt(invoiceTotal(inv))})</span></div>`
+    : `<div style="font-size:14px;margin:8px 0 4px"><b style="color:var(--green)">${fmt(invoiceTotal(inv))} QAR</b> paid in full</div>`) : '';
   showModal({
     title: '✅ Member & Invoice Created',
     body: `
@@ -10701,7 +10703,7 @@ window.showInvoiceHistory = function(customerId) {
                 <td>${i.sport ? `<span class="badge">${escapeHtml(i.sport)}</span>` : '<span class="text-mute">—</span>'}</td>
                 <td class="text-mute" style="font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(i.description || '—')}</td>
                 <td><span class="badge ${i.method === 'card' ? 'blue' : ''}">${i.method}</span></td>
-                <td class="text-right num font-bold">${fmt(i.amount)}</td>
+                <td class="text-right num font-bold">${fmt(invoiceTotal(i))}</td>
                 <td class="text-right" style="white-space:nowrap">
                   <button class="btn ghost sm" onclick="closeModal();printInvoicePDF(${i.id})" title="Export PDF">⬇</button>
                   ${(currentRole() === 'admin' || currentRole() === 'receptionist') ? `<button class="btn ghost sm" onclick="closeModal();editInvoicePayments(${i.id})" title="View / edit payments (date, method)">💳</button>` : ''}
@@ -11017,37 +11019,12 @@ function _icAmountIssue(inv) {
   return null;
 }
 
-// ── PAID-VS-LEDGER DRIFT (v6.395) ────────────────────────────────────────────
-// An invoice carries the paid figure TWICE: the scalar `amountPaid`, and the installment rows
-// in `payments[]`. recordPayment() keeps them equal, but several older paths set the scalar on
-// its own. When they disagree the app contradicts itself — invoicePaid() reads the scalar (so
-// the invoice row, the balance and the Paid/Partial badge use it) while invoicePaymentsSum()
-// and the per-month collected figures read the ROWS. That is the "installments make invoices
-// inaccurate" report: one screen says 900 paid, another says 600.
-// Nothing detected this before. Reported for REVIEW only — never auto-corrected, because
-// choosing which number is true is a money decision for the admin, not for the app.
-function _icPaidLedgerIssue(inv) {
-  if (!inv || inv.deleted) return null;
-  const rows = Array.isArray(inv.payments) ? inv.payments : [];
-  if (!rows.length) return null;                       // no ledger → nothing to disagree with
-  if (inv.amountPaid == null) return null;             // scalar absent → rows are used anyway
-  const ledger = Math.round(rows.reduce((s, p) => s + (Number(p.amount) || 0), 0) * 100) / 100;
-  const scalar = Math.round((Number(inv.amountPaid) || 0) * 100) / 100;
-  if (Math.abs(ledger - scalar) <= 0.01) return null;
-  return { ledger, scalar, diff: Math.round((scalar - ledger) * 100) / 100, rows: rows.length };
-}
-window._icPaidLedgerIssue = _icPaidLedgerIssue;
-
-// All drifted invoices, worst first — drives the review list and lets the owner see the scale.
-function findPaidLedgerDrift() {
-  const out = [];
-  for (const inv of (state.invoices || [])) {
-    const d = _icPaidLedgerIssue(inv);
-    if (d) out.push({ inv, ...d });
-  }
-  return out.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
-}
-window.findPaidLedgerDrift = findPaidLedgerDrift;
+// NOTE (v6.396): paid-vs-ledger drift — where the scalar `amountPaid` disagrees with the sum of
+// the `payments[]` rows — is ALREADY detected by _paymentLedgerIssues() in app.js and reviewed
+// through the "💳 Payment ledger" button on this screen, which shows Paid-field vs Rows-sum and
+// flags phantom duplicates. A second detector was briefly added here in v6.395 and removed: it
+// duplicated that logic with a tighter tolerance (0.01 vs 0.5 QAR) and was never wired to any
+// screen, so it was dead code. Use _paymentLedgerIssues() — do not reintroduce a parallel one.
 
 // ── MEMBER INVOICE HEALTH (v6.304.0) ────────────────────────────────────────
 // A per-member light for the Members screen so reception can spot at a glance whether
@@ -11522,7 +11499,7 @@ window.reviewPaymentLedger = function () {
     return `<div class="card" style="padding:12px;margin-bottom:10px">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
         <div><b>${escapeHtml(inv.customerName || ('#' + inv.id))}</b> <span class="text-mute" style="font-size:12px">${inv.ref || '#' + inv.id}</span></div>
-        <div style="font-size:12px" class="text-mute">${t('Total', 'الإجمالي')} ${fmt(inv.amount)} · ${t('Paid field', 'حقل المدفوع')} <b>${fmt(x.amountPaid)}</b> · ${t('Rows sum', 'مجموع الصفوف')} <b style="color:${x.drift ? 'var(--red)' : 'inherit'}">${fmt(x.sum)}</b></div>
+        <div style="font-size:12px" class="text-mute">${t('Total', 'الإجمالي')} ${fmt(invoiceTotal(inv))} · ${t('Paid field', 'حقل المدفوع')} <b>${fmt(x.amountPaid)}</b> · ${t('Rows sum', 'مجموع الصفوف')} <b style="color:${x.drift ? 'var(--red)' : 'inherit'}">${fmt(x.sum)}</b></div>
       </div>
       ${pays}
       <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px">
@@ -12739,7 +12716,10 @@ window.recordPaymentUI = function(id) {
           <div class="text-mute" style="font-size:13px">${inv.ref || '#' + inv.id} · ${escapeHtml(inv.sport || inv.description || '')}</div>
         </div>
         <div class="pay-totals">
-          <div class="pay-tcard"><div class="l">${t('Total', 'الإجمالي')}</div><div class="v">${fmt(inv.amount)}</div></div>
+          <!-- v6.397: use invoiceTotal, not inv.amount — the Balance card below is derived from
+               invoiceTotal, so showing the raw amount made the three cards contradict each other
+               (Total − Paid ≠ Balance) whenever the two had drifted apart. -->
+          <div class="pay-tcard"><div class="l">${t('Total', 'الإجمالي')}</div><div class="v">${fmt(invoiceTotal(inv))}</div></div>
           <div class="pay-tcard"><div class="l">${t('Paid', 'المدفوع')}</div><div class="v" style="color:var(--green)">${fmt(invoicePaid(inv))}</div></div>
           <div class="pay-tcard" style="border-color:rgba(242,163,60,.45);background:rgba(242,163,60,.08)"><div class="l" style="color:var(--accent-2)">${t('Balance', 'المتبقي')}</div><div class="v" style="color:var(--accent-2)">${fmt(bal)}</div></div>
         </div>
@@ -12974,7 +12954,11 @@ window.editInvoiceQuick = function(id) {
         // payment (for a real later payment, use the 💵 Pay button instead).
         let newPaid = parseFloat($('#ef-paid').value);
         if (isNaN(newPaid)) newPaid = invoicePaid(inv);
-        newPaid = Math.max(0, Math.min(newPaid, inv.amount));   // can't collect more than the total
+        // v6.397: clamp against invoiceTotal, not inv.amount. When the line-sum was HIGHER than
+        // the stored amount, this silently capped the figure below what the customer actually
+        // owed — so the admin could not record the full payment and the invoice kept showing a
+        // balance forever. (Identical for every invoice whose amount matches its lines.)
+        newPaid = Math.max(0, Math.min(newPaid, invoiceTotal(inv)));   // can't collect more than the total
         const _curPaid = invoicePaid(inv);
         if (Math.abs(newPaid - _curPaid) > 0.001) {
           // INSTALLMENTS ARE NEVER DESTROYED (v6.395). This used to overwrite inv.payments with a
@@ -14288,10 +14272,15 @@ window.sendInvoiceWhatsApp = function(id) {
       lines.push(`• ${label}${coachPart} — ${fmt(li.price)} QAR`);
     }
   } else {
-    lines.push(`${inv.description || inv.sport || 'Service'} — ${fmt(inv.amount)} QAR`);
+    lines.push(`${inv.description || inv.sport || 'Service'} — ${fmt(invoiceTotal(inv))} QAR`);
   }
   lines.push(``);
-  lines.push(`*Total: ${fmt(inv.amount)} QAR*`);
+  // v6.397: the itemised lines above are the SPORT LINES, so the total must be their sum
+  // (invoiceTotal), not the stored inv.amount. When those two drift — a condition the Invoice
+  // Checker already detects — the customer received a receipt whose items did not add up to its
+  // own total. invoiceTotal falls back to inv.amount when there are no line items, so this is
+  // identical for every consistent invoice.
+  lines.push(`*Total: ${fmt(invoiceTotal(inv))} QAR*`);
   if (invoiceBalance(inv) > 0.001) {
     lines.push(`Paid: ${fmt(invoicePaid(inv))} QAR`);
     lines.push(`*Balance due: ${fmt(invoiceBalance(inv))} QAR*`);

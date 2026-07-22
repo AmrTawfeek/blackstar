@@ -10,6 +10,7 @@ const fs = require('fs'), path = require('path'), http = require('http');
 const HOST = '127.0.0.1', PORT = 8080, PROJECT = 'blackstars-rules-test';
 const RULES = (() => {
   for (const p of [path.join(__dirname, 'crm238', 'blackstars-localhost', 'firestore.rules'),
+                   path.join(__dirname, '..', 'firestore.rules'),
                    path.join(__dirname, 'firestore.rules')]) {
     if (fs.existsSync(p)) return fs.readFileSync(p, 'utf8');
   }
