@@ -77,7 +77,12 @@ function gridNames(ctx, coachFilter) {
 
 console.log('source wiring (the actual fix):');
 ok('coach filter no longer tests only the headline m.coachId', !/if \(filter\.coach !== 'all' && m\.coachId !== parseInt\(filter\.coach\)\) continue;/.test(pagesSrc));
-ok('it now matches ANY of the member’s sports via coachSportsFor', /_coachSports = coachSportsFor\(m, parseInt\(filter\.coach\)\)/.test(pagesSrc));
+// v6.398: the coach filter became MULTI-select, so the single call became a UNION loop over every
+// chosen coach. The intent is unchanged — sports are still resolved per-coach via coachSportsFor —
+// so this asserts the new shape rather than the old one-coach line.
+ok('it still resolves sports via coachSportsFor (now unioned across the chosen coaches)',
+  /for \(const _cid of filter\.coaches\)[\s\S]{0,200}?coachSportsFor\(m, parseInt\(_cid\)\)/.test(pagesSrc));
+ok('...and a member taught by none of the chosen coaches is skipped', /if \(!_union\.size\) continue;/.test(pagesSrc));
 ok('and narrows the shown sports to that coach’s', /if \(_coachSports\) wanted = wanted\.filter\(s => _coachSports\.has\(s\)\)/.test(pagesSrc));
 ok('coachSportsFor also reads SUBSCRIPTION coaches (legacy rows)', /\(m\.subscriptions \|\| \[\]\)\.forEach\(s => \{ if \(s\.coachId === cid && s\.activity\) set\.add\(s\.activity\); \}\)/.test(pagesSrc));
 

@@ -14,7 +14,10 @@ const LS_VERSION_KEY = 'blackstars-crm-dataver';
 //                a required field that needs back-filling on existing data).
 //                A bump here triggers the runMigrations() pipeline which
 //                MUTATES existing data in place rather than wiping it.
-const APP_VERSION = '6.397.0';   // 6.397.0 PAYMENT + INVOICE MODULE REVIEW: one invoice, two totals. An invoice states its value TWICE - the stored inv.amount and the sum of its sport line items - and invoiceTotal() is the canonical one (line-sum when lines exist, else amount). Balance, status and the per-month figures all derive from invoiceTotal, but SEVEN money-facing screens printed the RAW inv.amount, so on any invoice where the two had drifted (a shape the Invoice Checker already detects and reports) the figures contradicted each other in front of staff and customers: the Pay panel's own three cards failed Total - Paid = Balance; the member card's paid + due did not add up to its stated total; both invoice tables showed a Total disagreeing with the row's balance; and the WhatsApp receipt listed items summing to one figure then printed a different Total, which the CUSTOMER receives. Worst of all, Edit-invoice CLAMPED the collected figure to inv.amount, so when the line-sum was higher the admin could not record the full payment at all and the invoice kept a phantom balance that could never be cleared. All seven now use invoiceTotal(), which is identical for every consistent invoice and falls back to inv.amount when there are no line items, so rentals/products/legacy rows are untouched. The two DRIFT DETECTORS deliberately still compare the raw values, since spotting that difference is their whole job. Tests: test-invoice-total-consistency 24/24, control-verified (the raw amount fails the reconciliation and caps the payment at 600 of 900). pages.js changed.
+const APP_VERSION = '6.400.0';   // 6.400.0 NEW: CLASSES screen. Requested: a screen like Swimming Groups that identifies students per coach, sport and timing. Built as a DERIVED VIEW over existing data - no new data model, nothing to migrate, nothing that can drift. A class = one weekly Schedule entry (day + time-slot + coach + sport); its roster = every non-archived member who trains that sport with that coach, matched through the SAME per-sport coach resolution the Attendance grid uses (primary sport, any enrollment, any subscription - so a member whose headline coach differs but who takes this sport with this coach still appears, and legacy subscription-only rows match too). New global helpers classRoster() + memberTakesSportWithCoach(). The screen lists every scheduled class with its coach/sport/day/time and student table (active first), filters by coach / sport / day / student search, and for each class PRINTS a register sheet (with a blank attendance column for pen-and-paper) or exports the roster to Excel. Read-only: attendance is still marked on the Attendance screen. Added to the Activities menu next to Schedule + Swimming Groups. Tests: test-classes 24/24 (roster resolution across all membership shapes, archived exclusion, active-first ordering, render, filters). app.js + pages.js changed.
+// prior: 6.399.0 attendance popup Sessions-remaining now uses the corrected window.
+// prior: 6.398.0 multi-select filters (Invoices + Attendance).
+// prior: 6.397.0 payment + invoice module review - one invoice, two totals.
 // prior: 6.396.0 removed a duplicate drift detector; bundled the test suite into the package.
 // prior: 6.395.0 INSTALLMENTS: stop destroying the payment ledger.
 // prior: 6.394.0 no sign-in card for a problem signing in cannot fix.
@@ -4797,6 +4800,35 @@ function coachName(id) {
   return c ? c.name : 'Unknown';
 }
 
+// ── CLASS ROSTER (v6.400) ────────────────────────────────────────────────────
+// A "class" is one weekly Schedule entry (day + time-slot + coach + sport). Its roster is
+// DERIVED, never stored: every member who trains that sport with that coach. A member is matched
+// through the SAME per-sport coach resolution the Attendance grid uses — primary sport, any
+// enrollment, and any subscription — so a member whose headline coach differs but who takes this
+// sport with this coach still appears. Global (the Attendance page had a closure-local copy).
+function memberTakesSportWithCoach(m, sport, coachId) {
+  if (!m || sport == null || coachId == null) return false;
+  const cid = parseInt(coachId);
+  if (m.coachId === cid && (m.sport || '') === sport) return true;
+  if ((m.enrollments || []).some(e => e.coachId === cid && (e.sport || '') === sport)) return true;
+  if ((m.subscriptions || []).some(s => s.coachId === cid && (s.activity || '') === sport)) return true;
+  return false;
+}
+// The live roster for a class, active members first, then name. Never includes archived members.
+function classRoster(sport, coachId) {
+  return (state.members || [])
+    .filter(m => m && !m.deleted && memberTakesSportWithCoach(m, sport, coachId))
+    .sort((a, b) => {
+      const sa = (typeof memberStatus === 'function' ? memberStatus(a) : '') === 'Active' ? 0 : 1;
+      const sb = (typeof memberStatus === 'function' ? memberStatus(b) : '') === 'Active' ? 0 : 1;
+      return sa - sb || String(a.name || '').localeCompare(String(b.name || ''));
+    });
+}
+if (typeof window !== 'undefined') {
+  window.memberTakesSportWithCoach = memberTakesSportWithCoach;
+  window.classRoster = classRoster;
+}
+
 // Resolve current customer info for a record (invoice/sale/rental/etc).
 // If the record has a customerId pointing to an existing member, the LIVE
 // member fields win — so renaming a member instantly propagates to all their
@@ -6808,6 +6840,7 @@ const ROUTES = {
   families:   { label: 'Families',   icon: '👨‍👩‍👧', section: 'Membership' },
   history:    { label: 'History',    icon: '📜', section: 'Membership' },
   schedule:   { label: 'Schedule',   icon: '🗓', section: 'Activities' },
+  classes:    { label: 'Classes',    icon: '📋', section: 'Activities' },
   swimgroups: { label: 'Swimming Groups', icon: '🏊', section: 'Activities' },
   campschedule: { label: 'Summer Camp', icon: '☀️', section: 'Summer Camp', hidden: true },
   campmembers: { label: 'Camp Members', icon: '🚌', section: 'Summer Camp', badge: () => campExpiringSoonCount() },
@@ -6916,6 +6949,7 @@ const NAV_AR = {
   families: 'العائلات',
   history: 'السجل',
   schedule: 'الجدول',
+  classes: 'الحصص',
   campschedule: 'المعسكر الصيفي',
   campmembers: 'أعضاء المعسكر',
   campdrivers: 'السائقون',

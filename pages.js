@@ -160,7 +160,10 @@ PAGES.dashboard = (main) => {
     // finished all classes but still active (likely needs renewal)
     for (const sub of (m.subscriptions || [])) {
       const tot = sub.totalClasses || 0;
-      const liveSp = liveAttendanceCount(m, sub.activity, sub.start || null, sub.end || null);
+      // v6.399: count over the CORRECTED window so "finished all classes" agrees with the member
+      // card and the attendance popup (raw start/end miss pre-start + gap classes).
+      const _w = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, sub) : { from: sub.start || null, to: sub.end || null };
+      const liveSp = liveAttendanceCount(m, sub.activity, _w.from, _w.to);
       const att = liveSp.total > 0 ? liveSp.y : (sub.attendedClasses || 0);
       if (tot > 0 && att >= tot && st === 'Active') {
         finishedList.push({ m, sport: sub.activity || m.sport });
@@ -2117,7 +2120,10 @@ function viewMember(id) {
   const totalSubs = allSubs.length;
   const totalClassesSum = allSubs.reduce((s,x) => s + (x.totalClasses || 0), 0);
   const attendedSum = allSubs.reduce((acc, x) => {
-    const lw = liveAttendanceCount(m, x.activity, x.start || null, x.end || null);
+    // v6.399: corrected window (this member card already uses it for the per-sport rows below —
+    // this lifetime sum was the one line still on the raw start/end, so the two disagreed).
+    const _w = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, x) : { from: x.start || null, to: x.end || null };
+    const lw = liveAttendanceCount(m, x.activity, _w.from, _w.to);
     return acc + (lw.total > 0 ? lw.y : (x.attendedClasses || 0));
   }, 0);
   // CURRENT-membership classes for the headline card: count only the ACTIVE
@@ -2147,7 +2153,7 @@ function viewMember(id) {
   const totalCharged = chargeInvs.reduce((s, i) => s + invoiceTotal(i), 0);   // Σ line prices — reconciles with memberOutstanding (balance)
   const totalPaid = chargeInvs.reduce((s, i) => s + invoicePaid(i), 0);
   const balanceDue = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : Math.max(0, totalCharged - totalPaid);
-  const anyLiveMarks = allSubs.some(x => liveAttendanceCount(m, x.activity, x.start || null, x.end || null).total > 0);
+  const anyLiveMarks = allSubs.some(x => { const _w = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, x) : { from: x.start || null, to: x.end || null }; return liveAttendanceCount(m, x.activity, _w.from, _w.to).total > 0; });   // v6.399: corrected window
   const liveCount = { total: anyLiveMarks ? 1 : 0 };   // flag for the "· live" label
   const attRatePct = curTotalClasses ? Math.min(100, Math.round(curAttended / curTotalClasses * 100)) : 0;
 
@@ -8445,6 +8451,187 @@ const SWIM_DAYS = [
   { en: 'Sun', ar: 'أحد' }, { en: 'Mon', ar: 'إثنين' }, { en: 'Tue', ar: 'ثلاثاء' },
   { en: 'Wed', ar: 'أربعاء' }, { en: 'Thu', ar: 'خميس' }, { en: 'Fri', ar: 'جمعة' }, { en: 'Sat', ar: 'سبت' },
 ];
+// ═══════════════════════════════════════════════════════════════════════════
+// CLASSES (v6.400) — every weekly Schedule slot as a class, with its live student roster.
+// A "class" is one Schedule entry: day + time-slot + coach + sport. Its roster is DERIVED from
+// enrollments (classRoster) — nothing new is stored, so it can never drift from the truth and
+// there is no data to migrate. Read-only: view, filter by coach/sport/day, and print or export
+// a register sheet per class. Attendance is still marked on the Attendance screen.
+// ═══════════════════════════════════════════════════════════════════════════
+const _CLASS_DAYS = [
+  { key: 'sat', en: 'Saturday', ar: 'السبت' }, { key: 'sun', en: 'Sunday', ar: 'الأحد' },
+  { key: 'mon', en: 'Monday', ar: 'الإثنين' }, { key: 'tue', en: 'Tuesday', ar: 'الثلاثاء' },
+  { key: 'wed', en: 'Wednesday', ar: 'الأربعاء' }, { key: 'thu', en: 'Thursday', ar: 'الخميس' },
+  { key: 'fri', en: 'Friday', ar: 'الجمعة' },
+];
+const _CLASS_SLOT = { 15: '3–4 PM', 16: '4–5 PM', 17: '5–6 PM', 18: '6–7 PM', 19: '7–8 PM', 20: '8–9 PM' };
+const _classDayLabel = (k) => { const d = _CLASS_DAYS.find(x => x.key === k); return d ? t(d.en, d.ar) : (k || ''); };
+const _classSlotLabel = (h) => _CLASS_SLOT[h] || (h != null ? h + ':00' : '');
+const _classDayIdx = (k) => _CLASS_DAYS.findIndex(x => x.key === k);
+
+// Build the class list from the schedule, each with its live roster. Sorted day then time.
+function _buildClasses() {
+  return (state.schedule || [])
+    .filter(c => c && c.sport)
+    .map(c => ({
+      id: c.id, day: c.day, slot: c.slot, sport: c.sport, coachId: c.coachId,
+      coach: coachName(c.coachId),
+      roster: (typeof classRoster === 'function') ? classRoster(c.sport, c.coachId) : [],
+    }))
+    .sort((a, b) => (_classDayIdx(a.day) - _classDayIdx(b.day)) || ((a.slot || 0) - (b.slot || 0)) ||
+      String(a.sport || '').localeCompare(String(b.sport || '')));
+}
+
+PAGES.classes = (main) => {
+  if (!Array.isArray(state.schedule)) state.schedule = [];
+  if (!window._classFilter) window._classFilter = { coach: 'all', sport: 'all', day: 'all', search: '' };
+  const f = window._classFilter;
+
+  const all = _buildClasses();
+  const coachIds = [...new Set(all.map(c => c.coachId).filter(v => v != null))];
+  const sports = [...new Set(all.map(c => c.sport).filter(Boolean))].sort();
+
+  let classes = all;
+  if (f.coach !== 'all') classes = classes.filter(c => String(c.coachId) === String(f.coach));
+  if (f.sport !== 'all') classes = classes.filter(c => c.sport === f.sport);
+  if (f.day !== 'all') classes = classes.filter(c => c.day === f.day);
+  if (f.search && f.search.trim()) {
+    const q = f.search.trim();
+    classes = classes.filter(c => (c.roster || []).some(m =>
+      (typeof searchMatchesFields === 'function')
+        ? searchMatchesFields(q, [m.name, m.nameArabic, m.phone], [m.phone])
+        : String(m.name || '').toLowerCase().includes(q.toLowerCase())));
+  }
+
+  const totalStudents = classes.reduce((s, c) => s + c.roster.length, 0);
+  const emptyClasses = classes.filter(c => c.roster.length === 0).length;
+
+  const opt = (val, lab, sel) => `<option value="${escapeHtml(String(val))}" ${String(sel) === String(val) ? 'selected' : ''}>${escapeHtml(String(lab))}</option>`;
+
+  const cardHtml = (c) => {
+    const dot = '';
+    const rosterRows = c.roster.length
+      ? c.roster.map((m, i) => {
+          const st = (typeof memberStatus === 'function') ? memberStatus(m) : '';
+          const stColor = st === 'Active' ? 'var(--green)' : st === 'Expired' ? 'var(--red)' : st === 'Frozen' ? 'var(--blue)' : 'var(--text-mute)';
+          return `<tr>
+            <td style="padding:6px 8px;color:var(--text-mute);font-size:11px">${i + 1}</td>
+            <td style="padding:6px 8px"><div style="font-weight:600">${escapeHtml(m.name || '—')}</div>${m.nameArabic ? `<div class="text-mute" style="font-size:11px">${escapeHtml(m.nameArabic)}</div>` : ''}</td>
+            <td style="padding:6px 8px;white-space:nowrap">${escapeHtml(m.phone || '')}</td>
+            <td style="padding:6px 8px"><span style="font-size:11px;font-weight:700;color:${stColor}">${escapeHtml(st)}</span></td>
+          </tr>`;
+        }).join('')
+      : `<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--text-mute);font-size:13px">${t('No students enrolled with this coach in this sport yet.', 'لا يوجد طلاب مسجّلون مع هذا المدرب في هذه الرياضة بعد.')}</td></tr>`;
+    return `
+      <div class="card" style="padding:0;overflow:hidden;margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;background:var(--surface-2);border-bottom:1px solid var(--border)">
+          <div>
+            <div style="font-weight:800;font-size:15px">${dot}${escapeHtml(c.sport)} · <span style="color:var(--blue)">${escapeHtml(c.coach)}</span></div>
+            <div class="text-mute" style="font-size:12px;margin-top:2px">🗓 ${escapeHtml(_classDayLabel(c.day))} · ⏰ ${escapeHtml(_classSlotLabel(c.slot))} · 👥 <b>${c.roster.length}</b> ${t('students', 'طالب')}</div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn ghost sm" onclick="window._classPrint(${c.id})">🖨 ${t('Print', 'طباعة')}</button>
+            <button class="btn ghost sm" onclick="window._classXlsx(${c.id})">📊 ${t('Excel', 'إكسل')}</button>
+          </div>
+        </div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead><tr style="color:var(--text-mute);font-size:10.5px;text-transform:uppercase">
+            <th style="padding:6px 8px;text-align:start">#</th>
+            <th style="padding:6px 8px;text-align:start">${t('Student', 'الطالب')}</th>
+            <th style="padding:6px 8px;text-align:start">${t('Mobile', 'الجوال')}</th>
+            <th style="padding:6px 8px;text-align:start">${t('Status', 'الحالة')}</th>
+          </tr></thead>
+          <tbody>${rosterRows}</tbody>
+        </table></div>
+      </div>`;
+  };
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div><h1>📋 ${t('Classes', 'الحصص')}</h1>
+        <div class="subtitle">${t('Every scheduled class with its coach, sport, time and student list — print or export a register per class. Rosters are live from enrollments.', 'كل حصة مجدولة مع مدربها ورياضتها ووقتها وقائمة طلابها — اطبع أو صدّر كشفاً لكل حصة. القوائم مباشرة من التسجيلات.')}</div>
+      </div>
+    </div>
+
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi"><div class="kpi-label">📋 ${t('Classes', 'الحصص')}</div><div class="kpi-value num">${classes.length}</div><div class="kpi-sub">${t('from the weekly schedule', 'من الجدول الأسبوعي')}</div></div>
+      <div class="kpi"><div class="kpi-label">👥 ${t('Student places', 'مقاعد الطلاب')}</div><div class="kpi-value num">${totalStudents}</div><div class="kpi-sub">${t('across all shown classes', 'عبر كل الحصص المعروضة')}</div></div>
+      <div class="kpi" style="${emptyClasses ? 'border-color:var(--accent-2);background:rgba(245,158,11,.06)' : ''}"><div class="kpi-label" style="${emptyClasses ? 'color:var(--accent-2)' : ''}">🈳 ${t('Empty classes', 'حصص فارغة')}</div><div class="kpi-value num" style="${emptyClasses ? 'color:var(--accent-2)' : ''}">${emptyClasses}</div><div class="kpi-sub">${t('scheduled, no students', 'مجدولة بلا طلاب')}</div></div>
+    </div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
+      <div class="search" style="flex:1 1 200px"><input id="cls-search" type="text" value="${escapeHtml(f.search || '')}" placeholder="${t('Search a student…', 'ابحث عن طالب…')}" /></div>
+      <select id="cls-coach" class="btn ghost">${opt('all', t('All coaches', 'كل المدربين'), f.coach)}${coachIds.map(id => opt(id, coachName(id), f.coach)).join('')}</select>
+      <select id="cls-sport" class="btn ghost">${opt('all', t('All sports', 'كل الرياضات'), f.sport)}${sports.map(s => opt(s, s, f.sport)).join('')}</select>
+      <select id="cls-day" class="btn ghost">${opt('all', t('All days', 'كل الأيام'), f.day)}${_CLASS_DAYS.map(d => opt(d.key, t(d.en, d.ar), f.day)).join('')}</select>
+      <button id="cls-clear" class="btn ghost">✕ ${t('Clear', 'مسح')}</button>
+    </div>
+
+    ${(state.schedule || []).length === 0
+      ? `<div class="empty"><div class="empty-icon">🗓</div>${t('No classes on the schedule yet. Add classes on the Schedule screen and they will appear here with their rosters.', 'لا توجد حصص في الجدول بعد. أضف الحصص من شاشة الجدول وستظهر هنا مع قوائمها.')}</div>`
+      : classes.length === 0
+      ? `<div class="empty"><div class="empty-icon">🔍</div>${t('No classes match these filters.', 'لا توجد حصص مطابقة لهذه الفلاتر.')}</div>`
+      : classes.map(cardHtml).join('')}
+  `;
+
+  const rerender = () => PAGES.classes(main);
+  $('#cls-search')?.addEventListener('input', e => { f.search = e.target.value; rerender(); });
+  $('#cls-coach')?.addEventListener('change', e => { f.coach = e.target.value; rerender(); });
+  $('#cls-sport')?.addEventListener('change', e => { f.sport = e.target.value; rerender(); });
+  $('#cls-day')?.addEventListener('change', e => { f.day = e.target.value; rerender(); });
+  $('#cls-clear')?.addEventListener('click', () => { window._classFilter = { coach: 'all', sport: 'all', day: 'all', search: '' }; rerender(); });
+};
+
+// Find a class (schedule entry) by id and build its current roster.
+function _classById(id) {
+  const c = (state.schedule || []).find(x => String(x.id) === String(id));
+  if (!c) return null;
+  return { ...c, coach: coachName(c.coachId), roster: (typeof classRoster === 'function') ? classRoster(c.sport, c.coachId) : [] };
+}
+function _classTitle(c) {
+  return `${c.sport} · ${c.coach} · ${_classDayLabel(c.day)} ${_classSlotLabel(c.slot)}`;
+}
+
+// Register sheet: a printable roster with an attendance column left blank for pen-and-paper use.
+window._classPrint = function (id) {
+  const c = _classById(id);
+  if (!c) { toast(t('Class not found', 'الحصة غير موجودة'), 'error'); return; }
+  const rows = c.roster.map((m, i) => `<tr>
+      <td style="text-align:center">${i + 1}</td>
+      <td>${escapeHtml(m.name || '')}${m.nameArabic ? ` <span style="color:#666">${escapeHtml(m.nameArabic)}</span>` : ''}</td>
+      <td>${escapeHtml(m.phone || '')}</td>
+      <td style="width:90px"></td>
+    </tr>`).join('') || `<tr><td colspan="4" style="text-align:center;color:#888;padding:16px">No students</td></tr>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(_classTitle(c))}</title>
+    <style>@page{size:portrait;margin:14mm}body{font-family:Arial,sans-serif;color:#111}
+      h1{font-size:18px;margin:0 0 2px}.sub{color:#555;font-size:13px;margin-bottom:14px}
+      table{width:100%;border-collapse:collapse;font-size:13px}
+      th,td{border:1px solid #bbb;padding:7px 9px;text-align:left}
+      th{background:#f0f0f0}</style></head>
+    <body onload="window.print()">
+      <h1>📋 ${escapeHtml(c.sport)} — ${escapeHtml(c.coach)}</h1>
+      <div class="sub">${escapeHtml(_classDayLabel(c.day))} · ${escapeHtml(_classSlotLabel(c.slot))} · ${c.roster.length} students · Black Stars Sports Club</div>
+      <table><thead><tr><th style="width:36px">#</th><th>Student</th><th style="width:130px">Mobile</th><th style="width:90px">Attendance</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+    </body></html>`;
+  const w = window.open('', '_blank');
+  if (!w) { toast(t('Allow pop-ups to print', 'اسمح بالنوافذ المنبثقة للطباعة'), 'error'); return; }
+  w.document.write(html); w.document.close();
+};
+
+window._classXlsx = function (id) {
+  const c = _classById(id);
+  if (!c) { toast(t('Class not found', 'الحصة غير موجودة'), 'error'); return; }
+  if (!window.XlsxMini || typeof window.XlsxMini.downloadFile !== 'function') { toast(t('Excel export unavailable', 'تصدير Excel غير متاح'), 'error'); return; }
+  const HEADER = ['#', 'Student', 'Arabic name', 'Mobile', 'Status'];
+  const rows = c.roster.map((m, i) => [i + 1, m.name || '', m.nameArabic || '', m.phone || '', (typeof memberStatus === 'function') ? memberStatus(m) : '']);
+  const safe = _classTitle(c).replace(/[^\w؀-ۿ -]+/g, '').replace(/\s+/g, '-').slice(0, 60);
+  try {
+    window.XlsxMini.downloadFile(`class-${safe}.xlsx`, { sheets: [{ name: 'Roster', rows: [HEADER, ...rows] }] });
+    toast(t(`Exported ${c.roster.length} students`, `تم تصدير ${c.roster.length} طالب`), 'success');
+  } catch (err) { toast(t('Excel export failed', 'فشل تصدير Excel') + ': ' + ((err && err.message) || err), 'error'); }
+};
+
 PAGES.swimgroups = (main) => {
   const SWIM = 'Swimming';
   const GROUP_MIN = 3, GROUP_MAX = 7;
@@ -9785,6 +9972,83 @@ function _mmMonthOpts(year, selSet) {
     `<label class="mm-opt" style="${_MM_OPT_STYLE}"><input type="checkbox" value="${m}" ${selSet.has(m) ? 'checked' : ''}/> ${fmtMonth(m)}</label>`
   ).join('');
 }
+// ── GENERIC MULTI-SELECT FILTER (v6.398) ─────────────────────────────────────
+// Most screens still had single-value <select> filters, so you could look at ONE sport, ONE
+// coach or ONE method at a time. The Members screen had multi-select, but through a helper bound
+// to that page's own closure and hand-written markup per filter — not reusable.
+//
+// This pair is self-contained: multiFilterHTML() renders the control, bindMultiFilter() wires it
+// and hands back the chosen values as an ARRAY. An empty array means "all", which keeps the
+// predicate trivial (`!sel.length || sel.includes(v)`) and matches how the month filter already
+// behaves, so the two read the same way on screen.
+//
+//   options : ['Boxing', ...]  or  [[value, label], ...]
+//   selected: array of currently-chosen values
+//   o       : { allText, icon, oneFmt, minWidth, noun }
+function multiFilterHTML(id, options, selected, o) {
+  o = o || {};
+  const pairs = (options || []).map(x => (Array.isArray(x) ? x : [x, x]))
+    .filter(p => p[0] != null && String(p[0]) !== '');
+  const sel = new Set((selected || []).map(String));
+  const allText = o.allText || t('All', 'الكل');
+  const noun = o.noun || t('selected', 'محدد');
+  const oneFmt = o.oneFmt || (v => { const p = pairs.find(x => String(x[0]) === String(v)); return p ? p[1] : v; });
+  const chosen = [...sel];
+  const label = !chosen.length ? allText : (chosen.length === 1 ? oneFmt(chosen[0]) : `${chosen.length} ${noun}`);
+  return `<div class="multi-filter" id="${id}" style="position:relative;display:inline-block">
+    <button type="button" class="btn ghost mf-btn" style="min-width:${o.minWidth || 140}px;text-align:start;display:inline-flex;align-items:center;justify-content:space-between;gap:8px">
+      <span class="mf-label">${o.icon ? o.icon + ' ' : ''}${escapeHtml(String(label))}</span><span style="opacity:.6">▾</span>
+    </button>
+    <div class="mf-pop" style="display:none;position:absolute;z-index:60;top:calc(100% + 4px);inset-inline-start:0;background:var(--surface,#fff);border:1px solid var(--border);border-radius:8px;padding:6px;min-width:190px;max-height:320px;overflow:auto;box-shadow:0 10px 28px rgba(0,0,0,.28)">
+      <div style="display:flex;justify-content:space-between;padding:2px 6px 6px;border-bottom:1px solid var(--border);margin-bottom:4px">
+        <button type="button" class="mf-all" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">${t('All', 'الكل')}</button>
+        <button type="button" class="mf-none" style="background:none;border:none;color:var(--text-mute);font-size:12px;cursor:pointer">${t('Clear', 'مسح')}</button>
+      </div>
+      ${pairs.map(([v, lab]) => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px">
+        <input type="checkbox" class="mf-cb" value="${escapeHtml(String(v))}" ${sel.has(String(v)) ? 'checked' : ''} /> ${escapeHtml(String(lab))}</label>`).join('')}
+    </div>
+  </div>`;
+}
+function bindMultiFilter(id, onChange, o) {
+  o = o || {};
+  const wrap = document.getElementById(id);
+  if (!wrap) return;
+  const btn = wrap.querySelector('.mf-btn');
+  const pop = wrap.querySelector('.mf-pop');
+  const lbl = wrap.querySelector('.mf-label');
+  const boxes = () => [...wrap.querySelectorAll('.mf-cb')];
+  const current = () => boxes().filter(b => b.checked).map(b => b.value);
+  const allText = o.allText || t('All', 'الكل');
+  const noun = o.noun || t('selected', 'محدد');
+  const oneFmt = o.oneFmt || (v => {
+    const cb = boxes().find(b => b.value === String(v));
+    return cb && cb.parentElement ? cb.parentElement.textContent.trim() : v;
+  });
+  const relabel = () => {
+    const c = current();
+    lbl.textContent = (o.icon ? o.icon + ' ' : '') +
+      (!c.length ? allText : (c.length === 1 ? oneFmt(c[0]) : `${c.length} ${noun}`));
+  };
+  const fire = () => { relabel(); onChange(current()); };
+  boxes().forEach(b => b.addEventListener('change', fire));
+  btn.addEventListener('click', e => { e.stopPropagation(); pop.style.display = pop.style.display === 'none' ? 'block' : 'none'; });
+  document.addEventListener('click', e => { if (!wrap.contains(e.target)) pop.style.display = 'none'; });
+  wrap.querySelector('.mf-all')?.addEventListener('click', e => { e.stopPropagation(); boxes().forEach(b => b.checked = true); fire(); });
+  wrap.querySelector('.mf-none')?.addEventListener('click', e => { e.stopPropagation(); boxes().forEach(b => b.checked = false); fire(); });
+}
+// A saved filter may still hold the OLD single value (or the 'all' sentinel). Normalise it to an
+// array once, so an upgrade never leaves a screen showing nothing. (v6.398)
+function asMulti(v) {
+  if (Array.isArray(v)) return v.filter(x => x != null && x !== '' && x !== 'all');
+  if (v == null || v === '' || v === 'all') return [];
+  return [v];
+}
+if (typeof window !== 'undefined') {
+  window.multiFilterHTML = multiFilterHTML;
+  window.bindMultiFilter = bindMultiFilter;
+  window.asMulti = asMulti;
+}
+
 function monthMultiHTML(id, months, selected) {
   const sel = new Set(_mmValidMonths(selected));
   const years = monthFilterYears([].concat(_mmValidMonths(months), [...sel]));
@@ -9881,6 +10145,13 @@ PAGES.invoices = (main) => {
   // Migrate any legacy single-month filter ({month:'YYYY-MM'|'all'}) to the array form.
   if (!Array.isArray(filter.months)) filter.months = (filter.month && filter.month !== 'all') ? [filter.month] : [];
   delete filter.month;
+  // v6.398: the method / sport / coach / category filters became MULTI-select. A saved filter may
+  // still hold the old single value, so carry it across rather than silently resetting the screen.
+  filter.methods = asMulti(filter.methods !== undefined ? filter.methods : filter.method);
+  filter.sports = asMulti(filter.sports !== undefined ? filter.sports : filter.sport);
+  filter.coaches = asMulti(filter.coaches !== undefined ? filter.coaches : filter.coach);
+  filter.categories = asMulti(filter.categories !== undefined ? filter.categories : filter.category);
+  delete filter.method; delete filter.sport; delete filter.coach; delete filter.category;
   const pg = makePager(10);
   const selected = new Set();   // invoice ids ticked for merging
 
@@ -9931,23 +10202,26 @@ PAGES.invoices = (main) => {
         if (filter.day && !dates.includes(filter.day)) return false;
         if (_range && !dates.some(d => (!filter.from || d >= filter.from) && (!filter.to || d <= filter.to))) return false;
       }
-      if (filter.method !== 'all' && i.method !== filter.method) return false;
-      if (filter.sport !== 'all') {
-        // "Summer Camp" matches every camp duration variant (Summer Camp · 1 week, …).
-        if (filter.sport === SUMMER_CAMP) {
-          if (!_isCampActivity(i.sport) && !(i.lineItems || []).some(li => _isCampActivity(li.sport))) return false;
-        } else {
+      // v6.398: multi-select — an EMPTY array means "all", and an invoice matches if it satisfies
+      // ANY chosen value, so picking Cash + Card shows both rather than forcing one at a time.
+      if (filter.methods.length && !filter.methods.includes(i.method)) return false;
+      if (filter.sports.length) {
+        const _matchSport = (_sp) => {
+          // "Summer Camp" matches every camp duration variant (Summer Camp · 1 week, …).
+          if (_sp === SUMMER_CAMP) {
+            return _isCampActivity(i.sport) || (i.lineItems || []).some(li => _isCampActivity(li.sport));
+          }
           // Match if the invoice INVOLVES the selected sport — its (possibly combined)
           // activity string names it, OR any line-item is for it. So picking "Swimming"
           // shows a member whose invoice activity is "Swimming, Gymnastic". (v6.325)
-          const _sp = filter.sport;
           const _inAct = String(i.sport || '').split(/\s*,\s*/).indexOf(_sp) !== -1;
           const _inLines = Array.isArray(i.lineItems) && i.lineItems.some(li => li.sport === _sp);
-          if (!_inAct && !_inLines) return false;
-        }
+          return _inAct || _inLines;
+        };
+        if (!filter.sports.some(_matchSport)) return false;
       }
-      if (filter.coach !== 'all' && i.coach !== filter.coach) return false;
-      if (filter.category !== 'all' && (i.category || 'Membership') !== filter.category) return false;
+      if (filter.coaches.length && !filter.coaches.includes(i.coach)) return false;
+      if (filter.categories.length && !filter.categories.includes(i.category || 'Membership')) return false;
       return true;
     });
   }
@@ -10149,23 +10423,10 @@ PAGES.invoices = (main) => {
           <span class="text-mute" style="font-size:11px">${t('To', 'إلى')}</span>
           <input id="inv-to" type="date" class="btn ghost" style="padding:6px 8px" value="${filter.to || ''}" />
         </div>
-        <select id="inv-category" class="btn ghost">
-          <option value="all">All categories</option>
-          ${INVOICE_CATS.map(c => `<option>${c}</option>`).join('')}
-        </select>
-        <select id="inv-sport" class="btn ghost">
-          <option value="all">All activities</option>
-          ${sportsInInvoices.map(s => `<option>${escapeHtml(s)}</option>`).join('')}
-        </select>
-        <select id="inv-coach" class="btn ghost">
-          <option value="all">All coaches</option>
-          ${coachesInInvoices.map(c => `<option>${escapeHtml(c)}</option>`).join('')}
-        </select>
-        <select id="inv-method" class="btn ghost">
-          <option value="all">All methods</option>
-          <option value="cash">Cash</option>
-          <option value="card">Card</option><option value="fawran">Fawran</option>
-        </select>
+        ${multiFilterHTML('inv-category', INVOICE_CATS, filter.categories, { allText: t('All categories', 'كل الفئات'), noun: t('categories', 'فئات'), minWidth: 150 })}
+        ${multiFilterHTML('inv-sport', sportsInInvoices, filter.sports, { allText: t('All activities', 'كل الأنشطة'), noun: t('activities', 'أنشطة'), minWidth: 150 })}
+        ${multiFilterHTML('inv-coach', coachesInInvoices, filter.coaches, { allText: t('All coaches', 'كل المدربين'), noun: t('coaches', 'مدربين'), minWidth: 150 })}
+        ${multiFilterHTML('inv-method', [['cash', t('Cash', 'نقداً')], ['card', t('Card', 'بطاقة')], ['fawran', t('Fawran', 'فوران')], ['transfer', t('Bank transfer', 'تحويل')]], filter.methods, { allText: t('All methods', 'كل الطرق'), noun: t('methods', 'طرق'), minWidth: 140 })}
         <button id="inv-clear-filters" class="btn ghost" title="${t('Clear all filters', 'مسح كل الفلاتر')}">✕ ${t('Clear filters', 'مسح الفلاتر')}</button>
       </div>
       <div id="inv-mergebar" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px">
@@ -10232,13 +10493,15 @@ PAGES.invoices = (main) => {
   $('#inv-to')?.addEventListener('change', e => { filter.to = e.target.value || ''; _onRange(); });
   $('#inv-clear-filters')?.addEventListener('click', () => {
     filter.search = ''; filter.months = []; filter.day = ''; filter.from = ''; filter.to = '';
-    filter.method = 'all'; filter.sport = 'all'; filter.coach = 'all'; filter.category = 'all';
+    // v6.398: these are ARRAYS now — resetting the old scalar keys would have left every
+    // multi-select still applied while the button claimed the filters were cleared.
+    filter.methods = []; filter.sports = []; filter.coaches = []; filter.categories = [];
     pg.page = 1; saveFilter('invoices', filter); PAGES.invoices(main);   // full re-render resets every control
   });
-  $('#inv-method').addEventListener('change', e => { filter.method = e.target.value; pg.page = 1; refresh(); });
-  $('#inv-sport').addEventListener('change', e => { filter.sport = e.target.value; pg.page = 1; refresh(); });
-  $('#inv-coach').addEventListener('change', e => { filter.coach = e.target.value; pg.page = 1; refresh(); });
-  $('#inv-category').addEventListener('change', e => { filter.category = e.target.value; pg.page = 1; refresh(); });
+  bindMultiFilter('inv-method', v => { filter.methods = v; pg.page = 1; refresh(); }, { allText: t('All methods', 'كل الطرق'), noun: t('methods', 'طرق') });
+  bindMultiFilter('inv-sport', v => { filter.sports = v; pg.page = 1; refresh(); }, { allText: t('All activities', 'كل الأنشطة'), noun: t('activities', 'أنشطة') });
+  bindMultiFilter('inv-coach', v => { filter.coaches = v; pg.page = 1; refresh(); }, { allText: t('All coaches', 'كل المدربين'), noun: t('coaches', 'مدربين') });
+  bindMultiFilter('inv-category', v => { filter.categories = v; pg.page = 1; refresh(); }, { allText: t('All categories', 'كل الفئات'), noun: t('categories', 'فئات') });
   $('#add-inv').addEventListener('click', addInvoice);
   $('#inv-archived-toggle')?.addEventListener('click', () => { filter.archived = !filter.archived; pg.page = 1; saveFilter('invoices', filter); PAGES.invoices(main); });
   $('#inv-merge-clear').addEventListener('click', () => { selected.clear(); refresh(); });
@@ -18847,7 +19110,8 @@ PAGES.attendance = (main) => {
   const _defaultMonth = _availMonths.includes(_todayMonth) ? _todayMonth : latestDataMonth();
   // filter.days is an array of day-numbers; empty = all days
   const _defaultDays = _defaultMonth === _todayMonth ? [_now.getDate()] : [];
-  let filter = { month: _defaultMonth, coach: 'all', search: '', sports: [], memberId: null, days: _defaultDays, att: 'all' };
+  // v6.398: `coaches` and `atts` are ARRAYS (empty = all), matching the sports filter beside them.
+  let filter = { month: _defaultMonth, coaches: [], search: '', sports: [], memberId: null, days: _defaultDays, atts: [] };
   // Month MULTI-select: filter.months = [] → summary over ALL months; exactly ONE →
   // the editable day-grid for that month; TWO+ → summary over just those months.
   // filter.month stays derived (single month or 'all') so all the grid logic below
@@ -18914,10 +19178,17 @@ PAGES.attendance = (main) => {
       // Abdel Salam" but filtering by that coach returned "No members match". Match on the coach
       // of ANY of the member's sports instead (same primitive the coach-login scoping uses), then
       // narrow the shown sports to that coach's — so the filter lists exactly their students.
+      // v6.398: multi-select coaches — the member is shown if ANY chosen coach teaches them, and
+      // the sports narrow to the UNION of those coaches' sports for this member.
       let _coachSports = null;
-      if (filter.coach !== 'all') {
-        _coachSports = coachSportsFor(m, parseInt(filter.coach));
-        if (!_coachSports || !_coachSports.size) continue;   // this coach teaches none of their sports
+      if (filter.coaches.length) {
+        const _union = new Set();
+        for (const _cid of filter.coaches) {
+          const s = coachSportsFor(m, parseInt(_cid));
+          if (s) for (const x of s) _union.add(x);
+        }
+        if (!_union.size) continue;   // none of the chosen coaches teaches this member
+        _coachSports = _union;
       }
       if (filter.memberId != null && m.id !== filter.memberId) continue;
       const sports = memberSports(m);
@@ -18940,10 +19211,11 @@ PAGES.attendance = (main) => {
       for (const sp of wanted) {
         // Attended / Not-attended filter — evaluated over the selected day(s),
         // or the whole grid month when no specific day is picked.
-        if (filter.att && filter.att !== 'all') {
-          const att = rowAttended(m, sp);
-          if (filter.att === 'attended' && !att) continue;
-          if (filter.att === 'notattended' && att) continue;
+        // v6.398: multi-select — selecting BOTH is the same as no filter, which falls out of the
+        // "does the row's own state appear in the chosen set" test without a special case.
+        if (filter.atts.length) {
+          const want = rowAttended(m, sp) ? 'attended' : 'notattended';
+          if (!filter.atts.includes(want)) continue;
         }
         // Resolve the coach for THIS sport: prefer the matching enrollment, then
         // the matching subscription (a sport may live only in subscriptions, e.g.
@@ -19008,10 +19280,15 @@ PAGES.attendance = (main) => {
 
   // Narrow day columns to attended / not-attended days when that filter is set
   // (so "Attended" shows only the days people actually attended).
+  // v6.398: the attendance filter is an ARRAY now. Narrowing the day columns only makes sense
+  // when exactly ONE state is chosen — picking both is the same as no filter, so the columns
+  // stay as they are. Returns 'attended' | 'notattended' | null.
+  const attOnly = () => (filter.atts.length === 1 ? filter.atts[0] : null);
   function visibleDays(rows, baseDays, mo) {
-    if (filter.att === 'attended')
+    const only = attOnly();
+    if (only === 'attended')
       return baseDays.filter(d => rows.some(r => (r.m.dailyAttendance?.[mo]?.[r.sport] || {})[String(d)] === 'Y'));
-    if (filter.att === 'notattended')
+    if (only === 'notattended')
       return baseDays.filter(d => rows.some(r => (r.m.dailyAttendance?.[mo]?.[r.sport] || {})[String(d)] === 'N'));
     return baseDays;
   }
@@ -19046,11 +19323,12 @@ PAGES.attendance = (main) => {
         : (m.subscriptions || []).filter(s => (s.activity || '') === sport).slice(-1)[0];
       const planned = sub ? (parseInt(sub.totalClasses) || 0) : 0;
       if (planned > 0) {
-        // Count present marks ONLY within that subscription's window (start → end).
-        // A renewal creates a new subscription with a fresh window, so the count
-        // resets — otherwise a renewed (Active) member is wrongly told they already
-        // finished their classes because the PREVIOUS cycle's attendance still counted.
-        const live = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(m, sport, sub.start || null, sub.end || null) : { y: 0 };
+        // Count present marks ONLY within that subscription's window. Use the CORRECTED window
+        // (subAttendanceWindow) so this over-cap warning agrees with the "Sessions remaining"
+        // popup and the member card — the raw start/end miss pre-start classes and mis-count the
+        // renewal-gap boundary, which could wrongly block (or wrongly allow) a present. (v6.399)
+        const _win = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, sub) : { from: sub.start || null, to: sub.end || null };
+        const live = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(m, sport, _win.from, _win.to) : { y: 0 };
         const alreadyY = live.y || 0;
         // Only block if this cell isn't already counted as Y (it's a NEW present).
         const cellWasY = m.dailyAttendance[mo][sport][String(day)] === 'Y';
@@ -19099,9 +19377,16 @@ PAGES.attendance = (main) => {
     const sub = (typeof subForAttendanceDate === 'function') ? subForAttendanceDate(doc, sport, dateISO) : null;
     const planned = sub ? (parseInt(sub.totalClasses) || 0) : 0;
     if (!sub || planned <= 0) return null;
-    // Count present marks only inside this subscription's window, so a renewal resets the tally.
+    // v6.399: count over the CORRECTED window (subAttendanceWindow), not the raw sub.start/end.
+    // The raw bounds miss classes attended BEFORE the package start (the first-package-of-a-sport
+    // case, v6.386) and mis-handle the renewal-gap + boundary day (v6.373), so "Sessions
+    // remaining" in this popup disagreed with the member card, which already uses the window.
+    // Every other place that counts a sub's attendance goes through subAttendanceWindow — this
+    // popup was the one that didn't.
+    const win = (typeof subAttendanceWindow === 'function')
+      ? subAttendanceWindow(doc, sub) : { from: sub.start || null, to: sub.end || null };
     const live = (typeof liveAttendanceCount === 'function')
-      ? liveAttendanceCount(doc, sport, sub.start || null, sub.end || null) : { y: 0 };
+      ? liveAttendanceCount(doc, sport, win.from, win.to) : { y: 0 };
     const attended = live.y || 0;
     return { attended, planned, left: Math.max(0, planned - attended) };
   }
@@ -19350,7 +19635,9 @@ PAGES.attendance = (main) => {
           : (m.subscriptions || []).filter(s => (s.activity || '') === SUMMER_CAMP).slice(-1)[0];
         campLimit = sub ? (parseInt(sub.totalClasses) || 0) : 0;
         if (campLimit > 0 && typeof liveAttendanceCount === 'function') {
-          campMarked = liveAttendanceCount(m, SUMMER_CAMP, sub ? (sub.start || null) : null, sub ? (sub.end || null) : null).y || 0;
+          // v6.399: corrected window, so the camp over-cap agrees with the popup + member card.
+          const _cw = (sub && typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, sub) : { from: sub ? (sub.start || null) : null, to: sub ? (sub.end || null) : null };
+          campMarked = liveAttendanceCount(m, SUMMER_CAMP, _cw.from, _cw.to).y || 0;
           campOver = campMarked >= campLimit;
         }
       }
@@ -19409,7 +19696,7 @@ PAGES.attendance = (main) => {
     `;
     let dayNote;
     if (attNarrowed) {
-      dayNote = `${filter.att === 'attended' ? 'attended' : 'absent'} days only · ${dayList.length} day${dayList.length === 1 ? '' : 's'} of ${fmtMonth(gMonth)}`;
+      dayNote = `${attOnly() === 'attended' ? 'attended' : 'absent'} days only · ${dayList.length} day${dayList.length === 1 ? '' : 's'} of ${fmtMonth(gMonth)}`;
     } else if (isFiltered) {
       if (selectedDays.length === 1) dayNote = `showing day ${selectedDays[0]} of ${fmtMonth(gMonth)} only`;
       else dayNote = `showing ${selectedDays.length} days of ${fmtMonth(gMonth)} (${selectedDays.slice(0,5).join(', ')}${selectedDays.length>5?'…':''})`;
@@ -19549,15 +19836,8 @@ PAGES.attendance = (main) => {
           <option value="4">Week 4 (22–28)</option>
           <option value="5">Week 5 (29–end)</option>
         </select>
-        <select id="att-coach" class="btn ghost" ${myCoachId != null ? 'style="display:none"' : ''}>
-          <option value="all">All coaches</option>
-          ${state.coaches.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
-        </select>
-        <select id="att-status" class="btn ghost" title="Show only students who attended (have a present mark) or did not, within the selected day(s) / month">
-          <option value="all">All attendance</option>
-          <option value="attended">✓ Attended</option>
-          <option value="notattended">✗ Not attended</option>
-        </select>
+        <span ${myCoachId != null ? 'style="display:none"' : ''}>${multiFilterHTML('att-coach', state.coaches.map(c => [String(c.id), c.name]), filter.coaches, { allText: t('All coaches', 'كل المدربين'), noun: t('coaches', 'مدربين'), minWidth: 150 })}</span>
+        ${multiFilterHTML('att-status', [['attended', '✓ ' + t('Attended', 'حضر')], ['notattended', '✗ ' + t('Not attended', 'لم يحضر')]], filter.atts, { allText: t('All attendance', 'كل الحضور'), noun: t('selected', 'محدد'), minWidth: 150 })}
         <div style="position:relative">
           <button type="button" id="att-sports-btn" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px">All sports <span style="opacity:.6">▾</span></button>
           <div id="att-sports-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;box-shadow:0 8px 24px rgba(0,0,0,.4)">
@@ -19605,8 +19885,8 @@ PAGES.attendance = (main) => {
     buildDayGrid();
     applyDays();
   });
-  $('#att-coach').addEventListener('change', e => { filter.coach = e.target.value; refresh(); });
-  $('#att-status').addEventListener('change', e => { filter.att = e.target.value; refresh(); });
+  bindMultiFilter('att-coach', v => { filter.coaches = v; refresh(); }, { allText: t('All coaches', 'كل المدربين'), noun: t('coaches', 'مدربين') });
+  bindMultiFilter('att-status', v => { filter.atts = v; refresh(); }, { allText: t('All attendance', 'كل الحضور'), noun: t('selected', 'محدد') });
 
   // Day multi-select dropdown
   const dayBtn = $('#att-day-btn');
@@ -19716,7 +19996,8 @@ PAGES.attendance = (main) => {
         <td style="border:1px solid #e5e5ea;text-align:center;font-size:9px;font-weight:700;color:#059669">${rowY}</td>
       </tr>`;
     }).join('');
-    const coachLabel = filter.coach !== 'all' ? coachName(parseInt(filter.coach)) : 'All coaches';
+    // v6.398: name every chosen coach in the export header, not just one.
+    const coachLabel = filter.coaches.length ? filter.coaches.map(c => coachName(parseInt(c))).filter(Boolean).join(', ') : t('All coaches', 'كل المدربين');
     const sportLabel = filter.sports.length ? filter.sports.join(', ') : 'All sports';
     const distinctMembers = new Set(rows.map(r => r.m.id)).size;
     const win = window.open('', '_blank');
@@ -19783,9 +20064,10 @@ PAGES.attendance = (main) => {
       </tr>`;
     }).join('');
 
-    const coachLabel = filter.coach !== 'all' ? coachName(parseInt(filter.coach)) : 'All coaches';
+    // v6.398: name every chosen coach in the export header, not just one.
+    const coachLabel = filter.coaches.length ? filter.coaches.map(c => coachName(parseInt(c))).filter(Boolean).join(', ') : t('All coaches', 'كل المدربين');
     const sportLabel = filter.sports.length ? filter.sports.join(', ') : 'All sports';
-    const attLabel = filter.att === 'attended' ? ' · attended days only' : filter.att === 'notattended' ? ' · absent days only' : '';
+    const attLabel = attOnly() === 'attended' ? ' · attended days only' : attOnly() === 'notattended' ? ' · absent days only' : '';
     const overallRate = grandSlots ? Math.round(grandY/grandSlots*100) : 0;
     const distinctMembers = new Set(rows.map(r => r.m.id)).size;
 
@@ -19887,7 +20169,7 @@ PAGES.attendance = (main) => {
       </tr>`;
     }).join('');
 
-    const coachLabel = filter.coach !== 'all' ? coachName(parseInt(filter.coach)) : L.allCoaches;
+    const coachLabel = filter.coaches.length ? filter.coaches.map(c => coachName(parseInt(c))).filter(Boolean).join(', ') : L.allCoaches;
     const sportLabel = filter.sports.length ? filter.sports.join(', ') : L.allSports;
     const overallRate = grandSlots ? Math.round(grandY / grandSlots * 100) : 0;
     const distinctMembers = new Set(rows.map(r => r.m.id)).size;
