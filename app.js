@@ -14,7 +14,9 @@ const LS_VERSION_KEY = 'blackstars-crm-dataver';
 //                a required field that needs back-filling on existing data).
 //                A bump here triggers the runMigrations() pipeline which
 //                MUTATES existing data in place rather than wiping it.
-const APP_VERSION = '6.400.0';   // 6.400.0 NEW: CLASSES screen. Requested: a screen like Swimming Groups that identifies students per coach, sport and timing. Built as a DERIVED VIEW over existing data - no new data model, nothing to migrate, nothing that can drift. A class = one weekly Schedule entry (day + time-slot + coach + sport); its roster = every non-archived member who trains that sport with that coach, matched through the SAME per-sport coach resolution the Attendance grid uses (primary sport, any enrollment, any subscription - so a member whose headline coach differs but who takes this sport with this coach still appears, and legacy subscription-only rows match too). New global helpers classRoster() + memberTakesSportWithCoach(). The screen lists every scheduled class with its coach/sport/day/time and student table (active first), filters by coach / sport / day / student search, and for each class PRINTS a register sheet (with a blank attendance column for pen-and-paper) or exports the roster to Excel. Read-only: attendance is still marked on the Attendance screen. Added to the Activities menu next to Schedule + Swimming Groups. Tests: test-classes 24/24 (roster resolution across all membership shapes, archived exclusion, active-first ordering, render, filters). app.js + pages.js changed.
+const APP_VERSION = '6.407.0';   // 6.407.0 RED-BAR SESSION DIAGNOSIS — the red "The server refused this change — you are still signed in, so signing in again will not help" bar was appearing for sessions that HAD actually lapsed. Root cause: the app decided "you are still signed in" purely from auth.currentUser being non-null, but Firebase keeps currentUser populated even when the ID token is DEAD (revoked/expired refresh token, password change). So a genuinely-lapsed session was told re-auth wouldn't help — the opposite of the truth, and exactly the owner's complaint ("why not extend the session"). Fix: diagnose by actually TRYING to refresh the token. showSessionResumePrompt() now shows the red "server refused" bar ONLY when the token was successfully refreshed (session truly alive) but the write is still denied — a real rules/server refusal that re-auth genuinely can't fix; when the token CANNOT be refreshed it shows the in-place sign-in prompt, which re-authenticates and immediately flushes the pending write (no reload, no lost work). The money-confirm popup (withCloudConfirm) likewise stops pre-judging: it shows one neutral "re-checking your sign-in" message and hands any auth-coded failure to that same self-diagnosing prompt. The proactive token keep-alive (30-min heartbeat + on focus/visibility/online) is unchanged, so in normal foreground use the token never lapses and the bar never appears. app.js changed; test-session-recovery.js extended (22) + audit-batch-poison / auth-stale-retry / cloud-confirm-all updated to the corrected diagnosis. // 6.406.0 INVOICE PDF ARABIC FIX — the PDF invoice mixed English (LTR) and Arabic (RTL) on the SAME line in 29 places (e.g. "Activity · النشاط", "Description · الوصف", and the Period value "July 2026 · يوليو 2026"). Rendered in a browser this looked fine, but the moment a PDF reader RE-EXTRACTS the text — which is exactly what WhatsApp's PDF viewer / "Edit PDF" does — the bidirectional runs reordered and merged, producing the "corrupted invoice" the club reported (garbled labels like "فترةفترة" / "النظام الغذائينشاط" and a Period scrambled to "262026 يوليو"). Every bilingual label is now split into two isolated single-direction runs (<span dir="ltr">English</span> <span dir="rtl">العربية</span>), and the Period VALUE stacks the two months on their own lines — so no line ever mixes directions and the text extracts in correct logical order in every viewer. Numbers/layout unchanged; verified live that the invoice extracts as "Description الوصف", "Subtotal المجموع الفرعي 750.00 QAR", etc. Also: froze the QC harness clock (it read the real system date, so every date-pinned test broke at the 24→25 midnight rollover) and taught it `Node`/`append`/`createTextNode` so the invoice builder runs under test; new guard test tests/test-invoice-pdf-bidi.js (21 assertions) locks the no-mixed-direction rule. pages.js changed. // 6.405.0 READY-TO-RENEW MULTI-SELECT — the Ready to Renew screen's Month, Coach and Sport filters are now multi-select (checkbox pickers, same shared multiFilterHTML/monthMultiHTML the Invoices/Attendance/Due-Payment screens use), so you can view several sports/coaches/months at once instead of one at a time. Two picks UNION (show both); an empty pick means "no filter" (show all); filters AND across each other. A "✕ Clear" button resets them. The old single-value filter shape (a session already open on the screen) migrates to arrays automatically. New behavioural test tests/test-ready-to-renew-multifilter.js (26 assertions actually drive the pickers and read the rendered table, not just the markup). pages.js changed. // 6.404.0 FULL-SYSTEM QC — four QC engineers reviewed every module against new, purpose-built test suites (tests/test-qc-money.js, test-qc-membership.js, test-qc-coaches-camp.js, test-qc-admin-reports.js — 473 new assertions on top of the all-screens smoke test). They found 50 real defects; all 50 are fixed here. SECURITY / DATA-LOSS: Data Import "Apply & Reset" replaced whole collections with NO admin check, NO backup, NO audit entry, and toasted "Imported successfully" after a fire-and-forget save() — it is now admin-only, downloads a backup, confirms twice, writes an audit entry and reports success only after the CLOUD confirms; "Restore from backup" had no admin gate at all (now gated on both the button and the file handler); Users & Roles — which exposes the role map, revoke-access and the preview-as-another-role switch — had no in-page guard (now walls off like Audit/Cleanup); "Clear all data" and "Load demo data" wrote no audit entry (now audited BEFORE the wipe, while the counts still exist) and the wipe missed families/notes/cashCounts/swimGroups/drivers/advices/posts/transfers, which survived as orphans pointing at deleted members. MONEY: Club Revenue valued invoices at the stale cached inv.amount instead of invoiceTotal() and counted a July+August invoice IN FULL in both months (it disagreed with Transactions by 250 and 1,000 QAR on the seeded club); Payments Analysis never month-filtered EXPENSES at all (the multi-select migration deleted filter.month but the expense test still read it) so one month's revenue was shown against ALL-TIME expenses; a payment with no method recorded was dropped from every KPI bucket while still being listed in the table below (headline "Total Revenue 0" over a "Filtered total: 650"); Cash Collection counted soft-deleted withdrawals; a legacy invoice whose amount drifted below its line sum showed a phantom Due on Transactions while invoiceBalance/invoiceStatus/memberOutstanding all said Paid; a coach payment was DOUBLE-COUNTED in salariesPaidInMonth (one 2,000 payout read as 4,000) because _salAddPay writes both a salary record and a mirror Salary expense; isCoachActive() treated a boolean true as INACTIVE, so an affected coach vanished from Salaries entirely and dropped out of payroll cost on the Dashboard and Monthly Report; the Member Commission column labelled "Paid" is really the BILLED line price (the commission basis) — relabelled "Billed", no number changed. COACH PAY: Coach Performance counted voided invoices and archived members, matched revenue on the invoice-level coachId only (a coach whose sport is one line on someone else's multi-sport invoice showed revenue 0 while payroll paid them), built its commission from the whole invoice amount instead of the attendance basis payroll uses, credited a mid-month handover class to BOTH coaches, and printed the attendance percentage where the commission rate belongs ("66.66666666666666%" beside a 30% coach) — it now runs off the canonical commission engine; a coach's own dashboard quoted a payment-basis number the payroll would never pay and showed months from BEFORE the coach joined. DATA LEAKS: archived members appeared in Renewals (and its CSV), Member History, the Dashboard sport donut, Top Coaches by Students, the members workbook and the attendance workbook; soft-deleted invoices/expenses appeared in the member's own portal, Enrolled Members' paid totals, Recent Invoices, the Monthly Report's expenses, the Dashboard's Total Expenses/Net Profit, the expenses workbook (folded into its total), coachStudents(), _recMonths() and memberRenewalValue(). CORRECTNESS: daysUntilBirthday() returned 365 on the birthday ITSELF (UTC-midnight TODAY compared against a local-midnight birthday — the Qatar UTC+3 off-by-one), so the Today tab said "no birthdays" on the day and the row read "turning 15" for a member turning 14; the member portal's "Left" counter and the Attendance Report's landing view both read the stored attendedClasses, which lags the register (the report showed Total Present 0 against 5 live marks); the Members Coach column printed "—" for a member whose coach sits on an enrollment, while the coach filter beside it correctly found them; Renewals credited the headline coach instead of the coach who teaches the renewed sport; the Monthly Report invented a sport named "Summer Camp, Kick Boxing" by keying on the joined invoice label; the Owner Dashboard counted Withdrawn and Frozen members as "Active members" while the screen it links to said otherwise; the Settings page had a missing card wrapper and an unbalanced </div>, so the Data Statistics table leaked onto Preferences and Club Setup and closed an ancestor early; and the Rentals screen threw on open after restoring a backup taken before facilityRates existed (restore bypasses the load-time migrations). Regression: 56 files, 1,295 assertions, 0 failures. app.js + pages.js changed.
+// prior: 6.402.0 attendance credit bound + no auto-repaint on big grids.
+// prior: 6.400.0 Classes screen (derived rosters from the weekly schedule).
 // prior: 6.399.0 attendance popup Sessions-remaining now uses the corrected window.
 // prior: 6.398.0 multi-select filters (Invoices + Attendance).
 // prior: 6.397.0 payment + invoice module review - one invoice, two totals.
@@ -126,6 +128,13 @@ function subClassLimit(sub) {
 // Gated by date so ALL historical attribution + already-settled coach commission is
 // left exactly as it was (forward-only). Effective 2026-07-06.
 const CONTIGUOUS_ATTENDANCE_FROM = '2026-07-06';
+// How far BEFORE its start date the first package of a sport may claim attendance. The case this
+// exists for is "the member trained a few days before the subscription was dated/paid" (the
+// reported one was 4 days), so a week covers it. Anything older belongs to no package and must
+// NOT spend this one's credit — that is what produced "2 of 8 sessions left" on a package that
+// had only just started. Tunable: raise it if your paperwork commonly lags more than a week.
+// (v6.402 — see subAttendanceWindow.)
+const FIRST_PACKAGE_GRACE_DAYS = 7;
 function subAttendanceWindow(m, sub) {
   let from = sub.start || null;
   let to = sub.end || null;
@@ -163,13 +172,20 @@ function subAttendanceWindow(m, sub) {
         }
       } else {
         // FIRST package for this sport: there is NO earlier period that could own an earlier
-        // mark, so attendance recorded BEFORE the start date — the member trained before the
-        // subscription was dated/paid — belongs to THIS package. Without dropping the lower
-        // bound those classes are ORPHANED: the member card showed "Kick Boxing 0/12" while the
-        // attendance grid showed 2 attended on 15 & 18 Jul for a package dated 19 Jul. Nothing
-        // else can claim them, so count them here. Still forward-only (CONTIGUOUS_ATTENDANCE_FROM)
-        // and still capped by `to`, so no historical member shifts. (v6.386)
-        from = null;
+        // mark, so attendance recorded shortly BEFORE the start date — the member trained before
+        // the subscription was dated/paid — belongs to THIS package. Without reaching back those
+        // classes are ORPHANED: the member card showed "Kick Boxing 0/12" while the attendance
+        // grid showed 2 attended on 15 & 18 Jul for a package dated 19 Jul. (v6.386)
+        //
+        // BUT the reach-back must be BOUNDED (v6.402). Dropping the bound entirely (from = null)
+        // meant EVERY mark that sport ever had counted against the new package: a member who had
+        // trained for months under an older, unrecorded arrangement showed "2 of 8 sessions left"
+        // the day his 8-class package started, because months of history were spending its
+        // credit. The intent was only ever "a few days before it was dated", so allow a grace
+        // window before the start and no further. Anything older belongs to no package and is
+        // simply not counted against this one.
+        const graceFrom = addDays(sub.start, -FIRST_PACKAGE_GRACE_DAYS);
+        from = graceFrom || sub.start;
       }
     }
   }
@@ -1611,41 +1627,36 @@ async function withCloudConfirm(opts) {
   // write). "Check your connection" was misleading. Show the real cause + the real fix, and
   // reassure the user their change is safe locally: storage auto-refreshes the token and retries,
   // so it usually saves on its own within seconds; a reload + sign-in guarantees it. (v6.354)
-  // v6.393: 'permission-denied' was ALWAYS reported as "your session expired". That is often
-  // wrong and it sent staff to reload+sign-in for a problem signing in cannot fix — the real
-  // cause was usually the server REFUSING one document in the write (the immutable audit log),
-  // while the session was perfectly valid. Distinguish the two by asking whether we still hold
-  // a signed-in user: no user = a genuine session lapse; user present = the server refused it.
-  const _stillSignedIn = (() => {
-    try { return !!(window.Storage && window.Storage.currentUser && window.Storage.currentUser()); } catch (_) { return false; }
-  })();
   const _isAuthReason = (reason === 'permission-denied' || reason === 'unauthenticated');
-  const _sessionLapsed = _isAuthReason && !_stillSignedIn;
-  const _serverRefused = _isAuthReason && _stillSignedIn;
-  const _failHeadline = _sessionLapsed
-    ? t('Your session expired — not saved yet', 'انتهت جلستك — لم يُحفظ بعد')
-    : _serverRefused
-    ? t('The server refused this change — not saved yet', 'رفض الخادم هذا التغيير — لم يُحفظ بعد')
+  // v6.407: DON'T pre-judge "lapsed session" vs "server refused" here. Both surface as
+  // permission-denied, and `currentUser()` stays populated even when the ID token is actually
+  // DEAD — so keying the message off `_stillSignedIn` wrongly told a genuinely-lapsed user that
+  // "signing in will not help." We can only tell them apart by TRYING to refresh the token, which
+  // showSessionResumePrompt() does on close. So show one neutral, honest message and let that
+  // prompt do the real diagnosis + recovery.
+  const _failHeadline = _isAuthReason
+    ? t('Not saved yet — re-checking your sign-in', 'لم يُحفظ بعد — يُعاد التحقق من تسجيل دخولك')
     : t('NOT saved to the cloud', 'لم يُحفظ في السحابة');
-  const _failHelp = _sessionLapsed
-    ? t('Your change is safe on this device. Sign in again and it will be saved straight away.', 'تغييرك محفوظ على هذا الجهاز. سجّل الدخول مجدداً وسيُحفظ فوراً.')
-    : _serverRefused
-    ? t('You are still signed in, so signing in again will not help. Your change is safe on this device and keeps retrying. If it repeats, send this code to support.', 'ما زلت مسجّل الدخول، لذا لن تفيد إعادة تسجيل الدخول. تغييرك محفوظ على هذا الجهاز وتتم إعادة المحاولة. إذا تكرر ذلك، أرسل هذا الرمز للدعم.')
+  const _failHelp = _isAuthReason
+    ? t('Your change is safe on this device and keeps retrying. We’ll refresh your sign-in and save it now — if the sign-in has expired you’ll be asked to sign in again.', 'تغييرك محفوظ على هذا الجهاز وتتم إعادة المحاولة. سنحدّث تسجيل دخولك ونحفظه الآن — وإذا انتهت الجلسة سيُطلب منك تسجيل الدخول مجدداً.')
     : t('Check your connection and try again.', 'تحقق من الاتصال وحاول مرة أخرى.');
   popup({
     okay: false,
     title: '⚠ ' + t('NOT saved in the cloud', 'لم يُحفظ في السحابة'),
     body: `<div style="text-align:center;padding:8px 0">
-        <div style="font-size:46px;line-height:1">${_sessionLapsed ? '🔑' : _serverRefused ? '🛑' : '⚠️'}</div>
+        <div style="font-size:46px;line-height:1">${_isAuthReason ? '🔑' : '⚠️'}</div>
         <div style="font-size:16px;font-weight:800;color:var(--red);margin-top:8px">${escapeHtml(_failHeadline)}</div>
         <div style="font-size:12px;color:var(--text-mute);margin-top:8px">${escapeHtml(String(reason))}</div>
         <div style="font-size:13px;color:var(--text);margin-top:10px">${escapeHtml(_failHelp)}</div>
       </div>`,
     onClose: () => {
       try { if (typeof opts.afterOk === 'function') opts.afterOk(); } catch (_) {}
-      // A genuine session lapse is recoverable in place — offer the sign-in card that
-      // re-authenticates and immediately flushes this pending write. No reload. (v6.393)
-      if (_sessionLapsed && typeof window.showSessionResumePrompt === 'function') {
+      // ANY auth-coded failure is recoverable in place. showSessionResumePrompt() refreshes the
+      // token and decides for real: if the token is alive but the write is still refused it shows
+      // the "server refused" bar; if the token is dead it shows the sign-in card that re-auths and
+      // flushes this pending write. No reload either way. (v6.407: was gated on _sessionLapsed,
+      // which mis-fired because currentUser stays set on a dead token.)
+      if (_isAuthReason && typeof window.showSessionResumePrompt === 'function') {
         try { window.showSessionResumePrompt(); } catch (_) {}
       }
     },
@@ -2069,12 +2080,26 @@ function runMigrations(data, fromVersion) {
 
 function resetData(skipConfirm) {
   if (!skipConfirm && !confirm('Clear ALL data and start with an empty database? You will need to re-import your Excel sheets. This cannot be undone.')) return;
+  // Audit BEFORE the wipe, while the counts still exist. The two most destructive actions in
+  // the app used to leave no trace at all, while far smaller changes were fully audited.
+  // (auditLog itself is intentionally kept — the trail must survive the wipe it records.)
+  try {
+    audit('data.reset', 'database', `Cleared ALL data (${(state.members || []).length} members, ${(state.invoices || []).length} invoices, ${(state.expenses || []).length} expenses)`, {
+      members: (state.members || []).length, invoices: (state.invoices || []).length,
+      expenses: (state.expenses || []).length, coaches: (state.coaches || []).length,
+    });
+  } catch (_) {}
   localStorage.removeItem(LS_KEY);
-  // Reset state to empty defaults
+  // Reset state to empty defaults. The button says it "permanently empties the ENTIRE
+  // database", so every collection goes — families/notes/cashCounts/swimGroups/drivers used
+  // to survive as orphans pointing at member ids that no longer existed.
   state.members = []; state.coaches = []; state.invoices = [];
   state.expenses = []; state.salaries = []; state.sales = [];
   state.trials = []; state.rentals = []; state.rentalCustomers = [];
   state.schedule = []; state.products = [];
+  state.families = []; state.notes = []; state.cashCounts = [];
+  state.swimGroups = []; state.drivers = []; state.advices = [];
+  state.posts = []; state.membershipTransfers = [];
   state.settings = { expiringSoonDays: 3, lowStockThreshold: 3,
     facilityRates: { 'Football Court': 150, 'Boxing Room': 100, 'Swimming Pool': 200 },
     sports: DEFAULT_SPORTS.map((name, i) => ({ name, enabled: true, order: i })),
@@ -2099,6 +2124,11 @@ function resetData(skipConfirm) {
 function loadDemoData() {
   const seed = window.SEED_DATA;
   if (!seed) { toast('Demo data not available', 'error'); return; }
+  // Audit before the overwrite, while the real counts are still readable.
+  try {
+    audit('data.demo', 'database', `Replaced ALL data with demo data (was ${(state.members || []).length} members, ${(state.invoices || []).length} invoices)`,
+      { wasMembers: (state.members || []).length, wasInvoices: (state.invoices || []).length });
+  } catch (_) {}
   state.members = (seed.members || []).map(m => ({...m}));
   state.coaches = (seed.coaches || []).map(c => ({...c}));
   state.invoices = (seed.invoices || []).map(i => ({...i}));
@@ -2653,7 +2683,7 @@ function memberRenewalValue(m) {
   if (state && Array.isArray(state.invoices)) {
     let best = null;
     for (const inv of state.invoices) {
-      if (inv.customerId !== m.id || inv.switchCredit) continue;
+      if (inv.customerId !== m.id || inv.switchCredit || inv.deleted) continue;
       if (!((parseFloat(inv.amount) || 0) > 0)) continue;
       const key = inv.date || inv.month || '';
       if (!best || key > best.key) best = { key, amount: parseFloat(inv.amount) || 0 };
@@ -3124,7 +3154,11 @@ function invoicePaidInMonth(inv, ym) {
   if (!inv) return 0;
   const pays = Array.isArray(inv.payments) ? inv.payments : [];
   if (!pays.length) {   // legacy invoice, no ledger → its paid sits in its own month
-    return (invoiceBillMonth(inv) === ym) ? Math.min(invoicePaid(inv), invoiceTotal(inv)) : 0;
+    if (invoiceBillMonth(inv) !== ym) return 0;
+    // Derive from invoiceBalance so this can never contradict it. A legacy invoice whose
+    // cached inv.amount drifted BELOW its line sum used to report a phantom Due here (and
+    // on Transactions) while invoiceBalance/invoiceStatus/memberOutstanding all said Paid.
+    return invoiceTotal(inv) - invoiceBalance(inv);
   }
   const invValue = invoiceTotal(inv);   // canonical total (Σ lines)
   const billedByMonth = new Map();
@@ -3269,6 +3303,9 @@ function salariesPaidInMonth(ym) {
   for (const s of (state.salaries || [])) {
     if (ym !== 'all' && (s.month || '') !== ym) continue;
     if (s.kind === 'advance') total += Number(s.amount || 0) || 0;
+    // A modern record carries its own payments[] — sum THOSE, not a stale snapshotNet
+    // (the snapshot is what was owed at pay time, not what was handed over).
+    else if (Array.isArray(s.payments)) total += salaryPaidTotal(s);
     else if (s.kind === 'paid') total += Number(s.snapshotNet != null ? s.snapshotNet : (s.amount != null ? s.amount : s.paid || 0)) || 0;
     else total += Number(s.amount != null ? s.amount : (s.paid || 0)) || 0;   // legacy
   }
@@ -3279,6 +3316,11 @@ function salariesPaidInMonth(ym) {
   for (const e of (state.expenses || [])) {
     if (e.deleted) continue;
     if (!isSalaryCategory(e.category)) continue;
+    // _salaryAutoExpense rows are the MIRROR of a salary payment already counted above —
+    // _salAddPay writes both for a single payout, so counting both doubled every coach
+    // payment (one 2,000 QAR payout reported as 4,000). Only MANUAL salary expenses
+    // (typed on the Expenses screen, with no salary record behind them) add money here.
+    if (e._salaryAutoExpense || e.salaryPaymentId) continue;
     const m = e.month || String(e.date || '').slice(0, 7);
     if (ym !== 'all' && m !== ym) continue;
     total += Number(e.amount) || 0;
@@ -4800,6 +4842,48 @@ function coachName(id) {
   return c ? c.name : 'Unknown';
 }
 
+// Every coach this member trains with — headline coach plus each enrollment/subscription.
+// A member's coachId is only the HEADLINE coach; a second sport can be taught by someone
+// else (and for a Summer Camp member the headline coach is null entirely).
+function memberCoachIds(m) {
+  if (!m) return [];
+  return [...new Set([
+    m.coachId,
+    ...((m.enrollments || []).map(e => e.coachId)),
+    ...((m.subscriptions || []).filter(s => s.status !== 'Withdrawn').map(s => s.coachId)),
+  ].filter(v => v != null))];
+}
+
+// The coach who actually teaches THIS sport to this member; falls back to the headline
+// coach so a caller always gets the best available answer. Reports that credit a coach
+// for a specific sport must use this, not m.coachId.
+function coachIdForSport(m, sport) {
+  if (!m) return null;
+  if (sport != null) {
+    const e = (m.enrollments || []).find(x => (x.sport || '') === sport && x.coachId != null);
+    if (e) return e.coachId;
+    const s = (m.subscriptions || []).find(x => (x.activity || '') === sport && x.coachId != null && x.status !== 'Withdrawn');
+    if (s) return s.coachId;
+    // Only claim the headline coach for the headline sport.
+    if (m.coachId != null && (m.sport || '') === sport) return m.coachId;
+    return null;
+  }
+  return m.coachId != null ? m.coachId : null;
+}
+
+// Names of every coach this member trains with, headline first. Empty for a camp-only member.
+function memberCoachNames(m) {
+  const head = m && m.coachId != null ? [m.coachId] : [];
+  const ids = [...new Set([...head, ...memberCoachIds(m)])];
+  return ids.map(coachName).filter(n => n && n !== '—');
+}
+
+// Display name of the coach for a member+sport ('—' when nobody teaches it, e.g. camp).
+function coachNameForSport(m, sport) {
+  const id = coachIdForSport(m, sport);
+  return id == null ? '—' : coachName(id);
+}
+
 // ── CLASS ROSTER (v6.400) ────────────────────────────────────────────────────
 // A "class" is one weekly Schedule entry (day + time-slot + coach + sport). Its roster is
 // DERIVED, never stored: every member who trains that sport with that coach. A member is matched
@@ -4814,19 +4898,52 @@ function memberTakesSportWithCoach(m, sport, coachId) {
   if ((m.subscriptions || []).some(s => s.coachId === cid && (s.activity || '') === sport)) return true;
   return false;
 }
+// ── PER-SLOT ASSIGNMENT (v6.401) ─────────────────────────────────────────────
+// A coach may teach the SAME sport at several times (Saturday 5PM and Monday 6PM). Derived-only
+// rosters put every student in BOTH, because coach+sport cannot tell them apart. Optional
+// assignments fix that, stored on the MEMBER as m.classSlots[] = [{ sport, coachId, day, slot }]
+// — inside the member document, so it rides the existing well-tested member array merge: no new
+// collection, no migration, and it syncs like everything else.
+//
+// The rule is deliberately backward-compatible: a student with NO assignment for a given
+// sport+coach still appears in EVERY class of that sport+coach (exactly today's behaviour), so
+// nothing empties out the day this ships. As soon as they are assigned to at least one slot for
+// that sport+coach, they appear ONLY in the slots they were assigned to.
+function memberClassSlots(m, sport, coachId) {
+  const cid = parseInt(coachId);
+  return ((m && Array.isArray(m.classSlots)) ? m.classSlots : [])
+    .filter(a => a && (a.sport || '') === sport && parseInt(a.coachId) === cid);
+}
+function memberInClassSlot(m, sport, coachId, day, slot) {
+  const mine = memberClassSlots(m, sport, coachId);
+  if (!mine.length) return true;                       // unassigned → belongs to all of them
+  return mine.some(a => a.day === day && Number(a.slot) === Number(slot));
+}
 // The live roster for a class, active members first, then name. Never includes archived members.
-function classRoster(sport, coachId) {
+// `day`/`slot` are optional — pass them to honour per-slot assignments.
+function classRoster(sport, coachId, day, slot) {
+  const useSlot = day != null && slot != null;
   return (state.members || [])
     .filter(m => m && !m.deleted && memberTakesSportWithCoach(m, sport, coachId))
+    .filter(m => !useSlot || memberInClassSlot(m, sport, coachId, day, slot))
     .sort((a, b) => {
       const sa = (typeof memberStatus === 'function' ? memberStatus(a) : '') === 'Active' ? 0 : 1;
       const sb = (typeof memberStatus === 'function' ? memberStatus(b) : '') === 'Active' ? 0 : 1;
       return sa - sb || String(a.name || '').localeCompare(String(b.name || ''));
     });
 }
+// Everyone eligible for this class (sport+coach), regardless of slot — drives the assign dialog.
+function classEligible(sport, coachId) {
+  return (state.members || [])
+    .filter(m => m && !m.deleted && memberTakesSportWithCoach(m, sport, coachId))
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+}
 if (typeof window !== 'undefined') {
   window.memberTakesSportWithCoach = memberTakesSportWithCoach;
+  window.memberClassSlots = memberClassSlots;
+  window.memberInClassSlot = memberInClassSlot;
   window.classRoster = classRoster;
+  window.classEligible = classEligible;
 }
 
 // Resolve current customer info for a record (invoice/sale/rental/etc).
@@ -4994,8 +5111,27 @@ function totalClassesFor(m, sport = null) {
 
 // A coach counts as active unless explicitly flagged 'N'.
 function isCoachActive(c) {
-  return (c.active || 'Y') === 'Y';
+  if (!c) return false;
+  const a = c.active;
+  if (a == null || a === '') return true;          // never set → active
+  if (typeof a === 'boolean') return a;            // a BOOLEAN true used to read as inactive
+  const s = String(a).trim().toLowerCase();        // ...and the v6 migration couldn't repair it,
+  // because `if (!c.active) c.active = 'Y'` leaves a truthy `true` alone. A coach stored that way
+  // vanished from Salaries entirely and dropped out of salariesEarnedInMonth, understating payroll
+  // on the Dashboard and the Monthly Report.
+  return !(s === 'n' || s === 'no' || s === 'false' || s === '0' || s === 'inactive');
 }
+
+// Hourly facility rates, self-healing. "Restore from backup" does Object.assign(state, incoming)
+// and so bypasses the load-time migrations — a backup taken before facilityRates existed left
+// state.settings.facilityRates undefined and the Rentals screen threw the moment it was opened.
+const DEFAULT_FACILITY_RATES = { 'Football Court': 150, 'Boxing Room': 100, 'Swimming Pool': 200 };
+function facilityRates() {
+  if (!state.settings) state.settings = {};
+  if (!state.settings.facilityRates) state.settings.facilityRates = { ...DEFAULT_FACILITY_RATES };
+  return state.settings.facilityRates;
+}
+function facilityRate(f) { return Number(facilityRates()[f]) || 0; }
 
 // Is this a real, bookable sport (so coach-eligibility should be enforced)?
 // Summer-camp activities like "Art"/"Combat" aren't sports, so no constraint there.
@@ -5113,13 +5249,18 @@ function isBirthdayInMonth(birthdate, monthKey) {
 // Days until next birthday (positive number). null if no birthdate.
 function daysUntilBirthday(birthdate) {
   if (!birthdate) return null;
-  const b = new Date(birthdate);
-  if (isNaN(b)) return null;
-  const t = new Date(TODAY);
-  // Build this year's birthday, then advance to next year if it's already passed
-  let next = new Date(t.getFullYear(), b.getMonth(), b.getDate());
-  if (next < t) next = new Date(t.getFullYear() + 1, b.getMonth(), b.getDate());
-  return Math.round((next - t) / 86400000);
+  const b = String(birthdate).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(b) || isNaN(new Date(b + 'T00:00:00'))) return null;
+  // Compare as plain YYYY-MM-DD strings. Building this year's birthday with
+  // new Date(y, m, d) gave LOCAL midnight while new Date(TODAY) gave UTC midnight —
+  // 3 hours apart in Qatar (UTC+3) — so a birthday that is TODAY looked like it had
+  // already passed and rolled forward a full year (365 instead of 0).
+  const md = b.slice(5);
+  let next = TODAY.slice(0, 4) + '-' + md;
+  if (next < TODAY) next = (Number(TODAY.slice(0, 4)) + 1) + '-' + md;
+  // Feb 29 in a non-leap year: celebrate on Mar 1, as the old Date-based build did.
+  if (isNaN(new Date(next + 'T00:00:00'))) next = next.slice(0, 4) + '-03-01';
+  return daysBetween(TODAY, next);
 }
 
 // "1 year 4 months" since the given date. Returns null if missing/future.
@@ -5333,6 +5474,16 @@ function isActiveStatus(m) {
   return memberStatus(m) !== 'Expired';
 }
 
+// "Still on the books": not archived, not expired, and not withdrawn. isActiveStatus() alone
+// treats a WITHDRAWN member (refunded and gone) as active, and says nothing about archiving —
+// which is how archived and withdrawn members ended up inside dashboard headcounts.
+// Matches memberCounts().current = active + completed + frozen.
+function isCurrentMember(m) {
+  if (!m || m.deleted) return false;
+  const s = memberStatus(m);
+  return s !== 'Expired' && s !== 'Withdrawn';
+}
+
 // ── Canonical member counts — ONE source of truth used by every page ──
 // Always computed over non-archived members, with strict per-status buckets so
 // the Dashboard, Members header, Reports, etc. can never disagree.
@@ -5403,6 +5554,7 @@ function isExcludedFromCoachSalary(coachId, memberId) {
 function coachStudents(coachId) {
   const seen = new Map();
   for (const inv of (state.invoices || [])) {
+    if (inv.deleted) continue;   // a voided invoice never put a student on a coach's roster
     if ((inv.category || 'Membership') !== 'Membership') continue;
     if (!inv.customerId) continue;
     const mem = state.members.find(x => x.id === inv.customerId);
@@ -7969,23 +8121,30 @@ async function init() {
 
   async function showSessionResumePrompt() {
     if (_sessionPromptOpen) return;
-    // 1) silent recovery first
+    // 1) Try to re-mint the ID token. refreshAuth() resolves to a BOOLEAN: true = a fresh token
+    //    was obtained (the session is genuinely alive), false = it could NOT be refreshed (the
+    //    sign-in has truly lapsed — a revoked/expired refresh token, a password change, a disabled
+    //    account). Capture that answer; it decides the message below.
+    let tokenAlive = false;
     try {
-      const r = await (window.Storage.refreshAuth ? window.Storage.refreshAuth() : Promise.resolve({ ok: false }));
-      if (r && r.ok) { try { document.getElementById('cloud-save-fail-bar')?.remove(); } catch (_) {} return; }
+      const r = await (window.Storage.refreshAuth ? window.Storage.refreshAuth() : false);
+      tokenAlive = !!r;
     } catch (_) {}
+    // 2) Retry the write — with the fresh token if we got one. If it lands, we're done.
     try {
       const retry = await (window.Storage.retryNow ? window.Storage.retryNow() : Promise.resolve({ ok: false }));
       if (retry && retry.ok) { try { document.getElementById('cloud-save-fail-bar')?.remove(); } catch (_) {} return; }
     } catch (_) {}
 
-    // 2) Is this actually a SESSION problem at all? (v6.394)
-    // A rules rejection also surfaces as permission-denied, and its retry never succeeds — so the
-    // old code fell through to the sign-in card and asked staff to sign in over and over for
-    // something signing in cannot fix. If a signed-in user is still present the session is fine
-    // and the SERVER refused the write; say that instead, and never show the sign-in card.
+    // 3) Still failing — choose the message by the REAL reason (v6.407):
+    //    • token refreshed (session alive) but the write is STILL refused → a genuine SERVER/RULES
+    //      rejection; re-signing-in cannot help, so show the "server refused" bar.
+    //    • token could NOT be refreshed → the session really lapsed, EVEN THOUGH the SDK still holds
+    //      a stale currentUser. Re-signing-in WILL fix it, so show the sign-in prompt. The old code
+    //      keyed only off `currentUser != null` and so wrongly told a genuinely-lapsed user that
+    //      "signing in will not help" — the exact complaint that surfaced this.
     const _who = (() => { try { return window.Storage.currentUser && window.Storage.currentUser(); } catch (_) { return null; } })();
-    if (_who) { showServerRefusedBar(); return; }
+    if (tokenAlive && _who) { showServerRefusedBar(); return; }
 
     // 3) genuinely signed out — ask, in place, without losing anything
     _sessionPromptOpen = true;
@@ -8176,6 +8335,8 @@ async function init() {
         window.addEventListener(ev, mark, { passive: true, capture: true }));
     } catch (_) {}
     const ACTIVE_MS = 3500;   // consider the user "busy" for this long after any interaction
+    // Routes whose screen is a big working grid — see _renderKeepScroll. (v6.402)
+    const NO_AUTO_REPAINT_ROUTES = new Set(['attendance', 'campschedule', 'schedule']);
     const isBusyEditing = () => {
       try {
         if (document.querySelector('.modal-overlay, .modal, [role="dialog"], #blocked-save-modal')) return true;
@@ -8191,6 +8352,13 @@ async function init() {
     // Redraw while KEEPING the current scroll position, so incoming changes update
     // the content in place instead of snapping the page to the top ("the flicker").
     const _renderKeepScroll = () => {
+      // v6.402: screens that are a LARGE grid the user works down (Attendance: hundreds of
+      // students × 31 day-columns) are not auto-repainted. The remote change is ALREADY merged
+      // into state, and every action on those screens re-renders anyway, so the only thing the
+      // automatic repaint added was a whole-page rebuild landing seconds after the user stopped
+      // touching — reported as "why did the screen refresh suddenly". The data is not stale: the
+      // next mark, filter or navigation shows it. Everywhere else still repaints live.
+      if (NO_AUTO_REPAINT_ROUTES.has(state.route)) { _remoteRenderPending = false; return; }
       let y = 0;
       try { y = _getScroll(); } catch (_) {}
       try { render(); } catch (e) { console.warn('[sync] render failed:', e); return; }

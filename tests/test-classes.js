@@ -101,12 +101,65 @@ console.log('\nfilters narrow the list:');
   vm.runInContext(`window._classFilter = null`, C);
 }
 
+console.log('\nPER-SLOT ASSIGNMENT (v6.401) — one coach, same sport, two times:');
+{
+  const X = makeCtx();
+  vm.runInContext(`
+    state.coaches = [{id:2,name:'Iyad'}];
+    state.schedule = [
+      {id:21,day:'sat',slot:17,sport:'Kick Boxing',coachId:2},
+      {id:22,day:'mon',slot:18,sport:'Kick Boxing',coachId:2}
+    ];
+    state.members = [
+      {id:1,name:'Unassigned',sport:'Kick Boxing',coachId:2,enrollments:[{sport:'Kick Boxing',coachId:2}]},
+      {id:2,name:'SatOnly',sport:'Kick Boxing',coachId:2,enrollments:[{sport:'Kick Boxing',coachId:2}],classSlots:[{sport:'Kick Boxing',coachId:2,day:'sat',slot:17}]},
+      {id:3,name:'MonOnly',sport:'Kick Boxing',coachId:2,enrollments:[{sport:'Kick Boxing',coachId:2}],classSlots:[{sport:'Kick Boxing',coachId:2,day:'mon',slot:18}]},
+      {id:4,name:'BothDays',sport:'Kick Boxing',coachId:2,enrollments:[{sport:'Kick Boxing',coachId:2}],classSlots:[{sport:'Kick Boxing',coachId:2,day:'sat',slot:17},{sport:'Kick Boxing',coachId:2,day:'mon',slot:18}]}
+    ];
+    if(!state.settings) state.settings={};
+  `, X);
+  const at = (day, slot) => vm.runInContext(`classRoster('Kick Boxing',2,${JSON.stringify(day)},${slot}).map(m=>m.name).sort()`, X);
+  const sat = at('sat', 17), mon = at('mon', 18);
+  ok('a student assigned to Saturday appears there', sat.includes('SatOnly'), sat);
+  ok('...and NOT in the Monday class', !mon.includes('SatOnly'), mon);
+  ok('a Monday student appears only on Monday', mon.includes('MonOnly') && !sat.includes('MonOnly'), { sat, mon });
+  ok('a student assigned to BOTH appears in both', sat.includes('BothDays') && mon.includes('BothDays'));
+  // the backward-compatible rule — this is what stops rosters emptying on upgrade
+  ok('an UNASSIGNED student still appears in every class of that coach+sport', sat.includes('Unassigned') && mon.includes('Unassigned'), { sat, mon });
+  ok('eligibility ignores slots (drives the assign dialog)',
+    vm.runInContext(`classEligible('Kick Boxing',2).length`, X) === 4);
+  ok('classRoster with NO day/slot returns everyone (old call shape still works)',
+    vm.runInContext(`classRoster('Kick Boxing',2).length`, X) === 4);
+}
+
+console.log('\nthe hours filter narrows by time slot:');
+{
+  const X = makeCtx();
+  vm.runInContext(`
+    state.coaches=[{id:2,name:'Iyad'}];
+    state.schedule=[{id:21,day:'sat',slot:17,sport:'Kick Boxing',coachId:2},{id:22,day:'mon',slot:18,sport:'Kick Boxing',coachId:2}];
+    state.members=[{id:1,name:'Ali',sport:'Kick Boxing',coachId:2,enrollments:[{sport:'Kick Boxing',coachId:2}]}];
+    if(!state.settings) state.settings={};
+  `, X);
+  const render = () => { for (const k of Object.keys(cap)) delete cap[k]; vm.runInContext(`PAGES.classes(document.getElementById('main'))`, X); return Object.values(cap).map(e => e._h || '').join('\n'); };
+  vm.runInContext(`window._classFilter = null`, X);
+  let html = render();
+  ok('the hours dropdown is rendered', html.includes('cls-slot') && /All hours/.test(html));
+  ok('both time slots are offered', /5–6 PM/.test(html) && /6–7 PM/.test(html));
+  vm.runInContext(`window._classFilter = { coach:'all', sport:'all', day:'all', slot:'17', search:'' }`, X);
+  html = render();
+  ok('choosing 5–6 PM hides the 6–7 PM class', /5–6 PM/.test(html) && !/⏰ 6–7 PM/.test(html));
+  vm.runInContext(`window._classFilter = null`, X);
+}
+
 console.log('\nsource wiring:');
 {
   ok('the route is registered in the nav', /classes:\s*\{ label: 'Classes'/.test(appSrc));
   ok('classRoster + memberTakesSportWithCoach are global', /window\.classRoster = classRoster/.test(appSrc) && /window\.memberTakesSportWithCoach = memberTakesSportWithCoach/.test(appSrc));
   ok('the roster is derived, not stored (reads state.members + schedule, no new collection)',
-    !/state\.classes\b/.test(pagesSrc) && /classRoster\(c\.sport, c\.coachId\)/.test(pagesSrc));
+    !/state\.classes\b/.test(pagesSrc) && /classRoster\(c\.sport, c\.coachId, c\.day, c\.slot\)/.test(pagesSrc));
+  ok('slot assignments live on the MEMBER (existing synced array, no new collection)',
+    /m\.classSlots/.test(pagesSrc) && !/state\.classAssignments/.test(pagesSrc));
   ok('print + xlsx handlers exist', /window\._classPrint = function/.test(pagesSrc) && /window\._classXlsx = function/.test(pagesSrc));
 }
 

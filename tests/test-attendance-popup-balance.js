@@ -101,6 +101,37 @@ console.log('\na renewal after a gap counts the gap class toward the NEW package
   ok('...matching the member card', card === fixed.attended, { card, popup: fixed.attended });
 }
 
+console.log('\nv6.402 — a first package must not have MONTHS of history spend its credit:');
+{
+  // The reported bug: an 8-class MMA package dated 8 Jul read "2 of 8 left" on day one, because
+  // the first-package rule dropped the lower bound entirely (from = null) and June's marks were
+  // counted against it. Reproduced exactly from the screenshot before fixing.
+  const m = {
+    id: 1, sport: 'MMA', coachId: 1,
+    subscriptions: [{ activity: 'MMA', coachId: 1, totalClasses: 8, start: '2026-07-08', end: '2026-08-07' }],
+    dailyAttendance: { '2026-06': { MMA: { '10': 'Y', '20': 'Y' } }, '2026-07': { MMA: { '01': 'Y', '06': 'Y', '08': 'Y', '09': 'Y' } } },
+  };
+  const fixed = sessionsLeft(m, 'MMA', '2026-07-09', true);
+  ok('only this package’s own classes count (4 of 8)', fixed.attended === 4, fixed);
+  ok('...so 4 sessions remain, not the 2 that was displayed', fixed.left === 4, fixed);
+  const w = vm.runInContext('subAttendanceWindow', C)(m, m.subscriptions[0]);
+  ok('the window now has a real lower bound (never null)', w.from != null, w);
+  ok('...one week before the start', w.from === '2026-07-01', w);
+}
+
+console.log('\n...while the v6.386 case the rule exists for still works:');
+{
+  // Trained 15 + 18 Jul on a package dated 19 Jul — those DO belong to this package.
+  const j = {
+    id: 2, sport: 'Kick Boxing', coachId: 1,
+    subscriptions: [{ activity: 'Kick Boxing', coachId: 1, totalClasses: 12, start: '2026-07-19', end: '2026-08-18' }],
+    dailyAttendance: { '2026-07': { 'Kick Boxing': { '15': 'Y', '18': 'Y', '20': 'Y' } } },
+  };
+  const fixed = sessionsLeft(j, 'Kick Boxing', '2026-07-20', true);
+  ok('classes a few days before the start still count (3)', fixed.attended === 3, fixed);
+  ok('...so remaining is 9', fixed.left === 9, fixed);
+}
+
 console.log('\nsource wiring — the popup + its over-cap guard use the corrected window:');
 {
   const _sldSeg = pagesSrc.slice(pagesSrc.indexOf('function _sessionsLeftFromDoc'), pagesSrc.indexOf('function _sessionsLeftFromDoc') + 1400);

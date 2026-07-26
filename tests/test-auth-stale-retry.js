@@ -59,8 +59,9 @@ console.log('\nretrying can never be mistaken for success:');
     /base is NOT advanced on failure, so the same delta is re-sent/.test(storeSrc));
   ok('the change is journalled to disk before the UI is told anything',
     /writePendingJournal\(state, \(e && e\.code\) \|\| 'write-failed'\);/.test(storeSrc));
-  ok('an auth failure no longer blames the session when one is still active',
-    /_serverRefused = _isAuthReason && _stillSignedIn/.test(appSrc));
+  ok('an auth failure is diagnosed by refreshing the token, not by currentUser alone (v6.407)',
+    /if \(tokenAlive && _who\) \{ showServerRefusedBar\(\); return; \}/.test(appSrc)
+    && !/_serverRefused = _isAuthReason/.test(appSrc));
 }
 
 console.log('\nAUTH STALE RETRY:', pass, 'passed,', fail, 'failed');

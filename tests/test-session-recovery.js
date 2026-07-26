@@ -84,6 +84,26 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   ok('refreshes on network reconnect (online) and window focus', /addEventListener\('online', _keepAuthAlive\)/.test(appSrc) && /addEventListener\('focus', _keepAuthAlive\)/.test(appSrc));
   ok('keep-alive calls Storage.refreshAuth()', /_keepAuthAlive = \(\) => \{[\s\S]{0,120}Storage\.refreshAuth\(\)/.test(appSrc));
 
+  // ── 5) v6.407 — CORRECT lapsed-vs-refused DIAGNOSIS. Firebase keeps auth.currentUser populated
+  // even when the ID token is DEAD, so keying the "signing in won't help" message off
+  // `currentUser != null` mislabelled a genuinely-lapsed session. The red "server refused" bar
+  // must appear ONLY when the token was actually refreshed (session alive) AND the write is still
+  // refused; a token that cannot be refreshed must route to the sign-in prompt (which fixes it).
+  // (The three runtime cases are verified live in the browser; these lock the source wiring.)
+  console.log('\nv6.407 session diagnosis wiring:');
+  ok('showSessionResumePrompt captures whether the token could be refreshed (tokenAlive)',
+    /let tokenAlive = false;[\s\S]{0,200}refreshAuth[\s\S]{0,80}tokenAlive = !!/.test(appSrc), null);
+  ok('the "server refused" bar is gated on tokenAlive && _who (not currentUser alone)',
+    /if \(tokenAlive && _who\) \{ showServerRefusedBar\(\); return; \}/.test(appSrc), null);
+  ok('a dead token (tokenAlive false) falls through to the in-place sign-in prompt',
+    /if \(tokenAlive && _who\) \{ showServerRefusedBar\(\); return; \}[\s\S]{0,400}_sessionPromptOpen = true;/.test(appSrc), null);
+  ok('withCloudConfirm no longer pre-judges "signing in again will not help"',
+    !/you are still signed in, so signing in again will not help[\s\S]{0,60}send this code to support/i.test(appSrc), null);
+  ok('withCloudConfirm routes ANY auth-coded failure to the self-diagnosing resume prompt',
+    /if \(_isAuthReason && typeof window\.showSessionResumePrompt === 'function'\)/.test(appSrc), null);
+  ok('the dead _stillSignedIn / _sessionLapsed / _serverRefused branching is gone from the confirm popup',
+    !/_serverRefused = _isAuthReason/.test(appSrc) && !/const _sessionLapsed = /.test(appSrc), null);
+
   console.log('\nSESSION RECOVERY:', pass, 'passed,', fail, 'failed');
   process.exit(fail ? 1 : 0);
 })();

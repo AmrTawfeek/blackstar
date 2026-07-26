@@ -51,18 +51,43 @@ console.log('the reported bug — Kick Boxing marked before its start date:');
   const kb = countFor(ctx, 'Kick Boxing');
   const sc = countFor(ctx, 'Summer Camp');
   ok('Kick Boxing now counts BOTH pre-start classes (2, was 0)', kb.y === 2, kb);
-  ok('...its window lower bound was dropped (first package of that sport)', kb.from === null, kb);
+  // v6.402: the lower bound is no longer dropped ENTIRELY. It reaches back a WEEK before the
+  // start — far enough for "trained before the paperwork" (this case is 4 days), but not far
+  // enough for months of older history to spend a new package's credit, which is what made an
+  // 8-class package read "2 of 8 left" on day one.
+  ok('...its window reaches back a week before the start (not unbounded)', kb.from === '2026-07-12', kb);
+  ok('...which still covers the 15 + 18 Jul classes this test exists for', kb.from <= '2026-07-15', kb);
   ok('Summer Camp still counts its own 2', sc.y === 2, sc);
   ok('card total is now 4 (2 + 2), not 2', kb.y + sc.y === 4, { kb: kb.y, sc: sc.y });
 }
 
-console.log('\ncontrol — without the fix the classes are orphaned:');
+console.log('\ncontrol — without any reach-back the classes are orphaned:');
 {
-  const broken = appSrc.replace(/\} else \{\s*\n\s*\/\/ FIRST package for this sport[\s\S]*?from = null;\s*\n\s*\}/, '}');
+  // Remove the reach-back entirely (window starts exactly at sub.start) → the pre-start classes
+  // are lost again, which is the card bug this behaviour exists to prevent.
+  const broken = appSrc.replace(
+    /const graceFrom = addDays\(sub\.start, -FIRST_PACKAGE_GRACE_DAYS\);\s*\n\s*from = graceFrom \|\| sub\.start;/,
+    'from = sub.start;');
   ok('control patch applied', broken !== appSrc);
   const ctx = makeCtx(broken); vm.runInContext(JABER, ctx);
   const kb = countFor(ctx, 'Kick Boxing');
-  ok('WITHOUT fix: Kick Boxing shows 0 — reproduces the card bug', kb.y === 0, kb);
+  ok('WITHOUT the reach-back: Kick Boxing shows 0 — reproduces the card bug', kb.y === 0, kb);
+}
+
+console.log('\nthe reach-back is BOUNDED — old history cannot spend a new package:');
+{
+  // The v6.402 report: months-old marks counted against a package that had only just started.
+  const ctx = makeCtx(appSrc);
+  vm.runInContext(`
+    state.members = [{ id: 9, name: 'Old Trainer', sport: 'MMA', coachId: 1,
+      enrollments: [{ sport: 'MMA', coachId: 1, classes: 8 }],
+      subscriptions: [{ activity: 'MMA', coachId: 1, totalClasses: 8, start: '2026-07-08', end: '2026-08-07', status: 'active' }],
+      dailyAttendance: { '2026-06': { 'MMA': { '10': 'Y', '20': 'Y' } }, '2026-07': { 'MMA': { '01': 'Y', '06': 'Y', '08': 'Y', '09': 'Y' } } } }];
+    state.coaches = [{ id: 1, name: 'Coach' }]; state.invoices = []; if (!state.settings) state.settings = {};
+  `, ctx);
+  const r = countFor(ctx, 'MMA');
+  ok('only this package’s 4 classes count — not June’s 2', r.y === 4, r);
+  ok('...so the window starts a week before, not at the beginning of time', r.from === '2026-07-01', r);
 }
 
 console.log('\na renewal must NOT steal the previous package’s attendance:');

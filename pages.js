@@ -42,8 +42,10 @@ function computeStats(monthKey) {
 
   // P&L expenses exclude "Salary"-category entries: those are salary PAYMENTS
   // (settlements), and the salary COST is already counted via salariesEarnedInMonth.
-  const currExpenses = state.expenses.filter(e => e.month === curr && !isSalaryCategory(e.category)).reduce((s,e) => s+e.amount, 0);
-  const prevExpenses = state.expenses.filter(e => e.month === prev && !isSalaryCategory(e.category)).reduce((s,e) => s+e.amount, 0);
+  // !e.deleted: moneyflow / cashinhand / payanalysis all honour the soft-delete, so a voided
+  // expense left the Dashboard as the only screen overstating cost and understating profit.
+  const currExpenses = state.expenses.filter(e => !e.deleted && e.month === curr && !isSalaryCategory(e.category)).reduce((s,e) => s+e.amount, 0);
+  const prevExpenses = state.expenses.filter(e => !e.deleted && e.month === prev && !isSalaryCategory(e.category)).reduce((s,e) => s+e.amount, 0);
 
   // Total payroll cost = sum of gross pay for every active coach/staff this month.
   // Previously this read `state.salaries[].salary` which doesn't exist in the
@@ -275,7 +277,7 @@ PAGES.dashboard = (main) => {
             <div onclick="navigate('expiring')" style="cursor:pointer;background:rgba(242,163,60,.1);border:1px solid rgba(242,163,60,.3);border-radius:8px;padding:12px">
               <div style="font-size:24px;font-weight:800;color:var(--accent-2)">${expiringSoon}</div>
               <div style="font-size:12px;font-weight:600">${t(`Expiring in ≤ ${threshold} days`,`تنتهي خلال ≤ ${threshold} يوم`)}</div>
-              <div class="text-mute" style="font-size:10px;margin-top:2px">${expiringList.slice(0,2).map(x => escapeHtml(x.m.name.split(' ')[0])).join(', ')}${expiringSoon > 2 ? '…' : ''} →</div>
+              <div class="text-mute" style="font-size:10px;margin-top:2px">${expiringList.slice(0,2).map(x => escapeHtml(String(x.m.name || '').split(' ')[0])).join(', ')}${expiringSoon > 2 ? '…' : ''} →</div>
             </div>` : ''}
           ${finishedList.length ? `
             <div onclick="navigate('members')" style="cursor:pointer;background:rgba(91,141,239,.1);border:1px solid rgba(91,141,239,.3);border-radius:8px;padding:12px">
@@ -312,7 +314,7 @@ PAGES.dashboard = (main) => {
             ${birthdayList.slice(0, 4).map(({m, days}) => {
               const age = memberAge(m.birthdate);
               const ageNext = age != null ? age + (days > 0 ? 1 : 0) : null;
-              return `${escapeHtml(m.name.split(' ')[0])}${ageNext != null ? ` (${ageNext})` : ''}${days === 0 ? ' 🎉' : days <= 7 ? ` · in ${days}d` : ''}`;
+              return `${escapeHtml(String(m.name || '').split(' ')[0])}${ageNext != null ? ` (${ageNext})` : ''}${days === 0 ? ' 🎉' : days <= 7 ? ` · in ${days}d` : ''}`;
             }).join(', ')}${birthdayList.length > 4 ? `… +${birthdayList.length - 4}` : ''}
           </div>
         </div>` : ''}
@@ -629,7 +631,10 @@ function drawRevenueChart() {
 function drawSportDonut() {
   const container = $('#sport-chart');
   const breakdown = {};
-  for (const m of state.members.filter(x => isActiveStatus(x))) {
+  // isCurrentMember: memberStatus() has no archived concept (an archived member with no expiry
+  // reads as Active), and a WITHDRAWN member is not active either — the donut centre used to
+  // disagree with the Active Members KPI printed right above it.
+  for (const m of state.members.filter(isCurrentMember)) {
     breakdown[m.sport] = (breakdown[m.sport] || 0) + 1;
   }
   const sorted = Object.entries(breakdown).sort((a,b) => b[1] - a[1]);
@@ -677,7 +682,8 @@ function drawSportDonut() {
 function drawCoachLeaderboard() {
   const container = $('#coach-leaderboard');
   const counts = {};
-  for (const m of state.members.filter(x => isActiveStatus(x))) {
+  // Archived and withdrawn members are nobody's student — they inflated every coach's count.
+  for (const m of state.members.filter(isCurrentMember)) {
     counts[m.coachId] = (counts[m.coachId] || 0) + 1;
   }
   const sorted = state.coaches
@@ -710,7 +716,9 @@ function drawCoachLeaderboard() {
 // ─── Recent invoices ────────────────────────────────────────
 function drawRecentInvoices() {
   const container = $('#recent-invoices');
-  const recent = [...state.invoices].sort((a,b) => String(b.date||'').localeCompare(String(a.date||''))).slice(0, 8);
+  // Voided invoices are excluded by every money helper — listing them here made the visible
+  // rows contradict the revenue KPI directly above them.
+  const recent = state.invoices.filter(i => !i.deleted).sort((a,b) => String(b.date||'').localeCompare(String(a.date||''))).slice(0, 8);
 
   container.innerHTML = `
     <div class="table-wrap">
@@ -720,7 +728,10 @@ function drawRecentInvoices() {
           ${recent.map(i => {
             const isRental = i.activityType === 'rental';
             const sportLabel = isRental ? '🏟 Rental' : (i.sport || '—');
-            const cust = i.customerName || i.description.split(/\s/).slice(0, 2).join(' ');
+            // v6.403: an invoice with NEITHER a customerName NOR a description crashed the whole
+            // Dashboard here (.split of undefined) — the first screen everyone opens. Found by the
+            // all-screens smoke test. Fall back to the reference rather than throwing.
+            const cust = i.customerName || String(i.description || i.ref || ('#' + i.id)).split(/\s/).slice(0, 2).join(' ');
             return `
               <tr>
                 <td class="text-dim" style="white-space:nowrap">${fmtDate(i.date)}</td>
@@ -1065,11 +1076,19 @@ PAGES.members = (main) => {
         sortVal: m => (m.sport || '').toLowerCase(),
         getVal: m => [m.sport, ...((m.enrollments || []).map(e => e.sport))].filter(Boolean).join(' '),
         cell: m => `${escapeHtml(m.sport)}${(m.enrollments && m.enrollments.length > 1) ? ` <span class="badge blue" style="font-size:9px;padding:1px 5px" title="${m.enrollments.map(e => escapeHtml(e.sport)).join(', ')}">+${m.enrollments.length - 1}</span>` : ''}` },
+      // Show EVERY coach the member trains with, not just the headline one — a member whose
+      // coach sits on an enrollment (or a camp member with no headline coach) used to read "—"
+      // even though the coach filter right below correctly returned them.
       { key: 'coach', label: 'Coach', def: true, filter: 'select',
         opts: () => distinct(state.coaches.map(c => c.name)),
-        sortVal: m => (coachName(m.coachId) || '').toLowerCase(),
-        getVal: m => coachName(m.coachId) || '',
-        cell: m => m.sport === SUMMER_CAMP && (!m.enrollments || m.enrollments.every(e => e.sport === SUMMER_CAMP)) ? '<span class="text-mute" style="font-style:italic">—</span>' : escapeHtml(coachName(m.coachId)) },
+        sortVal: m => (memberCoachNames(m)[0] || '').toLowerCase(),
+        getVal: m => memberCoachNames(m).join(', '),
+        cell: m => {
+          const names = memberCoachNames(m);
+          if (!names.length) return '<span class="text-mute" style="font-style:italic">—</span>';
+          return escapeHtml(names[0]) + (names.length > 1
+            ? ` <span class="badge blue" style="font-size:9px;padding:1px 5px" title="${escapeHtml(names.join(', '))}">+${names.length - 1}</span>` : '');
+        } },
       { key: 'attendance', label: 'Attendance', def: true, filter: null, num: true,
         sortVal: m => attPctVal(m), getVal: m => '', cell: m => attCellHtml(m) },
       { key: 'lastRenewal', label: 'Last Renewal', def: true, filter: 'date',
@@ -4631,11 +4650,13 @@ PAGES.campschedule = (main) => {
   function cellHtml(dayKey, rowIdx, g) {
     const cell = ((cs.days[dayKey] || [])[rowIdx] || {})[g.key] || { activity: '', coach: '' };
     const act = cell.activity || '';
-    return `<td class="camp-cell" data-cc="${dayKey}|${rowIdx}|${g.key}" ${isAdmin ? 'draggable="true"' : ''} title="${isAdmin ? 'Click to edit · drag to move' : 'Click to edit'}"
-      style="padding:14px;border:1px solid var(--border);cursor:pointer;vertical-align:middle;background:var(--surface)">
+    // Only an admin gets the editing affordances. Coaches and students get a READ-ONLY
+    // view: no data-cc (so no click handler is attached), no drag, no "tap to add" prompt.
+    return `<td class="camp-cell"${isAdmin ? ` data-cc="${dayKey}|${rowIdx}|${g.key}" draggable="true" title="Click to edit · drag to move"` : ''}
+      style="padding:14px;border:1px solid var(--border);${isAdmin ? 'cursor:pointer;' : ''}vertical-align:middle;background:var(--surface)">
       ${act
         ? `<div style="font-weight:800;color:${g.color};font-size:14px;line-height:1.25">${campActivityIcon(act)} ${escapeHtml(act)}</div>${cell.coach ? `<div style="font-size:11px;color:var(--text-mute);margin-top:3px">(${escapeHtml(cell.coach)})</div>` : ''}`
-        : '<div style="color:var(--text-mute);font-size:12px">— tap to add —</div>'}
+        : `<div style="color:var(--text-mute);font-size:12px">${isAdmin ? '— tap to add —' : '—'}</div>`}
     </td>`;
   }
 
@@ -4689,7 +4710,7 @@ PAGES.campschedule = (main) => {
       <input type="date" id="camp-date" class="btn ghost" value="${selDate}" min="${cs.startDate}" max="${cs.endDate}" style="font-weight:600" />
       <button class="btn ghost" id="camp-today" title="Jump to today's date">📅 Today</button>
       <span id="camp-datelabel" class="text-mute" style="font-size:12px"></span>
-      <span class="text-mute" style="font-size:12px;margin-left:auto">${isAdmin ? 'Click to edit · drag a class to move it.' : 'Click any class to edit it.'}</span>
+      <span class="text-mute" style="font-size:12px;margin-left:auto">${isAdmin ? 'Click to edit · drag a class to move it.' : '👁 Read-only — only an admin can change the camp schedule.'}</span>
     </div>
 
     <div class="card" id="camp-grid" style="overflow:auto">${buildGrid()}</div>
@@ -4729,6 +4750,9 @@ PAGES.campschedule = (main) => {
     rerender(); confirmSaved('Class moved');
   }
   function editCampCell(dayKey, rowIdx, gkey) {
+    // Defence in depth: the cells are no longer clickable for a non-admin, but the editor
+    // itself must refuse too — it writes straight into the shared camp schedule.
+    if (!isAdmin) { toast(t('Only an admin can change the camp schedule', 'فقط المدير يمكنه تعديل جدول المعسكر'), 'error'); return; }
     const g = groups.find(x => x.key === gkey);
     if (!cs.days[dayKey][rowIdx]) cs.days[dayKey][rowIdx] = {};
     const cell = cs.days[dayKey][rowIdx][gkey] || { activity: '', coach: '' };
@@ -6289,13 +6313,22 @@ PAGES.clubrevenue = (main) => {
     if (inv.deleted) continue;
     if (!inRange(inv)) continue;
     invoiceCount++;
-    const items = (inv.lineItems && inv.lineItems.length) ? inv.lineItems
+    let items = (inv.lineItems && inv.lineItems.length) ? inv.lineItems
       : [{ sport: inv.sport || null, coachId: inv.coachId || null, price: inv.amount || 0 }];
-    // Per-invoice value = the invoice's own charged amount (canonical), NOT a
-    // re-sum of line items. Line items are scaled proportionally below so the
-    // per-sport / per-coach breakdown always re-sums to this exact amount.
+    // When a whole month is selected, take only THIS month's share of the invoice — an
+    // invoice that bills July karate and August camp on one receipt used to be counted in
+    // full in both months, so Club Revenue disagreed with Transactions / billedInMonth.
+    if (monthScope && inv.lineItems && inv.lineItems.length) {
+      items = inv.lineItems.filter(li => lineRevenueMonth(li, inv) === monthScope);
+      if (!items.length) continue;
+    }
+    // Per-invoice value = invoiceTotal() (Σ line prices, falling back to inv.amount when
+    // there are no lines) — the SAME basis balances, dues, Transactions and billedInMonth
+    // use, so a stale cached inv.amount can no longer make this screen disagree with them.
+    // Line items are scaled proportionally below so the per-sport / per-coach breakdown
+    // always re-sums to this exact amount.
     const liSum = items.reduce((s, li) => s + (Number(li.price) || 0), 0);
-    const invAmount = Number(inv.amount) || 0;
+    const invAmount = monthScope ? invoiceBilledInMonth(inv, monthScope) : invoiceTotal(inv);
     const lineFactor = liSum > 0 ? invAmount / liSum : (items.length ? invAmount / items.length : 0);
     const invCategory = inv.category || 'Membership';
     txns.push({
@@ -7493,7 +7526,11 @@ PAGES.campdrivers = (main) => {
   const isCamp = m => m && !m.deleted && (m.sport === SUMMER_CAMP || (m.enrollments || []).some(e => e.sport === SUMMER_CAMP));
   const campStudents = state.members.filter(isCamp);
   const drivers = state.drivers.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  const assignedCount = campStudents.filter(m => m.campDriverId).length;
+  // A campDriverId left pointing at a REMOVED driver counts as unassigned — otherwise this
+  // total said "1 assigned" while every driver card showed 0, and the child fell out of the
+  // pickup roster and its CSV entirely.
+  const _liveDriverIds = new Set(drivers.map(d => d.id));
+  const assignedCount = campStudents.filter(m => m.campDriverId != null && _liveDriverIds.has(m.campDriverId)).length;
 
   main.innerHTML = `
     <div class="topbar">
@@ -7539,7 +7576,10 @@ PAGES.camproutes = (main) => {
   const isCamp = m => m && !m.deleted && (m.sport === SUMMER_CAMP || (m.enrollments || []).some(e => e.sport === SUMMER_CAMP));
   const campStudents = state.members.filter(isCamp).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const drivers = state.drivers.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  const unassigned = campStudents.filter(m => !m.campDriverId);
+  // A stale campDriverId (the driver was removed) matched no bucket, so the child vanished
+  // from the pickup roster AND the exported CSV. Treat it as unassigned so nobody is lost.
+  const _liveDriverIds = new Set(drivers.map(d => d.id));
+  const unassigned = campStudents.filter(m => m.campDriverId == null || !_liveDriverIds.has(m.campDriverId));
 
   window._driverRosterCSV = () => {
     const head = ['Driver', 'Driver mobile', 'Student', 'Arabic name', 'Student mobile'];
@@ -7646,13 +7686,26 @@ function computeMonthlyReport(ym) {
     }
     if (attributed < paidFull) byMethod[normMethod(i.method)] += (paidFull - attributed) * sh;   // remainder → invoice method
     revenue += paid;
-    bySport[sport] = (bySport[sport] || 0) + paid;
+    // Split across the invoice's LINE ITEMS. Keying on the invoice-level i.sport string
+    // produced rows like "Summer Camp, Kick Boxing" — a sport that exists nowhere in the
+    // club — which the Owner Dashboard's per-line "Top sports" could never reconcile with.
+    const _lines = (Array.isArray(i.lineItems) && i.lineItems.length) ? i.lineItems : null;
+    const _lineSum = _lines ? _lines.reduce((s, li) => s + (Number(li.price) || 0), 0) : 0;
+    if (_lines && _lineSum > 0) {
+      for (const li of _lines) {
+        const sp = li.sport || sport;
+        bySport[sp] = (bySport[sp] || 0) + paid * ((Number(li.price) || 0) / _lineSum);
+      }
+    } else {
+      bySport[sport] = (bySport[sport] || 0) + paid;
+    }
     if (i.customerId != null) payerTotals[i.customerId] = (payerTotals[i.customerId] || 0) + paid;
   }
 
   // 2) Expenses this month + net profit.
   let expenseEntries = 0;
   for (const e of (state.expenses || [])) {
+    if (e.deleted) continue;   // a voided expense is not a cost — it understated net profit by its full amount
     const d = e.date || (e.month ? e.month + '-01' : '');
     const m = e.month || String(d).slice(0, 7);
     if (m !== ym) continue;
@@ -7996,13 +8049,18 @@ function computeDashboard(ymSel) {
   for (const m of (state.members || [])) {
     if (m.deleted) continue;
     const st = (typeof memberStatus === 'function') ? memberStatus(m) : '';
-    if (st === 'Expired') expired++;
-    else { active++; // Active or Completed both count as current
-      const exp = m.expiryDate || '';
-      if (exp && exp >= today) {
-        const days = (typeof daysBetween === 'function') ? daysBetween(today, exp) : 999;
-        if (days <= 7) expiringSoon++;
-      }
+    if (st === 'Expired') { expired++; continue; }
+    // "Active members" has to mean what the Members screen this card LINKS TO means.
+    // Anything simply not Expired used to land in `active`, so a Withdrawn (refunded and
+    // gone) member and a Frozen one were both counted as active and the two screens
+    // could never agree — the dashboard said 4 where Members said 2.
+    if (st === 'Withdrawn') continue;
+    if (st === 'Active') active++;
+    // Expiry warnings still cover everyone still on the books (Frozen/Completed included).
+    const exp = m.expiryDate || '';
+    if (exp && exp >= today) {
+      const days = (typeof daysBetween === 'function') ? daysBetween(today, exp) : 999;
+      if (days <= 7) expiringSoon++;
     }
   }
 
@@ -8177,6 +8235,12 @@ PAGES.payanalysis = (main) => {
     if (x.indexOf('cash') >= 0) return 'cash';
     return x ? 'cash' : '';   // default unknown→cash (most receipts are cash)
   };
+  // A ROW must always land in a bucket. normMethod() returns '' for a blank method (that
+  // blank is meaningful only when picking an invoice's dominant method), and '' is not a
+  // byMethod key — so legacy money with no method recorded was silently dropped from the
+  // KPIs while still being listed in the table below them. Default it to cash, exactly as
+  // the app-wide normalizeMethod() does.
+  const rowMethod = (mRaw) => normMethod(mRaw) || 'cash';
   const METHOD_LABEL = { cash: t('Cash', 'نقداً'), card: t('Card', 'بطاقة'), transfer: t('Bank transfer', 'تحويل بنكي'), fawran: t('Fawran', 'فوران') };
 
   // Derive a single representative method for an invoice from its payments (the
@@ -8223,7 +8287,7 @@ PAGES.payanalysis = (main) => {
           id: i.id, ref, date: p.date || i.date || '',
           value: Number(p.amount) || 0, amount: Number(i.amount) || 0,
           customer, customerAr, activity, activityGroup,
-          method: normMethod(p.method || i.method),
+          method: rowMethod(p.method || i.method),
           isCredit: isCredit || (Number(p.amount) || 0) < 0,
         });
       }
@@ -8235,7 +8299,7 @@ PAGES.payanalysis = (main) => {
         id: i.id, ref, date: i.date || '',
         value: paid, amount: invoiceTotal(i),
         customer, customerAr, activity, activityGroup,
-        method: normMethod(i.method), isCredit,
+        method: rowMethod(i.method), isCredit,
       });
     }
   }
@@ -8285,7 +8349,10 @@ PAGES.payanalysis = (main) => {
   const expFiltered = expensesAll.filter(e => {
     const d = e.date || (e.month ? e.month + '-01' : '');
     const mo = e.month || String(d).slice(0, 7);
-    if (filter.month && filter.month !== 'all' && mo !== filter.month) return false;
+    // Use filter.months — the single-month filter.month was deleted by the multi-select
+    // migration above, so this test was always false and expenses were never month-scoped:
+    // the screen showed one month's revenue against ALL-TIME expenses.
+    if (filter.months.length && !filter.months.includes(mo)) return false;
     if (filter.day && d !== filter.day) return false;
     if (filter.from && d && d < filter.from) return false;
     if (filter.to && d && d > filter.to) return false;
@@ -8476,7 +8543,9 @@ function _buildClasses() {
     .map(c => ({
       id: c.id, day: c.day, slot: c.slot, sport: c.sport, coachId: c.coachId,
       coach: coachName(c.coachId),
-      roster: (typeof classRoster === 'function') ? classRoster(c.sport, c.coachId) : [],
+      // v6.401: slot-aware — a student assigned to specific times shows only in those classes;
+      // an unassigned student still shows in every class of that sport+coach (as before).
+      roster: (typeof classRoster === 'function') ? classRoster(c.sport, c.coachId, c.day, c.slot) : [],
     }))
     .sort((a, b) => (_classDayIdx(a.day) - _classDayIdx(b.day)) || ((a.slot || 0) - (b.slot || 0)) ||
       String(a.sport || '').localeCompare(String(b.sport || '')));
@@ -8484,17 +8553,21 @@ function _buildClasses() {
 
 PAGES.classes = (main) => {
   if (!Array.isArray(state.schedule)) state.schedule = [];
-  if (!window._classFilter) window._classFilter = { coach: 'all', sport: 'all', day: 'all', search: '' };
+  if (!window._classFilter) window._classFilter = { coach: 'all', sport: 'all', day: 'all', slot: 'all', search: '' };
   const f = window._classFilter;
+  if (f.slot === undefined) f.slot = 'all';   // carry an older saved filter forward
 
   const all = _buildClasses();
   const coachIds = [...new Set(all.map(c => c.coachId).filter(v => v != null))];
   const sports = [...new Set(all.map(c => c.sport).filter(Boolean))].sort();
+  // Only offer the hours that actually exist on the schedule, low → high.
+  const slots = [...new Set(all.map(c => c.slot).filter(v => v != null))].sort((a, b) => a - b);
 
   let classes = all;
   if (f.coach !== 'all') classes = classes.filter(c => String(c.coachId) === String(f.coach));
   if (f.sport !== 'all') classes = classes.filter(c => c.sport === f.sport);
   if (f.day !== 'all') classes = classes.filter(c => c.day === f.day);
+  if (f.slot !== 'all') classes = classes.filter(c => String(c.slot) === String(f.slot));
   if (f.search && f.search.trim()) {
     const q = f.search.trim();
     classes = classes.filter(c => (c.roster || []).some(m =>
@@ -8530,6 +8603,7 @@ PAGES.classes = (main) => {
             <div class="text-mute" style="font-size:12px;margin-top:2px">🗓 ${escapeHtml(_classDayLabel(c.day))} · ⏰ ${escapeHtml(_classSlotLabel(c.slot))} · 👥 <b>${c.roster.length}</b> ${t('students', 'طالب')}</div>
           </div>
           <div style="display:flex;gap:6px">
+            ${currentRole() !== 'coach' ? `<button class="btn ghost sm" onclick="window._classAssign(${c.id})">👥 ${t('Assign students', 'إسناد الطلاب')}</button>` : ''}
             <button class="btn ghost sm" onclick="window._classPrint(${c.id})">🖨 ${t('Print', 'طباعة')}</button>
             <button class="btn ghost sm" onclick="window._classXlsx(${c.id})">📊 ${t('Excel', 'إكسل')}</button>
           </div>
@@ -8564,6 +8638,7 @@ PAGES.classes = (main) => {
       <select id="cls-coach" class="btn ghost">${opt('all', t('All coaches', 'كل المدربين'), f.coach)}${coachIds.map(id => opt(id, coachName(id), f.coach)).join('')}</select>
       <select id="cls-sport" class="btn ghost">${opt('all', t('All sports', 'كل الرياضات'), f.sport)}${sports.map(s => opt(s, s, f.sport)).join('')}</select>
       <select id="cls-day" class="btn ghost">${opt('all', t('All days', 'كل الأيام'), f.day)}${_CLASS_DAYS.map(d => opt(d.key, t(d.en, d.ar), f.day)).join('')}</select>
+      <select id="cls-slot" class="btn ghost">${opt('all', t('All hours', 'كل الأوقات'), f.slot)}${slots.map(s => opt(s, _classSlotLabel(s), f.slot)).join('')}</select>
       <button id="cls-clear" class="btn ghost">✕ ${t('Clear', 'مسح')}</button>
     </div>
 
@@ -8579,14 +8654,16 @@ PAGES.classes = (main) => {
   $('#cls-coach')?.addEventListener('change', e => { f.coach = e.target.value; rerender(); });
   $('#cls-sport')?.addEventListener('change', e => { f.sport = e.target.value; rerender(); });
   $('#cls-day')?.addEventListener('change', e => { f.day = e.target.value; rerender(); });
-  $('#cls-clear')?.addEventListener('click', () => { window._classFilter = { coach: 'all', sport: 'all', day: 'all', search: '' }; rerender(); });
+  $('#cls-slot')?.addEventListener('change', e => { f.slot = e.target.value; rerender(); });
+  $('#cls-clear')?.addEventListener('click', () => { window._classFilter = { coach: 'all', sport: 'all', day: 'all', slot: 'all', search: '' }; rerender(); });
 };
 
 // Find a class (schedule entry) by id and build its current roster.
 function _classById(id) {
   const c = (state.schedule || []).find(x => String(x.id) === String(id));
   if (!c) return null;
-  return { ...c, coach: coachName(c.coachId), roster: (typeof classRoster === 'function') ? classRoster(c.sport, c.coachId) : [] };
+  // v6.401: slot-aware, so a printed/exported register matches exactly what the screen shows.
+  return { ...c, coach: coachName(c.coachId), roster: (typeof classRoster === 'function') ? classRoster(c.sport, c.coachId, c.day, c.slot) : [] };
 }
 function _classTitle(c) {
   return `${c.sport} · ${c.coach} · ${_classDayLabel(c.day)} ${_classSlotLabel(c.slot)}`;
@@ -8617,6 +8694,91 @@ window._classPrint = function (id) {
   const w = window.open('', '_blank');
   if (!w) { toast(t('Allow pop-ups to print', 'اسمح بالنوافذ المنبثقة للطباعة'), 'error'); return; }
   w.document.write(html); w.document.close();
+};
+
+// Assign which students attend THIS class's day + hour. Only needed when a coach teaches the
+// same sport at more than one time; a student left unticked everywhere keeps showing in all of
+// that coach's classes for the sport (the default), so nothing has to be maintained until you
+// actually want to split a group. (v6.401)
+window._classAssign = function (id) {
+  if (currentRole() === 'coach') { toast(t('Coaches cannot change class lists', 'لا يمكن للمدرب تغيير قوائم الحصص'), 'error'); return; }
+  const c = _classById(id);
+  if (!c) { toast(t('Class not found', 'الحصة غير موجودة'), 'error'); return; }
+  const eligible = (typeof classEligible === 'function') ? classEligible(c.sport, c.coachId) : [];
+  if (!eligible.length) {
+    toast(t('No students are enrolled with this coach in this sport yet', 'لا يوجد طلاب مسجّلون مع هذا المدرب في هذه الرياضة'), 'info');
+    return;
+  }
+  // Other times the same coach teaches this sport — shown per student so you can see where
+  // else they are placed without leaving the dialog.
+  const siblings = (state.schedule || []).filter(x => x.sport === c.sport && x.coachId === c.coachId && String(x.id) !== String(c.id));
+  const rows = eligible.map(m => {
+    const mine = (typeof memberClassSlots === 'function') ? memberClassSlots(m, c.sport, c.coachId) : [];
+    const here = mine.some(a => a.day === c.day && Number(a.slot) === Number(c.slot));
+    const unassigned = mine.length === 0;
+    const elsewhere = siblings
+      .filter(s => mine.some(a => a.day === s.day && Number(a.slot) === Number(s.slot)))
+      .map(s => `${_classDayLabel(s.day)} ${_classSlotLabel(s.slot)}`);
+    return `<label style="display:flex;align-items:center;gap:10px;padding:7px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px">
+        <input type="checkbox" class="cls-assign-cb" data-mid="${m.id}" ${here || unassigned ? 'checked' : ''} />
+        <span style="flex:1 1 auto">
+          <b>${escapeHtml(m.name || '')}</b>${m.nameArabic ? ` <span class="text-mute" style="font-size:11px">${escapeHtml(m.nameArabic)}</span>` : ''}
+          ${unassigned ? `<span class="text-mute" style="font-size:11px"> · ${escapeHtml(t('in all of this coach’s classes', 'في كل حصص هذا المدرب'))}</span>` : ''}
+          ${elsewhere.length ? `<span style="font-size:11px;color:var(--blue)"> · ${escapeHtml(t('also', 'أيضاً'))} ${escapeHtml(elsewhere.join(', '))}</span>` : ''}
+        </span>
+      </label>`;
+  }).join('');
+
+  showModal({
+    title: '👥 ' + t('Students in this class', 'طلاب هذه الحصة'),
+    body: `
+      <div style="font-size:13px;margin-bottom:6px"><b>${escapeHtml(c.sport)} · ${escapeHtml(c.coach)}</b><br>
+        <span class="text-mute">${escapeHtml(_classDayLabel(c.day))} · ${escapeHtml(_classSlotLabel(c.slot))}</span></div>
+      <div class="text-mute" style="font-size:11.5px;line-height:1.6;margin-bottom:10px">
+        ${escapeHtml(t('Tick the students who attend at THIS time. A student you never assign anywhere keeps appearing in every class this coach runs for this sport — so you only need this when a coach teaches the same sport at two different times.', 'حدّد الطلاب الذين يحضرون في هذا الوقت. الطالب غير المُسند لأي وقت يظل يظهر في كل حصص هذا المدرب لهذه الرياضة — لذا تحتاج هذا فقط عندما يدرّس المدرب نفس الرياضة في وقتين.'))}
+      </div>
+      <div style="display:flex;gap:10px;padding:0 8px 8px">
+        <button type="button" id="cls-assign-all" class="btn ghost sm">${t('All', 'الكل')}</button>
+        <button type="button" id="cls-assign-none" class="btn ghost sm">${t('None', 'لا أحد')}</button>
+      </div>
+      <div style="max-height:340px;overflow:auto;border:1px solid var(--border);border-radius:8px">${rows}</div>`,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: '💾 ' + t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
+        const picked = new Set([...document.querySelectorAll('.cls-assign-cb')].filter(x => x.checked).map(x => parseInt(x.dataset.mid)));
+        let changed = 0;
+        for (const m of eligible) {
+          if (!Array.isArray(m.classSlots)) m.classSlots = [];
+          const isHere = m.classSlots.some(a => (a.sport || '') === c.sport && parseInt(a.coachId) === parseInt(c.coachId) && a.day === c.day && Number(a.slot) === Number(c.slot));
+          const want = picked.has(m.id);
+          if (want === isHere) continue;
+          if (want) {
+            m.classSlots.push({ sport: c.sport, coachId: parseInt(c.coachId), day: c.day, slot: Number(c.slot) });
+          } else {
+            // Tombstone the removed row so a concurrent sync cannot resurrect it.
+            const gone = m.classSlots.filter(a => (a.sport || '') === c.sport && parseInt(a.coachId) === parseInt(c.coachId) && a.day === c.day && Number(a.slot) === Number(c.slot));
+            try {
+              if (typeof window._tombstoneEl === 'function') gone.forEach(a => window._tombstoneEl(a, 'members:' + m.id + ':classSlots'));
+            } catch (_) {}
+            m.classSlots = m.classSlots.filter(a => !((a.sport || '') === c.sport && parseInt(a.coachId) === parseInt(c.coachId) && a.day === c.day && Number(a.slot) === Number(c.slot)));
+          }
+          if (typeof stampUpdate === 'function') stampUpdate(m);
+          changed++;
+        }
+        if (!changed) { closeModal(); toast(t('No changes', 'لا تغييرات'), 'info'); return; }
+        if (typeof audit === 'function') audit('class.assign', 'schedule:' + c.id,
+          `Class list updated: ${c.sport} · ${c.coach} · ${_classDayLabel(c.day)} ${_classSlotLabel(c.slot)} — ${picked.size} student(s)`,
+          { sport: c.sport, coachId: c.coachId, day: c.day, slot: c.slot, count: picked.size });
+        closeModal();
+        render();
+        confirmSaved(`👥 ${t('Class list saved', 'تم حفظ قائمة الحصة')} · ${picked.size} ${t('students', 'طالب')}`);
+      } },
+    ],
+  });
+  setTimeout(() => {
+    document.getElementById('cls-assign-all')?.addEventListener('click', () => document.querySelectorAll('.cls-assign-cb').forEach(x => { x.checked = true; }));
+    document.getElementById('cls-assign-none')?.addEventListener('click', () => document.querySelectorAll('.cls-assign-cb').forEach(x => { x.checked = false; }));
+  }, 30);
 };
 
 window._classXlsx = function (id) {
@@ -11808,7 +11970,7 @@ window._payLedgerFix = function (invId) {
 window._mcExport = function () {
   const ym = window._mcMonth || 'all';
   const rows = computeMemberCommissions(ym);
-  const head = ['Member', 'Sport', 'Coach', 'Start', 'Expiry', 'Paid', 'Attended', 'Total', 'Status', 'Rate%', 'Commission'];
+  const head = ['Member', 'Sport', 'Coach', 'Start', 'Expiry', 'Billed', 'Attended', 'Total', 'Status', 'Rate%', 'Commission'];
   const body = rows.map(r => [
     r.memberName, r.sport, r.coachName, fmtDate(r.start), r.expiry ? fmtDate(r.expiry) : '',
     r.paid, r.attended, r.total, r.status, r.rate, Math.round(r.commission)
@@ -11893,7 +12055,7 @@ PAGES.membercommission = (main) => {
         <div class="kpi-sub">${rows.length} ${t('sport lines', 'سطر رياضة')}</div>
       </div>
       <div class="kpi">
-        <div class="kpi-label">💰 ${t('Membership paid', 'المدفوع للاشتراك')}</div>
+        <div class="kpi-label" title="${t('Total BILLED across these sport lines — the commission basis. Money actually collected is on the Invoices / Transactions screens.', 'إجمالي المُفوتر لهذه البنود — أساس العمولة. المبالغ المحصلة فعلياً في شاشة الفواتير.')}">💰 ${t('Membership billed', 'المفوتر للاشتراك')}</div>
         <div class="kpi-value num">${fmt(totalPaid)}</div>
         <div class="kpi-sub">QAR</div>
       </div>
@@ -11913,7 +12075,7 @@ PAGES.membercommission = (main) => {
             <th>${t('Coach', 'المدرب')}</th>
             <th>${t('Start', 'البداية')}</th>
             <th>${t('Expiry', 'الانتهاء')}</th>
-            <th class="text-right">${t('Paid', 'المدفوع')}</th>
+            <th class="text-right" title="${t('The line price this sport was BILLED at — the basis commission is calculated on. It is not what the member has actually paid yet; see the invoice for that.', 'سعر البند الذي فُوتر به — أساس احتساب العمولة، وليس ما دفعه العضو فعلياً.')}">${t('Billed', 'المُفوتر')}</th>
             <th class="text-center">${t('Attended', 'الحضور')}</th>
             <th class="text-center">${t('Status', 'الحالة')}</th>
             <th class="text-right">${t('Commission', 'العمولة')}</th>
@@ -14182,17 +14344,17 @@ window.printInvoicePDF = function(id) {
       </div>
     </div>
     <div class="header-right">
-      <div class="invoice-label">Invoice · <bdi>فاتورة</bdi></div>
+      <div class="invoice-label"><span dir="ltr">Invoice</span> <span dir="rtl">فاتورة</span></div>
       <div class="invoice-no">${escapeHtml(ref)}</div>
-      <div class="invoice-date" dir="ltr">Issued · <bdi>تاريخ الإصدار</bdi>: ${issueDate}</div>
-      ${inv.lastUpdated && String(inv.lastUpdated).slice(0,10) !== String(inv.date).slice(0,10) ? `<div class="invoice-date" dir="ltr" style="opacity:.7;font-size:.85em">Last updated · <bdi>آخر تحديث</bdi>: ${fmtDate(inv.lastUpdated)}</div>` : ''}
-      <div class="invoice-date" dir="ltr" style="opacity:.7;font-size:.85em">Printed · <bdi>الطباعة</bdi>: ${fmtDate(TODAY)}</div>
+      <div class="invoice-date"><span dir="ltr">Issued: ${issueDate}</span> <span dir="rtl">تاريخ الإصدار</span></div>
+      ${inv.lastUpdated && String(inv.lastUpdated).slice(0,10) !== String(inv.date).slice(0,10) ? `<div class="invoice-date" style="opacity:.7;font-size:.85em"><span dir="ltr">Last updated: ${fmtDate(inv.lastUpdated)}</span> <span dir="rtl">آخر تحديث</span></div>` : ''}
+      <div class="invoice-date" style="opacity:.7;font-size:.85em"><span dir="ltr">Printed: ${fmtDate(TODAY)}</span> <span dir="rtl">الطباعة</span></div>
     </div>
   </div>
 
   <div class="parties">
     <div>
-      <div class="party-label">From · <bdi>من</bdi></div>
+      <div class="party-label"><span dir="ltr">From</span> <span dir="rtl">من</span></div>
       <div class="party-name">Black Stars Sports Club</div>
       <div class="party-detail">
         Waab — Village Resort, Doha, Qatar<br>
@@ -14201,7 +14363,7 @@ window.printInvoicePDF = function(id) {
       </div>
     </div>
     <div>
-      <div class="party-label">Billed to · <bdi>فاتورة إلى</bdi></div>
+      <div class="party-label"><span dir="ltr">Billed to</span> <span dir="rtl">فاتورة إلى</span></div>
       <div class="party-name">${escapeHtml(customerName)}</div>
       ${(() => { const ar = (liveCust && liveCust.nameArabic) || (matchedMember && matchedMember.nameArabic) || ''; return ar ? `<div class="party-name" dir="rtl" style="font-size:.92em;color:#444">${escapeHtml(ar)}</div>` : ''; })()}
       <div class="party-detail">
@@ -14216,12 +14378,12 @@ window.printInvoicePDF = function(id) {
   ${inv.sport ? `
   <div style="display:flex;gap:20px;margin-bottom:24px;padding:14px 20px;background:#f7f7f8;border-radius:10px">
     <div>
-      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Activity · <bdi>النشاط</bdi></div>
+      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px"><span dir="ltr">Activity</span> <span dir="rtl">النشاط</span></div>
       <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escapeHtml(inv.sport)}</div>
     </div>
     <div style="margin-left:auto">
-      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Period · <bdi>الفترة</bdi></div>
-      <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escapeHtml(fmtMonth(inv.month))} · <bdi>${escapeHtml(fmtMonthAr(inv.month))}</bdi></div>
+      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px"><span dir="ltr">Period</span> <span dir="rtl">الفترة</span></div>
+      <div style="font-size:14px;font-weight:700;color:#1a1a1a"><div dir="ltr">${escapeHtml(fmtMonth(inv.month))}</div><div dir="rtl" style="color:#555;font-weight:600">${escapeHtml(fmtMonthAr(inv.month))}</div></div>
     </div>
   </div>
   ` : ''}
@@ -14229,9 +14391,9 @@ window.printInvoicePDF = function(id) {
   <table class="items-table">
     <thead>
       <tr>
-        <th>Description · <bdi>الوصف</bdi></th>
-        <th class="right" style="width:90px">Qty · <bdi>الكمية</bdi></th>
-        <th class="right" style="width:130px">Amount · <bdi>المبلغ</bdi> (QAR)</th>
+        <th><span dir="ltr">Description</span> <span dir="rtl">الوصف</span></th>
+        <th class="right" style="width:90px"><span dir="ltr">Qty</span> <span dir="rtl">الكمية</span></th>
+        <th class="right" style="width:130px"><span dir="ltr">Amount (QAR)</span> <span dir="rtl">المبلغ</span></th>
       </tr>
     </thead>
     <tbody>
@@ -14311,7 +14473,7 @@ window.printInvoicePDF = function(id) {
             const count = parseInt(sub.totalClasses) || 0;
             const unitEn = isCamp ? (count === 1 ? 'day' : 'days') : (count === 1 ? 'class' : 'classes');
             const unitAr = isCamp ? 'يوم' : 'حصة';
-            const countLine = count ? `<div class="item-sub" dir="ltr">${count} ${unitEn} · <bdi>${count} ${unitAr}</bdi></div>` : '';
+            const countLine = count ? `<div class="item-sub"><span dir="ltr">${count} ${unitEn}</span> <span dir="rtl">${count} ${unitAr}</span></div>` : '';
             const validityLine = sub.start ? `<div class="item-valid" dir="ltr" style="font-weight:700;color:#111">📅 Valid: ${fmtDate(sub.start)} → ${sub.end ? fmtDate(sub.end) : '—'}</div><div class="item-valid" dir="rtl" style="font-weight:700;color:#111">📅 صالح: ${fmtDateAr(sub.start)} ← ${sub.end ? fmtDateAr(sub.end) : '—'}</div>` : '';
             return countLine + validityLine;
           })()}
@@ -14328,24 +14490,24 @@ window.printInvoicePDF = function(id) {
   <div class="totals">
     <div class="totals-table">
       <div class="totals-row">
-        <span>Subtotal · <bdi>المجموع الفرعي</bdi></span>
+        <span><span dir="ltr">Subtotal</span> <span dir="rtl">المجموع الفرعي</span></span>
         <span>${invTotalStr} QAR</span>
       </div>
       <div class="totals-row">
-        <span>Tax · <bdi>الضريبة</bdi> (0%)</span>
+        <span><span dir="ltr">Tax (0%)</span> <span dir="rtl">الضريبة</span></span>
         <span>0.00 QAR</span>
       </div>
       <div class="totals-row grand">
-        <span>Total · <bdi>الإجمالي</bdi></span>
+        <span><span dir="ltr">Total</span> <span dir="rtl">الإجمالي</span></span>
         <span class="amount">${invTotalStr} QAR</span>
       </div>
       ${invoiceBalance(inv) > 0.001 ? `
       <div class="totals-row">
-        <span>Paid · <bdi>المدفوع</bdi>${inv.amountPaid > 0 ? '' : ' (deposit)'}</span>
+        <span><span dir="ltr">Paid${inv.amountPaid > 0 ? '' : ' (deposit)'}</span> <span dir="rtl">المدفوع</span></span>
         <span>${Number(invoicePaid(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR</span>
       </div>
       <div class="totals-row grand" style="color:#b45309">
-        <span>Balance due · <bdi>المتبقي</bdi></span>
+        <span><span dir="ltr">Balance due</span> <span dir="rtl">المتبقي</span></span>
         <span class="amount">${Number(invoiceBalance(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR</span>
       </div>` : ''}
     </div>
@@ -14362,13 +14524,13 @@ window.printInvoicePDF = function(id) {
     // Reveal it with the "Show installments" button (only when a member asks).
     return `
   <div id="pay-history" style="margin:24px 0;display:none">
-    <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:8px">Payment History · <bdi>سجل المدفوعات</bdi></div>
+    <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:8px"><span dir="ltr">Payment History</span> <span dir="rtl">سجل المدفوعات</span></div>
     <table style="width:100%;border-collapse:collapse;font-size:12px">
       <thead><tr style="background:#f7f7f8">
-        <th style="text-align:left;padding:8px 12px">Date · <bdi>التاريخ</bdi></th>
-        <th style="text-align:right;padding:8px 12px">Amount · <bdi>المبلغ</bdi></th>
-        <th style="text-align:left;padding:8px 12px">Method · <bdi>الطريقة</bdi></th>
-        <th style="text-align:left;padding:8px 12px">Entered By · <bdi>أدخلها</bdi></th>
+        <th style="text-align:left;padding:8px 12px"><span dir="ltr">Date</span> <span dir="rtl">التاريخ</span></th>
+        <th style="text-align:right;padding:8px 12px"><span dir="ltr">Amount</span> <span dir="rtl">المبلغ</span></th>
+        <th style="text-align:left;padding:8px 12px"><span dir="ltr">Method</span> <span dir="rtl">الطريقة</span></th>
+        <th style="text-align:left;padding:8px 12px"><span dir="ltr">Entered By</span> <span dir="rtl">أدخلها</span></th>
       </tr></thead>
       <tbody>
         ${pays.map(p => `<tr style="border-bottom:1px solid #eee">
@@ -14383,7 +14545,7 @@ window.printInvoicePDF = function(id) {
   })()}
 
   <div class="amount-words">
-    <strong dir="ltr">Amount in words · <bdi>المبلغ كتابةً</bdi>:</strong> ${escapeHtml(amountWords)} Qatari Riyals only.
+    <span dir="ltr"><strong>Amount in words:</strong> ${escapeHtml(amountWords)} Qatari Riyals only.</span><br><span dir="rtl">المبلغ كتابةً</span>
   </div>
 
   <div class="payment-info">
@@ -14391,13 +14553,13 @@ window.printInvoicePDF = function(id) {
       ${(() => {
         const st = invoiceStatus(inv);
         const dueStr = Number(invoiceBalance(inv)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        if (st === 'Paid') return `<span class="payment-status">✓ Paid · <bdi>مدفوعة</bdi></span>`;
-        if (st === 'Unpaid') return `<span class="payment-status" style="background:#fee2e2;color:#991b1b">● Unpaid · <bdi>غير مدفوعة</bdi> — ${dueStr} QAR ${t('due', 'مستحقة')}</span>`;
-        return `<span class="payment-status" style="background:#fef3c7;color:#92400e">◐ Partially paid · <bdi>مدفوعة جزئياً</bdi> — ${dueStr} QAR ${t('due', 'مستحقة')}</span>`;
+        if (st === 'Paid') return `<span class="payment-status"><span dir="ltr">✓ Paid</span> <span dir="rtl">مدفوعة</span></span>`;
+        if (st === 'Unpaid') return `<span class="payment-status" style="background:#fee2e2;color:#991b1b"><span dir="ltr">● Unpaid — ${dueStr} QAR due</span> <span dir="rtl">غير مدفوعة · مستحقة</span></span>`;
+        return `<span class="payment-status" style="background:#fef3c7;color:#92400e"><span dir="ltr">◐ Partially paid — ${dueStr} QAR due</span> <span dir="rtl">مدفوعة جزئياً · مستحقة</span></span>`;
       })()}
     </div>
     <div class="payment-method">
-      <span dir="ltr">Payment method · <bdi>طريقة الدفع</bdi>: <strong>${escapeHtml(inv.method || 'Cash')}</strong></span>
+      <span dir="ltr">Payment method: <strong>${escapeHtml(inv.method || 'Cash')}</strong></span> <span dir="rtl">طريقة الدفع</span>
     </div>
   </div>
 
@@ -14437,7 +14599,7 @@ window.printInvoicePDF = function(id) {
   <div class="footer">
     <div class="thanks">Thank you for choosing Black Stars Sports Club!</div>
     <div dir="rtl" class="thanks" style="margin-top:2px">شكراً لاختياركم نادي بلاك ستارز الرياضي!</div>
-    <div style="margin-top:8px">For any questions about this invoice, contact us · <bdi>لأي استفسار عن هذه الفاتورة تواصلوا معنا</bdi>: blackstarssportsclub@gmail.com · +974 3040 0103</div>
+    <div style="margin-top:8px"><span dir="ltr">For any questions about this invoice, contact us: blackstarssportsclub@gmail.com · +974 3040 0103</span><br><span dir="rtl">لأي استفسار عن هذه الفاتورة تواصلوا معنا</span></div>
     <div style="margin-top:10px;font-size:10px">This invoice was generated on ${new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })}</div>
   </div>
 
@@ -14880,7 +15042,9 @@ function computeReconciliation(ym) {
 }
 
 function _recMonths() {
-  return [...new Set((state.invoices || []).flatMap(i => {
+  // Skip voided invoices — otherwise a month whose only invoice was deleted still appeared
+  // in the Bank Account / Reconciliation / Money Flow dropdowns and rendered all zeroes.
+  return [...new Set((state.invoices || []).filter(i => !i.deleted).flatMap(i => {
     const pays = Array.isArray(i.payments) && i.payments.length ? i.payments : [{ date: i.date }];
     return pays.map(p => String(p.date || i.date).slice(0, 7));
   }).filter(Boolean))].sort().reverse();
@@ -15161,7 +15325,9 @@ PAGES.cashcollection = (main) => {
   const f = window._ccFilter;
 
   const all = (state.expenses || [])
-    .filter(e => e.category === CASH_COLLECTION_CATEGORY)
+    // !e.deleted: a voided withdrawal was still being counted in every KPI here, so this
+    // screen and Reconciliation disagreed on how much cash the owner had taken.
+    .filter(e => e.category === CASH_COLLECTION_CATEGORY && !e.deleted)
     .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
   // Available months from the cash-collection rows only.
@@ -18617,9 +18783,12 @@ PAGES.settings = (main, section) => {
         Each button downloads a full backup automatically, then asks for confirmation <b>twice</b> before doing anything.
       </div>
     </div>
+
+    <div class="card" data-sset="data">
+      <div class="card-header"><div><div class="card-title">${t('Data Statistics', 'إحصائيات البيانات')}</div></div></div>
       <table>
         <tbody>
-          <tr><td>Members</td><td class="text-right font-bold num">${state.members.length}</td></tr>
+          <tr><td>Members</td><td class="text-right font-bold num">${activeMembers().length}${state.members.length !== activeMembers().length ? ` <span class="text-mute" style="font-size:11px;font-weight:400">(+${state.members.length - activeMembers().length} archived)</span>` : ''}</td></tr>
           <tr><td>Coaches</td><td class="text-right font-bold num">${state.coaches.length}</td></tr>
           <tr><td>Trials</td><td class="text-right font-bold num">${(state.trials || []).length}</td></tr>
           <tr><td>Invoices</td><td class="text-right font-bold num">${state.invoices.length}</td></tr>
@@ -18876,10 +19045,17 @@ PAGES.settings = (main, section) => {
     });
   })();
 
-  $('#restore-btn').addEventListener('click', () => $('#restore-file').click());
+  // Restoring replaces the ENTIRE database from an arbitrary file — the same blast radius as
+  // the danger-zone buttons, which are all admin-gated. This one was the outlier: only the
+  // router kept a receptionist off the page. Gate the click AND the file handler.
+  $('#restore-btn').addEventListener('click', () => {
+    if (currentRole() !== 'admin') { toast(t('Only an admin can restore a backup', 'فقط المدير يمكنه استعادة نسخة احتياطية'), 'error'); return; }
+    $('#restore-file').click();
+  });
   $('#restore-file').addEventListener('change', async e => {
     const file = e.target.files[0];
     if (!file) return;
+    if (currentRole() !== 'admin') { toast(t('Only an admin can restore a backup', 'فقط المدير يمكنه استعادة نسخة احتياطية'), 'error'); e.target.value = ''; return; }
     try {
       const text = await file.text();
       const data = JSON.parse(text);
@@ -20505,8 +20681,12 @@ window._attPdfSubscription = function(memberId) {
 PAGES.history = (main) => {
   let state2 = { selectedId: null, search: '' };
 
+  // Archived members are not browsable here — the row carried an "Active" badge because
+  // memberStatus() has no archived concept, so an archived person looked like a live one.
+  const _histMembers = state.members.filter(m => !m.deleted);
+
   if (window._historyLastSelected) state2.selectedId = window._historyLastSelected;
-  else if (state.members.length) state2.selectedId = state.members[0].id;
+  else if (_histMembers.length) state2.selectedId = _histMembers[0].id;
 
   function memberFilter(m) {
     if (!state2.search) return true;
@@ -20808,7 +20988,7 @@ PAGES.history = (main) => {
   }
 
   function renderMembers() {
-    const filtered = state.members.filter(memberFilter);
+    const filtered = _histMembers.filter(memberFilter);
     $('#hist-list').innerHTML = filtered.length ? filtered.map(m => {
       const subCount = (m.subscriptions || []).length + (m.renewals || []).length;
       const isSel = m.id === state2.selectedId;
@@ -20827,7 +21007,7 @@ PAGES.history = (main) => {
       `;
     }).join('') : `<div class="empty" style="padding:20px">No members match</div>`;
 
-    $('#hist-mem-count').textContent = `${filtered.length} of ${state.members.length}`;
+    $('#hist-mem-count').textContent = `${filtered.length} of ${_histMembers.length}`;
 
     $$('.hist-mem-row[data-id]').forEach(row => {
       row.addEventListener('click', () => {
@@ -22257,8 +22437,14 @@ PAGES.completed = (main) => {
   const coachesInList = [...new Set(all.flatMap(r => r.done.map(coachNameOf).filter(Boolean)))].sort();
   // Keep the filters on `window` so marking a reminder (which calls the global render() → re-runs
   // this page) doesn't wipe the search / month / coach / sport the user set. (v6.365)
-  let f = window._compFilter || { search: '', sport: 'all', month: 'all', coach: 'all' };
+  let f = window._compFilter || { search: '', sports: [], months: [], coaches: [] };
   window._compFilter = f;
+  // Migrate the old single-value shape ('all' | one value) → arrays, so a session that was
+  // already open on this screen doesn't break when the multi-select lands.
+  f.sports = asMulti(f.sports !== undefined ? f.sports : f.sport);
+  f.months = asMulti(f.months !== undefined ? f.months : f.month);
+  f.coaches = asMulti(f.coaches !== undefined ? f.coaches : f.coach);
+  delete f.sport; delete f.month; delete f.coach;
 
   // The renewal message for someone who FINISHED their classes. It should feel like a
   // congratulation, not a bill: celebrate the achievement by name + real numbers (how many
@@ -22290,10 +22476,11 @@ PAGES.completed = (main) => {
     // Filter at the SPORT level so a member shows only when they have a finished sport matching
     // EVERY active filter (sport + enrolled month + coach); the row then displays just those.
     const rows = all.map(({ m, done }) => {
+      // An empty array = no filter (show all); otherwise the value must be one of the picks.
       let shown = done;
-      if (f.sport !== 'all') shown = shown.filter(d => d.sport === f.sport);
-      if (f.month !== 'all') shown = shown.filter(d => (d.sub.start || '').slice(0, 7) === f.month);
-      if (f.coach !== 'all') shown = shown.filter(d => coachNameOf(d) === f.coach);
+      if (f.sports.length) shown = shown.filter(d => f.sports.includes(d.sport));
+      if (f.months.length) shown = shown.filter(d => f.months.includes((d.sub.start || '').slice(0, 7)));
+      if (f.coaches.length) shown = shown.filter(d => f.coaches.includes(coachNameOf(d)));
       return { m, shown };
     }).filter(({ m, shown }) => {
       if (!shown.length) return false;
@@ -22362,21 +22549,13 @@ PAGES.completed = (main) => {
       <div class="kpi" style="border-color:var(--green);background:rgba(16,185,129,.06)"><div class="kpi-label" style="color:var(--green)">💰 ${t('Renewal potential', 'قيمة التجديد المحتملة')}</div><div class="kpi-value num" id="comp-kpi-potential" style="color:var(--green)">0</div><div class="kpi-sub">@ ${fmt(AVG_RENEWAL)} ${t('avg/renewal', 'متوسط/تجديد')}</div></div>
     </div>
     <div class="card" style="padding:16px;margin-bottom:14px">
-      <input id="comp-search" class="input" placeholder="🔍 ${t('Search by name (EN/AR), phone or QID…', 'ابحث بالاسم (EN/AR) أو الهاتف أو الرقم الشخصي…')}" style="width:100%;font-size:16px;padding:12px 14px;box-sizing:border-box;margin-bottom:10px" />
+      <input id="comp-search" class="input" value="${escapeHtml(f.search || '')}" placeholder="🔍 ${t('Search by name (EN/AR), phone or QID…', 'ابحث بالاسم (EN/AR) أو الهاتف أو الرقم الشخصي…')}" style="width:100%;font-size:16px;padding:12px 14px;box-sizing:border-box;margin-bottom:10px" />
       <div class="filter-bar" style="flex-wrap:wrap;gap:8px">
         <label style="font-size:12px;color:var(--text-mute);align-self:center">${t('Filter:', 'تصفية:')}</label>
-        <select id="comp-month" class="btn ghost" title="${t('Enrolled (start) month', 'شهر التسجيل (البدء)')}">
-          <option value="all">🗓 ${t('All months', 'كل الأشهر')}</option>
-          ${monthsInList.map(mo => `<option value="${mo}">${escapeHtml(typeof fmtMonth === 'function' ? fmtMonth(mo) : mo)}</option>`).join('')}
-        </select>
-        <select id="comp-coach" class="btn ghost" title="${t('Coach', 'المدرب')}">
-          <option value="all">🥋 ${t('All coaches', 'كل المدربين')}</option>
-          ${coachesInList.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}
-        </select>
-        <select id="comp-sport" class="btn ghost" title="${t('Sport', 'الرياضة')}">
-          <option value="all">🎯 ${t('All sports', 'كل الرياضات')}</option>
-          ${sportsInList.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('')}
-        </select>
+        ${monthMultiHTML('comp-month', monthsInList, f.months)}
+        ${multiFilterHTML('comp-coach', coachesInList, f.coaches, { icon: '🥋', allText: t('All coaches', 'كل المدربين'), noun: t('coaches', 'مدربين') })}
+        ${multiFilterHTML('comp-sport', sportsInList, f.sports, { icon: '🎯', allText: t('All sports', 'كل الرياضات'), noun: t('sports', 'رياضات') })}
+        <button class="btn ghost" id="comp-clear" title="${t('Clear all filters', 'مسح كل عوامل التصفية')}">✕ ${t('Clear', 'مسح')}</button>
       </div>
     </div>
     <div class="card table-wrap">
@@ -22396,9 +22575,14 @@ PAGES.completed = (main) => {
       </table>
     </div>`;
   $('#comp-search')?.addEventListener('input', e => { f.search = e.target.value; refresh(); });
-  $('#comp-sport')?.addEventListener('change', e => { f.sport = e.target.value; refresh(); });
-  $('#comp-month')?.addEventListener('change', e => { f.month = e.target.value; refresh(); });
-  $('#comp-coach')?.addEventListener('change', e => { f.coach = e.target.value; refresh(); });
+  bindMonthMulti('comp-month', (months) => { f.months = months; refresh(); });
+  bindMultiFilter('comp-coach', (v) => { f.coaches = v; refresh(); }, { icon: '🥋', allText: t('All coaches', 'كل المدربين'), noun: t('coaches', 'مدربين') });
+  bindMultiFilter('comp-sport', (v) => { f.sports = v; refresh(); }, { icon: '🎯', allText: t('All sports', 'كل الرياضات'), noun: t('sports', 'رياضات') });
+  // Clear resets the ARRAYS (not to 'all') and repaints the bar so the pickers show it too.
+  $('#comp-clear')?.addEventListener('click', () => {
+    f.search = ''; f.months = []; f.coaches = []; f.sports = [];
+    PAGES.completed(main);
+  });
   // Clicking the WhatsApp icon IS the reminder: mark it silently (no confirm interrupting the
   // WhatsApp tab opening) and repaint just these rows so the label flips to green — no global
   // render() rebuilding the page. The repaint is deferred a tick so replacing the <a> mid-click
@@ -23389,7 +23573,16 @@ PAGES.mymembership = (main) => {
     // Classes remaining across the whole subscription (lifetime), so the student
     // sees how many sessions they still have left — not just this month.
     const sub = (m.subscriptions || []).find(s => (s.activity || '') === e.sport && s.status !== 'Withdrawn');
-    const remaining = sub ? Math.max(0, (parseInt(sub.totalClasses) || 0) - (parseInt(sub.attendedClasses) || 0)) : null;
+    // Count over the CORRECTED window from LIVE marks. The stored sub.attendedClasses lags
+    // behind the register, so the member's "Left" used to disagree with the attendance log
+    // printed further down this very page (and with the staff's renewal screens).
+    let remaining = null;
+    if (sub) {
+      const w = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, sub) : { from: sub.start || null, to: sub.end || null };
+      const lv = liveAttendanceCount(m, sub.activity || e.sport, w.from, w.to);
+      const att = lv.total > 0 ? lv.y : (parseInt(sub.attendedClasses) || 0);
+      remaining = Math.max(0, (parseInt(sub.totalClasses) || 0) - att);
+    }
     const remLow = remaining != null && remaining > 0 && remaining <= 2;
     return `<div style="border:1px solid var(--border);border-radius:16px;padding:18px;background:linear-gradient(135deg,${meta.c}14,transparent 70%)">
       <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
@@ -23513,7 +23706,7 @@ PAGES.mymembership = (main) => {
   })() : `<div class="text-mute" style="font-size:13px">${t('No upcoming class found in the schedule for your sports.', 'لا توجد حصة قادمة في الجدول لرياضاتك.')}</div>`;
 
   // Payment history — this member's own invoices, newest first.
-  const myInvoices = (state.invoices || []).filter(inv => inv.customerId === m.id)
+  const myInvoices = (state.invoices || []).filter(inv => inv.customerId === m.id && !inv.deleted)
     .sort((a, b) => (b.date || b.month || '').localeCompare(a.date || a.month || ''));
   const payHtml = myInvoices.length ? myInvoices.map(inv => {
     const paid = invoicePaid(inv);
@@ -23768,9 +23961,22 @@ PAGES.coachhome = (main) => {
   const expiringRoster = roster
     .filter(r => r.status === 'Expired' || (r.dLeft != null && r.dLeft <= 14))
     .sort((a, b) => (a.dLeft == null ? 1 : a.dLeft) - (b.dLeft == null ? 1 : b.dLeft));
-  const earnRows = months.map(mo => ({ mo, e: coachEarnings(coach, mo) }))
+  // PAY comes from computeMonthlyPay — the same engine Salaries, My Salary and the admin
+  // payroll use. coachEarnings() alone is a PAYMENT-basis figure, so when the club runs on
+  // the attendance basis a coach's own dashboard used to quote a number the payroll would
+  // never pay (195 here vs 0 there). Revenue/students still come from coachEarnings.
+  const _joinedMonth = coach.joinedDate ? String(coach.joinedDate).slice(0, 7) : '';
+  const _earnFor = (mo) => {
+    const e = coachEarnings(coach, mo);
+    const p = (typeof computeMonthlyPay === 'function') ? computeMonthlyPay(coach.id, mo) : null;
+    if (!p) return e;
+    return { ...e, fixed: p.fixed, commissionBase: p.commissionBase, rate: p.commissionRate, commission: p.commissionAmount, total: p.gross };
+  };
+  // Months BEFORE the coach joined are not theirs to be paid for — the admin Salaries screen
+  // already omits them, so showing them here credited a new coach with money never owed.
+  const earnRows = months.filter(mo => !_joinedMonth || mo >= _joinedMonth).map(mo => ({ mo, e: _earnFor(mo) }))
     .filter(r => r.e.total > 0 || r.e.revenue > 0 || r.mo === thisMonth);
-  const cur = thisMonth ? coachEarnings(coach, thisMonth) : { fixed: coach.fixedSalary || 0, commission: 0, total: coach.fixedSalary || 0, commissionBase: 0, rate: coach.rate || 0, revenue: 0 };
+  const cur = thisMonth ? _earnFor(thisMonth) : { fixed: coach.fixedSalary || 0, commission: 0, total: coach.fixedSalary || 0, commissionBase: 0, rate: coach.rate || 0, revenue: 0 };
 
   // Advice this coach has sent (with any replies)
   const myAdvice = (state.advices || []).filter(a => a.coachId === coach.id).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
@@ -24767,6 +24973,13 @@ window.lookupUserRole = function() {
 };
 // ─── Users & Roles — dedicated admin screen ────────────────────────
 PAGES.users = (main) => {
+  // Admin-only, hard guard — this screen exposes the role map, revoke-access controls and the
+  // "preview as another role" switch (an escalation path). Audit and Cleanup already wall off
+  // this way; only the router used to keep anyone else out of here.
+  if (currentRole() !== 'admin') {
+    main.innerHTML = `<div class="card" style="text-align:center;padding:40px"><div style="font-size:40px">🔒</div><h2>${t('Admins only', 'للمسؤولين فقط')}</h2><div class="text-mute">${t('Users & Roles is restricted to administrators.', 'المستخدمون والصلاحيات متاحة للمسؤولين فقط.')}</div></div>`;
+    return;
+  }
   const u = state.user || {};
   const acct = accountRole();
   const linkedName = acct === 'coach' ? coachName(u.coachId)
@@ -25209,10 +25422,16 @@ PAGES.attreport = (main) => {
           const subMonth = (s.start || '').slice(0, 7);
           if (monthFilter !== 'all' && subMonth !== monthFilter) continue;
           if (s.totalClasses) {
+            // Count LIVE marks over this subscription's corrected window. The stored
+            // s.attendedClasses lags the register, so the landing view of this report used
+            // to read "Total Present 0 / 0%" for a month that had marks in the grid.
+            const w = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, s) : { from: s.start || null, to: s.end || null };
+            const lv = liveAttendanceCount(m, s.activity || m.sport, w.from, w.to);
+            const att = lv.total > 0 ? lv.y : (s.attendedClasses || 0);
             stats[cid].students.add(m.id);
-            stats[cid].attended += s.attendedClasses || 0;
+            stats[cid].attended += att;
             stats[cid].total += s.totalClasses || 0;
-            stats[cid].absent += (s.totalClasses || 0) - (s.attendedClasses || 0);
+            stats[cid].absent += Math.max(0, (s.totalClasses || 0) - att);
           }
         }
       } else {
@@ -25474,7 +25693,7 @@ PAGES.enrolled = (main) => {
         // Withdrawals/refunds are negative line items so they net correctly.
         let paid = 0;
         for (const inv of (state.invoices || [])) {
-          if (inv.customerId !== m.id) continue;
+          if (inv.customerId !== m.id || inv.deleted) continue;   // a voided invoice is not money
           if ((inv.category || 'Membership') !== 'Membership') continue;
           if (monthSel && inv.month !== monthSel) continue;
           for (const li of (inv.lineItems || [])) {
@@ -25719,6 +25938,7 @@ PAGES.renewals = (main) => {
     const memberRows = [];     // members who renewed at least once
 
     for (const m of state.members) {
+      if (m.deleted) continue;   // archived members are not part of any report
       const sportMap = m.renewalsBySport || {};
       let memberTotal = 0;
       // per-sport counters
@@ -25796,7 +26016,9 @@ PAGES.renewals = (main) => {
     const rows = [['Member','Coach','Sport','Renewals (this sport)','Member total']];
     for (const r of agg.memberRows) {
       const entries = Object.entries(r.sports);
-      if (entries.length) entries.forEach(([s,c]) => rows.push([r.m.name, coachName(r.m.coachId), s, c, r.total]));
+      // Credit the coach who teaches the RENEWED sport — the headline coach may teach a
+      // different sport (or be blank for a camp member), which mis-credited the renewal.
+      if (entries.length) entries.forEach(([s,c]) => rows.push([r.m.name, coachNameForSport(r.m, s), s, c, r.total]));
       else rows.push([r.m.name, coachName(r.m.coachId), '', '', r.total]);
     }
     downloadFile('renewals-report.csv', rows.map(x => x.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n'), 'text/csv');
@@ -25815,38 +26037,41 @@ PAGES.coachperf = (main) => {
   function statsFor(coachId, mo) {
     let students = new Set(), attended = 0, total = 0;
     const monthKey = mo ? (mo.length === 7 ? mo : null) : null;
-    // Students + attendance from subscriptions
+    // Students + attendance from subscriptions.
     for (const m of state.members) {
+      if (m.deleted) continue;            // archived members are not on anyone's roster
       for (const s of (m.subscriptions || [])) {
         if (s.coachId !== coachId) continue;
         if (mo && (s.start || '').slice(0,7) !== mo) continue;
         students.add(m.id);
+        // Scope the marks to THIS subscription's window, not the whole month. On a
+        // mid-month coach handover both coaches used to be credited with the same class.
+        const w = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, s) : { from: s.start || null, to: s.end || null };
         const daily = monthKey ? attendanceFor(m, monthKey, s.activity || m.sport) : null;
         if (daily && Object.keys(daily).length) {
-          const y = Object.values(daily).filter(v => v === 'Y').length;
-          const n = Object.values(daily).filter(v => v === 'N').length;
+          let y = 0, n = 0;
+          for (const [day, v] of Object.entries(daily)) {
+            const d = `${monthKey}-${String(day).padStart(2, '0')}`;
+            if (w.from && d < w.from) continue;
+            if (w.to && d > w.to) continue;
+            if (v === 'Y') y++; else if (v === 'N') n++;
+          }
           attended += y; total += (y + n) || (s.totalClasses || 0);
         } else { attended += s.attendedClasses || 0; total += s.totalClasses || 0; }
       }
     }
-    // REVENUE comes from actual invoices linked to this coach (real cash collected).
-    // Only count membership/subscription invoices — rentals and product sales
-    // don't generate commission even if a coachId happens to be attached.
-    let paid = 0, activeBase = 0;
-    for (const inv of state.invoices) {
-      if (inv.coachId !== coachId) continue;
-      if (monthKey && inv.month !== monthKey) continue;
-      // Filter to coaching revenue only
-      const isCoaching = !inv.activityType || inv.activityType === 'subscription' || inv.category === 'Membership';
-      if (!isCoaching) continue;
-      const amt = inv.amount || 0;
-      paid += amt;
-      if (inv.customerId) {
-        const mem = state.members.find(x => x.id === inv.customerId);
-        if (mem && isActiveStatus(mem)) activeBase += amt;
-      }
+    // REVENUE + COMMISSION BASE come from the app's canonical commission engine, so this
+    // screen can no longer disagree with Salaries / My Salary / coachhome. The old local
+    // loop matched on the INVOICE-level coachId (missing a coach whose sport is one line
+    // on someone else's multi-sport invoice), counted soft-deleted invoices, and built its
+    // base from the whole invoice amount instead of the attendance basis the club pays on.
+    let paid = 0, commissionBase = 0;
+    for (const r of computeMemberCommissions(monthKey || 'all')) {
+      if (r.coachId !== coachId) continue;
+      paid += Number(r.paid) || 0;
+      commissionBase += Number(r.commissionBase) || 0;
     }
-    return { students: students.size, paid, commissionBase: activeBase, completed: paid, attended, total, rate: total ? attended/total*100 : 0 };
+    return { students: students.size, paid, commissionBase, completed: paid, attended, total, attendanceRate: total ? attended/total*100 : 0 };
   }
 
   const PALETTE = ['#f26060','#5b8def','#10b981','#f2a33c','#8b5cf6','#06b6d4','#ec4899','#d4af37','#22c55e','#eab308','#f97316','#a855f7'];
@@ -25854,7 +26079,10 @@ PAGES.coachperf = (main) => {
   function refresh() {
     const data = state.coaches.map((c, i) => {
       const st = statsFor(c.id, month);
-      return { ...c, ...st, commission: (st.commissionBase ?? st.paid) * (c.rate || 0) / 100, color: PALETTE[i % PALETTE.length] };
+      // Spread st AFTER c, then restore c.rate: statsFor's attendance figure used to land on
+      // `rate` and overwrite the coach's COMMISSION rate, printing "66.66666666666666%" next
+      // to a 30% coach. statsFor now returns `attendanceRate`, and this makes it explicit.
+      return { ...c, ...st, rate: c.rate, commission: (st.commissionBase ?? st.paid) * (c.rate || 0) / 100, color: PALETTE[i % PALETTE.length] };
     }).filter(c => c.students > 0 || c.paid > 0);
 
     const byCommission = [...data].sort((a, b) => b.commission - a.commission);
@@ -25891,20 +26119,20 @@ PAGES.coachperf = (main) => {
           <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%">
             <div style="font-size:11px;font-weight:700;margin-bottom:4px">${c.students}</div>
             <div title="${escapeHtml(c.name)}: ${c.students} students" style="width:70%;height:${(c.students/maxStud*100).toFixed(1)}%;background:linear-gradient(180deg,${c.color},${c.color}99);border-radius:4px 4px 0 0;min-height:3px"></div>
-            <div style="font-size:9px;color:var(--text-mute);margin-top:5px;text-align:center;white-space:nowrap;overflow:hidden;max-width:100%;text-overflow:ellipsis">${escapeHtml(c.name.split(' ')[0])}</div>
+            <div style="font-size:9px;color:var(--text-mute);margin-top:5px;text-align:center;white-space:nowrap;overflow:hidden;max-width:100%;text-overflow:ellipsis">${escapeHtml(String(c.name || '').split(' ')[0])}</div>
           </div>`).join('')}
       </div>`;
 
     // Attendance-rate donuts (simple horizontal with % color)
-    const rateRows = [...data].sort((a,b)=>b.rate-a.rate).map(c => {
-      const col = c.rate>=75?'var(--green)':c.rate>=40?'var(--accent-2)':'var(--red)';
+    const rateRows = [...data].sort((a,b)=>b.attendanceRate-a.attendanceRate).map(c => {
+      const col = c.attendanceRate>=75?'var(--green)':c.attendanceRate>=40?'var(--accent-2)':'var(--red)';
       return `
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:9px">
         <div style="width:110px;font-size:12px;font-weight:500">${escapeHtml(c.name)}</div>
         <div style="flex:1;height:18px;background:var(--surface-2);border-radius:5px;overflow:hidden">
-          <div style="height:100%;width:${c.rate.toFixed(0)}%;background:${col};border-radius:5px;min-width:2px"></div>
+          <div style="height:100%;width:${c.attendanceRate.toFixed(0)}%;background:${col};border-radius:5px;min-width:2px"></div>
         </div>
-        <div style="width:48px;text-align:right;font-weight:700;font-size:13px;color:${col}">${c.total?Math.round(c.rate)+'%':'—'}</div>
+        <div style="width:48px;text-align:right;font-weight:700;font-size:13px;color:${col}">${c.total?Math.round(c.attendanceRate)+'%':'—'}</div>
       </div>`;}).join('');
 
     const totalComm = data.reduce((s,c)=>s+c.commission,0);
@@ -26986,12 +27214,19 @@ PAGES.dataimport = (main) => {
   }
 
   $('#apply-import').addEventListener('click', () => {
+    // This REPLACES whole collections. It carried none of the protections every other
+    // destructive action has, so bring it in line: admin-only, a downloaded backup first,
+    // a second confirmation, an audit entry, and success only after the CLOUD confirms.
+    if (currentRole() !== 'admin') { toast(t('Only an admin can apply an import', 'فقط المدير يمكنه تنفيذ الاستيراد'), 'error'); return; }
     const parts = [];
     if (staged.members) parts.push(`${staged.members.members.length} members + ${staged.members.coaches.length} coaches`);
     if (staged.attendance) parts.push(`${staged.attendance.totalMarks} attendance marks`);
     if (staged.expenses) parts.push(`${staged.expenses.expenses.length} expenses`);
     if (staged.sales) parts.push(`${staged.sales.sales.length} sales`);
-    if (!confirm(`Apply import? This will REPLACE:\n\n${parts.map(p => '• ' + p).join('\n')}\n\nOther data (invoices, salaries) stays as-is. Continue?`)) return;
+    if (!confirm(`Apply import? This will REPLACE:\n\n${parts.map(p => '• ' + p).join('\n')}\n\nOther data (invoices, salaries) stays as-is.\n\nA backup of your CURRENT data will be downloaded first. Continue?`)) return;
+    try { if (typeof window.downloadBackup === 'function') window.downloadBackup(); } catch (_) {}
+    if (!confirm('A backup was just downloaded. This is your LAST chance.\n\nReplace the data now? This cannot be undone.')) return;
+    if (currentRole() !== 'admin') { toast(t('Only an admin can apply an import', 'فقط المدير يمكنه تنفيذ الاستيراد'), 'error'); return; }
 
     if (staged.members) {
       state.coaches = staged.members.coaches;
@@ -27005,6 +27240,7 @@ PAGES.dataimport = (main) => {
     if (staged.sales) state.sales = staged.sales.sales;
 
     // Re-link invoices to new member IDs by customerName
+    let _importNote = '';
     if (staged.members) {
       const nameToId = {};
       for (const m of state.members) nameToId[m.name.toLowerCase().trim()] = m.id;
@@ -27020,15 +27256,25 @@ PAGES.dataimport = (main) => {
       for (const sal of state.salaries || []) {
         if (sal.coachId && !coachIds.has(sal.coachId)) sal.coachId = null;
       }
-      toast(`Imported. ${relinked} invoices re-linked to new member IDs.`, 'success');
-    } else {
-      toast('Imported successfully.', 'success');
+      _importNote = `${relinked} invoices re-linked to new member IDs.`;
     }
 
-    save();
-    // Reset staged
+    audit('data.import', 'import', `Applied import — replaced: ${parts.join(', ') || 'nothing'}`, {
+      members: staged.members ? staged.members.members.length : 0,
+      coaches: staged.members ? staged.members.coaches.length : 0,
+      attendanceMarks: staged.attendance ? staged.attendance.totalMarks : 0,
+      expenses: staged.expenses ? staged.expenses.expenses.length : 0,
+      sales: staged.sales ? staged.sales.sales.length : 0,
+    });
+
+    // Reset staged BEFORE the round-trip so a slow cloud can't be applied twice.
     Object.keys(staged).forEach(k => staged[k] = null);
-    navigate('dashboard');
+    // Success only after the SERVER holds it — this used to toast "Imported successfully"
+    // straight after a fire-and-forget save(), so a failed write still read as a success.
+    const _okMsg = `Import applied and saved to the cloud.${_importNote ? ' ' + _importNote : ''}`;
+    if (typeof confirmSaved === 'function') {
+      confirmSaved(_okMsg, { afterOk: () => navigate('dashboard') });
+    } else { save(); toast(_okMsg, 'success'); navigate('dashboard'); }
   });
 
   $('#clear-staged').addEventListener('click', () => {
@@ -27059,8 +27305,11 @@ function buildMembersWorkbook() {
   const sheets = [];
   for (const c of state.coaches) {
     const rows = [cols.slice()];
-    // For each member enrolled with this coach, emit one row per subscription with this coach
+    // For each member enrolled with this coach, emit one row per subscription with this coach.
+    // Archived members are skipped — the workbook shipped them as live members, and re-importing
+    // the file resurrected them.
     for (const m of state.members) {
+      if (m.deleted) continue;
       const subs = (m.subscriptions || []).filter(s => s.coachId === c.id);
       if (!subs.length) continue;
       for (const s of subs) {
@@ -27114,6 +27363,7 @@ function buildAttendanceSheetForMonth(curMonth) {
   const rows = [header];
 
   for (const m of state.members) {
+    if (m.deleted) continue;   // archived members do not belong in the attendance workbook
     const monthData = m.dailyAttendance?.[curMonth] || {};
     const sportsWithMarks = new Set(Object.keys(monthData));
     const allSports = new Set([...sportsWithMarks, ...(m.enrollments || []).map(e => e.sport)].filter(Boolean));
@@ -27172,7 +27422,8 @@ function buildExpensesWorkbook() {
   const header = ['Expenses Items', 'price', 'Online/Cash', 'Monthly Expenses', 'Buying Staff/Equiments'];
   const rows = [header];
   let monthlyTotal = 0, equipTotal = 0;
-  for (const e of (state.expenses || []).filter(x => x.month === curMonth)) {
+  // !x.deleted: a voided expense shipped as a line AND was folded into the sheet total.
+  for (const e of (state.expenses || []).filter(x => !x.deleted && x.month === curMonth)) {
     const isEquip = e.category === 'Equipment';
     rows.push([
       e.description,
@@ -27402,7 +27653,7 @@ PAGES.rentals = (main) => {
         return `<div class="kpi ${color}">
           <div class="kpi-label">${icon} ${escapeHtml(f)} — ${monthShort}</div>
           <div class="kpi-value">${isViewerRole() ? thisMonth.length : fmt(amt)}</div>
-          <div class="kpi-sub">${isViewerRole() ? `${thisMonth.length} booking${thisMonth.length===1?'':'s'} · ${hrs}h` : `${thisMonth.length} booking${thisMonth.length===1?'':'s'} · ${hrs}h · ${fmt(state.settings.facilityRates[f] || 0)}/hr`}</div>
+          <div class="kpi-sub">${isViewerRole() ? `${thisMonth.length} booking${thisMonth.length===1?'':'s'} · ${hrs}h` : `${thisMonth.length} booking${thisMonth.length===1?'':'s'} · ${hrs}h · ${fmt(facilityRate(f))}/hr`}</div>
         </div>`;
       }).join('')}
     </div>
@@ -27527,7 +27778,7 @@ function wireRentalForm() {
 
   function autoFillRate() {
     if (!rateInp.value || rateInp.dataset.auto !== 'manual') {
-      rateInp.value = state.settings.facilityRates[facSel.value] || 0;
+      rateInp.value = facilityRate(facSel.value);
       rateInp.dataset.auto = 'default';
     }
     recalc();
@@ -28070,7 +28321,7 @@ function editFacilityRates() {
       ${FACILITIES.map(f => `
         <div class="form-row" style="margin-bottom:8px">
           <div class="field"><label>${f === 'Football Court' ? '⚽' : f === 'Boxing Room' ? '🥊' : '🏊'} ${escapeHtml(f)}</label>
-            <input type="number" min="0" step="1" id="fr-${f.replace(/\s+/g,'-')}" value="${state.settings.facilityRates[f] || 0}" />
+            <input type="number" min="0" step="1" id="fr-${f.replace(/\s+/g,'-')}" value="${facilityRate(f)}" />
           </div>
         </div>
       `).join('')}
@@ -28080,7 +28331,7 @@ function editFacilityRates() {
       { label: '💾 Save', class: 'btn primary', onclick: () => {
         for (const f of FACILITIES) {
           const v = parseFloat(document.getElementById('fr-' + f.replace(/\s+/g,'-')).value) || 0;
-          state.settings.facilityRates[f] = v;
+          facilityRates()[f] = v;
         }
         
         closeModal();

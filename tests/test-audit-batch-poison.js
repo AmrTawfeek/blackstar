@@ -71,30 +71,31 @@ console.log('\nsource wiring — append-only + isolated + non-fatal:');
     /noteAuditFromServer\(result\.auditLog\)/.test(storageSrc));
 }
 
-console.log('\nthe message no longer blames the session when the session is fine:');
+console.log('\nauth failures are diagnosed by TESTING the token, not by currentUser alone (v6.407):');
 {
-  ok('a signed-in user + permission-denied reads as "the server refused"',
-    /_serverRefused = _isAuthReason && _stillSignedIn/.test(appSrc));
-  ok('...and it stops telling them to sign in again (which cannot help)',
-    /signing in again will not help/.test(appSrc));
-  ok('only a REAL lapse is called a session expiry', /_sessionLapsed = _isAuthReason && !_stillSignedIn/.test(appSrc));
-  ok('a real lapse offers in-place sign-in instead of a reload',
-    /_sessionLapsed && typeof window\.showSessionResumePrompt === 'function'/.test(appSrc));
+  // v6.393/6.394 keyed the message off `currentUser != null` ("still signed in ⇒ server refused,
+  // signing in won't help"). But Firebase keeps currentUser populated even when the ID token is
+  // DEAD, so a genuinely-lapsed session was wrongly told re-auth wouldn't help — the reported bug.
+  // v6.407 decides by whether the token can actually be refreshed.
+  ok('the confirm popup no longer pre-judges with _serverRefused/_sessionLapsed',
+    !/_serverRefused = _isAuthReason/.test(appSrc) && !/_sessionLapsed = _isAuthReason/.test(appSrc));
+  ok('any auth-coded failure is routed to the self-diagnosing resume prompt',
+    /if \(_isAuthReason && typeof window\.showSessionResumePrompt === 'function'\)/.test(appSrc));
+  ok('the confirm popup shows one neutral "re-checking your sign-in" message',
+    /Not saved yet — re-checking your sign-in/.test(appSrc));
 }
 
-console.log('\nthe sign-in card is NEVER shown for a problem signing in cannot fix:');
+console.log('\nthe sign-in card is shown for a lapse, the refused bar only for a live-token refusal:');
 {
-  // v6.394 — the reported screenshot: permission-denied from a RULES rejection, retries failing
-  // forever, and the app repeatedly asking a still-signed-in user to sign in again.
-  ok('the resume prompt checks for a still-signed-in user before asking',
-    /const _who = \(\(\) => \{ try \{ return window\.Storage\.currentUser && window\.Storage\.currentUser\(\); \}[\s\S]{0,120}?if \(_who\) \{ showServerRefusedBar\(\); return; \}/.test(appSrc));
-  ok('a still-signed-in user gets the "server refused" bar instead of a sign-in card',
-    /function showServerRefusedBar\(\)/.test(appSrc) && /The server refused this change', 'رفض الخادم هذا التغيير'/.test(appSrc));
-  ok('...which states plainly that signing in again will not help',
-    /signing in again will not help[\s\S]{0,200}?keeps retrying/.test(appSrc));
+  ok('the resume prompt records whether the token could be refreshed (tokenAlive)',
+    /let tokenAlive = false;[\s\S]{0,220}?tokenAlive = !!/.test(appSrc));
+  ok('the "server refused" bar requires tokenAlive AND a user (not currentUser alone)',
+    /if \(tokenAlive && _who\) \{ showServerRefusedBar\(\); return; \}/.test(appSrc));
+  ok('the "server refused" bar still exists and states signing in will not help',
+    /function showServerRefusedBar\(\)/.test(appSrc) && /signing in again will not help/.test(appSrc));
   ok('...and still offers a manual retry', /showServerRefusedBar[\s\S]{0,1600}?cloud-retry-now/.test(appSrc));
-  ok('the sign-in card is only reached when NO user remains',
-    /genuinely signed out — ask, in place[\s\S]{0,120}?_sessionPromptOpen = true;/.test(appSrc));
+  ok('a dead token (or no user) falls through to the in-place sign-in prompt',
+    /if \(tokenAlive && _who\) \{ showServerRefusedBar\(\); return; \}[\s\S]{0,400}?_sessionPromptOpen = true;/.test(appSrc));
 }
 
 console.log('\nevery confirmSaved operation shows a pending state and the real result:');

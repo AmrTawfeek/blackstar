@@ -71,10 +71,13 @@ ok('status derives isCompleted from the live attended/total in scope', /Use the 
 console.log('\n(3b) source: enriched columns + month/coach filters (v6.359.1):');
 ok('screen has an Arabic-name line', /m\.nameArabic \? `<div style="font-size:11px;color:var\(--text-dim\)" dir="rtl">/.test(pagesSrc));
 ok('screen has Start + Expiry columns', /<th>\$\{t\('Start', 'البداية'\)\}<\/th>/.test(pagesSrc) && /<th>\$\{t\('Expiry', 'الانتهاء'\)\}<\/th>/.test(pagesSrc));
-ok('screen has an enrolled-month filter', /id="comp-month"/.test(pagesSrc) && /f\.month = e\.target\.value/.test(pagesSrc));
-ok('screen has a coach filter', /id="comp-coach"/.test(pagesSrc) && /f\.coach = e\.target\.value/.test(pagesSrc));
-ok('month filter matches the finished sub START month', /\(d\.sub\.start \|\| ''\)\.slice\(0, 7\) === f\.month/.test(pagesSrc));
-ok('coach filter matches the finished sub coach', /coachNameOf\(d\) === f\.coach/.test(pagesSrc));
+// The month/coach/sport filters are MULTI-select now (v6.405 — see test-ready-to-renew-multifilter.js
+// for the behavioural coverage). These assert the wiring is present and multi-shaped.
+// (the id is emitted by the shared helper as id="${id}", so assert the render + bind calls)
+ok('screen has an enrolled-month MULTI filter', /monthMultiHTML\('comp-month'/.test(pagesSrc) && /bindMonthMulti\('comp-month'/.test(pagesSrc));
+ok('screen has a coach MULTI filter', /multiFilterHTML\('comp-coach'/.test(pagesSrc) && /bindMultiFilter\('comp-coach'/.test(pagesSrc));
+ok('month filter matches the finished sub START month', /f\.months\.includes\(\(d\.sub\.start \|\| ''\)\.slice\(0, 7\)\)/.test(pagesSrc));
+ok('coach filter matches the finished sub coach', /f\.coaches\.includes\(coachNameOf\(d\)\)/.test(pagesSrc));
 ok('search field is full-width + larger', /id="comp-search"[\s\S]{0,400}width:100%;font-size:16px;padding:12px 14px/.test(pagesSrc));
 
 console.log('\n(3c) source: Due-Payment-style reminder + real WhatsApp icon (v6.370):');

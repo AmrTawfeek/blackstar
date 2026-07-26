@@ -235,17 +235,17 @@ const P = 'clubs/blackstars';
   // Intent: the failure path shows the LOCKED popup carrying the raw reason — never a toast.
   // (Matched on the popup itself rather than a variable name, which v6.393 renamed.)
   ok('failed WRITES also get the locked popup (not a toast)', /const _failHeadline =/.test(appSrc) && /popup\(\{\s*okay: false,/.test(appSrc) && /escapeHtml\(String\(reason\)\)/.test(appSrc));
-  // v6.393 — a permission-denied write is NO LONGER always blamed on the session. It is only an
-  // expired session when no signed-in user remains; if the user IS still signed in the server
-  // refused the write (e.g. an immutable-collection rule), and telling them to sign in again
-  // would be useless advice. Both branches are asserted here.
-  ok('permission-denied while SIGNED OUT reads as an expired session',
-    /_sessionLapsed = _isAuthReason && !_stillSignedIn/.test(appSrc) &&
-    /_sessionLapsed\s*\n?\s*\?\s*t\('Your session expired — not saved yet'/.test(appSrc));
-  ok('permission-denied while STILL SIGNED IN reads as the server refusing it',
-    /_serverRefused = _isAuthReason && _stillSignedIn/.test(appSrc) &&
-    /The server refused this change — not saved yet/.test(appSrc));
-  ok('...and it does not send them to sign in again pointlessly', /signing in again will not help/.test(appSrc));
+  // v6.407 — a permission-denied write can be EITHER a lapsed session OR a genuine server refusal,
+  // and Firebase keeps currentUser populated even on a dead token, so the popup can no longer tell
+  // them apart itself. It shows ONE neutral "re-checking your sign-in" message and hands off to
+  // showSessionResumePrompt(), which refreshes the token and decides: sign-in card if the token is
+  // dead, "server refused" bar if the token is alive but the write is still denied.
+  ok('an auth-coded write shows one neutral "re-checking your sign-in" message',
+    /_isAuthReason\s*\n?\s*\?\s*t\('Not saved yet — re-checking your sign-in'/.test(appSrc));
+  ok('the popup no longer pre-labels it session-lapse vs server-refused',
+    !/_sessionLapsed = _isAuthReason/.test(appSrc) && !/_serverRefused = _isAuthReason/.test(appSrc));
+  ok('any auth-coded failure hands off to the self-diagnosing resume prompt',
+    /if \(_isAuthReason && typeof window\.showSessionResumePrompt === 'function'\)/.test(appSrc));
   // v6.347 loader
   ok('a saving loader overlay exists', /function showSavingOverlay\(\)/.test(appSrc) && /function hideSavingOverlay\(\)/.test(appSrc));
   ok('the loader is shown at the start of withCloudConfirm', /if \(wantOverlay\) showSavingOverlay\(\);/.test(appSrc));
