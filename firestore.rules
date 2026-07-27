@@ -34,6 +34,28 @@ service cloud.firestore {
     function isStaff() {
       return request.auth != null && !isMember();
     }
+    function isAdmin() {
+      return _mappedRole() == 'admin';
+    }
+    // The ROLE MAP (settings.userRoles) decides who is admin/receptionist/coach. If ANY staff
+    // could rewrite it, a receptionist could promote themselves to admin or lock everyone out —
+    // a privilege-escalation hole. This returns true when a write leaves the role map untouched,
+    // so only a change TO the role map is gated on isAdmin() below. resource == null on the very
+    // first create of the club doc; a create that already carries a role map must be an admin.
+    function _rolesUnchanged() {
+      return (resource != null
+              ? resource.data.get('settings', {}).get('userRoles', {})
+              : {})
+        == request.resource.data.get('settings', {}).get('userRoles', {});
+    }
+    // BOOTSTRAP: on a brand-new club the role map is empty and NOBODY is admin yet (the app treats
+    // the first login as admin — see roleForEmail). So the first-ever role map may be set by any
+    // staff; once ANY mapping exists this is false and only an admin can change it. Matches the app,
+    // and does not weaken a live club (whose map is already populated).
+    function _rolesEmptyBefore() {
+      return (resource == null)
+        || resource.data.get('settings', {}).get('userRoles', {}).size() == 0;
+    }
     // Collections a MEMBER portal login may read. Everything else — invoices/
     // revenue, expenses, salaries, cashCounts, sales, coaches (pay), families,
     // membershipTransfers, notes, rentals, trials, drivers, products, auditLog — is
@@ -44,7 +66,9 @@ service cloud.firestore {
 
     match /clubs/{clubId} {
       allow read:  if request.auth != null;   // parent meta doc (settings / camp schedule)
-      allow write: if isStaff();
+      // Staff may write the club meta doc (settings, camp schedule, sport list, prices…), BUT
+      // changing the ROLE MAP is admin-only — otherwise any staff login could escalate itself.
+      allow write: if isStaff() && (_rolesUnchanged() || isAdmin() || _rolesEmptyBefore());
 
       // AUDIT TRAIL is IMMUTABLE (req #8): STAFF may CREATE + READ audit entries, but
       // NOBODY may update or delete, and MEMBERS may not read it at all. Declared

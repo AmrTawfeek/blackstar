@@ -126,6 +126,42 @@ const denied  = r => r.status === 403 || /PERMISSION_DENIED/i.test(r.body || '')
     ok('a member CANNOT write members', denied(await patch('members', 'm_pub', { name: 'hacked' }, MEMBER)));
   }
 
+  console.log('\nPRIVILEGE ESCALATION — only an admin may change the role map (settings.userRoles):');
+  {
+    // Build a nested Firestore value for settings.userRoles = { <email>: { role: '...' } }.
+    const roleMap = emails => ({ mapValue: { fields: { userRoles: { mapValue: { fields:
+      Object.fromEntries(emails.map(([e, r]) => [e, { mapValue: { fields: { role: field(r) } } }])) } } } } });
+    const setRoles = (emails, tok) => req('PATCH',
+      `${CLUB}?updateMask.fieldPaths=settings&currentDocument.exists=true`,
+      { fields: { settings: roleMap(emails) } }, tok);
+
+    // BOOTSTRAP: the club doc currently has no userRoles (only `name` was written above). On a
+    // fresh club the first staff login IS admin (roleForEmail), so it may set the initial map.
+    const bootstrap = await setRoles([['admin@blackstars.qa', 'admin']], STAFF);
+    ok('BOOTSTRAP: with an empty role map, staff CAN set the first one (fresh-install setup)', allowed(bootstrap), bootstrap.status);
+
+    // From here the map is populated → escalation lock is active. (Re-seed as OWNER to be safe.)
+    await req('PATCH', CLUB, { fields: { name: field('Black Stars'),
+      settings: roleMap([['admin@blackstars.qa', 'admin']]) } }, OWNER);
+
+    const ADMIN = tokenFor('admin@blackstars.qa', 'admin1');   // mapped role → admin
+    // STAFF (blackstarsportsmail@gmail.com) is a valid staff login but NOT in the role map → not admin.
+
+    const escalate = await setRoles([['admin@blackstars.qa', 'admin'], ['blackstarsportsmail@gmail.com', 'admin']], STAFF);
+    ok('a non-admin staff member CANNOT add themselves to the role map (escalation blocked)', denied(escalate), escalate.status);
+
+    const wipe = await setRoles([], STAFF);
+    ok('a non-admin staff member CANNOT wipe the role map (lock-out blocked)', denied(wipe), wipe.status);
+
+    const adminChange = await setRoles([['admin@blackstars.qa', 'admin'], ['newcoach@blackstars.qa', 'coach']], ADMIN);
+    ok('an ADMIN CAN change the role map', allowed(adminChange), adminChange.status);
+
+    // A normal settings write that does NOT touch the role map must still work for any staff.
+    const otherSetting = await req('PATCH', `${CLUB}?updateMask.fieldPaths=expiringSoonDays`,
+      { fields: { expiringSoonDays: { integerValue: '5' } } }, STAFF);
+    ok('staff CAN still write other settings (role map untouched)', allowed(otherSetting), otherSetting.status);
+  }
+
   console.log('\nsigned out — nothing is reachable:');
   {
     ok('anonymous cannot read members', denied(await read('members', 'm_pub', null)));

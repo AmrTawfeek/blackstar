@@ -16290,6 +16290,7 @@ PAGES.salaries = (main) => {
       </div>
       <div class="topbar-actions">
         <button class="btn ghost" onclick="navigate('coaches')" title="Set fixed salaries + commission rates per person">⚙️ Configure on Team page</button>
+        ${currentRole() === 'admin' ? `<button class="btn ghost" onclick="coachAttributionCheck()" title="${t('Find invoice lines credited to a coach who is no longer the current coach for that sport, and re-credit them', 'ابحث عن بنود منسوبة لمدرب لم يعد مدرب العضو لتلك الرياضة، وأعد إسنادها')}">🧭 ${t('Coach check', 'فحص المدرب')}</button>` : ''}
         <button class="btn primary" onclick="downloadPayrollCSV('${filter.month}')">📥 Export payroll</button>
       </div>
     </div>
@@ -17038,6 +17039,97 @@ window.downloadPayslipPDF = function(coachId, monthKey) {
 // Itemized breakdown showing the coach exactly which members + sports
 // contributed to their commission base for a month. Includes sport-switch
 // reconciliation lines (positive earnings + negative deductions). PDF only.
+// ── COACH ATTRIBUTION CHECK (v6.410) ──────────────────────────────────────────
+// Commission FOLLOWS THE INVOICE LINE's coach. When a member's sport coach is reassigned, the
+// member's enrollment gets the new coach but the historical invoice lines keep the OLD coach — so
+// the old coach keeps earning the commission and shows up on the wrong coach's report (the "I
+// printed Karma but see a different coach's students" bug). This admin tool lists every membership
+// invoice line whose coach ≠ the member's CURRENT enrollment coach for that sport, and lets the
+// admin re-credit it (per row, or all). Money-reviewed: it only shows a mismatch, never auto-fixes;
+// each fix is audited; it re-credits to the enrollment's current coach.
+function _coachAttrMismatches() {
+  const out = [];
+  for (const inv of (state.invoices || [])) {
+    if (inv.deleted) continue;
+    if ((inv.category || 'Membership') !== 'Membership') continue;
+    const mem = inv.customerId ? state.members.find(m => m.id === inv.customerId) : null;
+    if (!mem || mem.deleted) continue;
+    // Only invoices with explicit per-sport line items can be re-credited safely (a sport-less
+    // legacy line has no single sport to move).
+    if (!(Array.isArray(inv.lineItems) && inv.lineItems.length)) continue;
+    inv.lineItems.forEach((li, idx) => {
+      if (!li || !li.sport || li.sport === SUMMER_CAMP) return;
+      const expected = coachIdForSport(mem, li.sport);
+      if (expected == null) return;              // no current enrollment coach → can't judge
+      if (li.coachId == null) return;            // unattributed line → a separate concern
+      if (li.coachId === expected) return;       // already correct
+      out.push({
+        invId: inv.id, ref: inv.ref || ('INV' + inv.id), idx,
+        memberName: mem.name || mem.nameArabic || ('#' + mem.id),
+        sport: li.sport, month: lineBillMonth(li, inv),
+        fromCoach: li.coachId, toCoach: expected, price: Number(li.price) || 0,
+      });
+    });
+  }
+  return out.sort((a, b) => (a.month < b.month ? 1 : a.month > b.month ? -1 : 0) || a.memberName.localeCompare(b.memberName));
+}
+window._coachAttrFix = function (invId, idx, silent) {
+  const inv = (state.invoices || []).find(x => x.id === invId);
+  if (!inv || !Array.isArray(inv.lineItems) || !inv.lineItems[idx]) return false;
+  const li = inv.lineItems[idx];
+  const mem = state.members.find(m => m.id === inv.customerId);
+  const expected = coachIdForSport(mem, li.sport);
+  if (expected == null) { if (!silent) toast(t('No current coach for this sport', 'لا يوجد مدرب حالي لهذه الرياضة'), 'error'); return false; }
+  const from = coachName(li.coachId), to = coachName(expected);
+  li.coachId = expected;
+  li.coach = to;
+  if (typeof audit === 'function') audit('invoice.recredit', 'invoice:' + invId,
+    `Re-credited ${li.sport} commission on ${inv.ref || ('INV' + invId)} from ${from} to ${to}${mem ? ' (member ' + mem.name + ')' : ''}`,
+    { invId, sport: li.sport, from: li.coachId, to: expected });
+  return true;
+};
+window.coachAttributionCheck = function () {
+  if (currentRole() !== 'admin') { toast(t('Admins only', 'للمسؤولين فقط'), 'error'); return; }
+  const rows = _coachAttrMismatches();
+  const body = rows.length ? `
+    <div style="background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.30);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;line-height:1.6">
+      ${t('These invoice lines credit a coach who is <b>different</b> from the current coach for that sport — usually because the coach was reassigned after the invoice was made. Re-crediting moves that line commission to the current coach. Only fix genuine corrections; leave a real mid-membership handover as it is.', 'هذه البنود تنسب العمولة لمدرب <b>مختلف</b> عن مدرب العضو الحالي لتلك الرياضة — عادةً لأن المدرب أُعيد تعيينه بعد إصدار الفاتورة. إعادة الإسناد تنقل عمولة هذا البند للمدرب الحالي. صحّح الحالات الخاطئة فقط.')}
+      <div style="margin-top:6px;color:var(--accent-2)">⚠️ ${t('If the old coach was already PAID for a month, re-crediting shifts that commission — reconcile their pay after.', 'إذا كان المدرب القديم قد استلم عن شهرٍ ما، فإن إعادة الإسناد تنقل تلك العمولة — سوِّ راتبه بعد ذلك.')}</div>
+    </div>
+    <div style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:620px">
+        <thead><tr style="background:var(--surface-2);position:sticky;top:0">
+          <th style="padding:8px 10px;text-align:left">${t('Member', 'العضو')}</th>
+          <th style="padding:8px 10px;text-align:left">${t('Sport', 'الرياضة')}</th>
+          <th style="padding:8px 10px;text-align:left">${t('Month', 'الشهر')}</th>
+          <th style="padding:8px 10px;text-align:left">${t('Credited now → should be', 'المنسوب حالياً ← الصحيح')}</th>
+          <th style="padding:8px 10px;text-align:right">${t('Amount', 'المبلغ')}</th>
+          <th style="padding:8px 10px;text-align:right">${t('Action', 'إجراء')}</th>
+        </tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td style="padding:7px 10px;font-weight:600">${escapeHtml(r.memberName)}</td>
+          <td style="padding:7px 10px">${escapeHtml(r.sport)}</td>
+          <td style="padding:7px 10px;white-space:nowrap">${fmtMonth(r.month)}</td>
+          <td style="padding:7px 10px"><span style="color:var(--red)">${escapeHtml(coachName(r.fromCoach))}</span> → <span style="color:var(--green);font-weight:700">${escapeHtml(coachName(r.toCoach))}</span></td>
+          <td style="padding:7px 10px;text-align:right">${fmt(r.price)}</td>
+          <td style="padding:7px 10px;text-align:right"><button class="btn primary sm" onclick="_coachAttrFix(${r.invId}, ${r.idx}); confirmSaved('${t('Re-credited', 'أُعيد الإسناد')}', { onOk: () => coachAttributionCheck() })">↪ ${t('Re-credit', 'إعادة إسناد')}</button></td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>` : `<div class="text-mute" style="padding:26px;text-align:center">✓ ${t('No coach-attribution mismatches — every commission line matches the current coach.', 'لا يوجد عدم تطابق — كل بنود العمولة تطابق مدرب العضو الحالي.')}</div>`;
+  showModal({
+    title: `🧭 ${t('Coach attribution check', 'فحص إسناد المدرب')}${rows.length ? ' · ' + rows.length : ''}`,
+    body,
+    actions: [
+      { label: t('Close', 'إغلاق'), class: 'btn ghost', onclick: () => closeModal() },
+      ...(rows.length ? [{ label: `↪ ${t('Re-credit all', 'إعادة إسناد الكل')} ${rows.length}`, class: 'btn primary', onclick: () => {
+        if (!confirm(t('Re-credit ALL ' + rows.length + ' lines to each member\'s current coach? Only do this if none are genuine mid-membership handovers.', 'إعادة إسناد كل ' + rows.length + ' بند لمدرب العضو الحالي؟ نفّذ ذلك فقط إن لم يكن أي منها تسليماً حقيقياً في منتصف الاشتراك.'))) return;
+        let n = 0; for (const r of rows) { if (window._coachAttrFix(r.invId, r.idx, true)) n++; }
+        confirmSaved(t('Re-credited ' + n + ' lines', 'أُعيد إسناد ' + n + ' بند'), { onOk: () => coachAttributionCheck() });
+      } }] : []),
+    ],
+  });
+};
+
 window.showRevenueDetail = function(coachId, monthKey) {
   const c = state.coaches.find(x => x.id === coachId);
   if (!c) return;
