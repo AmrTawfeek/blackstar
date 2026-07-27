@@ -9184,6 +9184,8 @@ PAGES.schedule = (main) => {
   let filter = { coaches: myCoachId != null ? [myCoachId] : [], sports: [], days: [] };
   // Days actually shown in the grid: all of DAYS, narrowed to filter.days when set.
   const visibleDays = () => (filter.days.length ? DAYS.filter(d => filter.days.includes(d.key)) : DAYS);
+  // Today's weekday key — the default day for the shareable poster.
+  const _todayKey = (() => { try { return ['sun','mon','tue','wed','thu','fri','sat'][new Date().getDay()]; } catch (_) { return 'sat'; } })();
 
   // Find classes for a given day + slot
   function classesAt(day, hour) {
@@ -9262,7 +9264,7 @@ PAGES.schedule = (main) => {
             ? `<span title="${escapeHtml(coach.name)} is now inactive — reassign or remove this class" style="flex-shrink:0">⚠️</span>` : '';
           return `<div class="sch-class" data-id="${c.id}" data-sport="${escapeHtml(c.sport)}" data-coachid="${c.coachId != null ? c.coachId : ''}" style="background:${sportColor(c.sport)};color:white;padding:6px 8px;border-radius:6px;font-size:11px;font-weight:600;margin:2px 0;display:flex;align-items:center;justify-content:space-between;gap:4px;cursor:pointer;opacity:${dimmed ? '0.18' : '1'};transition:opacity .15s;${coach && !isCoachActive(coach) ? 'outline:2px solid #facc15;outline-offset:-2px' : ''}">
             <div style="flex:1;min-width:0;overflow:hidden">
-              <div style="display:flex;align-items:center;gap:4px"><span>${sportEmoji(c.sport)}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(c.sport)}</span></div>
+              <div style="display:flex;align-items:center;gap:4px"><span>${sportEmoji(c.sport)}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(c.label || c.sport)}</span></div>
               <div style="font-size:9px;font-weight:500;opacity:.95;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(coach ? coach.name : 'No coach')}${coach && !isCoachActive(coach) ? ' · inactive' : ''}</div>
             </div>
             ${warn}
@@ -9403,6 +9405,11 @@ PAGES.schedule = (main) => {
           <select id="sch-coach" style="width:100%">${opts}</select>
           ${noneNote}
         </div>
+        <div class="field" style="margin-top:12px">
+          <label>${t('Class name (optional)', 'اسم الحصة (اختياري)')}</label>
+          <input id="sch-label" style="width:100%" maxlength="40" value="${escapeHtml((existing && existing.label) || '')}" placeholder="${escapeHtml(sport)}" />
+          <div class="text-mute" style="font-size:11px;margin-top:4px">${t('Custom label shown on the schedule — e.g. "Kids Kick-Boxing", "Adult Boxing". Leave blank to use the sport name.', 'اسم مخصص يظهر على الجدول — مثل «كيك بوكسينغ أطفال» أو «ملاكمة كبار». اتركه فارغاً لاستخدام اسم الرياضة.')}</div>
+        </div>
       `,
       actions: [
         ...(existing ? [{ label: 'Remove class', class: 'btn ghost', onclick: () => {
@@ -9422,13 +9429,17 @@ PAGES.schedule = (main) => {
             toast(`${coachName(coachId)} already has ${clash.sport} in this slot — one class per coach per time slot.`, 'error');
             return;
           }
+          // Custom class label (e.g. "Kids Kick-Boxing"). Blank — or the same as the sport name —
+          // stores no label so the tile just shows the sport.
+          const _labelRaw = (($('#sch-label') || {}).value || '').trim();
+          const _label = (_labelRaw && _labelRaw !== sport) ? _labelRaw : '';
           if (existing) {
             existing.coachId = coachId;
+            if (_label) existing.label = _label; else delete existing.label;
           } else {
-            state.schedule.push({
-              id: nextId(state.schedule || []),
-              day, slot, sport, coachId,
-            });
+            const _rec = { id: nextId(state.schedule || []), day, slot, sport, coachId };
+            if (_label) _rec.label = _label;
+            state.schedule.push(_rec);
           }
           closeModal(); refresh();
           confirmSaved(existing ? 'Class updated' : 'Class added');
@@ -9603,6 +9614,98 @@ PAGES.schedule = (main) => {
     });
   }
 
+  // ─── DAILY POSTER (v6.409) ─────────────────────────────────────────────────
+  // A PORTRAIT, WhatsApp-status-friendly image of ONE day's classes. The weekly PNG above is a
+  // wide grid (great on a wall, wrong shape for a phone status). This is a tall 1080×1920+ card:
+  // brand header + the day + each time slot with its classes as colour chips (custom label +
+  // coach). Pure-canvas, no external libs; downloaded as a PNG the owner shares as a status.
+  function exportDayStatus(dayKey, lang) {
+    const ar = lang === 'ar';
+    const day = DAYS.find(d => d.key === dayKey) || DAYS[0];
+    const sections = SLOTS.map(slot => ({ slot, cls: classesAt(day.key, slot.hour).filter(isFiltered) }))
+      .filter(s => s.cls.length);
+    const W = 1080, PAD = 56, headH = 340, footH = 150;
+    const timeH = 64, cardH = 118, cardGap = 14, sectGap = 30;
+    let bodyH = 40;
+    for (const s of sections) bodyH += timeH + 12 + s.cls.length * cardH + (s.cls.length - 1) * cardGap + sectGap;
+    const H = Math.max(1920, headH + bodyH + footH);
+    const scale = 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = W * scale; canvas.height = H * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+    const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); };
+
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#0b1020'); bg.addColorStop(1, '#0a0e1a');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+    // Brand header
+    ctx.fillStyle = '#0a0e1a'; ctx.fillRect(0, 0, W, headH);
+    const accent = ctx.createLinearGradient(0, 0, W, 0); accent.addColorStop(0, '#f26060'); accent.addColorStop(1, '#f2a33c');
+    ctx.fillStyle = accent; ctx.fillRect(0, headH - 6, W, 6);
+    ctx.textAlign = ar ? 'right' : 'left';
+    const HX = ar ? W - PAD : PAD;
+    ctx.fillStyle = '#f26060'; ctx.font = 'bold 54px sans-serif';
+    ctx.fillText(ar ? '★ بلاك ستارز' : '★ BLACK STARS', HX, 88);
+    ctx.fillStyle = '#9ba6b6'; ctx.font = '26px sans-serif';
+    ctx.fillText(ar ? 'نادٍ رياضي · جدول اليوم' : 'Sports Club · Today at the club', HX, 128);
+    ctx.fillStyle = '#e8eaf0'; ctx.font = 'bold 82px sans-serif';
+    ctx.fillText(ar ? dayNameAR(day.key) : day.label, HX, 238);
+    ctx.fillStyle = '#5b8def'; ctx.font = '30px sans-serif';
+    let dstr = ''; try { dstr = new Date().toLocaleDateString(ar ? 'ar-EG' : 'en-GB', { day: 'numeric', month: 'long', year: 'numeric' }); } catch (_) {}
+    ctx.fillText(dstr, HX, 288);
+
+    // Body
+    let y = headH + 34;
+    if (!sections.length) {
+      ctx.textAlign = 'center'; ctx.fillStyle = '#5a627a'; ctx.font = '32px sans-serif';
+      ctx.fillText(ar ? 'لا توجد حصص في هذا اليوم' : 'No classes scheduled for this day', W / 2, y + 100);
+    }
+    for (const s of sections) {
+      const tlabel = ar ? timeLabelAR(s.slot.label) : s.slot.label;
+      ctx.textAlign = ar ? 'right' : 'left';
+      ctx.fillStyle = '#1a2030'; rr(PAD, y, W - 2 * PAD, timeH, 14); ctx.fill();
+      ctx.fillStyle = '#f2a33c'; ctx.font = 'bold 30px sans-serif';
+      ctx.fillText('🕐 ' + tlabel, ar ? W - PAD - 20 : PAD + 20, y + timeH / 2 + 11);
+      y += timeH + 12;
+      for (const c of s.cls) {
+        rr(PAD, y, W - 2 * PAD, cardH, 18); ctx.fillStyle = sportColor(c.sport); ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 2; rr(PAD, y, W - 2 * PAD, cardH, 18); ctx.stroke();
+        const coach = state.coaches.find(co => co.id === c.coachId);
+        const nm = c.label || (ar ? sportNameAR(c.sport) : c.sport);
+        ctx.fillStyle = '#fff'; ctx.textAlign = ar ? 'right' : 'left';
+        const TX = ar ? W - PAD - 28 : PAD + 28;
+        ctx.font = 'bold 40px sans-serif';
+        ctx.fillText(sportEmoji(c.sport) + '  ' + nm, TX, y + (coach ? 54 : cardH / 2 + 14));
+        if (coach) {
+          ctx.font = '28px sans-serif'; ctx.fillStyle = 'rgba(255,255,255,0.92)';
+          const cn = (ar && coach.nameArabic) ? coach.nameArabic : coach.name;
+          ctx.fillText((ar ? 'المدرب: ' : 'Coach: ') + cn, TX, y + 96);
+        }
+        y += cardH + cardGap;
+      }
+      y += sectGap;
+    }
+
+    // Footer
+    ctx.textAlign = 'center'; ctx.fillStyle = '#5a627a'; ctx.font = '24px sans-serif';
+    ctx.fillText(ar ? 'واب · منتجع القرية · الدوحة · قطر' : 'Waab · Village Resort · Doha · Qatar', W / 2, H - 72);
+    ctx.fillStyle = '#3b4256'; ctx.font = '22px sans-serif';
+    ctx.fillText('+974 3040 0103', W / 2, H - 40);
+
+    canvas.toBlob(blob => {
+      if (!blob) { toast(ar ? 'تعذّر إنشاء الصورة' : 'Could not build the image', 'error'); return; }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `BlackStars-${ar ? 'AR-' : ''}${day.label}-status.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast(ar ? '📲 تم حفظ صورة اليوم — شاركها كحالة واتساب' : '📲 Day poster saved — share it as a WhatsApp status');
+    });
+  }
+
   // ─── Render the page ───────────────────────────────────────────────
   // Sports offered in the schedule come from the ENABLED sports in Settings, so
   // newly-added sports show up and disabled sports can't be booked. Summer Camp
@@ -9664,8 +9767,13 @@ PAGES.schedule = (main) => {
       </div>
       <div class="topbar-actions">
         ${canEdit && currentRole() === 'admin' ? '<button class="btn ghost" id="sch-clear" title="Remove all scheduled classes">🗑 Clear all</button>' : ''}
-        <button class="btn primary" id="sch-png">📸 Export PNG</button>
-        <button class="btn ghost" id="sch-png-ar" title="تصدير الجدول بالعربية">📸 PNG (عربي)</button>
+        <select class="btn ghost" id="sch-status-day" title="${t('Pick a day for the shareable poster', 'اختر يوماً للملصق القابل للمشاركة')}" style="padding:8px 10px">
+          ${DAYS.map(d => `<option value="${d.key}" ${d.key === _todayKey ? 'selected' : ''}>${t(d.label, dayNameAR(d.key))}</option>`).join('')}
+        </select>
+        <button class="btn primary" id="sch-status" title="${t('Save this day as a portrait image to share as a WhatsApp status', 'احفظ هذا اليوم كصورة عمودية لمشاركتها كحالة واتساب')}">📲 ${t('Day poster', 'ملصق اليوم')}</button>
+        <button class="btn ghost" id="sch-status-ar" title="ملصق اليوم بالعربية">📲 (عربي)</button>
+        <button class="btn ghost" id="sch-png" title="${t('Full week grid (wide image)', 'جدول الأسبوع كامل (صورة عريضة)')}">📸 ${t('Week PNG', 'الأسبوع')}</button>
+        <button class="btn ghost" id="sch-png-ar" title="تصدير الجدول الأسبوعي بالعربية">📸 (عربي)</button>
       </div>
     </div>
 
@@ -9801,9 +9909,13 @@ PAGES.schedule = (main) => {
   // Reset all
   $('#sch-filter-reset')?.addEventListener('click', () => { filter.coaches = []; filter.sports = []; filter.days = []; $$('.sch-coach-cb, .sch-sport-cb, .sch-day-cb').forEach(cb => cb.checked = false); updateFilterLabels(); refresh(); });
 
-  // Export PNG
+  // Export PNG (weekly grid)
   $('#sch-png').addEventListener('click', () => exportPng('en'));
   const pngAr = $('#sch-png-ar'); if (pngAr) pngAr.addEventListener('click', () => exportPng('ar'));
+  // Daily poster (portrait, for WhatsApp status)
+  const _statusDay = () => (($('#sch-status-day') || {}).value || _todayKey);
+  $('#sch-status')?.addEventListener('click', () => exportDayStatus(_statusDay(), 'en'));
+  $('#sch-status-ar')?.addEventListener('click', () => exportDayStatus(_statusDay(), 'ar'));
 
   // Clear all (admins only — button absent for read-only roles)
   const clearBtn = $('#sch-clear');
@@ -16089,11 +16201,19 @@ PAGES.salaries = (main) => {
           <td class="text-right" style="white-space:nowrap">
             ${canCarry
               ? `<button class="btn primary sm" onclick="carrySalaryForward(${p.coachId}, '${p.month}')" title="Carry the ${fmt(-p.net)} over-advance to next month as an opening advance and settle this month at 0">↩ Carry ${fmt(-p.net)}</button>`
+              + (p.commissionPending > 0.005
+                // Over-advanced BUT there is still pending commission to settle — offer to Settle in
+                // full here too, not ONLY Carry. Settling raises the payout to net + pending (which
+                // may flip positive) and stamps the memberships so they never true-up again. Without
+                // this the Pay button was hidden and the pending could not be reached. (v6.409)
+                ? ` <button class="btn ghost sm" onclick="markPaid(${p.coachId}, '${p.month}')" title="Settle in full instead of carrying: pay net + the ${fmt(p.commissionPending)} pending now; it won't true-up again">💰 ${t('Settle', 'تسوية')}</button>`
+                : '')
               : p.carriedOut > 0.005
                 ? `<button class="btn ghost sm" onclick="undoSalaryCarry(${p.coachId}, '${p.month}')" title="Undo the carry-forward — restores this month's negative net and removes next month's opening advance">↩ Undo carry</button>`
                 : `<button class="btn ${p.paidStatus === 'paid' ? 'ghost' : 'primary'} sm" onclick="markPaid(${p.coachId}, '${p.month}')" title="${p.paidStatus === 'paid' ? 'Manage payments' : p.paidStatus === 'partial' ? 'Pay the remaining ' + fmt(p.paidRemaining) : 'Record payment(s)'}">
               ${p.paidStatus === 'paid' ? '✓' : p.paidStatus === 'partial' ? '💵 ' + fmt(p.paidRemaining) : '💰 Pay'}
             </button>`}
+            <button class="btn ghost sm" onclick="showCoachSalaryHistory(${p.coachId})" title="${t('See every month for this coach — review the history and pay any month', 'عرض جميع أشهر هذا المدرب — راجع السجل وادفع أي شهر')}">📅</button>
             <button class="btn ghost sm" onclick="showPayslip(${p.coachId}, '${p.month}')" title="Pay slip (PDF summary)">📄</button>
             <button class="btn ghost sm" onclick="showRevenueDetail(${p.coachId}, '${p.month}')" title="Revenue detail report (every member + sport)">📊</button>
             <button class="btn ghost sm" onclick="downloadRevenueDetailPDF(${p.coachId}, '${p.month}')" title="Download coach report as PDF (Coach-Month-Year.pdf)">⬇️</button>
@@ -16689,6 +16809,75 @@ window.markPaid = function(coachId, monthKey) {
         confirmSaved(t('Payments cleared', 'تم حذف الدفعات'));
       } }] : []),
     ],
+  });
+};
+
+// COACH SALARY HISTORY (v6.409): every month for ONE coach in a single table, so the admin can
+// review the whole history and take a payment action on ANY month — the Salaries screen itself
+// only shows one month at a time. Read-only figures + a Pay/Manage button per month (opens the
+// normal pay dialog). Total outstanding across all months is summarised at the bottom.
+window.showCoachSalaryHistory = function (coachId) {
+  const c = state.coaches.find(x => x.id === coachId);
+  if (!c) { toast(t('Coach not found', 'المدرب غير موجود'), 'error'); return; }
+  const months = availableMonths({ includeFuture: true }).slice().reverse();   // newest first
+  const rows = [];
+  let tGross = 0, tPending = 0, tNet = 0, tPaid = 0, tOutstanding = 0;
+  for (const m of months) {
+    const p = computeMonthlyPay(coachId, m);
+    if (!p) continue;
+    const active = p.gross > 0.005 || p.commissionPending > 0.005 || p.advance > 0.005
+      || p.paidTotal > 0.005 || p.carriedIn > 0.005 || p.carriedOut > 0.005;
+    if (!active) continue;
+    const outstanding = Math.max(0, (p.paidTarget != null ? p.paidTarget : p.net) - p.paidTotal);
+    tGross += p.gross; tPending += p.commissionPending; tNet += p.net; tPaid += p.paidTotal;
+    if (p.net > 0.005) tOutstanding += outstanding;
+    const stColor = p.paidStatus === 'paid' ? 'var(--green)' : p.paidStatus === 'partial' ? '#f59e0b' : (p.net < -0.005 ? '#6b7280' : 'var(--red)');
+    const stLabel = p.paidStatus === 'paid' ? '✓ ' + t('Paid', 'مدفوع')
+      : p.paidStatus === 'partial' ? t('Partial', 'جزئي')
+      : p.net < -0.005 ? t('Over-advanced', 'سلفة زائدة') : t('Not paid', 'غير مدفوع');
+    const canPay = p.paidStatus !== 'paid';
+    rows.push(`<tr>
+      <td style="padding:7px 10px;white-space:nowrap;font-weight:600">${fmtMonth(m)}</td>
+      <td style="padding:7px 10px;text-align:right">${fmt(p.gross)}</td>
+      <td style="padding:7px 10px;text-align:right;color:${p.commissionPending > 0.005 ? '#f59e0b' : 'var(--text-mute)'}">${p.commissionPending > 0.005 ? '⏳ ' + fmt(p.commissionPending) : '—'}</td>
+      <td style="padding:7px 10px;text-align:right;color:var(--text-mute)">${p.advance > 0.005 ? fmt(p.advance) : '—'}</td>
+      <td style="padding:7px 10px;text-align:right;font-weight:700;color:${p.net < -0.005 ? 'var(--red)' : 'var(--green)'}">${fmt(p.net)}</td>
+      <td style="padding:7px 10px;text-align:right">${p.paidTotal > 0.005 ? fmt(p.paidTotal) : '—'}</td>
+      <td style="padding:7px 10px;text-align:center;color:${stColor};font-weight:700;font-size:11px;white-space:nowrap">${stLabel}</td>
+      <td style="padding:7px 10px;text-align:right"><button class="btn ${canPay ? 'primary' : 'ghost'} sm" onclick="closeModal(); markPaid(${coachId}, '${m}')">${canPay ? '💰 ' + t('Pay', 'ادفع') : t('Manage', 'إدارة')}</button></td>
+    </tr>`);
+  }
+  const body = rows.length ? `
+    <div style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px">
+        <thead><tr style="background:var(--surface-2);position:sticky;top:0">
+          <th style="padding:8px 10px;text-align:left">${t('Month', 'الشهر')}</th>
+          <th style="padding:8px 10px;text-align:right">${t('Gross', 'الإجمالي')}</th>
+          <th style="padding:8px 10px;text-align:right">${t('Pending', 'معلّق')}</th>
+          <th style="padding:8px 10px;text-align:right">${t('Advance', 'سلفة')}</th>
+          <th style="padding:8px 10px;text-align:right">${t('Net', 'الصافي')}</th>
+          <th style="padding:8px 10px;text-align:right">${t('Paid', 'مدفوع')}</th>
+          <th style="padding:8px 10px;text-align:center">${t('Status', 'الحالة')}</th>
+          <th style="padding:8px 10px;text-align:right">${t('Action', 'إجراء')}</th>
+        </tr></thead>
+        <tbody>${rows.join('')}</tbody>
+        <tfoot><tr style="border-top:2px solid var(--border);font-weight:700;background:var(--surface-2)">
+          <td style="padding:8px 10px">${rows.length} ${t('months', 'أشهر')}</td>
+          <td style="padding:8px 10px;text-align:right">${fmt(tGross)}</td>
+          <td style="padding:8px 10px;text-align:right;color:#f59e0b">${tPending > 0.005 ? fmt(tPending) : '—'}</td>
+          <td></td>
+          <td style="padding:8px 10px;text-align:right;color:var(--green)">${fmt(tNet)}</td>
+          <td style="padding:8px 10px;text-align:right">${fmt(tPaid)}</td>
+          <td colspan="2" style="padding:8px 10px;text-align:right;color:${tOutstanding > 0.5 ? 'var(--red)' : 'var(--green)'}">${tOutstanding > 0.5 ? '⚠️ ' + fmt(tOutstanding) + ' ' + t('outstanding', 'مستحق') : '✓ ' + t('all settled', 'تمت التسوية')}</td>
+        </tr></tfoot>
+      </table>
+    </div>
+    <div style="font-size:11px;color:var(--text-mute);margin-top:8px">${t('Click Pay on any month to record a payment for it. Outstanding counts only months with a positive net.', 'اضغط ادفع على أي شهر لتسجيل دفعة له. المستحق يحتسب الأشهر ذات الصافي الموجب فقط.')}</div>
+  ` : `<div class="text-mute" style="padding:24px;text-align:center">${t('No salary activity recorded for this coach yet.', 'لا يوجد نشاط رواتب مسجل لهذا المدرب بعد.')}</div>`;
+  showModal({
+    title: `📅 ${t('Salary history', 'سجل الرواتب')} · ${escapeHtml(c.name)}`,
+    body,
+    actions: [{ label: t('Close', 'إغلاق'), class: 'btn ghost', onclick: () => closeModal() }],
   });
 };
 
