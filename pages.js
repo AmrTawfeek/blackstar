@@ -16199,20 +16199,23 @@ PAGES.salaries = (main) => {
                   : '<span class="badge">Pending</span>'}
           </td>
           <td class="text-right" style="white-space:nowrap">
-            ${canCarry
-              ? `<button class="btn primary sm" onclick="carrySalaryForward(${p.coachId}, '${p.month}')" title="Carry the ${fmt(-p.net)} over-advance to next month as an opening advance and settle this month at 0">↩ Carry ${fmt(-p.net)}</button>`
-              + (p.commissionPending > 0.005
-                // Over-advanced BUT there is still pending commission to settle — offer to Settle in
-                // full here too, not ONLY Carry. Settling raises the payout to net + pending (which
-                // may flip positive) and stamps the memberships so they never true-up again. Without
-                // this the Pay button was hidden and the pending could not be reached. (v6.409)
-                ? ` <button class="btn ghost sm" onclick="markPaid(${p.coachId}, '${p.month}')" title="Settle in full instead of carrying: pay net + the ${fmt(p.commissionPending)} pending now; it won't true-up again">💰 ${t('Settle', 'تسوية')}</button>`
-                : '')
-              : p.carriedOut > 0.005
-                ? `<button class="btn ghost sm" onclick="undoSalaryCarry(${p.coachId}, '${p.month}')" title="Undo the carry-forward — restores this month's negative net and removes next month's opening advance">↩ Undo carry</button>`
-                : `<button class="btn ${p.paidStatus === 'paid' ? 'ghost' : 'primary'} sm" onclick="markPaid(${p.coachId}, '${p.month}')" title="${p.paidStatus === 'paid' ? 'Manage payments' : p.paidStatus === 'partial' ? 'Pay the remaining ' + fmt(p.paidRemaining) : 'Record payment(s)'}">
-              ${p.paidStatus === 'paid' ? '✓' : p.paidStatus === 'partial' ? '💵 ' + fmt(p.paidRemaining) : '💰 Pay'}
-            </button>`}
+            ${(() => {
+              // "Settle pending" pays the pending amount as cash NOW and closes those students so
+              // they don't carry to next month — reachable even when the row is already Paid or the
+              // coach is over-advanced (v6.410). Shown whenever there is unsettled pending.
+              const settleBtn = p.commissionPending > 0.005
+                ? ` <button class="btn ghost sm" onclick="_salSettlePending(${p.coachId}, '${p.month}')" title="Settle pending in full: pay the ${fmt(p.commissionPending)} pending as cash now and close those students so they don't carry to next month">💰 ${t('Settle', 'تسوية')}</button>`
+                : '';
+              return canCarry
+                ? `<button class="btn primary sm" onclick="carrySalaryForward(${p.coachId}, '${p.month}')" title="Carry the ${fmt(-p.net)} over-advance to next month as an opening advance and settle this month at 0">↩ Carry ${fmt(-p.net)}</button>` + settleBtn
+                : p.carriedOut > 0.005
+                  ? `<button class="btn ghost sm" onclick="undoSalaryCarry(${p.coachId}, '${p.month}')" title="Undo the carry-forward — restores this month's negative net and removes next month's opening advance">↩ Undo carry</button>` + settleBtn
+                  : `<button class="btn ${p.paidStatus === 'paid' ? 'ghost' : 'primary'} sm" onclick="markPaid(${p.coachId}, '${p.month}')" title="${p.paidStatus === 'paid' ? 'Manage payments' : p.paidStatus === 'partial' ? 'Pay the remaining ' + fmt(p.paidRemaining) : 'Record payment(s)'}">${p.paidStatus === 'paid' ? '✓' : p.paidStatus === 'partial' ? '💵 ' + fmt(p.paidRemaining) : '💰 Pay'}</button>`
+                    // Show Settle next to a PAID row that still has unsettled pending (the modal tick
+                    // is gone once a payment exists). Not on an UNPAID row — there the Pay dialog's
+                    // "Settle pending in full now" tick already covers the first payment.
+                    + (p.paidStatus === 'paid' ? settleBtn : '');
+            })()}
             <button class="btn ghost sm" onclick="showCoachSalaryHistory(${p.coachId})" title="${t('See every month for this coach — review the history and pay any month', 'عرض جميع أشهر هذا المدرب — راجع السجل وادفع أي شهر')}">📅</button>
             <button class="btn ghost sm" onclick="showPayslip(${p.coachId}, '${p.month}')" title="Pay slip (PDF summary)">📄</button>
             <button class="btn ghost sm" onclick="showRevenueDetail(${p.coachId}, '${p.month}')" title="Revenue detail report (every member + sport)">📊</button>
@@ -16722,6 +16725,49 @@ window._salSetTarget = function(coachId, monthKey) {
   audit('salary.target', `coach:${coachId}`, `Set agreed payout for ${fmtMonth(monthKey)} to ${fmt(rec.target || 0)} QAR`, { coachId, month: monthKey, target: rec.target });
   save(); render();
   markPaid(coachId, monthKey);
+};
+
+// SETTLE PENDING IN FULL (v6.410) — one click, reachable even when the month is already PAID or the
+// coach is OVER-ADVANCED (the modal's "Settle pending" tick only shows on the FIRST payment of an
+// unpaid month, so an already-paid coach like Aziz could never reach it). Pays the coach the PENDING
+// amount as cash NOW and stamps those memberships settled, so they do NOT carry / true-up next month
+// even though the coach keeps teaching them. Admin choice (v6.410): the pending is recorded as a real
+// cash payment on top of any advances.
+window._salSettlePending = function (coachId, monthKey) {
+  if (currentRole() !== 'admin' && currentRole() !== 'receptionist') { toast(t('Not allowed', 'غير مسموح'), 'error'); return; }
+  const c = state.coaches.find(x => x.id === coachId);
+  if (!c) return;
+  const pay = computeMonthlyPay(coachId, monthKey);
+  if (!pay) return;
+  const pending = Math.round((Number(pay.commissionPending) || 0) * 100) / 100;
+  if (pending <= 0.005) { toast(t('Nothing pending to settle for this month', 'لا يوجد معلّق لتسويته لهذا الشهر'), 'error'); return; }
+  const msg = t(
+    'Settle ' + c.name + ' pending for ' + fmtMonth(monthKey) + '?\n\nThis pays ' + fmt(pending) + ' QAR (cash) now for the not-yet-attended classes, and closes those students so they do NOT carry to next month — even if ' + c.name + ' keeps teaching them.',
+    'تسوية معلّق ' + c.name + ' لشهر ' + fmtMonth(monthKey) + '؟\n\nيدفع ' + fmt(pending) + ' ر.ق نقداً الآن عن الحصص غير المحضورة، ويُغلق هؤلاء الطلاب حتى لا يُرحّلوا للشهر القادم — حتى لو استمر ' + c.name + ' بتدريبهم.');
+  if (!confirm(msg)) return;
+  // 1) Close the pending memberships (stamp sub.commissionSettled = this month).
+  const settledCount = (typeof settleCoachPendingCommission === 'function') ? settleCoachPendingCommission(coachId, monthKey) : 0;
+  // 2) Ensure a paid record, then record the pending as a cash payment + its Salary expense.
+  const rec = _salEnsureRec(coachId, monthKey, null, false);
+  rec.payments = Array.isArray(rec.payments) ? rec.payments : [];
+  const payId = 'p' + nextId(state.salaries);
+  rec.payments.push({ id: payId, amount: pending, date: TODAY, method: 'cash', note: 'pending settled in full' });
+  rec.settledPending = (Number(rec.settledPending) || 0) + pending;
+  // Keep the month readable as PAID: the agreed target must at least cover what has now been paid.
+  const paidTot = (typeof salaryPaidTotal === 'function') ? salaryPaidTotal(rec) : pending;
+  if (rec.target == null || Number(rec.target) < paidTot) rec.target = paidTot;
+  if (!Array.isArray(state.expenses)) state.expenses = [];
+  state.expenses.push({
+    id: nextId(state.expenses), date: TODAY, month: monthKey, amount: pending,
+    category: 'Salary', method: 'cash',
+    description: 'Coach salary (pending settled) — ' + c.name + ' · ' + fmtMonth(monthKey),
+    coachId, coachName: c.name, _salaryAutoExpense: true, salaryId: rec.id, salaryPaymentId: payId,
+  });
+  if (typeof audit === 'function') audit('salary.settlePending', 'coach:' + coachId,
+    'Settled ' + settledCount + ' pending membership(s) for ' + c.name + ' · ' + fmtMonth(monthKey) + ' — paid ' + fmt(pending) + ' QAR',
+    { coachId, month: monthKey, pending, settledCount });
+  render();
+  confirmSaved(t('Pending settled — ' + fmt(pending) + ' QAR paid, ' + settledCount + ' membership(s) closed', 'تمت التسوية — دُفع ' + fmt(pending) + ' ر.ق، أُغلق ' + settledCount + ' اشتراك'));
 };
 
 window.markPaid = function(coachId, monthKey) {

@@ -72,9 +72,9 @@ R.section('the Salaries row now offers Settle alongside Carry (was Carry-only)')
   const src = H.readSrc();
   R.ok('the screen renders without throwing', H.renderScreen(H.seed(H.makeCtx({ role: 'admin' })), 'salaries').ok);
   R.ok('over-advanced rows still offer Carry', /carrySalaryForward\(\$\{p\.coachId\}, '\$\{p\.month\}'\)/.test(src));
-  R.ok('...and when there is pending, ALSO offer Settle-in-full (the fix)',
-    /canCarry[\s\S]{0,600}p\.commissionPending > 0\.005/.test(src)
-    && /markPaid\(\$\{p\.coachId\}, '\$\{p\.month\}'\)[\s\S]{0,160}💰 \$\{t\('Settle'/.test(src));
+  R.ok('...and when there is pending, ALSO offer Settle-in-full (v6.410: direct settle action)',
+    /p\.commissionPending > 0\.005/.test(src)
+    && /_salSettlePending\(\$\{p\.coachId\}, '\$\{p\.month\}'\)[\s\S]{0,200}💰 \$\{t\('Settle'/.test(src));
   R.ok('every row has a per-coach history button', /showCoachSalaryHistory\(\$\{p\.coachId\}\)/.test(src));
 }
 
