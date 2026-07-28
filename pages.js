@@ -2050,7 +2050,26 @@ function viewMember(id) {
   const allSubs = [
     ...(m.subscriptions || []),
     ...standaloneRenewals,
-  ].sort((a, b) => (b.start || '').localeCompare(a.start || ''));
+  ];
+  // Include a sport that exists ONLY as an ENROLLMENT with no matching subscription — e.g. a sport
+  // just ADDED or SWITCHED to, which is stored as an enrollment before/without a subscription row.
+  // Without this the sport appears in Edit Member (which lists enrollments) but is INVISIBLE in this
+  // Subscription History card, which confused the owner ("I switched the sport, why doesn't it show?").
+  // Synthesize a display row from the enrollment so every enrolled sport is listed. Attendance still
+  // fills in live from the grid; no _sid means no delete button (removal is via Manage sport history
+  // below or Edit Member). (v6.415)
+  const _subSports = new Set((m.subscriptions || []).map(s => s.activity).filter(Boolean));
+  for (const e of (m.enrollments || [])) {
+    if (!e || !e.sport || _subSports.has(e.sport)) continue;
+    const st = e.start || m.startDate || m.joinDate || null;
+    const val = parseInt(e.validity) || 30;
+    const end = st ? ((e.sport === SUMMER_CAMP && typeof campEndDate === 'function') ? campEndDate(st, val)
+                     : (typeof addDays === 'function' ? addDays(st, val) : null)) : null;
+    allSubs.push({ activity: e.sport, coachId: e.coachId, start: st, end,
+      totalClasses: parseInt(e.classes) || 0, attendedClasses: 0, _synthFromEnrollment: true });
+    _subSports.add(e.sport);
+  }
+  allSubs.sort((a, b) => (b.start || '').localeCompare(a.start || ''));
 
   const subs = allSubs.map(s => {
     const total = (typeof subClassLimit === 'function') ? subClassLimit(s) : s.totalClasses;
@@ -9706,62 +9725,73 @@ PAGES.schedule = (main) => {
     ctx.scale(scale, scale);
     const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); };
 
+    // ── BRIGHT / LIGHT THEME (v6.414) ──
     const bg = ctx.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, '#0b1020'); bg.addColorStop(1, '#0a0e1a');
+    bg.addColorStop(0, '#ffffff'); bg.addColorStop(1, '#eef3f9');
     ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
 
-    // Brand header
-    ctx.fillStyle = '#0a0e1a'; ctx.fillRect(0, 0, W, headH);
+    // Brand header (light)
+    const headBg = ctx.createLinearGradient(0, 0, 0, headH);
+    headBg.addColorStop(0, '#ffffff'); headBg.addColorStop(1, '#f3f7fc');
+    ctx.fillStyle = headBg; ctx.fillRect(0, 0, W, headH);
     const accent = ctx.createLinearGradient(0, 0, W, 0); accent.addColorStop(0, '#f26060'); accent.addColorStop(1, '#f2a33c');
     ctx.fillStyle = accent; ctx.fillRect(0, headH - 6, W, 6);
     ctx.textAlign = ar ? 'right' : 'left';
     const HX = ar ? W - PAD : PAD;
-    ctx.fillStyle = '#f26060'; ctx.font = 'bold 54px sans-serif';
+    ctx.fillStyle = '#ef4444'; ctx.font = 'bold 54px sans-serif';
     ctx.fillText(ar ? '★ بلاك ستارز' : '★ BLACK STARS', HX, 88);
-    ctx.fillStyle = '#9ba6b6'; ctx.font = '26px sans-serif';
+    ctx.fillStyle = '#64748b'; ctx.font = '26px sans-serif';
     ctx.fillText(ar ? 'نادٍ رياضي · جدول اليوم' : 'Sports Club · Today at the club', HX, 128);
-    ctx.fillStyle = '#e8eaf0'; ctx.font = 'bold 82px sans-serif';
+    ctx.fillStyle = '#0f172a'; ctx.font = 'bold 82px sans-serif';
     ctx.fillText(ar ? dayNameAR(day.key) : day.label, HX, 238);
-    ctx.fillStyle = '#5b8def'; ctx.font = '30px sans-serif';
+    ctx.fillStyle = '#2563eb'; ctx.font = '30px sans-serif';
     let dstr = ''; try { dstr = new Date().toLocaleDateString(ar ? 'ar-EG' : 'en-GB', { day: 'numeric', month: 'long', year: 'numeric' }); } catch (_) {}
     ctx.fillText(dstr, HX, 288);
 
     // Body
     let y = headH + 34;
     if (!sections.length) {
-      ctx.textAlign = 'center'; ctx.fillStyle = '#5a627a'; ctx.font = '32px sans-serif';
+      ctx.textAlign = 'center'; ctx.fillStyle = '#94a3b8'; ctx.font = '32px sans-serif';
       ctx.fillText(ar ? 'لا توجد حصص في هذا اليوم' : 'No classes scheduled for this day', W / 2, y + 100);
     }
     for (const s of sections) {
       const tlabel = ar ? timeLabelAR(s.slot.label) : s.slot.label;
       ctx.textAlign = ar ? 'right' : 'left';
-      ctx.fillStyle = '#1a2030'; rr(PAD, y, W - 2 * PAD, timeH, 14); ctx.fill();
-      ctx.fillStyle = '#f2a33c'; ctx.font = 'bold 30px sans-serif';
+      ctx.fillStyle = '#e6edf6'; rr(PAD, y, W - 2 * PAD, timeH, 14); ctx.fill();
+      ctx.fillStyle = '#c2410c'; ctx.font = 'bold 30px sans-serif';
       ctx.fillText('🕐 ' + tlabel, ar ? W - PAD - 20 : PAD + 20, y + timeH / 2 + 11);
       y += timeH + 12;
       for (const c of s.cls) {
+        // Soft drop shadow gives the coloured chips depth on the light background.
+        ctx.save();
+        ctx.shadowColor = 'rgba(15,23,42,0.16)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 5;
         rr(PAD, y, W - 2 * PAD, cardH, 18); ctx.fillStyle = sportColor(c.sport); ctx.fill();
-        ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 2; rr(PAD, y, W - 2 * PAD, cardH, 18); ctx.stroke();
+        ctx.restore();
+        ctx.strokeStyle = 'rgba(0,0,0,0.10)'; ctx.lineWidth = 1.5; rr(PAD, y, W - 2 * PAD, cardH, 18); ctx.stroke();
         const coach = state.coaches.find(co => co.id === c.coachId);
         const nm = c.label || (ar ? sportNameAR(c.sport) : c.sport);
-        ctx.fillStyle = '#fff'; ctx.textAlign = ar ? 'right' : 'left';
         const TX = ar ? W - PAD - 28 : PAD + 28;
+        // White text with a subtle dark shadow so it stays readable on ANY chip colour (even the light greens/cyans).
+        ctx.save();
+        ctx.shadowColor = 'rgba(0,0,0,0.32)'; ctx.shadowBlur = 5; ctx.shadowOffsetY = 1;
+        ctx.fillStyle = '#fff'; ctx.textAlign = ar ? 'right' : 'left';
         ctx.font = 'bold 40px sans-serif';
         ctx.fillText(sportEmoji(c.sport) + '  ' + nm, TX, y + (coach ? 54 : cardH / 2 + 14));
         if (coach) {
-          ctx.font = '28px sans-serif'; ctx.fillStyle = 'rgba(255,255,255,0.92)';
+          ctx.font = '28px sans-serif'; ctx.fillStyle = 'rgba(255,255,255,0.95)';
           const cn = (ar && coach.nameArabic) ? coach.nameArabic : coach.name;
           ctx.fillText((ar ? 'المدرب: ' : 'Coach: ') + cn, TX, y + 96);
         }
+        ctx.restore();
         y += cardH + cardGap;
       }
       y += sectGap;
     }
 
     // Footer
-    ctx.textAlign = 'center'; ctx.fillStyle = '#5a627a'; ctx.font = '24px sans-serif';
+    ctx.textAlign = 'center'; ctx.fillStyle = '#64748b'; ctx.font = '24px sans-serif';
     ctx.fillText(ar ? 'واب · منتجع القرية · الدوحة · قطر' : 'Waab · Village Resort · Doha · Qatar', W / 2, H - 72);
-    ctx.fillStyle = '#3b4256'; ctx.font = '22px sans-serif';
+    ctx.fillStyle = '#94a3b8'; ctx.font = '22px sans-serif';
     ctx.fillText('+974 3040 0103', W / 2, H - 40);
 
     canvas.toBlob(blob => {
