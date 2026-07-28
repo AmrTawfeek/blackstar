@@ -47,6 +47,22 @@ R.section('settling pays it as cash + closes it (no carry next month)');
   R.ok('the settle is audited', run(ctx, `(state.auditLog||[]).some(a=>a.action==='salary.settlePending')`) === true);
 }
 
+R.section('UNDO settle — gives the pending back and re-opens the students');
+{
+  const ctx = H.makeCtx({ role: 'admin' }); seed(ctx);
+  run(ctx, `window._salSettlePending(4, '2026-06')`);
+  const settledPending = run(ctx, `computeMonthlyPay(4,'2026-06').salaryRecord.settledPending`);
+  R.ok('after settling, settledPending is recorded (360)', Math.round(settledPending) === 360, settledPending);
+  const expensesAfterSettle = run(ctx, `state.expenses.length`);
+
+  run(ctx, `window._salUndoSettlePending(4, '2026-06')`);
+  R.ok('after undo, the pending is BACK (360)', Math.round(run(ctx, `computeMonthlyPay(4,'2026-06').commissionPending`)) === 360);
+  R.ok('the membership is RE-OPENED (commissionSettled cleared)', run(ctx, `state.members[0].subscriptions[0].commissionSettled`) == null, run(ctx, `state.members[0].subscriptions[0].commissionSettled`));
+  R.ok('the settle payment is removed (settledPending back to 0)', Math.round(run(ctx, `(computeMonthlyPay(4,'2026-06').salaryRecord||{}).settledPending || 0`)) === 0);
+  R.ok('the settle Salary expense is removed', run(ctx, `state.expenses.filter(e=>e._salaryAutoExpense).length`) === (expensesAfterSettle - 1));
+  R.ok('undo is audited', run(ctx, `(state.auditLog||[]).some(a=>a.action==='salary.undoSettlePending')`) === true);
+}
+
 R.section('nothing-to-settle is refused (no phantom payment)');
 {
   const ctx = H.makeCtx({ role: 'admin' }); seed(ctx);

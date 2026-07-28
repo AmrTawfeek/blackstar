@@ -7236,6 +7236,73 @@ window.campRemindAll = function() {
   render();
 };
 
+// ── CAMP VALIDITY REPAIR (v6.413) ──────────────────────────────────────────────
+// A Summer Camp pass lasts its class-DAYS counted Sun–Thu (the camp is CLOSED Fri/Sat) — "1 month"
+// = 22 class-days, ending on the 22nd. Records created before that rule (or via a calendar-day
+// path) stored the wrong end (e.g. 5 Jul → 4 Aug instead of the correct 3 Aug). This recomputes
+// every camp subscription's end = campEndDateFromClasses(start, class-days) and lists the ones that
+// disagree. Non-camp sports and already-correct records are never touched.
+function _campValidityFixes() {
+  const out = [];
+  for (const m of (state.members || [])) {
+    if (!m || m.deleted) continue;
+    for (const s of (m.subscriptions || [])) {
+      if ((s.activity || '') !== SUMMER_CAMP || !s.start) continue;
+      const classes = (typeof subClassLimit === 'function') ? subClassLimit(s) : (parseInt(s.totalClasses) || 0);
+      if (!(classes > 0)) continue;
+      const correct = (typeof campEndDateFromClasses === 'function') ? campEndDateFromClasses(s.start, classes) : null;
+      if (correct && String(s.end || '') !== String(correct)) {
+        out.push({ mid: m.id, member: m, name: m.name || ('#' + m.id), sub: s, start: s.start, oldEnd: s.end || null, newEnd: correct, classes });
+      }
+    }
+  }
+  return out;
+}
+window.fixCampValidity = function () {
+  if (currentRole() !== 'admin') { toast(t('Admins only', 'للمسؤولين فقط'), 'error'); return; }
+  const fixes = _campValidityFixes();
+  if (!fixes.length) { toast(t('✅ All Summer Camp end dates are already correct.', '✅ جميع تواريخ انتهاء المعسكر صحيحة بالفعل.'), 'success'); return; }
+  const rows = fixes.slice(0, 300).map((f, i) => `<tr>
+    <td style="padding:5px 8px">${i + 1}</td>
+    <td style="padding:5px 8px">${escapeHtml(f.name)}</td>
+    <td style="padding:5px 8px">${f.classes} ${t('classes', 'حصص')}</td>
+    <td style="padding:5px 8px;white-space:nowrap">${fmtDate(f.start)}</td>
+    <td style="padding:5px 8px;white-space:nowrap;color:var(--red);text-decoration:line-through">${f.oldEnd ? fmtDate(f.oldEnd) : '—'}</td>
+    <td style="padding:5px 8px;white-space:nowrap;color:var(--green);font-weight:700">${fmtDate(f.newEnd)}</td>
+  </tr>`).join('');
+  showModal({
+    title: `🛠 ${t('Fix Summer Camp validity', 'تصحيح صلاحية المعسكر')}`,
+    body: `<div style="font-size:13px;margin-bottom:10px">${t('These camp memberships have the wrong end date. A camp pass lasts its class-days counted Sun–Thu (Fri/Sat closed) — e.g. 1 month = 22 class-days, ending on the 22nd. The corrected end is in green; the member’s expiry is kept in sync.', 'هذه الاشتراكات تحمل تاريخ انتهاء خاطئ. باقة المعسكر تُحسب بأيام الحصص من الأحد إلى الخميس (الجمعة/السبت مغلق) — مثلاً الشهر = 22 يوم حصة تنتهي في اليوم الـ22. التصحيح بالأخضر، ويُزامَن تاريخ انتهاء العضو.')}</div>
+      <div style="max-height:44vh;overflow:auto;border:1px solid var(--border);border-radius:8px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--surface-2);position:sticky;top:0">
+            <th style="padding:6px 8px;text-align:left">#</th><th style="padding:6px 8px;text-align:left">${t('Member', 'العضو')}</th>
+            <th style="padding:6px 8px;text-align:left">${t('Package', 'الباقة')}</th><th style="padding:6px 8px;text-align:left">${t('Start', 'البداية')}</th>
+            <th style="padding:6px 8px;text-align:left">${t('Old end', 'النهاية القديمة')}</th><th style="padding:6px 8px;text-align:left">${t('Correct end', 'النهاية الصحيحة')}</th>
+          </tr></thead><tbody>${rows}</tbody></table>
+      </div>
+      <div style="font-size:12px;color:var(--text-mute);margin-top:8px">${fixes.length} ${t('membership(s) will be corrected. A backup is downloaded first.', 'اشتراك سيُصحّح. تُنزَّل نسخة احتياطية أولاً.')}</div>`,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: () => closeModal() },
+      { label: `🛠 ${t('Backup & fix all', 'نسخة احتياطية وتصحيح الكل')} (${fixes.length})`, class: 'btn primary', onclick: () => {
+        try { if (typeof window.downloadBackup === 'function') window.downloadBackup(); } catch (_) {}
+        let n = 0;
+        for (const f of fixes) {
+          const prev = f.sub.end || null;
+          f.sub.end = f.newEnd;
+          // Keep the member's top-level expiry in sync when it was driven by THIS camp period.
+          if (f.member && f.member.expiryDate === prev) f.member.expiryDate = f.newEnd;
+          if (typeof audit === 'function') audit('camp.fixValidity', 'member:' + f.mid, `${f.name}: camp end ${prev || '—'} → ${f.newEnd} (${f.classes} class-days from ${f.start})`, { mid: f.mid, start: f.start, oldEnd: prev, newEnd: f.newEnd, classes: f.classes });
+          n++;
+        }
+        closeModal();
+        render();
+        confirmSaved(t('Fixed ' + n + ' camp end date(s)', 'تم تصحيح ' + n + ' تاريخ انتهاء للمعسكر'));
+      } },
+    ],
+  });
+};
+
 PAGES.campmembers = (main) => {
   const isCamp = m => m && !m.deleted && (m.sport === SUMMER_CAMP || (m.enrollments || []).some(e => e.sport === SUMMER_CAMP));
   const allCamp = state.members.filter(isCamp).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
@@ -7359,6 +7426,7 @@ PAGES.campmembers = (main) => {
       <div class="topbar-actions">
         ${!isViewerRole() && expiringSoonCount > 0 ? `<button class="btn ghost" id="campmem-remind-all" style="color:var(--accent-2);border-color:var(--accent-2)">📱 ${t('Remind all expiring', 'تذكير كل المنتهين')} (${expiringSoonCount})</button>` : ''}
         ${isViewerRole() ? '' : `<button class="btn ghost" id="campmem-export">⬇ ${t('Export CSV', 'تصدير CSV')}</button>`}
+        ${currentRole() === 'admin' ? `<button class="btn ghost" id="campmem-fixvalidity" title="${t('Recompute every Summer Camp end date to the correct class-days (Sun–Thu); previews changes before applying', 'إعادة حساب تواريخ انتهاء المعسكر لأيام الحصص الصحيحة (الأحد–الخميس)؛ يعرض التغييرات قبل التطبيق')}">🛠 ${t('Fix camp dates', 'تصحيح تواريخ المعسكر')}</button>` : ''}
       </div>
     </div>
     <div class="kpi-grid" style="grid-template-columns:repeat(${(gUnk > 0 ? 5 : 4) + 1},1fr);gap:10px;margin-bottom:16px">
@@ -7441,6 +7509,8 @@ PAGES.campmembers = (main) => {
 
   const remindAllBtn = $('#campmem-remind-all');
   if (remindAllBtn) remindAllBtn.addEventListener('click', () => campRemindAll());
+  const fixValBtn = $('#campmem-fixvalidity');
+  if (fixValBtn) fixValBtn.addEventListener('click', () => { try { window.fixCampValidity(); } catch (_) {} });
   const expBtn = $('#campmem-export');
   if (expBtn) expBtn.addEventListener('click', () => {
     const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
@@ -16206,7 +16276,12 @@ PAGES.salaries = (main) => {
               const settleBtn = p.commissionPending > 0.005
                 ? ` <button class="btn ghost sm" onclick="_salSettlePending(${p.coachId}, '${p.month}')" title="Settle pending in full: pay the ${fmt(p.commissionPending)} pending as cash now and close those students so they don't carry to next month">💰 ${t('Settle', 'تسوية')}</button>`
                 : '';
-              return canCarry
+              // Once a settle has been done, offer to reverse it (removes the settle payment, gives
+              // the pending back, re-opens the students). (v6.411)
+              const undoSettleBtn = (p.salaryRecord && Number(p.salaryRecord.settledPending) > 0.005)
+                ? ` <button class="btn ghost sm" onclick="_salUndoSettlePending(${p.coachId}, '${p.month}')" title="Undo the pending settlement — return the ${fmt(p.salaryRecord.settledPending)} and re-open those students so they earn normally again">↩ ${t('Undo settle', 'تراجع التسوية')}</button>`
+                : '';
+              return (canCarry
                 ? `<button class="btn primary sm" onclick="carrySalaryForward(${p.coachId}, '${p.month}')" title="Carry the ${fmt(-p.net)} over-advance to next month as an opening advance and settle this month at 0">↩ Carry ${fmt(-p.net)}</button>` + settleBtn
                 : p.carriedOut > 0.005
                   ? `<button class="btn ghost sm" onclick="undoSalaryCarry(${p.coachId}, '${p.month}')" title="Undo the carry-forward — restores this month's negative net and removes next month's opening advance">↩ Undo carry</button>` + settleBtn
@@ -16214,7 +16289,7 @@ PAGES.salaries = (main) => {
                     // Show Settle next to a PAID row that still has unsettled pending (the modal tick
                     // is gone once a payment exists). Not on an UNPAID row — there the Pay dialog's
                     // "Settle pending in full now" tick already covers the first payment.
-                    + (p.paidStatus === 'paid' ? settleBtn : '');
+                    + (p.paidStatus === 'paid' ? settleBtn : '')) + undoSettleBtn;
             })()}
             <button class="btn ghost sm" onclick="showCoachSalaryHistory(${p.coachId})" title="${t('See every month for this coach — review the history and pay any month', 'عرض جميع أشهر هذا المدرب — راجع السجل وادفع أي شهر')}">📅</button>
             <button class="btn ghost sm" onclick="showPayslip(${p.coachId}, '${p.month}')" title="Pay slip (PDF summary)">📄</button>
@@ -16768,6 +16843,48 @@ window._salSettlePending = function (coachId, monthKey) {
     { coachId, month: monthKey, pending, settledCount });
   render();
   confirmSaved(t('Pending settled — ' + fmt(pending) + ' QAR paid, ' + settledCount + ' membership(s) closed', 'تمت التسوية — دُفع ' + fmt(pending) + ' ر.ق، أُغلق ' + settledCount + ' اشتراك'));
+};
+
+// UNDO a pending settlement (v6.411) — reverses _salSettlePending: it removes the settle payment
+// and its Salary expense, and RE-OPENS the memberships (clears sub.commissionSettled) so the
+// pending comes back and next month resumes earning normally. Use it if a settle was done by
+// mistake or needs redoing.
+window._salUndoSettlePending = function (coachId, monthKey) {
+  if (currentRole() !== 'admin' && currentRole() !== 'receptionist') { toast(t('Not allowed', 'غير مسموح'), 'error'); return; }
+  const c = state.coaches.find(x => x.id === coachId);
+  if (!c) return;
+  const rec = (state.salaries || []).find(s => s.coachId === coachId && s.month === monthKey && s.kind === 'paid');
+  const hasSettle = rec && Array.isArray(rec.payments) && rec.payments.some(p => p.note === 'pending settled in full');
+  if (!hasSettle && !(rec && Number(rec.settledPending) > 0.005)) { toast(t('Nothing settled to undo for this month', 'لا توجد تسوية معلّق لإلغائها لهذا الشهر'), 'error'); return; }
+  if (!confirm(t(
+    'Undo the pending settlement for ' + c.name + ' · ' + fmtMonth(monthKey) + '?\n\nThis removes the settle payment, gives back the pending, and re-opens those students so they earn normally again next month.',
+    'إلغاء تسوية المعلّق لـ ' + c.name + ' · ' + fmtMonth(monthKey) + '؟\n\nيُلغى دفع التسوية، ويعود المعلّق، ويُعاد فتح هؤلاء الطلاب ليُحتسبوا كالمعتاد الشهر القادم.'))) return;
+  // 1) Remove the settle payment(s) and their linked Salary expense(s).
+  let removedAmt = 0; const payIds = [];
+  if (rec && Array.isArray(rec.payments)) {
+    for (const p of rec.payments) { if (p.note === 'pending settled in full') { removedAmt += Number(p.amount) || 0; payIds.push(p.id); } }
+    rec.payments = rec.payments.filter(p => p.note !== 'pending settled in full');
+    rec.settledPending = 0;
+  }
+  if (payIds.length) state.expenses = (state.expenses || []).filter(e => !(e._salaryAutoExpense && payIds.indexOf(e.salaryPaymentId) !== -1));
+  // 2) Re-open the memberships this coach's lines settled in this month (mirror settleCoachPendingCommission's matching).
+  let reopened = 0;
+  for (const inv of (state.invoices || [])) {
+    if (!inv || inv.deleted || (inv.category || 'Membership') !== 'Membership') continue;
+    const mem = inv.customerId ? state.members.find(x => x.id === inv.customerId) : null;
+    if (!mem || mem.deleted) continue;
+    const lines = (typeof commissionLineItems === 'function') ? commissionLineItems(inv, mem) : (inv.lineItems || []);
+    for (const li of lines) {
+      if (li.coachId !== coachId || li.sport === SUMMER_CAMP) continue;
+      const sub = (typeof findSubForLine === 'function') ? findSubForLine(mem, inv, li) : null;
+      if (sub && sub.commissionSettled === monthKey) { delete sub.commissionSettled; reopened++; }
+    }
+  }
+  if (typeof audit === 'function') audit('salary.undoSettlePending', 'coach:' + coachId,
+    'Undid pending settlement for ' + c.name + ' · ' + fmtMonth(monthKey) + ' — removed ' + fmt(removedAmt) + ' QAR, re-opened ' + reopened + ' membership(s)',
+    { coachId, month: monthKey, removedAmt, reopened });
+  render();
+  confirmSaved(t('Settlement undone — ' + fmt(removedAmt) + ' QAR returned, ' + reopened + ' membership(s) re-opened', 'أُلغيت التسوية — أُعيد ' + fmt(removedAmt) + ' ر.ق، فُتح ' + reopened + ' اشتراك'));
 };
 
 window.markPaid = function(coachId, monthKey) {
