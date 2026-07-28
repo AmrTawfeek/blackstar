@@ -11740,12 +11740,38 @@ window.showMemberInvoiceHealth = function (id) {
   const list = (h.reasons && h.reasons.length)
     ? `<ul style="margin:12px 0 0;padding-inline-start:18px;line-height:1.8;font-size:13px">${h.reasons.map(r => `<li>${r}</li>`).join('')}</ul>`
     : `<div class="text-mute" style="margin-top:10px;font-size:12px">${t('Sports, prices and total all match the invoice.', 'الرياضات والأسعار والإجمالي كلها مطابقة للفاتورة.')}</div>`;
+  // FIX RIGHT HERE (v6.416) — offer a one-click fix from this popup instead of sending the admin to
+  // the Invoice Integrity screen. NO invoice → generate one from the current enrolled sports/prices;
+  // a MISMATCH → open the member's pricing panel (adds a missing sport, fixes a price, recomputes the
+  // total, and Save aligns the invoice). Reception + admin only; the member's own money is edited so
+  // nothing is applied until Save/confirm inside those flows.
+  const canFix = (currentRole() === 'admin' || currentRole() === 'receptionist');
+  const fixHint = (canFix && (h.status === 'red' || h.status === 'noinv'))
+    ? `<div style="margin-top:14px;padding:10px 12px;background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.25);border-radius:8px;font-size:12px;color:var(--text)">
+         ${h.status === 'noinv'
+           ? t('Click <b>Generate invoice</b> to create the latest invoice from this member’s enrolled sports & prices.', 'اضغط <b>إنشاء فاتورة</b> لإنشاء أحدث فاتورة من رياضات وأسعار هذا العضو.')
+           : t('Click <b>Fix invoice</b> to open pricing — it adds any missing sport, corrects the price, and Save re-aligns the invoice. Nothing changes until you Save.', 'اضغط <b>إصلاح الفاتورة</b> لفتح التسعير — يضيف أي رياضة ناقصة ويصحّح السعر، والحفظ يعيد مطابقة الفاتورة. لا شيء يتغيّر حتى تحفظ.')}
+       </div>`
+    : '';
+  const fixActions = [];
+  if (canFix && h.status === 'noinv') {
+    fixActions.push({ label: '🧾 ' + t('Generate invoice', 'إنشاء فاتورة'), class: 'btn primary', onclick: () => {
+      closeModal();
+      let r; try { r = generateInvoiceForMember(m.id); } catch (e) { r = { created: false, message: (e && e.message) || 'error' }; }
+      if (r && r.created) { toast('✅ ' + r.message, 'success'); try { render(); } catch (_) {} if (typeof printInvoicePDF === 'function') printInvoicePDF(r.invoice.id); }
+      else if (r && r.existing) { toast(r.message + ' — ' + t('opening it', 'يتم فتحها'), 'info'); if (typeof printInvoicePDF === 'function') printInvoicePDF(r.existing.id); }
+      else toast((r && r.message) || t('Could not generate the invoice', 'تعذّر إنشاء الفاتورة'), 'error');
+    } });
+  } else if (canFix && h.status === 'red') {
+    fixActions.push({ label: '🔧 ' + t('Fix invoice', 'إصلاح الفاتورة'), class: 'btn primary', onclick: () => { closeModal(); try { editMemberPricing(m.id); } catch (_) {} } });
+  }
   showModal({
     title: '🧾 ' + escapeHtml(m.name),
-    body: `<div style="font-size:14px">${head}${list}</div>`,
+    body: `<div style="font-size:14px">${head}${list}${fixHint}</div>`,
     actions: [
       { label: t('Open member', 'فتح العضو'), class: 'btn ghost', onclick: () => { closeModal(); try { viewMember(m.id); } catch (_) {} } },
-      { label: t('Close', 'إغلاق'), class: 'btn primary', onclick: () => closeModal() },
+      ...fixActions,
+      { label: t('Close', 'إغلاق'), class: fixActions.length ? 'btn ghost' : 'btn primary', onclick: () => closeModal() },
     ],
   });
 };
