@@ -1377,7 +1377,10 @@ PAGES.members = (main) => {
       </tr>`;
     }).join('') : `<tr><td colspan="${cols.length + 3}" class="empty"><div class="empty-icon">👥</div>No members match your filters</td></tr>`;
 
-    $('#members-count').textContent = `${allRows.length} of ${activeMembers().length}`;
+    { const _active = activeMembers().length, _total = (state.members || []).length, _arch = _total - _active;
+      $('#members-count').textContent = _arch > 0
+        ? `${allRows.length} of ${_active} · ${_total} incl. ${_arch} archived`
+        : `${allRows.length} of ${_active}`; }
 
     // Pagination bar
     $('#members-pagination').innerHTML = paginationBar(pg, allRows.length, 'members');
@@ -1436,7 +1439,7 @@ PAGES.members = (main) => {
     <div class="topbar">
       <div>
         <h1>Members</h1>
-        <div class="subtitle" style="margin-top:6px"><span id="members-count" style="font-size:13px;font-weight:600;color:var(--text)">${activeMembers().length} of ${activeMembers().length}</span></div>
+        <div class="subtitle" style="margin-top:6px"><span id="members-count" style="font-size:13px;font-weight:600;color:var(--text)">${activeMembers().length} of ${activeMembers().length}${(state.members || []).length > activeMembers().length ? ` · ${(state.members || []).length} incl. ${(state.members || []).length - activeMembers().length} archived` : ''}</span></div>
         <div class="member-stat-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
           ${(() => {
           const mc = memberCounts();
@@ -24585,12 +24588,13 @@ PAGES.coachhome = (main) => {
     <div class="card" style="margin-bottom:16px">
       <div class="card-header"><div><div class="card-title">👥 ${t('My Students', 'طلابي')} (${students.length})</div><div class="card-subtitle">${t('Attendance this month · ⚠ = low attendance', 'الحضور هذا الشهر · ⚠ = حضور منخفض')}</div></div></div>
       ${roster.length ? `<div style="overflow:auto"><table class="data-table" style="width:100%"><thead><tr>
-          <th>${t('Student', 'الطالب')}</th><th>${t('Sports', 'الرياضات')}</th>
+          <th>${t('Student', 'الطالب')}</th><th>${t('Sports', 'الرياضات')}</th><th>${t('Mobile', 'الجوال')}</th>
           <th class="text-right">${t('This month', 'هذا الشهر')}</th><th class="text-right">${t('Rate', 'النسبة')}</th><th>${t('Last attended', 'آخر حضور')}</th>
         </tr></thead><tbody>
         ${roster.map(r => `<tr${r.atRisk ? ' style="background:rgba(239,68,68,.06)"' : ''}>
           <td>${escapeHtml(r.name)}${r.atRisk ? ` <span class="badge expired" title="${t('Low attendance', 'حضور منخفض')}">⚠ ${t('at risk', 'متعثّر')}</span>` : ''}</td>
           <td class="text-mute">${escapeHtml((r.sports || []).join(', ') || '—')}</td>
+          <td style="white-space:nowrap">${r.mem && r.mem.phone ? `<a href="https://wa.me/${String(r.mem.phone).replace(/[^\d]/g, '')}" target="_blank" onclick="event.stopPropagation()" style="color:var(--blue);text-decoration:none" title="${t('Message on WhatsApp', 'مراسلة عبر واتساب')}">${escapeHtml(r.mem.phone)}</a>` : '<span class="text-mute">—</span>'}</td>
           <td class="text-right num">${r.marked ? r.y + '/' + r.marked : '—'}</td>
           <td class="text-right num" style="${r.rate == null ? '' : r.rate >= 75 ? 'color:var(--green)' : r.rate >= 50 ? 'color:var(--accent-2)' : 'color:var(--red);font-weight:600'}">${r.rate == null ? '—' : r.rate + '%'}</td>
           <td class="text-mute">${r.last ? fmtDate(r.last) : '—'}</td>
