@@ -19,7 +19,7 @@ ok('a grand TOTAL across all sports closes the table', /TOTAL · Commission base
 ok('the running "#" index continues across groups (++n)', /grp\.map\(l => rowTr\(l, \+\+n\)\)/.test(pagesSrc));
 
 console.log('\nB) expiring reminder — completed message when classes finished:');
-ok('completion set built from membersReadyToRenew', /_completedRenewIds = new Set\(\(\(typeof membersReadyToRenew === 'function'\)/.test(pagesSrc));
+ok('completion set built from membersReadyToRenew', /_readyRows = \(typeof membersReadyToRenew === 'function'\)/.test(pagesSrc) && /_completedRenewIds = new Set\(_readyRows\.map/.test(pagesSrc));
 ok('kind becomes "completed" when the member finished classes', /const kind = \(completed \|\| _completedRenewIds\.has\(m\.id\)\) \? 'completed'/.test(pagesSrc));
 ok('buildReminderMessage supports the completed templates', /kind === 'completed' \? 'completed_en'/.test(appSrc) && /kind === 'completed' \? 'completed_ar'/.test(appSrc));
 

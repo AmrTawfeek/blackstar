@@ -973,7 +973,8 @@ PAGES.members = (main) => {
   const pg = makePager(10);
   const selected = new Set();   // member ids ticked for bulk actions (persists across pages)
   // List (table) vs Grid (cards) view — persisted.
-  let viewMode = (() => { try { return localStorage.getItem('bs-members-view') === 'grid' ? 'grid' : 'list'; } catch (_) { return 'list'; } })();
+  // v6.424 — GRID is the default view (only an explicit 'list' preference opts out).
+  let viewMode = (() => { try { return localStorage.getItem('bs-members-view') === 'list' ? 'list' : 'grid'; } catch (_) { return 'grid'; } })();
 
   const dash = '<span class="text-mute">—</span>';
   let sort = { key: null, dir: 1 };   // active header sort (1=asc, -1=desc)
@@ -1614,7 +1615,7 @@ PAGES.members = (main) => {
           <tbody id="members-tbody"></tbody>
         </table>
       </div>
-      <div id="members-grid" style="display:none;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px"></div>
+      <div id="members-grid" style="display:none;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px"></div>
       <div id="members-pagination"></div>
     </div>
   `;
@@ -5136,6 +5137,36 @@ PAGES.families = (main) => {
   const totalOut = rows.reduce((s, x) => s + familyOutstanding(x.f.id), 0);
   const totalPaid = rows.reduce((s, x) => s + familyPaidTotal(x.f.id), 0);
 
+  // v6.425 — GRID is the default layout (compact summary cards); LIST keeps the detailed
+  // expandable member tables. Only an explicit 'list' choice opts out.
+  let famView = (() => { try { return localStorage.getItem('bs-families-view') === 'list' ? 'list' : 'grid'; } catch (_) { return 'grid'; } })();
+
+  const _famHay = (f, members) => [familyName(f.id), familyContactPhone(f.id) || '',
+    ...members.map(m => `${m.name || ''} ${m.nameArabic || ''} ${m.phone || ''} ${m.phone2 || ''}`)].join(' ').toLowerCase();
+  const _famExpiring = (members) => members.filter(m => { const d = m.expiryDate ? daysUntil(m.expiryDate) : null; return d != null && d >= 0 && d <= 7; }).length;
+
+  // Compact card for the grid — summary only; click opens the full family detail.
+  const compactCard = (f, members) => {
+    const out = familyOutstanding(f.id), paid = familyPaidTotal(f.id), phone = familyContactPhone(f.id);
+    const expiringSoon = _famExpiring(members);
+    return `<div class="card fam-card fam-grid-card" data-fam="${f.id}" data-hay="${escapeHtml(_famHay(f, members))}" style="cursor:pointer;display:flex;flex-direction:column;gap:8px;margin:0" onclick="viewFamily(${f.id})">
+      <div style="font-weight:800;font-size:15px;display:flex;align-items:center;gap:6px">👨‍👩‍👧 <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(familyName(f.id))}</span></div>
+      <div class="text-mute" style="font-size:11px">${members.length} ${t('members', 'عضو')}${expiringSoon ? ` · <span style="color:var(--accent-2)">${expiringSoon} ${t('expiring', 'قرب الانتهاء')}</span>` : ''}</div>
+      ${phone ? `<div class="text-mute" style="font-size:11px">📞 ${escapeHtml(String(phone))}</div>` : ''}
+      <div style="display:flex;gap:8px;margin-top:2px">
+        <div style="flex:1"><div class="text-mute" style="font-size:9px;text-transform:uppercase;letter-spacing:.4px">${t('Paid', 'المدفوع')}</div><div class="num" style="font-weight:700;color:var(--green)">${fmt(paid)}</div></div>
+        <div style="flex:1"><div class="text-mute" style="font-size:9px;text-transform:uppercase;letter-spacing:.4px">${t('Balance', 'المستحق')}</div><div class="num" style="font-weight:700;color:${out > 0 ? 'var(--red)' : 'var(--text-mute)'}">${out > 0 ? fmt(out) : '—'}</div></div>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:auto" onclick="event.stopPropagation()">
+        ${phone && isRealPhone(phone) ? `<a class="btn ghost sm" href="${waLink(phone)}" target="_blank" title="WhatsApp the family">💬</a>` : ''}
+        <button class="btn ghost sm" style="flex:1" onclick="viewFamily(${f.id})">👁 ${t('View', 'عرض')}</button>
+        <button class="btn ghost sm" onclick="editFamily(${f.id})" title="${t('Rename / edit', 'تعديل الاسم')}">✏️</button>
+      </div>
+    </div>`;
+  };
+  const gridCards = rows.length ? rows.map(({ f, members }) => compactCard(f, members)).join('')
+    : `<div class="card text-mute" style="grid-column:1/-1;text-align:center;padding:30px">${t('No households yet.', 'لا توجد عائلات بعد.')}</div>`;
+
   const cards = rows.length ? rows.map(({ f, members }) => {
     const out = familyOutstanding(f.id);
     const paid = familyPaidTotal(f.id);
@@ -5212,11 +5243,12 @@ PAGES.families = (main) => {
     </div>
     ${rows.length ? `<div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px">
       <input id="fam-search" type="search" placeholder="🔍 ${t('Search family, member, or phone…', 'ابحث عن عائلة أو عضو أو هاتف…')}" style="flex:1;min-width:200px;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:13px" />
-      <button class="btn ghost sm" id="fam-expand-all">⊕ ${t('Expand all', 'توسيع الكل')}</button>
-      <button class="btn ghost sm" id="fam-collapse-all">⊖ ${t('Collapse all', 'طي الكل')}</button>
+      <button class="btn ghost sm" id="fam-view-toggle" title="${t('Switch between grid and list view', 'التبديل بين عرض الشبكة والقائمة')}">${famView === 'grid' ? '☰ ' + t('List', 'قائمة') : '▦ ' + t('Grid', 'شبكة')}</button>
+      ${famView === 'list' ? `<button class="btn ghost sm" id="fam-expand-all">⊕ ${t('Expand all', 'توسيع الكل')}</button>
+      <button class="btn ghost sm" id="fam-collapse-all">⊖ ${t('Collapse all', 'طي الكل')}</button>` : ''}
       <span id="fam-count" class="text-mute" style="font-size:11px;margin-left:auto"></span>
     </div>` : ''}
-    <div id="fam-list">${cards}</div>
+    <div id="fam-list" style="${famView === 'grid' ? 'display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px' : ''}">${famView === 'grid' ? gridCards : cards}</div>
     <div id="fam-noresults" class="card text-mute" style="display:none;text-align:center;padding:24px">${t('No families match your search.', 'لا توجد عائلات مطابقة لبحثك.')}</div>`;
 
   // ── Collapse / expand + search wiring ──
@@ -5234,6 +5266,11 @@ PAGES.families = (main) => {
   };
   document.getElementById('fam-expand-all')?.addEventListener('click', () => setAllFams(false));
   document.getElementById('fam-collapse-all')?.addEventListener('click', () => setAllFams(true));
+  document.getElementById('fam-view-toggle')?.addEventListener('click', () => {
+    famView = famView === 'grid' ? 'list' : 'grid';
+    try { localStorage.setItem('bs-families-view', famView); } catch (_) {}
+    PAGES.families(main);
+  });
   const famCountEl = document.getElementById('fam-count');
   const updateFamCount = () => {
     const shown = [...document.querySelectorAll('.fam-card')].filter(c => c.style.display !== 'none').length;
@@ -8707,20 +8744,24 @@ PAGES.classes = (main) => {
           </tr>`;
         }).join('')
       : `<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--text-mute);font-size:13px">${t('No students enrolled with this coach in this sport yet.', 'لا يوجد طلاب مسجّلون مع هذا المدرب في هذه الرياضة بعد.')}</td></tr>`;
+    const isCollapsed = !!(window._clsCollapsed && window._clsCollapsed.has(c.id));
     return `
-      <div class="card" style="padding:0;overflow:hidden;margin-bottom:14px">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;background:var(--surface-2);border-bottom:1px solid var(--border)">
-          <div>
-            <div style="font-weight:800;font-size:15px">${dot}${escapeHtml(c.sport)} · <span style="color:var(--blue)">${escapeHtml(c.coach)}</span></div>
-            <div class="text-mute" style="font-size:12px;margin-top:2px">🗓 ${escapeHtml(_classDayLabel(c.day))} · ⏰ ${escapeHtml(_classSlotLabel(c.slot))} · 👥 <b>${c.roster.length}</b> ${t('students', 'طالب')}</div>
+      <div class="card cls-card" data-cid="${c.id}" style="padding:0;overflow:hidden;margin-bottom:14px">
+        <div class="cls-head" onclick="window._clsToggle(${c.id})" title="${t('Click to collapse / expand', 'اضغط للطي / التوسيع')}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;background:var(--surface-2);border-bottom:1px solid var(--border);cursor:pointer;user-select:none">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="cls-chev" style="display:inline-block;transition:transform .15s;transform:rotate(${isCollapsed ? '-90' : '0'}deg);color:var(--text-mute);font-size:13px">▾</span>
+            <div>
+              <div style="font-weight:800;font-size:15px">${dot}${escapeHtml(c.sport)} · <span style="color:var(--blue)">${escapeHtml(c.coach)}</span></div>
+              <div class="text-mute" style="font-size:12px;margin-top:2px">🗓 ${escapeHtml(_classDayLabel(c.day))} · ⏰ ${escapeHtml(_classSlotLabel(c.slot))} · 👥 <b>${c.roster.length}</b> ${t('students', 'طالب')}${isCollapsed ? ' · ' + t('collapsed', 'مطوية') : ''}</div>
+            </div>
           </div>
           <div style="display:flex;gap:6px">
-            ${currentRole() !== 'coach' ? `<button class="btn ghost sm" onclick="window._classAssign(${c.id})">👥 ${t('Assign students', 'إسناد الطلاب')}</button>` : ''}
-            <button class="btn ghost sm" onclick="window._classPrint(${c.id})">🖨 ${t('Print', 'طباعة')}</button>
-            <button class="btn ghost sm" onclick="window._classXlsx(${c.id})">📊 ${t('Excel', 'إكسل')}</button>
+            ${currentRole() !== 'coach' ? `<button class="btn ghost sm" onclick="event.stopPropagation();window._classAssign(${c.id})">👥 ${t('Assign students', 'إسناد الطلاب')}</button>` : ''}
+            <button class="btn ghost sm" onclick="event.stopPropagation();window._classPrint(${c.id})">🖨 ${t('Print', 'طباعة')}</button>
+            <button class="btn ghost sm" onclick="event.stopPropagation();window._classXlsx(${c.id})">📊 ${t('Excel', 'إكسل')}</button>
           </div>
         </div>
-        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+        <div class="cls-body" id="cls-body-${c.id}" style="overflow-x:auto;display:${isCollapsed ? 'none' : 'block'}"><table style="width:100%;border-collapse:collapse;font-size:13px">
           <thead><tr style="color:var(--text-mute);font-size:10.5px;text-transform:uppercase">
             <th style="padding:6px 8px;text-align:start">#</th>
             <th style="padding:6px 8px;text-align:start">${t('Student', 'الطالب')}</th>
@@ -8730,6 +8771,17 @@ PAGES.classes = (main) => {
           <tbody>${rosterRows}</tbody>
         </table></div>
       </div>`;
+  };
+  // Per-card collapse/expand (persists across the screen's re-renders via a module-level set).
+  window._clsToggle = function (id) {
+    const set = (window._clsCollapsed = window._clsCollapsed || new Set());
+    const body = document.getElementById('cls-body-' + id);
+    const card = body && body.closest('.cls-card');
+    const chev = card && card.querySelector('.cls-chev');
+    const nowCollapsed = !set.has(id);
+    if (nowCollapsed) set.add(id); else set.delete(id);
+    if (body) body.style.display = nowCollapsed ? 'none' : 'block';
+    if (chev) chev.style.transform = nowCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
   };
 
   main.innerHTML = `
@@ -8752,6 +8804,8 @@ PAGES.classes = (main) => {
       <select id="cls-day" class="btn ghost">${opt('all', t('All days', 'كل الأيام'), f.day)}${_CLASS_DAYS.map(d => opt(d.key, t(d.en, d.ar), f.day)).join('')}</select>
       <select id="cls-slot" class="btn ghost">${opt('all', t('All hours', 'كل الأوقات'), f.slot)}${slots.map(s => opt(s, _classSlotLabel(s), f.slot)).join('')}</select>
       <button id="cls-clear" class="btn ghost">✕ ${t('Clear', 'مسح')}</button>
+      <button id="cls-collapse-all" class="btn ghost" title="${t('Collapse every class', 'طيّ كل الحصص')}">⊟ ${t('Collapse all', 'طيّ الكل')}</button>
+      <button id="cls-expand-all" class="btn ghost" title="${t('Expand every class', 'توسيع كل الحصص')}">⊞ ${t('Expand all', 'توسيع الكل')}</button>
     </div>
 
     ${(state.schedule || []).length === 0
@@ -8768,6 +8822,8 @@ PAGES.classes = (main) => {
   $('#cls-day')?.addEventListener('change', e => { f.day = e.target.value; rerender(); });
   $('#cls-slot')?.addEventListener('change', e => { f.slot = e.target.value; rerender(); });
   $('#cls-clear')?.addEventListener('click', () => { window._classFilter = { coach: 'all', sport: 'all', day: 'all', slot: 'all', search: '' }; rerender(); });
+  $('#cls-collapse-all')?.addEventListener('click', () => { window._clsCollapsed = new Set(classes.map(c => c.id)); rerender(); });
+  $('#cls-expand-all')?.addEventListener('click', () => { window._clsCollapsed = new Set(); rerender(); });
 };
 
 // Find a class (schedule entry) by id and build its current roster.
@@ -15917,7 +15973,10 @@ PAGES.expenses = (main) => {
     const realExpenses = state.expenses.filter(e => (e.category || '') !== CASH_COLLECTION_CATEGORY
       && !(_hideRent && /^rent$/i.test(String(e.category || '').trim())));
     const allRows = realExpenses.filter(e => {
-      if (filter.search && !e.description.toLowerCase().includes(filter.search.toLowerCase())) return false;
+      // GUARD: a row with no description (e.g. an auto Bank-Commission entry) made
+      // undefined.toLowerCase() THROW the moment a search was typed, so refresh() crashed and
+      // the list never filtered — the "search does nothing" bug. Coerce to string. (v6.424)
+      if (filter.search && !String(e.description || '').toLowerCase().includes(filter.search.toLowerCase())) return false;
       if (filter.months.length && !filter.months.includes(e.month)) return false;
       if (filter.categories.length && !filter.categories.includes(e.category || 'Others')) return false;
       if (filter.methods.length && !filter.methods.includes(e.method || '')) return false;
@@ -23293,7 +23352,7 @@ PAGES.expiring = (main) => {
   const AVG_RENEWAL = (state.settings && Number(state.settings.avgRenewalValue)) || 350;
   let filter = { sport: 'all', coach: 'all', search: '', bucket: 'all', sort: 'expiry', reminded: 'all' };
   // Which sections are collapsed (default: all open)
-  const collapsed = { soon: false, week: false, expired: false, upcoming: false };
+  const collapsed = { soon: false, week: false, expired: false, upcoming: false, completed: false };
   // Bulk-selected member IDs (across all sections)
   const selectedIds = new Set();
 
@@ -23329,12 +23388,21 @@ PAGES.expiring = (main) => {
   week.sort((a, b) => a.days - b.days);
   upcoming.sort((a, b) => a.days - b.days);
 
+  // COMPLETED — members who FINISHED their classes (same source as the Ready-to-Renew screen,
+  // so the two agree). They need a renewal regardless of their calendar expiry, so surface the
+  // list here too. Frozen/withdrawn/archived are excluded. (v6.423)
+  const _readyRows = (typeof membersReadyToRenew === 'function') ? membersReadyToRenew() : [];
+  const completed = _readyRows
+    .filter(r => r.m && !r.m.deleted && memberStatus(r.m) !== 'Withdrawn' && memberStatus(r.m) !== 'Frozen')
+    .map(r => ({ m: r.m, days: (daysUntil(r.m.expiryDate) || 0), completed: true }));
+  completed.sort((a, b) => a.days - b.days);
+
   // "Recently expired" = expired within the last N days (win-back window), N configurable.
   const recentDays = state.settings?.recentlyExpiredDays || 15;
   const recentCount = expired.filter(x => x.days >= -recentDays).length;
 
   // Sports + coaches present in the expiring lists, for the dropdowns
-  const allEntries = [...expired, ...expiringSoon, ...week, ...upcoming];
+  const allEntries = [...expired, ...expiringSoon, ...week, ...upcoming, ...completed];
   const sportsInList = [...new Set(allEntries.flatMap(({m}) =>
     [m.sport, ...((m.enrollments||[]).map(e=>e.sport)), ...((m.subscriptions||[]).map(s=>s.activity))].filter(Boolean)
   ))].sort();
@@ -23409,11 +23477,12 @@ PAGES.expiring = (main) => {
   // WhatsApp reminder should use the CONGRATULATION/completed tone ("you finished your classes, come
   // renew"), not the plain "your membership expired" wording. Same source as the Ready-to-Renew
   // screen, so the two screens agree on who's "completed". (v6.380)
-  const _completedRenewIds = new Set(((typeof membersReadyToRenew === 'function') ? membersReadyToRenew() : []).map(r => r.m && r.m.id).filter(v => v != null));
+  const _completedRenewIds = new Set(_readyRows.map(r => r.m && r.m.id).filter(v => v != null));
 
   function rowHtml({ m, days, completed }, bucket, _n) {
-    const color = bucket === 'expired' ? 'var(--red)' : (bucket === 'soon' || bucket === 'week') ? 'var(--accent-2)' : 'var(--text-dim)';
-    const label = bucket === 'expired' ? `${Math.abs(days)}d ago` : `in ${days}d`;
+    const color = bucket === 'expired' ? 'var(--red)' : bucket === 'completed' ? 'var(--purple)' : (bucket === 'soon' || bucket === 'week') ? 'var(--accent-2)' : 'var(--text-dim)';
+    // Sign-based so the Completed group (whose expiry can be past OR future) reads correctly.
+    const label = days < 0 ? `${Math.abs(days)}d ago` : days === 0 ? 'today' : `in ${days}d`;
     const phone = m.phone && !m.phone.startsWith('+9747000') ? m.phone : null;
     const lastR = lastRenewalDate(m);
     const isChecked = selectedIds.has(m.id);
@@ -23571,6 +23640,7 @@ PAGES.expiring = (main) => {
           <option value="recent">🔴 Recently expired (≤ ${recentDays} days)</option>
           <option value="expired">⛔ Already expired</option>
           <option value="upcoming">📅 Expiring in ≤ 30 days</option>
+          <option value="completed">✅ Completed — finished classes</option>
         </select>
         <select id="exp-sport" class="btn ghost">
           <option value="all">All sports</option>
@@ -23630,6 +23700,7 @@ PAGES.expiring = (main) => {
     const wFiltered = applySort(week.filter(matchFilter));
     const eFiltered = applySort(expired.filter(matchFilter));
     const uFiltered = applySort(upcoming.filter(matchFilter));
+    const cFiltered = applySort(completed.filter(matchFilter));
     const parts = [];
     if (filter.bucket === 'recent') {
       parts.push(section(`Recently expired — within ${recentDays} days`, 'var(--red)', '🔴', eFiltered, 'expired'));
@@ -23651,6 +23722,10 @@ PAGES.expiring = (main) => {
       parts.push(section('Already expired', 'var(--red)', '⛔', eFiltered, 'expired'));
     if (filter.bucket === 'all' || filter.bucket === 'upcoming')
       parts.push(section('Expiring within 30 days', 'var(--blue)', '📅', uFiltered, 'upcoming'));
+    // Completed — members who finished their classes (ready to renew). Shown in the default
+    // view and when the status filter is set to Completed. (v6.423)
+    if (filter.bucket === 'all' || filter.bucket === 'completed')
+      parts.push(section('Completed — finished classes, ready to renew', 'var(--purple)', '✅', cFiltered, 'completed'));
     $('#exp-sections').innerHTML = parts.join('');
     // Wire row clicks (open member detail)
     $$('tbody tr[data-id]').forEach(tr => {

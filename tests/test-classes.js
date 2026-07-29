@@ -161,6 +161,11 @@ console.log('\nsource wiring:');
   ok('slot assignments live on the MEMBER (existing synced array, no new collection)',
     /m\.classSlots/.test(pagesSrc) && !/state\.classAssignments/.test(pagesSrc));
   ok('print + xlsx handlers exist', /window\._classPrint = function/.test(pagesSrc) && /window\._classXlsx = function/.test(pagesSrc));
+  // v6.423 — each class card collapses/expands.
+  ok('a per-card collapse toggle exists', /window\._clsToggle = function/.test(pagesSrc) && /onclick="window\._clsToggle\(\$\{c\.id\}\)"/.test(pagesSrc));
+  ok('the roster body is the collapsible region', /class="cls-body" id="cls-body-\$\{c\.id\}"/.test(pagesSrc));
+  ok('action buttons stopPropagation so they do not toggle the card', /onclick="event\.stopPropagation\(\);window\._classPrint/.test(pagesSrc));
+  ok('Collapse all / Expand all controls are wired', /cls-collapse-all[\s\S]{0,400}window\._clsCollapsed = new Set\(classes\.map/.test(pagesSrc) && /cls-expand-all[\s\S]{0,200}window\._clsCollapsed = new Set\(\)/.test(pagesSrc));
 }
 
 console.log('\nCLASSES:', pass, 'passed,', fail, 'failed');

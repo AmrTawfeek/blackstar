@@ -374,6 +374,9 @@ R.section('ENROLLED MEMBERS');
 R.section('MEMBERS list');
 {
   const ctx = club();
+  // Grid is the default view as of v6.424; this section asserts the TABLE's Coach column,
+  // so force list view for the render.
+  Q(ctx, `localStorage.getItem = (k) => k === 'bs-members-view' ? 'list' : null;`);
   const out = screen(ctx, 'members');
   R.ok('renders', out.ok, out.error);
   R.ok('archived members are excluded from the list', !has(out.html, 'Archived Person'));
