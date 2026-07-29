@@ -7,7 +7,12 @@ const vm = require('vm'), fs = require('fs'), path = require('path');
 const DIR = [path.join(__dirname, 'crm238', 'blackstars-localhost'), path.join(__dirname, '..')].find(p => { try { return fs.existsSync(path.join(p, 'app.js')); } catch (_) { return false; } });
 const appSrc = fs.readFileSync(path.join(DIR, 'app.js'), 'utf8');
 
-const ctx = { console: { log() {}, warn() {}, error() {}, info() {} }, JSON, Math, Date, String, Number, Array, Object, Set, Map, isNaN, isFinite, parseInt, parseFloat, RegExp, TextEncoder,
+// Pin the clock to 2026-07-18 (matching TODAY below). This test builds its own sandbox and
+// used the REAL Date, so its fixture window (subs ending 2026-07-28) silently broke once the
+// real system date rolled past it. A frozen Date keeps the scenario deterministic year-round.
+const _FIXED = new Date('2026-07-18T12:00:00Z').getTime();
+class FrozenDate extends Date { constructor(...a) { if (!a.length) super(_FIXED); else super(...a); } static now() { return _FIXED; } }
+const ctx = { console: { log() {}, warn() {}, error() {}, info() {} }, JSON, Math, Date: FrozenDate, String, Number, Array, Object, Set, Map, isNaN, isFinite, parseInt, parseFloat, RegExp, TextEncoder,
   setTimeout: f => (typeof f === 'function' ? f() : 0), clearTimeout() {}, setInterval: () => 0, clearInterval() {} };
 ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx; ctx.TODAY = '2026-07-18';
 ctx.localStorage = { getItem: () => null, setItem() {}, removeItem() {} }; ctx.sessionStorage = ctx.localStorage;
