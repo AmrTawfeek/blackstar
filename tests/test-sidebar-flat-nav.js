@@ -13,6 +13,26 @@ R.section('ROUTES config: icon fixed + My Salary hidden');
   R.ok('My Salary (coachsalary) is hidden — page disabled', run(ctx, `!!ROUTES.coachsalary.hidden`) === true);
 }
 
+R.section('My Salary page is FULLY disabled for coaches (route blocked, not just hidden)');
+{
+  const ctx = H.makeCtx({ role: 'coach' });
+  run(ctx, `state.session = { role:'coach', coachId:1 }; state.user = { role:'coach', coachId:1 };`);
+  R.ok('coachsalary is NOT in the coach access list', run(ctx, `ROLE_ALLOWED.coach.indexOf('coachsalary')`) === -1, run(ctx, `ROLE_ALLOWED.coach`));
+  R.ok('roleCanAccess(coach, coachsalary) is false — a direct link is blocked', run(ctx, `roleCanAccess('coach','coachsalary')`) === false);
+  R.ok('the coach can still reach My Dashboard', run(ctx, `roleCanAccess('coach','coachhome')`) === true);
+}
+
+R.section('the coach dashboard no longer shows a My Salary card');
+{
+  const ctx = H.seed(H.makeCtx({ role: 'coach' }));
+  run(ctx, `state.session = { role:'coach', coachId:1 }; state.user = { role:'coach', coachId:1 };`);
+  const out = H.renderScreen(ctx, 'coachhome');
+  R.ok('coachhome still renders', out.ok, out.error);
+  const html = out.html || '';
+  R.ok('the "My Salary" salary table/card is gone from the dashboard', !/My Salary|راتبي/.test(html));
+  R.ok('the dashboard still shows My Students', /My Students|طلابي/.test(html));
+}
+
 R.section('a coach sees a flat list without My Salary');
 {
   const ctx = H.makeCtx({ role: 'coach' });
@@ -36,7 +56,7 @@ R.section('a coach sees a flat list without My Salary');
   R.ok('Main-section items come before later sections (order preserved)', keys.indexOf('coachhome') === 0 || keys.indexOf('coachhome') < keys.indexOf('schedule'), keys);
 }
 
-R.section('admin still sees the full set, just flat (no page-category headers)');
+R.section('admin still sees the full set (now grouped again — see source section)');
 {
   const ctx = H.makeCtx({ role: 'admin' });
   const keys = run(ctx, `(function(){
@@ -56,15 +76,14 @@ R.section('admin still sees the full set, just flat (no page-category headers)')
   R.ok('coach-only pages are NOT in the admin list', !keys.includes('coachhome'));
 }
 
-R.section('source: page nav is flat; only the footer "More" keeps a section toggle');
+R.section('source: coach/student flat, admin/reception grouped (v6.422 revert for admin)');
 {
-  const src = H.readSrc('app.js');
-  R.ok('the flat entries collector exists', /const flatEntries = \[\];/.test(src));
-  R.ok('page-nav items append straight to nav (no per-section group append)', !/nav\.append\(header\);/.test(src) && /nav\.append\(item\);/.test(src));
-  R.ok('the old collapsible page-category state is gone', !/bs-nav-collapsed/.test(src));
-  // The footer "More" toggle is the ONLY remaining nav-section-toggle (utilities, not pages).
-  const toggles = (src.match(/nav-section-toggle/g) || []).length;
-  R.ok('exactly one nav-section-toggle remains (footer More)', toggles === 1, 'count=' + toggles);
+  const src = H.readSrc();
+  R.ok('a flatNav gate targets ONLY coach + student', /const flatNav = \(currentRole\(\) === 'coach' \|\| currentRole\(\) === 'student'\);/.test(src));
+  R.ok('coach/student branch renders a flat list', /if \(flatNav\) \{[\s\S]{0,320}nav\.append\(makeNavItem/.test(src));
+  R.ok('admin/reception branch restores collapsible category groups', /nav\.append\(header\); nav\.append\(group\);/.test(src));
+  R.ok('category collapse state is used again for the grouped roles', /bs-nav-collapsed/.test(src));
+  R.ok('category section headers exist again in the page nav', /className: 'nav-section nav-section-toggle'/.test(src));
 }
 
 R.done();

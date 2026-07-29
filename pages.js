@@ -1874,10 +1874,24 @@ window.exportMemberAttendanceImage = function(id, lang) {
     if (s.start && (!periodStart || s.start < periodStart)) periodStart = s.start;
     if (s.end && (!periodEnd || s.end > periodEnd)) periodEnd = s.end;
   });
-  // A YYYY-MM-DD date is in-window if within [periodStart, periodEnd] (open-ended if null).
-  const inWindow = (iso) => {
-    if (periodStart && iso < periodStart) return false;
-    if (periodEnd && iso > periodEnd) return false;
+  // COUNT per sport with the SAME window the profile card / rate / payroll all use
+  // (subAttendanceWindow), which reaches back a short grace before a FIRST package's start
+  // so training done just before the registration date still counts toward this membership.
+  // Using the strict membership period here made the shared report UNDER-count versus the app
+  // (e.g. the card showed 5/6 · 83% but this report printed 4/6 · 67%). (v6.422)
+  const _sportWin = {};
+  const winForSport = (sp) => {
+    if (_sportWin[sp]) return _sportWin[sp];
+    const subsSp = (m.subscriptions || []).filter(s => (s.activity || '') === sp);
+    const activeSp = subsSp.filter(s => (!s.end || s.end >= _today) && (s.status || '').toLowerCase() !== 'withdrawn');
+    const sub = (activeSp.length ? activeSp : subsSp).slice(-1)[0];
+    const w = (sub && typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, sub) : { from: periodStart, to: periodEnd };
+    return (_sportWin[sp] = w);
+  };
+  const inWindowSport = (iso, sp) => {
+    const w = winForSport(sp);
+    if (w.from && iso < w.from) return false;
+    if (w.to && iso > w.to) return false;
     return true;
   };
   const months = Object.keys(da).sort();
@@ -1901,7 +1915,7 @@ window.exportMemberAttendanceImage = function(id, lang) {
       let y = 0, n = 0;
       Object.keys(dd).sort((a, b) => parseInt(a) - parseInt(b)).forEach(day => {
         const iso = `${mo}-${String(parseInt(day)).padStart(2, '0')}`;
-        if (!inWindow(iso)) return;   // only this membership's period
+        if (!inWindowSport(iso, sp)) return;   // same window the app counts on (matches the card)
         const v = dd[day];
         if (v === 'Y') { y++; marked.push({ day, v }); }
         else if (v === 'N') { n++; marked.push({ day, v }); }
@@ -1938,6 +1952,12 @@ window.exportMemberAttendanceImage = function(id, lang) {
     }
   }
   if (!sections.length) { toast(L.noData, 'info'); return; }
+  // Widen the printed "current membership" range to the actual counting windows, so a
+  // grace-credited class never shows as a row dated before the stated period. (v6.422)
+  for (const w of Object.values(_sportWin)) {
+    if (w.from && (!periodStart || w.from < periodStart)) periodStart = w.from;
+    if (w.to && (!periodEnd || w.to > periodEnd)) periodEnd = w.to;
+  }
   // Overall = total present ÷ total enrolled across the member's sports (matches the
   // profile's "Att rate"). Fall back to present÷marks only if nothing is enrolled.
   const totalEnrolled = Object.keys(sportPresent).reduce((s, sp) => s + (enrolledFor(sp) || 0), 0);
@@ -22284,6 +22304,170 @@ window.switchSport = function(memberId) {
   }, 50);
 };
 
+// ─── Smart multi-sport renewal ────────────────────────────────────
+// For a member enrolled in 2+ sports: TICK exactly which sports to renew, each at
+// its OWN editable amount (nothing is bundled into one figure), with a live total.
+// Produces ONE combined receipt with a per-sport line item so commission still splits
+// per coach, plus one subscription + renewal record per selected sport. Carry-forward
+// credit and post-expiry deductions are applied per sport (one global toggle).
+window.addRenewalMulti = function(m, picks) {
+  if (!m) return;
+  // Smart price per sport: what was actually BILLED as membership for that sport last
+  // (the most recent Membership invoice LINE), so a contaminated enrolment price doesn't
+  // carry forward. Falls back to the enrolment price, then the pick's price.
+  const smartPrice = (sp, fallback) => {
+    const invs = (state.invoices || []).filter(iv => !iv.deleted && iv.customerId === m.id
+      && (iv.category || 'Membership') === 'Membership' && !iv.switchCredit)
+      .sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.id - a.id));
+    for (const iv of invs) {
+      if (Array.isArray(iv.lineItems) && iv.lineItems.length) {
+        const li = iv.lineItems.find(x => x.sport === sp);
+        if (li && (Number(li.price) || 0) > 0) return Number(li.price);
+      } else if (iv.sport === sp && (Number(iv.amount) || 0) > 0) return Number(iv.amount);
+    }
+    return fallback;
+  };
+  const getLastSportExpiry = (sport) => { const s = (m.subscriptions || []).filter(x => x.activity === sport && x.end); return s.length ? s.map(x => x.end).sort().pop() : null; };
+  const countAttendedAfter = (sport, after) => {
+    if (!m.dailyAttendance || !after) return 0; let tot = 0;
+    for (const mk of Object.keys(m.dailyAttendance)) {
+      const sm = m.dailyAttendance[mk] && m.dailyAttendance[mk][sport]; if (!sm) continue;
+      for (const d of Object.keys(sm)) { if (sm[d] === 'Y' && `${mk}-${String(d).padStart(2, '0')}` > after) tot++; }
+    }
+    return tot;
+  };
+  const progressFor = (sport, coachId) => {
+    const subs = (m.subscriptions || []).filter(s => s.activity === sport && (coachId == null || s.coachId === coachId));
+    let att = 0, tot = 0; subs.forEach(s => { att += s.attendedClasses || 0; tot += s.totalClasses || 0; });
+    return tot ? `${att}/${tot} classes${att < tot ? ' · not finished' : ' · finished'}` : '';
+  };
+  const rows = picks.map((e, i) => ({
+    sport: e.sport, coachId: e.coachId, classes: parseInt(e.classes) || 0, i,
+    price: smartPrice(e.sport, Number(e.price) || 0),
+    carry: (typeof carryForwardCredit === 'function') ? (carryForwardCredit(m, e.sport) || 0) : 0,
+    deduct: (() => { const le = getLastSportExpiry(e.sport); return le ? countAttendedAfter(e.sport, le) : 0; })(),
+  }));
+
+  const rowHtml = rows.map(r => `
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+      <input type="checkbox" id="rnm-pick-${r.i}" class="rnm-pick" checked />
+      <div style="flex:1;min-width:110px">
+        <div style="font-weight:600;font-size:13px">${escapeHtml(r.sport)} <span class="text-mute" style="font-weight:400">· ${escapeHtml(coachName(r.coachId) || '—')}</span></div>
+        <div class="text-dim" style="font-size:11px">${progressFor(r.sport, r.coachId)}${r.carry ? ` · 🎁 +${r.carry} carry` : ''}${r.deduct ? ` · ⚠ −${r.deduct} post-expiry` : ''}</div>
+      </div>
+      <div class="field" style="margin:0;width:78px"><label style="font-size:10px">${t('Classes', 'الحصص')}</label><input id="rnm-cls-${r.i}" type="number" min="0" step="1" value="${r.classes || ''}" /></div>
+      <div class="field" style="margin:0;width:104px"><label style="font-size:10px">${t('Amount', 'المبلغ')}</label><input id="rnm-amt-${r.i}" class="rnm-amt" type="number" min="0" step="0.01" value="${r.price || ''}" /></div>
+    </div>`).join('');
+
+  showModal({
+    title: `${t('Renew Subscription', 'تجديد الاشتراك')} — ${escapeHtml(m.name)}`,
+    body: `
+      <div style="margin-bottom:10px">
+        <div style="font-size:11px;color:var(--blue);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:6px">${t('Which sports to renew?', 'أي الرياضات تريد تجديدها؟')}</div>
+        ${rowHtml}
+        <div class="text-mute" style="font-size:10px">${t('Untick a sport to leave it out. Each renews at its OWN amount — nothing is bundled.', 'ألغِ اختيار رياضة لاستثنائها. كل رياضة تُجدَّد بمبلغها الخاص — لا شيء مُجمَّع.')}</div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>${t('Start / renewal date', 'تاريخ البداية / التجديد')}</label><input id="rnm-start" type="date" value="${TODAY}" /></div>
+        <div class="field"><label>${t('Validity', 'المدة')}</label><select id="rnm-validity">${VALIDITY_OPTIONS.map(v => `<option value="${v}" ${v === DEFAULT_VALIDITY ? 'selected' : ''}>${v} ${t('days', 'يوم')}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('Status', 'الحالة')}</label><select id="rnm-status"><option value="active">${t('Active', 'نشط')}</option><option value="expired">${t('Expired', 'منتهٍ')}</option></select></div>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer;font-size:12px"><input type="checkbox" id="rnm-adjust" checked /> <span>${t('Apply carry-forward credit & deduct post-expiry classes per sport', 'تطبيق رصيد الحصص المُرحَّلة وخصم حصص ما بعد الانتهاء لكل رياضة')}</span></label>
+      <div style="margin-top:8px;padding:9px 11px;background:var(--surface-2);border-radius:8px;font-weight:700;font-size:14px">${t('Total to renew', 'إجمالي التجديد')}: <span id="rnm-total">0</span> ${t('QAR', 'ر.ق')}</div>
+    `,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: t('Save Renewal', 'حفظ التجديد'), class: 'btn primary', onclick: () => {
+        const start = document.getElementById('rnm-start').value;
+        if (!start) { toast(t('Start date required', 'تاريخ البداية مطلوب'), 'error'); return; }
+        const validity = parseInt(document.getElementById('rnm-validity').value) || DEFAULT_VALIDITY;
+        const status = document.getElementById('rnm-status').value;
+        const applyAdj = document.getElementById('rnm-adjust').checked;
+        const selected = rows.filter(r => document.getElementById(`rnm-pick-${r.i}`)?.checked);
+        if (!selected.length) { toast(t('Tick at least one sport to renew', 'اختر رياضة واحدة على الأقل للتجديد'), 'error'); return; }
+        if (typeof assertCloudWritable === 'function' && !assertCloudWritable('record this renewal', 'تسجيل هذا التجديد')) return;
+
+        const ref = nextInvoiceRef();
+        const invLines = []; let invAmount = 0; const created = []; let maxEnd = null;
+        const _stamp = Date.now();
+        for (const r of selected) {
+          const amount = parseFloat(document.getElementById(`rnm-amt-${r.i}`).value) || 0;
+          let classes = parseInt(document.getElementById(`rnm-cls-${r.i}`).value) || 0;
+          let carried = 0, deducted = 0;
+          if (applyAdj) {
+            if (r.carry > 0 && classes > 0) { carried = r.carry; classes += carried; }
+            if (r.deduct > 0 && classes > 0) { deducted = Math.min(r.deduct, classes); classes -= deducted; }
+          }
+          const isCamp = r.sport === SUMMER_CAMP;
+          const end = (isCamp && typeof campEndDate === 'function') ? campEndDate(start, validity) : addDays(start, validity);
+          // Duplicate-period guard (same sport / coach / start) — the usual cause of twin rows.
+          const dup = (m.subscriptions || []).find(s => (s.activity || '') === r.sport && (s.start || '') === start && (s.coachId || null) === (r.coachId || null) && s.status !== 'Withdrawn');
+          if (dup && !confirm(`⚠ ${m.name} ${t('already has an identical', 'لديه بالفعل فترة مطابقة')} ${r.sport} ${t('period starting', 'تبدأ في')} ${fmtDate(start)}.\n\n${t('Add another identical period anyway?', 'إضافة فترة مطابقة أخرى على أي حال؟')}`)) return;
+          const _rid = 'r' + _stamp + '_' + r.i;
+          if (!m.renewals) m.renewals = [];
+          m.renewals.push({ _rid, activity: r.sport, coach: coachName(r.coachId), coachId: r.coachId, start, end: end || null, validity, totalClasses: classes || null, amountPaid: amount, status, manual: true, createdAt: new Date().toISOString() });
+          if (!m.subscriptions) m.subscriptions = [];
+          m.subscriptions.push({ _sid: 's' + _stamp + '_' + r.i, _rid, month: ymToShort(start.slice(0, 7)) || start.slice(0, 7), activity: r.sport, coach: coachName(r.coachId), coachId: r.coachId, firstRegistration: m.firstRegistration || null, start, end: end || null, validity, status, totalClasses: classes || null, attendedClasses: 0, priceCompleted: null, amountPaid: amount, invoiceNumber: ref, manual: true });
+          m.renewalsBySport = m.renewalsBySport || {}; m.renewalsBySport[r.sport] = (m.renewalsBySport[r.sport] || 0) + 1;
+          m.renewalCount = (m.renewalCount || 0) + 1;
+          if (amount > 0) {
+            const dl = (isCamp && classes && typeof campLabelForClasses === 'function') ? (campLabelForClasses(classes) || '') : '';
+            invLines.push({ sport: r.sport, coach: coachName(r.coachId), coachId: r.coachId, classes, price: amount, durationLabel: dl || null, billMonth: start.slice(0, 7) });
+            invAmount += amount;
+          }
+          if (!maxEnd || (end && end > maxEnd)) maxEnd = end;
+          created.push({ sport: r.sport, carried, deducted });
+        }
+
+        let _invId = null;
+        if (invAmount > 0) {
+          const sportLabel = (typeof sportListWithDuration === 'function' && sportListWithDuration(invLines)) || invLines.map(l => l.sport).join(', ');
+          const inv = {
+            id: (_invId = nextId(state.invoices)), date: start,
+            description: `${sportLabel} renewal — ${m.name}`,
+            amount: invAmount, method: 'cash', month: start.slice(0, 7), ref,
+            sport: sportLabel, coach: invLines.length === 1 ? invLines[0].coach : '', coachId: invLines.length === 1 ? invLines[0].coachId : null,
+            customerId: m.id, customerName: m.name, category: 'Membership', activityType: 'subscription',
+            lineItems: invLines,
+          };
+          stampUpdate(inv); state.invoices.push(inv);
+        }
+        m.startDate = start;
+        if (maxEnd && (!m.expiryDate || maxEnd > m.expiryDate)) m.expiryDate = maxEnd;
+        if (status === 'active') m.status = 'Active';
+        if (m.status === 'Withdrawn') m.status = (status === 'active' ? 'Active' : 'Expired');
+
+        audit('subscription.renew', `member:${m.id}`,
+          `Renewed ${created.map(c => c.sport).join(', ')} for ${m.name || m.nameArabic}`,
+          { memberId: m.id, name: m.name, sports: created.map(c => c.sport), amount: invAmount, start, invoiceRef: ref });
+
+        closeModal(); render();
+        const parts = created.map(c => c.sport + (c.carried ? ` +${c.carried}` : '') + (c.deducted ? ` −${c.deducted}` : ''));
+        const msg = `${t('Renewed', 'تم تجديد')} ${created.length} ${created.length === 1 ? t('sport', 'رياضة') : t('sports', 'رياضات')} · ${parts.join(', ')} · ${t('invoice', 'فاتورة')} ${ref}${invAmount > 0 ? ' · ' + fmt(invAmount) + ' QAR' : ''}`;
+        const verify = [{ collection: 'members', id: m.id }]; if (_invId != null) verify.push({ collection: 'invoices', id: _invId });
+        if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify, okMsg: msg }); else { save(); toast(msg); }
+      } },
+    ],
+  });
+
+  // Live total = sum of the CHECKED sports' amounts.
+  setTimeout(() => {
+    const recalc = () => {
+      let s = 0;
+      for (const r of rows) {
+        const c = document.getElementById(`rnm-pick-${r.i}`), a = document.getElementById(`rnm-amt-${r.i}`);
+        if (c && c.checked && a) s += parseFloat(a.value) || 0;
+      }
+      const el = document.getElementById('rnm-total'); if (el) el.textContent = fmt(s);
+    };
+    rows.forEach(r => {
+      document.getElementById(`rnm-pick-${r.i}`)?.addEventListener('change', recalc);
+      document.getElementById(`rnm-amt-${r.i}`)?.addEventListener('input', recalc);
+    });
+    recalc();
+  }, 30);
+};
+
 // ─── Add a renewal / new subscription record ──────────────────────
 // For multi-sport members, the member's enrolled sports are offered as quick
 // picks so a specific sport can be renewed — even if its classes aren't finished.
@@ -22305,6 +22489,11 @@ window.addRenewal = function(memberId) {
   // De-dupe by sport+coach
   const seen = new Set();
   const enrolledUnique = enrolled.filter(e => { const k = e.sport + '|' + e.coachId; if (seen.has(k)) return false; seen.add(k); return true; });
+
+  // 2+ sports → smart multi-select renewal (tick which sports, per-sport amounts, live
+  // total, one combined receipt). Single-sport members keep the classic modal below with
+  // its per-sport deduction/carry banners + expiry override. (v6.421)
+  if (enrolledUnique.length > 1 && typeof window.addRenewalMulti === 'function') { return window.addRenewalMulti(m, enrolledUnique); }
 
   // Build a quick-pick list showing class progress so you can renew before finishing
   function progressFor(sport, coachId) {
@@ -24616,24 +24805,7 @@ PAGES.coachhome = (main) => {
         </tbody></table></div>` : `<div class="text-mute" style="font-size:13px">${t('None of your students are expiring soon. 🎉', 'لا يوجد طلاب قرب الانتهاء. 🎉')}</div>`}
     </div>
 
-    <div class="card" style="margin-bottom:16px">
-      <div class="card-header"><div><div class="card-title">💰 ${t('My Salary', 'راتبي')}</div><div class="card-subtitle">${t('This month and previous months', 'هذا الشهر والأشهر السابقة')}</div></div></div>
-      <div style="overflow:auto"><table class="data-table" style="width:100%"><thead><tr>
-        <th>${t('Month', 'الشهر')}</th>
-        <th class="text-right">${t('Fixed', 'ثابت')}</th>
-        <th class="text-right">${t('Commission', 'العمولة')}</th>
-        <th class="text-right">${t('Total', 'الإجمالي')}</th>
-      </tr></thead><tbody>
-      ${earnRows.map(({ mo, e }) => `<tr${mo === thisMonth ? ' style="background:rgba(16,185,129,.06)"' : ''}>
-        <td>${fmtMonth(mo)}${mo === thisMonth ? ` <span class="text-mute" style="font-size:10px">· ${t('current', 'الحالي')}</span>` : ''}</td>
-        <td class="text-right num">${fmt(e.fixed)}</td>
-        <td class="text-right num" title="${fmt(e.commissionBase)} × ${e.rate}%">${fmt(e.commission)}</td>
-        <td class="text-right num font-bold">${fmt(e.total)}</td>
-      </tr>`).join('')}
-      </tbody></table></div>
-      <div class="text-mute" style="font-size:11px;margin-top:8px">${t('Commission = your rate × revenue from active members that month. Figures are estimates from recorded invoices.', 'العمولة = نسبتك × إيرادات الأعضاء النشطين في ذلك الشهر. الأرقام تقديرية من الفواتير المسجلة.')}</div>
-    </div>
-
+    ${/* v6.420 — the "My Salary" summary card is removed; coaches no longer see salary figures. */ ''}
     <div class="card">
       <div class="card-header"><div><div class="card-title">💬 ${t('Advice', 'النصائح')}</div><div class="card-subtitle">${t('Recent notes you sent · students can reply', 'أحدث ملاحظاتك · يمكن للطلاب الرد')}</div></div>
         <button class="btn primary sm" id="ch-go-advice">${t('Write advice', 'كتابة نصيحة')} →</button>
