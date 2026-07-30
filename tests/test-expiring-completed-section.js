@@ -41,6 +41,23 @@ R.section('the Expiring screen renders + exposes the Completed status filter');
   R.ok('the status filter has a Completed option', /value="completed">✅ Completed/.test(out.html || ''));
 }
 
+R.section('v6.427 — the KPI row has all 4 bucket cards, each a clickable filter');
+{
+  const ctx = H.makeCtx({ role: 'admin' }); seed(ctx);
+  const html = H.renderScreen(ctx, 'expiring').html || '';
+  R.ok('a "Expiring in ≤ 3 days" KPI → soon filter', /value='soon'[\s\S]{0,260}Expiring in ≤/.test(html));
+  R.ok('a "Expiring in ≤ 7 days" KPI → d7 filter', /value='d7'[\s\S]{0,260}Expiring in ≤ 7 days/.test(html));
+  R.ok('a "Completed" KPI → completed filter', /value='completed'[\s\S]{0,260}Completed/.test(html));
+  R.ok('a "Expiring in ≤ 30 days" KPI → upcoming filter', /value='upcoming'[\s\S]{0,260}Expiring in ≤ 30 days/.test(html));
+}
+
+R.section('v6.427 — Renewals Report + Ready-to-Renew screens are disabled');
+{
+  const ctx = H.makeCtx({ role: 'admin' });
+  R.ok('renewals (Renewals Report) is hidden', run(ctx, `!!ROUTES.renewals.hidden`) === true);
+  R.ok('completed (Ready to Renew) is hidden', run(ctx, `!!ROUTES.completed.hidden`) === true);
+}
+
 R.section('the completed bucket (as the screen builds it) contains the finisher only');
 {
   // The section rows are injected into #exp-sections after render (not in main.innerHTML),

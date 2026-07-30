@@ -39,4 +39,16 @@ R.section('the Schedule screen still renders in every role');
   }
 }
 
+R.section('v6.426 — the WEEKLY schedule PNG export is BRIGHT (light theme)');
+{
+  const src = H.readSrc();
+  const exp = (src.split('function exportPng(lang)')[1] || '').split('function exportDayStatus')[0];
+  R.ok('a light base fill is drawn first', /ctx\.fillStyle = '#f4f7fb';\s*\n\s*ctx\.fillRect\(0, 0, W, H\)/.test(exp));
+  R.ok('the brand band is white with a red underline', /ctx\.fillStyle = '#ffffff';[\s\S]{0,80}ctx\.fillStyle = '#f26060';\s*\n\s*ctx\.fillRect\(0, brandH - 3/.test(exp));
+  R.ok('column header + time cells use dark text on a light fill', /ctx\.fillStyle = '#e6edf6'/.test(exp) && /ctx\.fillStyle = '#0f172a'/.test(exp) && /ctx\.fillStyle = '#eef3f9'/.test(exp));
+  R.ok('day cells are light (white / f6f9fd)', /colIdx % 2 === 0 \? '#ffffff' : '#f6f9fd'/.test(exp));
+  R.ok('class chips keep a soft drop shadow for depth', /shadowColor = 'rgba\(15,23,42,0\.20\)'/.test(exp));
+  R.ok('NO dark navy fills remain in the weekly export', !/#0a0e1a|#0e131f|#131826|#1a2030|#252b3d/.test(exp));
+}
+
 R.done();

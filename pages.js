@@ -1252,6 +1252,7 @@ PAGES.members = (main) => {
         if (!(d != null && d >= 0 && d <= within && memberStatus(m) !== 'Frozen')) return false;
       }
       if (f.expiry === 'expired') { if (memberStatus(m) !== 'Expired') return false; }
+      if (f.expiry === 'completed') { if (memberStatus(m) !== 'Completed') return false; }   // v6.428
       // From–To date range — filter by ENROLLMENT date (any sport start) or DB record-CREATED
       // date, per the basis toggle. A member with no matching date (e.g. no createdAt when the
       // basis is "created") is excluded while a range is set.
@@ -1477,13 +1478,6 @@ PAGES.members = (main) => {
       </div>
     </div>
 
-    <div style="background:rgba(91,141,239,.08);border:1px solid rgba(91,141,239,.25);border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;align-items:center;gap:10px;font-size:12px;color:var(--text-dim)">
-      <span style="font-size:16px">💡</span>
-      <div style="flex:1">
-        Use <strong>+ Add Member</strong> for new registrations. For existing members paying again, click the <strong>🔄</strong> button or open the <strong style="color:var(--blue);cursor:pointer" onclick="navigate('history')">History page</strong>.
-      </div>
-    </div>
-
     ${(() => {
       const recent = getRecentMembers();
       if (!recent.length) return '';
@@ -1584,20 +1578,10 @@ PAGES.members = (main) => {
           <option value="d7" ${filter.expiry === 'd7' || filter.expiry === 'soon' ? 'selected' : ''}>⏰ ${t('To expire ≤ 7 days', 'ينتهي خلال ٧ أيام')}</option>
           <option value="d30" ${filter.expiry === 'd30' ? 'selected' : ''}>⏰ ${t('To expire ≤ 30 days', 'ينتهي خلال ٣٠ يوماً')}</option>
           <option value="expired" ${filter.expiry === 'expired' ? 'selected' : ''}>⛔ ${t('Expired', 'منتهٍ')}</option>
+          <option value="completed" ${filter.expiry === 'completed' ? 'selected' : ''}>✅ ${t('Completed', 'مكتمل')}</option>
         </select>
-        <span class="btn ghost" style="display:inline-flex;align-items:center;gap:6px;padding:4px 8px" title="${t('Filter by a date range — enrollment date or the date the record was created', 'تصفية حسب نطاق تاريخ — تاريخ التسجيل أو تاريخ إنشاء السجل')}">
-          <select id="filter-date-basis" style="border:none;background:transparent;font-size:12.5px;cursor:pointer;color:var(--text);outline:none">
-            <option value="enrolled" ${filter.dateBasis !== 'created' ? 'selected' : ''}>📅 ${t('Enrolled', 'التسجيل')}</option>
-            <option value="created" ${filter.dateBasis === 'created' ? 'selected' : ''}>🗂 ${t('Created', 'الإنشاء')}</option>
-          </select>
-          <input type="date" id="filter-date-from" value="${filter.dateFrom || ''}" title="${t('From', 'من')}" style="border:none;background:transparent;font-size:12px;color:var(--text);width:118px;outline:none" />
-          <span class="text-mute" style="font-size:12px">→</span>
-          <input type="date" id="filter-date-to" value="${filter.dateTo || ''}" title="${t('To', 'إلى')}" style="border:none;background:transparent;font-size:12px;color:var(--text);width:118px;outline:none" />
-          ${(filter.dateFrom || filter.dateTo) ? `<button type="button" id="filter-date-clear" title="${t('Clear dates', 'مسح التواريخ')}" style="border:none;background:transparent;cursor:pointer;color:var(--text-mute);font-size:13px;padding:0 2px">✕</button>` : ''}
-        </span>
-        <button type="button" id="filter-dupnames" class="btn ${filter.dupNames ? 'primary' : 'ghost'}" title="Find members whose names are the same or very similar (likely duplicates)">🔁 ${filter.dupNames ? 'Similar names ✓' : 'Similar names'}</button>
+        <button type="button" id="members-clear-filters-inline" class="btn ghost" title="${t('Reset all filters', 'إعادة ضبط كل المرشحات')}">✕ ${t('Clear filters', 'مسح المرشحات')}</button>
       </div>
-      ${filter.dupNames && dupNameInfo ? `<div class="text-mute" style="font-size:12px;padding:0 2px 10px">${t('Showing members with same / near-identical names', 'عرض الأعضاء ذوي الأسماء المتطابقة أو المتشابهة')} · ${dupNameInfo.groupCount} ${t('groups', 'مجموعة')} · ${dupNameInfo.ids.size} ${t('members', 'عضو')}. ${t('Open each to compare and merge/archive duplicates.', 'افتح كل عضو للمقارنة ودمج/أرشفة المكررين.')}</div>` : ''}
 
       <div class="table-wrap" id="members-table-wrap">
         <table>
@@ -1662,8 +1646,8 @@ PAGES.members = (main) => {
   $('#filter-date-basis')?.addEventListener('change', e => { filter.dateBasis = e.target.value; if (filter.dateFrom || filter.dateTo) { pg.page = 1; refreshAndSave(); } else { saveFilter('members', filter); } });
   $('#filter-date-from')?.addEventListener('change', e => { filter.dateFrom = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#filter-date-to')?.addEventListener('change', e => { filter.dateTo = e.target.value; pg.page = 1; refreshAndSave(); });
-  $('#filter-date-clear')?.addEventListener('click', () => { filter.dateFrom = ''; filter.dateTo = ''; pg.page = 1; refreshAndSave(); });
-  $('#filter-dupnames')?.addEventListener('click', () => { filter.dupNames = !filter.dupNames; pg.page = 1; refreshAndSave(); });
+  // v6.428 — always-visible Clear-filters button in the filter bar; full reset + re-render.
+  $('#members-clear-filters-inline')?.addEventListener('click', () => { filter = { ...DEFAULT_F }; saveFilter('members', filter); pg.page = 1; PAGES.members(main); });
   $('#add-member').addEventListener('click', () => addMember());
   $('#export-members')?.addEventListener('click', () => exportMembersChoice());   // hidden for viewer/reception role
   const colBtn = $('#member-columns'); if (colBtn) colBtn.addEventListener('click', () => openMemberColumns());
@@ -5299,6 +5283,125 @@ PAGES.families = (main) => {
     });
   }
   updateFamCount();
+};
+
+// ─── Trash — recover soft-deleted records (v6.426) ──────────────────────────
+// A single place to see & undo deletions. Archived MEMBERS and deleted INVOICES are
+// soft-deleted (recoverable in one click). A read-only deletion LOG (from the immutable
+// audit trail) shows every delete/archive/purge so nothing is invisible. Admin-only.
+PAGES.trash = (main) => {
+  if (currentRole() !== 'admin') {
+    main.innerHTML = `<div class="topbar"><div><h1>🗑 ${t('Trash', 'المهملات')}</h1></div></div><div class="card text-mute" style="text-align:center;padding:40px">${t('Admins only.', 'المشرفون فقط.')}</div>`;
+    return;
+  }
+  let f = window._trashFilter || { kind: 'all', search: '' };
+  window._trashFilter = f;
+
+  const _whoArchived = (recId, action) => {
+    const hit = (state.auditLog || []).filter(a => a.action === action && String(a.recId) === String(recId))
+      .sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')))[0];
+    return hit ? (hit.userName || hit.user || '') : '';
+  };
+
+  const memberRows = (state.members || []).filter(m => m.deleted).map(m => ({
+    kind: 'member', id: m.id, title: m.name || '—', titleAr: m.nameArabic || '',
+    detail: [m.sport, ...((m.enrollments || []).map(e => e.sport))].filter(Boolean).join(', ') || (m.phone || ''),
+    when: m.deletedAt || null, who: _whoArchived(m.id, 'member.archive') || '',
+    reason: m.deletedReason || '', restore: `restoreMember(${m.id})`, purge: `permanentlyDeleteMember(${m.id})`,
+  }));
+  const invoiceRows = (state.invoices || []).filter(i => i.deleted).map(i => ({
+    kind: 'invoice', id: i.id, title: i.ref || ('#' + i.id), titleAr: '',
+    detail: `${escapeHtml(i.customerName || '—')} · ${fmt((typeof invoiceTotal === 'function') ? invoiceTotal(i) : (i.amount || 0))} QAR`,
+    when: i.deletedAt || null, who: i.deletedBy || _whoArchived(i.id, 'invoice.delete') || '',
+    reason: '', restore: `restoreInvoice(${i.id})`, purge: `hardDeleteInvoice(${i.id})`,
+  }));
+  let all = [...memberRows, ...invoiceRows];
+  if (f.kind !== 'all') all = all.filter(r => r.kind === f.kind);
+  all.sort((a, b) => String(b.when || '').localeCompare(String(a.when || '')));
+
+  const totalM = memberRows.length, totalI = invoiceRows.length;
+
+  const rowHtml = (r) => `<tr class="trash-row" data-hay="${escapeHtml(`${r.title} ${r.titleAr} ${r.detail} ${r.who} ${r.reason}`.toLowerCase())}">
+    <td style="padding:8px"><span class="badge ${r.kind === 'member' ? 'active' : 'pending'}" style="font-size:10px">${r.kind === 'member' ? '👤 ' + t('Member', 'عضو') : '🧾 ' + t('Invoice', 'فاتورة')}</span></td>
+    <td style="padding:8px"><div style="font-weight:600">${escapeHtml(r.title)}${r.titleAr ? ` <span class="text-mute" style="font-weight:400" dir="rtl">${escapeHtml(r.titleAr)}</span>` : ''}</div>${r.reason ? `<div class="text-mute" style="font-size:11px">${escapeHtml(r.reason)}</div>` : ''}</td>
+    <td style="padding:8px;font-size:12px" class="text-mute">${escapeHtml(String(r.detail || ''))}</td>
+    <td style="padding:8px;font-size:12px;white-space:nowrap">${r.when ? ((typeof fmtDateTime === 'function') ? fmtDateTime(r.when) : fmtDate(String(r.when).slice(0, 10))) : '—'}</td>
+    <td style="padding:8px;font-size:12px" class="text-mute">${escapeHtml(r.who || '—')}</td>
+    <td style="padding:8px;text-align:right;white-space:nowrap">
+      <button class="btn primary sm" onclick="${r.restore}">↩ ${t('Restore', 'استرجاع')}</button>
+      <button class="btn ghost sm" style="color:var(--red)" onclick="${r.purge}" title="${t('Delete permanently — cannot be undone', 'حذف نهائي — لا يمكن التراجع')}">🗑</button>
+    </td>
+  </tr>`;
+
+  // Deletion LOG (read-only) — every archive/delete/purge from the audit trail.
+  const delLog = (state.auditLog || []).filter(a => /(\.delete|\.purge|\.archive|\.remove|deleted|purged)/i.test(a.action || ''))
+    .sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || ''))).slice(0, 60);
+
+  // Multi-device SYNC CONFLICTS seen on THIS device this session (device-local, in-memory).
+  const syncLog = (typeof window !== 'undefined' && Array.isArray(window.__syncConflictLog)) ? window.__syncConflictLog.slice(0, 30) : [];
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div><h1>🗑 ${t('Trash', 'المهملات')}</h1>
+        <div class="subtitle">${t('Recover archived members & deleted invoices — or review everything that was deleted', 'استرجع الأعضاء المؤرشفين والفواتير المحذوفة — أو راجع كل ما تم حذفه')}</div></div>
+    </div>
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi"><div class="kpi-label">${t('In trash', 'في المهملات')}</div><div class="kpi-value num">${totalM + totalI}</div><div class="kpi-sub">${t('recoverable', 'قابل للاسترجاع')}</div></div>
+      <div class="kpi"><div class="kpi-label">👤 ${t('Archived members', 'أعضاء مؤرشفون')}</div><div class="kpi-value num">${totalM}</div></div>
+      <div class="kpi"><div class="kpi-label">🧾 ${t('Deleted invoices', 'فواتير محذوفة')}</div><div class="kpi-value num">${totalI}</div></div>
+    </div>
+    <div class="card" style="padding:12px 14px;margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <select id="trash-kind" class="btn ghost">
+        <option value="all" ${f.kind === 'all' ? 'selected' : ''}>${t('All types', 'كل الأنواع')}</option>
+        <option value="member" ${f.kind === 'member' ? 'selected' : ''}>👤 ${t('Members', 'الأعضاء')}</option>
+        <option value="invoice" ${f.kind === 'invoice' ? 'selected' : ''}>🧾 ${t('Invoices', 'الفواتير')}</option>
+      </select>
+      <div class="search" style="flex:1;min-width:200px"><input id="trash-search" type="text" value="${escapeHtml(f.search || '')}" placeholder="${t('Search name, invoice, reason…', 'ابحث بالاسم أو الفاتورة أو السبب…')}" /></div>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden;margin-bottom:16px">
+      ${all.length ? `<div style="overflow-x:auto"><table class="data-table" style="width:100%">
+        <thead><tr>
+          <th style="padding:8px">${t('Type', 'النوع')}</th><th style="padding:8px">${t('Name', 'الاسم')}</th>
+          <th style="padding:8px">${t('Details', 'التفاصيل')}</th><th style="padding:8px">${t('Deleted', 'حُذف')}</th>
+          <th style="padding:8px">${t('By', 'بواسطة')}</th><th style="padding:8px;text-align:right">${t('Actions', 'إجراءات')}</th>
+        </tr></thead>
+        <tbody>${all.map(rowHtml).join('')}</tbody>
+      </table></div>` : `<div class="empty" style="padding:40px;text-align:center"><div class="empty-icon">✅</div>${t('Trash is empty — nothing archived or deleted is waiting.', 'المهملات فارغة — لا يوجد شيء مؤرشف أو محذوف.')}</div>`}
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><div><div class="card-title">↔ ${t('Sync conflicts', 'تعارضات المزامنة')}</div><div class="card-subtitle">${t('When another device edited the SAME record at the same time — your version was kept, both sides’ separate changes were merged. This device, this session.', 'عندما عدّل جهاز آخر نفس السجل في نفس الوقت — احتُفظ بنسختك ودُمجت تغييرات الطرفين المنفصلة. هذا الجهاز، هذه الجلسة.')}</div></div></div>
+      ${syncLog.length ? `<div style="overflow-x:auto"><table class="data-table" style="width:100%;font-size:12px">
+        <thead><tr><th style="padding:6px 8px">${t('When', 'متى')}</th><th style="padding:6px 8px">${t('Records both devices edited', 'سجلات عدّلها الجهازان')}</th></tr></thead>
+        <tbody>${syncLog.map(e => `<tr>
+          <td style="padding:6px 8px;white-space:nowrap" class="text-mute">${e.ts ? ((typeof fmtDateTime === 'function') ? fmtDateTime(e.ts) : fmtDate(String(e.ts).slice(0, 10))) : '—'}</td>
+          <td style="padding:6px 8px">${(e.items || []).map(it => `<span class="badge" style="font-size:9px;margin:1px">${escapeHtml(String(it.coll || ''))} · ${escapeHtml(String(it.name || ''))}</span>`).join(' ') || `${e.count} ${t('records', 'سجلات')}`}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>` : `<div class="text-mute" style="font-size:13px;padding:8px">${t('No multi-device conflicts detected this session. 🎉', 'لم تُكتشف تعارضات بين الأجهزة في هذه الجلسة. 🎉')}</div>`}
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">📜 ${t('Deletion log', 'سجل الحذف')}</div><div class="card-subtitle">${t('Read-only — every archive / delete / purge (incl. items not one-click restorable). From the immutable audit trail.', 'للعرض فقط — كل أرشفة / حذف / حذف نهائي (بما فيها غير القابلة للاسترجاع بضغطة). من سجل التدقيق غير القابل للتعديل.')}</div></div></div>
+      ${delLog.length ? `<div style="overflow-x:auto"><table class="data-table" style="width:100%;font-size:12px">
+        <thead><tr><th style="padding:6px 8px">${t('When', 'متى')}</th><th style="padding:6px 8px">${t('Action', 'الإجراء')}</th><th style="padding:6px 8px">${t('What', 'ماذا')}</th><th style="padding:6px 8px">${t('By', 'بواسطة')}</th></tr></thead>
+        <tbody>${delLog.map(a => `<tr>
+          <td style="padding:6px 8px;white-space:nowrap" class="text-mute">${a.ts ? ((typeof fmtDateTime === 'function') ? fmtDateTime(a.ts) : fmtDate(String(a.ts).slice(0, 10))) : '—'}</td>
+          <td style="padding:6px 8px"><span class="badge" style="font-size:9px">${escapeHtml(a.action || '')}</span></td>
+          <td style="padding:6px 8px">${escapeHtml(a.summary || a.recordName || a.target || '')}</td>
+          <td style="padding:6px 8px" class="text-mute">${escapeHtml(a.userName || a.user || '')}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>` : `<div class="text-mute" style="font-size:13px;padding:8px">${t('No deletions logged yet.', 'لا توجد عمليات حذف مسجّلة بعد.')}</div>`}
+    </div>`;
+
+  $('#trash-kind')?.addEventListener('change', e => { f.kind = e.target.value; PAGES.trash(main); });
+  // Search filters in place (no re-render) so typing keeps focus.
+  $('#trash-search')?.addEventListener('input', e => {
+    f.search = e.target.value;
+    const q = (e.target.value || '').trim().toLowerCase();
+    $$('.trash-row').forEach(tr => { tr.style.display = (!q || (tr.getAttribute('data-hay') || '').includes(q)) ? '' : 'none'; });
+  });
+  // Re-apply an active search after a kind-change re-render.
+  if (f.search) { const q = f.search.trim().toLowerCase(); $$('.trash-row').forEach(tr => { tr.style.display = (!q || (tr.getAttribute('data-hay') || '').includes(q)) ? '' : 'none'; }); }
 };
 
 // ─── Summer Camp members list (admin) + transportation flag ─────────────────
@@ -9652,16 +9755,21 @@ PAGES.schedule = (main) => {
     ctx.scale(2, 2);
     try { ctx.direction = ar ? 'rtl' : 'ltr'; } catch (e) {}
 
-    // Brand header
-    ctx.fillStyle = '#0a0e1a';
+    // BRIGHT theme (v6.426) — light base so the whole export reads well on a phone/wall.
+    ctx.fillStyle = '#f4f7fb';
+    ctx.fillRect(0, 0, W, H);
+    // Brand header — white band with a brand-red underline
+    ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, W, brandH);
+    ctx.fillStyle = '#f26060';
+    ctx.fillRect(0, brandH - 3, W, 3);
     const monthName = ar ? monthNameAR(new Date()) : new Date().toLocaleString('en', { month: 'long', year: 'numeric' }).toUpperCase();
     if (ar) {
       ctx.textAlign = 'right';
       ctx.fillStyle = '#f26060';
       ctx.font = 'bold 32px sans-serif';
       ctx.fillText('★ بلاك ستارز', W - 24, 50);
-      ctx.fillStyle = '#9ba6b6';
+      ctx.fillStyle = '#64748b';
       ctx.font = '15px sans-serif';
       ctx.fillText('نادٍ رياضي · جدول الحصص', W - 24, 78);
       ctx.fillStyle = '#5b8def';
@@ -9672,7 +9780,7 @@ PAGES.schedule = (main) => {
       ctx.fillStyle = '#f26060';
       ctx.font = 'bold 32px sans-serif';
       ctx.fillText('★ BLACK STARS', 24, 50);
-      ctx.fillStyle = '#9ba6b6';
+      ctx.fillStyle = '#64748b';
       ctx.font = '14px sans-serif';
       ctx.fillText('Sports Club · Class Schedule', 24, 75);
       ctx.fillStyle = '#5b8def';
@@ -9684,9 +9792,9 @@ PAGES.schedule = (main) => {
 
     // Column headers
     const headerY = brandH;
-    ctx.fillStyle = '#1a2030';
+    ctx.fillStyle = '#e6edf6';
     ctx.fillRect(0, headerY, W, headerH);
-    ctx.fillStyle = '#e8eaf0';
+    ctx.fillStyle = '#0f172a';
     ctx.font = 'bold 14px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(ar ? 'الوقت' : 'TIME', timeX + timeW / 2, headerY + 38);
@@ -9701,9 +9809,9 @@ PAGES.schedule = (main) => {
     SLOTS.forEach((slot, rowIdx) => {
       const rowH = rowHeights[rowIdx];
       // Time cell
-      ctx.fillStyle = '#131826';
+      ctx.fillStyle = '#eef3f9';
       ctx.fillRect(timeX, y, timeW, rowH);
-      ctx.fillStyle = '#e8eaf0';
+      ctx.fillStyle = '#0f172a';
       ctx.font = 'bold 13px sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText(ar ? timeLabelAR(slot.label) : slot.label, timeX + timeW / 2, y + rowH / 2 + 4);
@@ -9712,12 +9820,12 @@ PAGES.schedule = (main) => {
       DAYS.forEach((day, colIdx) => {
         const x = dayX(colIdx);
         const cls = classesAt(day.key, slot.hour).filter(isFiltered);
-        // Cell background
-        ctx.fillStyle = colIdx % 2 === 0 ? '#0e131f' : '#0a0e1a';
+        // Cell background (light, subtly zebra-striped)
+        ctx.fillStyle = colIdx % 2 === 0 ? '#ffffff' : '#f6f9fd';
         ctx.fillRect(x, y, cellW, rowH);
         // Cell border
         ctx.lineWidth = 1;
-        ctx.strokeStyle = '#252b3d';
+        ctx.strokeStyle = '#e2e8f0';
         ctx.strokeRect(x, y, cellW, rowH);
 
         if (cls.length) {
@@ -9727,28 +9835,34 @@ PAGES.schedule = (main) => {
           cls.forEach((c, ci) => {
             const by = y + GAP + ci * (blockH + GAP);
             const bx = x + 6, bw = cellW - 12;
-            // Colored block
+            // Colored block — soft drop shadow gives depth on the light background
+            ctx.save();
+            ctx.shadowColor = 'rgba(15,23,42,0.20)'; ctx.shadowBlur = 6; ctx.shadowOffsetY = 2;
             ctx.fillStyle = sportColor(c.sport);
             ctx.fillRect(bx, by, bw, blockH);
-            // Dark outline so two same-coloured sports don't blend into one
+            ctx.restore();
+            // Thin dark outline so two same-coloured sports don't blend into one
             ctx.lineWidth = 1.5;
-            ctx.strokeStyle = 'rgba(0,0,0,0.40)';
+            ctx.strokeStyle = 'rgba(0,0,0,0.30)';
             ctx.strokeRect(bx, by, bw, blockH);
-            // Labels
+            // Labels (white text with a subtle shadow so it stays readable on any chip colour)
             const cx = x + cellW / 2, cy = by + blockH / 2;
             const coach = state.coaches.find(co => co.id === c.coachId);
             const sportTxt = ar ? sportNameAR(c.sport) : c.sport.toUpperCase();
             const txt = `${sportEmoji(c.sport)} ${sportTxt}`;
+            ctx.save();
+            ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 3; ctx.shadowOffsetY = 1;
             ctx.fillStyle = 'white';
             ctx.textAlign = 'center';
             ctx.font = `bold ${single ? 15 : 12}px sans-serif`;
             ctx.fillText(txt, cx, cy + (coach ? (single ? -2 : -4) : 4));
             if (coach) {
               ctx.font = `${single ? 12 : 9}px sans-serif`;
-              ctx.fillStyle = 'rgba(255,255,255,0.92)';
+              ctx.fillStyle = 'rgba(255,255,255,0.95)';
               const cn = (ar && coach.nameArabic) ? coach.nameArabic : coach.name;
               ctx.fillText(cn, cx, cy + (single ? 18 : 9));
             }
+            ctx.restore();
           });
         }
       });
@@ -9756,7 +9870,7 @@ PAGES.schedule = (main) => {
     });
 
     // Footer
-    ctx.fillStyle = '#5a627a';
+    ctx.fillStyle = '#94a3b8';
     ctx.font = '11px sans-serif';
     if (ar) {
       ctx.textAlign = 'right';
@@ -19689,8 +19803,13 @@ PAGES.settings = (main, section) => {
 
   // Shared guard for destructive actions: admin-only, force a backup download, then
   // require TWO confirmations before running.
+  const DANGER_PIN = '4242';
   const dangerAction = (firstMsg, secondMsg, run) => {
     if (currentRole() !== 'admin') { toast('Only an admin can perform this action', 'error'); return; }
+    // v6.428 — require a security PIN before any destructive Danger Zone action.
+    const pin = prompt(t('Enter the security PIN to continue:', 'أدخل رمز الأمان للمتابعة:'));
+    if (pin === null) return;   // cancelled
+    if (String(pin).trim() !== DANGER_PIN) { toast(t('Incorrect PIN — action cancelled', 'رمز غير صحيح — أُلغي الإجراء'), 'error'); return; }
     if (!confirm(firstMsg)) return;
     try { if (typeof window.downloadBackup === 'function') window.downloadBackup(); } catch (_) {}
     if (!confirm(secondMsg)) return;
@@ -23604,6 +23723,18 @@ PAGES.expiring = (main) => {
         <div class="kpi-label">Expiring in ≤ ${threshold} days</div>
         <div class="kpi-value num">${expiringSoon.length}</div>
         <div class="kpi-delta flat">Call them now · click to filter</div>
+      </div>
+      <div class="kpi orange" style="cursor:pointer" onclick="document.getElementById('exp-bucket').value='d7';document.getElementById('exp-bucket').dispatchEvent(new Event('change'))">
+        <div class="kpi-icon">⏳</div>
+        <div class="kpi-label">Expiring in ≤ 7 days</div>
+        <div class="kpi-value num">${expiringSoon.length + week.length}</div>
+        <div class="kpi-delta flat">This week · click to filter</div>
+      </div>
+      <div class="kpi" style="cursor:pointer;border:1px solid var(--purple)" onclick="document.getElementById('exp-bucket').value='completed';document.getElementById('exp-bucket').dispatchEvent(new Event('change'))">
+        <div class="kpi-icon">✅</div>
+        <div class="kpi-label" style="color:var(--purple)">Completed</div>
+        <div class="kpi-value num" style="color:var(--purple)">${completed.length}</div>
+        <div class="kpi-delta flat">Finished classes · click to filter</div>
       </div>
       <div class="kpi blue" style="cursor:pointer" onclick="document.getElementById('exp-bucket').value='upcoming';document.getElementById('exp-bucket').dispatchEvent(new Event('change'))">
         <div class="kpi-icon">📅</div>

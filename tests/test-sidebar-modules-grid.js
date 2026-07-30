@@ -26,7 +26,7 @@ R.section('Renewal Potential + Duplicate Invoices are disabled');
 R.section('the new sections appear in the sidebar order (source)');
 {
   const src = H.readSrc();
-  R.ok('sections array includes Engagement / Advice / Shop in order', /'Membership','Engagement','Activities','Advice','Summer Camp'[\s\S]{0,60}'Finance','Shop','Insights'/.test(src));
+  R.ok('sections array includes Engagement / Advice / Shop in order', /'Membership','Engagement','Activities',[\s\S]{0,40}'Advice','Summer Camp'[\s\S]{0,60}'Finance','Shop','Insights'/.test(src));
   R.ok('each new section has an Arabic label', /Engagement: 'التواصل'/.test(src) && /Advice: 'النصائح'/.test(src) && /Shop: 'المتجر'/.test(src));
 }
 
