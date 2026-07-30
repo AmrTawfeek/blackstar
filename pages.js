@@ -1647,7 +1647,13 @@ PAGES.members = (main) => {
   $('#filter-date-from')?.addEventListener('change', e => { filter.dateFrom = e.target.value; pg.page = 1; refreshAndSave(); });
   $('#filter-date-to')?.addEventListener('change', e => { filter.dateTo = e.target.value; pg.page = 1; refreshAndSave(); });
   // v6.428 — always-visible Clear-filters button in the filter bar; full reset + re-render.
-  $('#members-clear-filters-inline')?.addEventListener('click', () => { filter = { ...DEFAULT_F }; saveFilter('members', filter); pg.page = 1; PAGES.members(main); });
+  // v6.431 FIX: use an inline default object here — the shared default is scoped to refresh(), so
+  // referencing it from this top-level handler threw ReferenceError on click (the "something
+  // glitched" toast) and the filters never cleared, leaving the member list stuck at 0.
+  $('#members-clear-filters-inline')?.addEventListener('click', () => {
+    saveFilter('members', { search: '', statuses: [], sports: [], coaches: [], nationalities: [], incomplete: 'all', balance: 'all', expiry: 'all', enrollMonths: [], dateFrom: '', dateTo: '', dateBasis: 'enrolled' });
+    PAGES.members(main);
+  });
   $('#add-member').addEventListener('click', () => addMember());
   $('#export-members')?.addEventListener('click', () => exportMembersChoice());   // hidden for viewer/reception role
   const colBtn = $('#member-columns'); if (colBtn) colBtn.addEventListener('click', () => openMemberColumns());
@@ -23711,7 +23717,7 @@ PAGES.expiring = (main) => {
       </div>
     </div>
 
-    <div class="kpi-grid mb-3">
+    <div class="kpi-grid mb-3" style="display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:12px">
       <div class="kpi red" style="cursor:pointer" onclick="document.getElementById('exp-bucket').value='expired';document.getElementById('exp-bucket').dispatchEvent(new Event('change'))">
         <div class="kpi-icon">⛔</div>
         <div class="kpi-label">Already Expired</div>
@@ -23742,18 +23748,6 @@ PAGES.expiring = (main) => {
         <div class="kpi-value num">${week.length + upcoming.length}</div>
         <div class="kpi-delta flat">On the horizon · click to filter</div>
       </div>
-      ${(() => {
-        const inList = [...expired, ...expiringSoon, ...upcoming];
-        const dueRows = inList.filter(({ m }) => memberOutstanding(m.id) > 0.001);
-        if (!dueRows.length) return '';
-        const total = dueRows.reduce((s, { m }) => s + memberOutstanding(m.id), 0);
-        return `<div class="kpi" style="background:rgba(242,163,60,.10);border:1px solid var(--accent-2)">
-          <div class="kpi-icon">💰</div>
-          <div class="kpi-label" style="color:var(--accent-2)">Money due (from these members)</div>
-          <div class="kpi-value num" style="color:var(--accent-2)">${fmt(total)} <span style="font-size:12px;color:var(--text-dim)">QAR</span></div>
-          <div class="kpi-delta flat">${dueRows.length} member${dueRows.length === 1 ? '' : 's'} owe payment · click 💰 in the table to collect</div>
-        </div>`;
-      })()}
       ${isViewerRole() ? '' : `<div class="kpi green">
         <div class="kpi-icon">💰</div>
         <div class="kpi-label">Potential Revenue</div>

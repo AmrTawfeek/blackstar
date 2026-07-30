@@ -34,6 +34,20 @@ R.section('Members filter bar: cleaned up + Completed option');
   R.ok('an always-visible Clear-filters button is present', /id="members-clear-filters-inline"/.test(html));
 }
 
+R.section('v6.431 — the inline Clear-filters handler is in-scope (no DEFAULT_F ReferenceError)');
+{
+  const src = H.readSrc();
+  // The handler runs at the top level of PAGES.members; DEFAULT_F is scoped to refresh(), so the
+  // handler must NOT reference DEFAULT_F (that threw the "something glitched" toast and left the
+  // list stuck at 0). It must save an inline default object instead.
+  const handler = (src.split("members-clear-filters-inline")[1] || '').slice(0, 400);
+  R.ok('the inline clear handler does NOT reference the out-of-scope DEFAULT_F', !/\bDEFAULT_F\b/.test(handler.split('addEventListener')[1] || handler));
+  R.ok('the inline clear handler saves an inline default filter', /saveFilter\('members', \{ search: '', statuses: \[\]/.test(src));
+  // DEFAULT_F itself is only referenced inside refresh() (declaration + the banner clear).
+  const refs = (src.match(/\bDEFAULT_F\b/g) || []).length;
+  R.ok('DEFAULT_F is referenced only where it is declared (≤3 times, all in refresh)', refs <= 3, refs);
+}
+
 R.section('the Completed expiry filter narrows to Completed-status members');
 {
   const ctx = H.makeCtx({ role: 'admin' }); seed(ctx);

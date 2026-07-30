@@ -15,7 +15,7 @@ R.section('the attendance routes are in the Attendance section');
 R.section('the new section is registered in order + Arabic');
 {
   const src = H.readSrc();
-  R.ok('sections array places Attendance after Activities', /'Activities','Attendance','Advice'/.test(src));
+  R.ok('sections array places Attendance right after Membership', /'Membership','Attendance','Activities'/.test(src));
   R.ok('Attendance has an Arabic label', /Attendance: 'الحضور'/.test(src));
 }
 
