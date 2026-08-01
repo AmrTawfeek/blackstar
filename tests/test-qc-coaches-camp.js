@@ -240,8 +240,8 @@ R.section('4 · Attendance windows');
   R.ok('DEFECT: coachperf attendance rate is windowed per subscription (Mostafa 75%)', rates.Mostafa === '75%', rates);
 }
 {
-  // subAttendanceWindow's v6.307 renewal-gap carry vs the RAW sub.start/end. Commission
-  // deliberately still uses the raw window — this pins the divergence so a future change is loud.
+  // subAttendanceWindow's v6.307 renewal-gap carry. As of v6.434 commission uses this SAME
+  // corrected window as the member card — this pins that they now agree (no more raw-window gap).
   const ctx = mk('admin', ACTIVE_Y + `
     state.members.push({id:130,name:'Gap Kid',sport:'Karate',coachId:1,joinDate:'2026-05-01',expiryDate:'2026-08-20',status:'Active',
       enrollments:[{sport:'Karate',coachId:1,classes:8,price:600}],
@@ -259,9 +259,9 @@ R.section('4 · Attendance windows');
   R.ok('raw sub.start is later than the corrected window start', q(ctx, `${m}.subscriptions[1].start`) === '2026-07-20', q(ctx, `${m}.subscriptions[1].start`));
   const rawY = q(ctx, `attendedYForSub(${m}, ${m}.subscriptions[1])`);
   const winY = q(ctx, `(()=>{const w=subAttendanceWindow(${m},${m}.subscriptions[1]);return liveAttendanceCount(${m},'Karate',w.from,w.to).y;})()`);
-  // KNOWN + DELIBERATE (not filed as a defect): commission keeps the raw window so settled
-  // history never moves. Documented here so the 1-vs-3 gap is never mistaken for a regression.
-  R.ok('KNOWN: commission (raw window) counts 1 while the member card (corrected window) counts 3', rawY === 1 && winY === 3, { rawY, winY });
+  // v6.434: commission counts attendance through the SAME corrected window as the member card,
+  // so a late-but-paid class reads as attended (not a phantom expiry true-up). Both count 3.
+  R.ok('commission and the member card agree on attended (both 3, corrected window)', rawY === 3 && winY === 3, { rawY, winY });
 }
 {
   const ctx = mk('admin', ACTIVE_Y);

@@ -17719,6 +17719,7 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
       memberName: l.memberName, sport: l.sport, price: l.amountBase,
       isSwitch: l.kind === 'switch', invoiceRef: l.kind === 'trueup' ? 'expiry true-up' : (l.kind === 'attended' ? (l.classes + ' class' + (l.classes === 1 ? '' : 'es')) : ''),
       invoiceDate: null, start: l.start, end: l.end, attended: l.attended, total: l.total, status: l.status,
+      _kind: l.kind, _trueupClasses: l.classes,   // v6.434: so the report can flag "expiry true-up" clearly
       _dupIgnored: !!l._dupIgnored, _origAmount: l._origAmount,
     }));
     pendingLines = pay.attendanceLines.pendingLines || [];
@@ -17839,7 +17840,9 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
             const rowTr = (l, n) => `
             <tr${l._dupIgnored ? ' style="background:#fafafa;color:#b0b0b0"' : ''}>
               <td style="color:#999">${n}</td>
-              <td>${l._dupIgnored ? `<span style="text-decoration:line-through">${escapeHtml(l.memberName)}</span> <span class="badge" style="background:#fee2e2;color:#b91c1c">DUPLICATE — NOT PAID</span>` : escapeHtml(l.memberName)}${l.isSwitch ? '<span class="badge">SWITCH</span>' : ''}<div style="color:#999;font-size:10px">${escapeHtml(l.invoiceRef || '')}${l.invoiceDate ? ' · ' + fmtDate(l.invoiceDate) : ''}</div></td>
+              <td>${l._dupIgnored ? `<span style="text-decoration:line-through">${escapeHtml(l.memberName)}</span> <span class="badge" style="background:#fee2e2;color:#b91c1c">DUPLICATE — NOT PAID</span>` : escapeHtml(l.memberName)}${l.isSwitch ? '<span class="badge">SWITCH</span>' : ''}${l._kind === 'trueup'
+                ? `<div style="margin-top:3px"><span style="display:inline-block;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;line-height:1.4">⏳ EXPIRED — ${l._trueupClasses} paid class${l._trueupClasses === 1 ? '' : 'es'} not attended, paid in full</span></div>`
+                : `<div style="color:#999;font-size:10px">${escapeHtml(l.invoiceRef || '')}${l.invoiceDate ? ' · ' + fmtDate(l.invoiceDate) : ''}</div>`}</td>
               <td>${escapeHtml(l.sport || '—')}</td>
               <td style="font-size:11px">${l.start ? fmtDate(l.start) : '—'}</td>
               <td style="font-size:11px">${l.end ? fmtDate(l.end) : '—'}</td>
