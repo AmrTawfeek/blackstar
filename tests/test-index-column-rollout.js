@@ -24,7 +24,11 @@ function makeEl(key) {
   };
   store[key] = e; return e;
 }
-const ctx = { console: { log() {}, warn() {}, error() {}, info() {} }, JSON, Math, Date, Object, Array, Map, Set, WeakMap, Promise, String, Number, Boolean, Symbol, RegExp, Error, TypeError, isNaN, isFinite, parseInt, parseFloat, encodeURIComponent, decodeURIComponent, TextEncoder,
+// Pin the clock (own sandbox, real Date — the invoice/expense month filter broke once the real
+// calendar rolled past July). FrozenDate keeps TODAY = 2026-07-18.
+const _FIX = new Date('2026-07-18T12:00:00Z').getTime();
+class FrozenDate extends Date { constructor(...a) { if (!a.length) super(_FIX); else super(...a); } static now() { return _FIX; } }
+const ctx = { console: { log() {}, warn() {}, error() {}, info() {} }, JSON, Math, Date: FrozenDate, Object, Array, Map, Set, WeakMap, Promise, String, Number, Boolean, Symbol, RegExp, Error, TypeError, isNaN, isFinite, parseInt, parseFloat, encodeURIComponent, decodeURIComponent, TextEncoder,
   setTimeout: f => { if (typeof f === 'function') f(); return 0; }, clearTimeout() {}, setInterval: () => 0, clearInterval() {}, requestAnimationFrame: () => 0 };
 ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx; ctx.TODAY = '2026-07-18';
 ctx.localStorage = { _d: {}, getItem(k) { return this._d[k] ?? null; }, setItem(k, v) { this._d[k] = String(v); }, removeItem(k) { delete this._d[k]; } }; ctx.sessionStorage = ctx.localStorage;

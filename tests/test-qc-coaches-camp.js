@@ -252,7 +252,10 @@ R.section('4 · Attendance windows');
   `);
   const m = 'state.members.find(x=>x.id===130)';
   const win = q(ctx, `subAttendanceWindow(${m}, ${m}.subscriptions[1])`);
-  R.ok('subAttendanceWindow absorbs the renewal gap (from = day after prev end)', win.from === '2026-07-06' && win.to === '2026-08-20', win);
+  // v6.433: the LAST package now opens its window's end (fill-up-to-paid), so `to` is null unless
+  // the class limit was reached. This test's member is under the limit → to === null. The renewal-
+  // gap absorption this asserts is about `from`, which is unchanged (day after the prev end).
+  R.ok('subAttendanceWindow absorbs the renewal gap (from = day after prev end)', win.from === '2026-07-06' && win.to === null, win);
   R.ok('raw sub.start is later than the corrected window start', q(ctx, `${m}.subscriptions[1].start`) === '2026-07-20', q(ctx, `${m}.subscriptions[1].start`));
   const rawY = q(ctx, `attendedYForSub(${m}, ${m}.subscriptions[1])`);
   const winY = q(ctx, `(()=>{const w=subAttendanceWindow(${m},${m}.subscriptions[1]);return liveAttendanceCount(${m},'Karate',w.from,w.to).y;})()`);
