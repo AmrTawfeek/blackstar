@@ -70,6 +70,7 @@ R.section('coach salary report flags an expiry true-up clearly (not bare grey te
   const pagesSrc = require('fs').readFileSync(require('path').join(H.DIR, 'pages.js'), 'utf8');
   R.ok("true-up rows carry the line kind so the report can flag them", /_kind: l\.kind, _trueupClasses: l\.classes/.test(pagesSrc));
   R.ok('the report renders a styled "EXPIRED — paid but not attended" flag', /_kind === 'trueup'[\s\S]{0,260}EXPIRED — \$\{l\._trueupClasses\} paid class/.test(pagesSrc));
+  R.ok('a true-up row shows the trued-up class count (not attended) in the Classes column', /l\._kind === 'trueup' \? \(l\._trueupClasses != null \? l\._trueupClasses : 0\) : \(l\.attended/.test(pagesSrc));
 }
 
 R.done();

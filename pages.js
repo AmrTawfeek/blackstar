@@ -16573,9 +16573,13 @@ PAGES.salaries = (main) => {
           <td colspan="2" class="text-mute" style="font-size:11px">${paidCount} of ${people.length} paid</td>
         </tr>` : '';
     }
-    $('#sal-count').textContent = filter.settleDate
+    // Commission is recomputed LIVE from the latest attendance/invoices/payments on every open and
+    // on Recalculate (v6.436) — stamp the time so the user knows the figures are fresh, not cached.
+    let _recStamp = '';
+    try { const d = new Date(); _recStamp = ` · 🔄 recalculated ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; } catch (_) {}
+    $('#sal-count').textContent = (filter.settleDate
       ? `${people.length} active · ${fmtMoney(totalNet)} net · settlement up to ${fmtDate(filter.settleDate)} · ${paidCount} paid`
-      : `${people.length} active · ${fmtMoney(totalNet)} net payroll for ${fmtMonth(filter.month)} · ${paidCount} paid`;
+      : `${people.length} active · ${fmtMoney(totalNet)} net payroll for ${fmtMonth(filter.month)} · ${paidCount} paid`) + _recStamp;
 
     // Ad-hoc / external coach payments (free-text name on a Salary expense). These
     // people have no auto-calculated pay, so the amount paid IS their salary cost.
@@ -16626,6 +16630,7 @@ PAGES.salaries = (main) => {
       </div>
       <div class="topbar-actions">
         <button class="btn ghost" onclick="navigate('coaches')" title="Set fixed salaries + commission rates per person">⚙️ Configure on Team page</button>
+        <button class="btn ghost" onclick="window._salRecalc && window._salRecalc()" title="${t('Re-run each coach commission from the latest attendance, invoices and payments', 'أعد حساب عمولة كل مدرب من أحدث الحضور والفواتير والمدفوعات')}">🔄 ${t('Recalculate', 'إعادة الحساب')}</button>
         ${currentRole() === 'admin' ? `<button class="btn ghost" onclick="coachAttributionCheck()" title="${t('Find invoice lines credited to a coach who is no longer the current coach for that sport, and re-credit them', 'ابحث عن بنود منسوبة لمدرب لم يعد مدرب العضو لتلك الرياضة، وأعد إسنادها')}">🧭 ${t('Coach check', 'فحص المدرب')}</button>` : ''}
         <button class="btn primary" onclick="downloadPayrollCSV('${filter.month}')">📥 Export payroll</button>
       </div>
@@ -16681,6 +16686,7 @@ PAGES.salaries = (main) => {
     </div>
     <div id="sal-adhoc" style="margin-top:14px"></div>
   `;
+  window._salRecalc = refresh;   // v6.436 — the 🔄 Recalculate button re-runs the live commission compute
   $('#sal-month').addEventListener('change', e => { filter.month = e.target.value; window._salMonth = filter.month; refresh(); });
   const salBasisChange = $('#sal-basis-change');
   if (salBasisChange) salBasisChange.addEventListener('click', () => {
@@ -17846,7 +17852,7 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
               <td>${escapeHtml(l.sport || '—')}</td>
               <td style="font-size:11px">${l.start ? fmtDate(l.start) : '—'}</td>
               <td style="font-size:11px">${l.end ? fmtDate(l.end) : '—'}</td>
-              <td style="font-size:11px">${l.attended != null ? l.attended : 0}${l.total ? ' / ' + l.total : ''}</td>
+              <td style="font-size:11px">${l._kind === 'trueup' ? (l._trueupClasses != null ? l._trueupClasses : 0) : (l.attended != null ? l.attended : 0)}${l.total ? ' / ' + l.total : ''}</td>
               <td style="font-size:11px">${escapeHtml(l.status || '—')}</td>
               <td class="num ${l.price < 0 ? 'neg' : ''}">${l._dupIgnored ? `<span style="text-decoration:line-through;color:#c0c0c0">${fmt(l._origAmount || 0)}</span> → <b>0</b>` : fmt(l.price)}${l.prorated ? `<div style="color:#999;font-size:9px">of ${fmt(l.fee)} · ${l.attended}/${l.total} attended</div>` : ''}</td>
               <td class="num ${l.price < 0 ? 'neg' : ''}" style="font-weight:700">${l._dupIgnored ? '<b>0</b>' : fmt(l.price * rate / 100)}</td>
@@ -22307,14 +22313,42 @@ window.switchSport = function(memberId) {
         }
         // Summer Camp has no coach — force null when switching TO camp
         const finalToCoachId = toIsCamp ? null : toCoachId;
+        // v6.436 — the destination sport carries the REMAINING classes and the TRANSFERRED
+        // value (bShare), and the source sport is left at what was actually used (attended
+        // classes / aShare). So a switch splits ONE package instead of leaving two full-price
+        // sports, the member card shows the right class counts, and a later invoice re-sync
+        // won't see the switched-in sport as "missing" and re-charge it a full membership.
+        const _remainingCls = skipReconciliation ? (from.classes || 0) : Math.max(0, totalClasses - attendedA);
+        const _destPrice = skipReconciliation ? (from.price || 0) : bShare;
         const targetIdx = m.enrollments.findIndex(e => e.sport === from.sport && e.coachId === from.coachId);
         if (targetIdx >= 0) {
           m.enrollments[targetIdx].sport = toSport;
           m.enrollments[targetIdx].coachId = finalToCoachId;
-          // Don't touch classes/price on the enrollment row — those reflect
-          // the original deal; commission credits live in the invoice lineItems.
+          m.enrollments[targetIdx].classes = _remainingCls;
+          m.enrollments[targetIdx].price = _destPrice;
+          m.enrollments[targetIdx].switchedInto = true;   // funded by a switch credit — never re-bill as a fresh membership
         } else {
-          m.enrollments.push({ sport: toSport, coachId: finalToCoachId, classes: from.classes || 0, price: from.price || 0 });
+          m.enrollments.push({ sport: toSport, coachId: finalToCoachId, classes: _remainingCls, price: _destPrice, switchedInto: true });
+        }
+        // Mark the SOURCE subscription completed at what she actually used (e.g. Gymnastic → 2
+        // attended, completed) and size/repurpose the destination subscription to the remaining
+        // classes + transferred value, so the card and payroll read one split package.
+        if (!skipReconciliation && Array.isArray(m.subscriptions)) {
+          const srcSub = m.subscriptions.find(s => (s.activity || '') === from.sport && s.coachId === from.coachId && s.status !== 'completed' && !s.switchedAwayTo);
+          if (srcSub) {
+            srcSub.status = 'completed';
+            srcSub.switchedAwayTo = toSport;
+            srcSub.switchedAt = switchDate;
+          }
+          const destSub = m.subscriptions.find(s => (s.activity || '') === toSport && s.coachId === finalToCoachId);
+          if (destSub) {
+            destSub.totalClasses = _remainingCls;
+            destSub.switchFunded = true;
+          } else if (srcSub) {
+            m.subscriptions.push({ activity: toSport, coachId: finalToCoachId, totalClasses: _remainingCls,
+              start: switchDate, end: srcSub.end || null, status: 'active', switchFunded: true, amountPaid: _destPrice,
+              _sid: 's' + Date.now() + '_sw' });
+          }
         }
 
         // If the old sport was the member's PRIMARY sport (legacy fields), update those too
