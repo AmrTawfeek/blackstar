@@ -16632,6 +16632,7 @@ PAGES.salaries = (main) => {
         <button class="btn ghost" onclick="navigate('coaches')" title="Set fixed salaries + commission rates per person">⚙️ Configure on Team page</button>
         <button class="btn ghost" onclick="window._salRecalc && window._salRecalc()" title="${t('Re-run each coach commission from the latest attendance, invoices and payments', 'أعد حساب عمولة كل مدرب من أحدث الحضور والفواتير والمدفوعات')}">🔄 ${t('Recalculate', 'إعادة الحساب')}</button>
         ${currentRole() === 'admin' ? `<button class="btn ghost" onclick="coachAttributionCheck()" title="${t('Find invoice lines credited to a coach who is no longer the current coach for that sport, and re-credit them', 'ابحث عن بنود منسوبة لمدرب لم يعد مدرب العضو لتلك الرياضة، وأعد إسنادها')}">🧭 ${t('Coach check', 'فحص المدرب')}</button>` : ''}
+        ${currentRole() === 'admin' && (typeof _switchedUnreconciled === 'function' && _switchedUnreconciled().length) ? `<button class="btn ghost" style="border-color:var(--accent-2);color:var(--accent-2)" onclick="switchReconcileCheck()" title="${t('A sport was switched before the fix — complete the old sport, split the payment, remove the phantom pending', 'رياضة بُدّلت قبل الإصلاح — أكمل القديمة وقسّم الدفعة وأزل المعلّق الوهمي')}">🔀 ${t('Switch check', 'فحص التبديل')} · ${_switchedUnreconciled().length}</button>` : ''}
         <button class="btn primary" onclick="downloadPayrollCSV('${filter.month}')">📥 Export payroll</button>
       </div>
     </div>
@@ -17557,6 +17558,91 @@ window.coachAttributionCheck = function () {
   });
 };
 
+// ── Reconcile a pre-v6.436 sport SWITCH that left the source sport ACTIVE + the payment un-split ──
+// Older switches flipped the enrollment but left the SOURCE subscription active at its full class
+// count and never split the invoice, so the member looked like TWO full-price sports and the source
+// coach carried a PHANTOM PENDING for classes that actually moved to the new sport. This uses the
+// LOCKED switch snapshot (attendedByOld / aShare / bShare) to: complete the source sub at what was
+// attended, resize the destination sub to the remaining classes, split the invoice line prices
+// (source→aShare, dest→bShare) so the one package is one split payment, and void the now-redundant
+// switch-credit invoice. (v6.440)
+function _switchedUnreconciled() {
+  const out = [];
+  for (const m of (state.members || [])) {
+    if (m.deleted || !Array.isArray(m.sportSwitches)) continue;
+    for (const sw of m.sportSwitches) {
+      if (!sw || !sw.snapshot || sw.distributed) continue;   // multi-target distribution not handled here
+      const fromSub = (m.subscriptions || []).find(s => (s.activity || '') === sw.fromSport && s.coachId === sw.fromCoachId);
+      if (!fromSub || fromSub.status === 'completed' || fromSub.switchedAwayTo) continue;   // already reconciled / gone
+      out.push({ m, sw, snap: sw.snapshot, fromSub });
+    }
+  }
+  return out;
+}
+window._applySwitchReconcile = function (memberId) {
+  const m = (state.members || []).find(x => x.id === memberId);
+  if (!m) return 0;
+  let did = 0;
+  for (const { sw, snap, fromSub } of _switchedUnreconciled().filter(r => r.m.id === memberId)) {
+    const attended = parseInt(snap.attendedByOld) || 0;
+    const total = parseInt(snap.totalClasses) || (parseInt(fromSub.totalClasses) || 0);
+    const aShare = Math.round((Number(snap.aShare) || 0) * 100) / 100;
+    const bShare = Math.round((Number(snap.bShare) || 0) * 100) / 100;
+    const remaining = Math.max(0, total - attended);
+    // 1) SOURCE sub → completed at what was actually attended.
+    fromSub.totalClasses = attended; fromSub.status = 'completed';
+    fromSub.switchedAwayTo = sw.toSport; fromSub.switchedAt = sw.date; fromSub.amountPaid = aShare;
+    // 2) DEST sub → the remaining classes, switch-funded.
+    const toSub = (m.subscriptions || []).find(s => (s.activity || '') === sw.toSport && s.coachId === sw.toCoachId);
+    if (toSub) { toSub.totalClasses = remaining; toSub.amountPaid = bShare; toSub.switchFunded = true; }
+    // 3) Split the membership invoice line prices (source→aShare, dest→bShare) so the slot is ONE payment.
+    const invRef = fromSub.invoiceNumber || (toSub && toSub.invoiceNumber);
+    const inv = (state.invoices || []).find(v => !v.deleted && !v.switchCredit && v.customerId === m.id
+      && (v.ref === invRef || (Array.isArray(v.lineItems) && v.lineItems.some(li => li.sport === sw.fromSport && li.coachId === sw.fromCoachId))));
+    if (inv && Array.isArray(inv.lineItems)) {
+      const fl = inv.lineItems.find(li => li.sport === sw.fromSport && li.coachId === sw.fromCoachId);
+      if (fl) fl.price = aShare;
+      const tl = inv.lineItems.find(li => li.sport === sw.toSport && li.coachId === sw.toCoachId);
+      if (tl) tl.price = bShare;
+      inv.amount = inv.lineItems.reduce((s, li) => s + (Number(li.price) || 0), 0);
+      if (typeof stampUpdate === 'function') stampUpdate(inv);
+    }
+    // 4) Void the now-redundant switch-credit invoice (its ±adjustment is baked into the lines above).
+    const swInv = (state.invoices || []).find(v => !v.deleted && v.switchCredit && v.customerId === m.id
+      && Array.isArray(v.lineItems) && v.lineItems.some(li => li.sport === sw.fromSport) && v.lineItems.some(li => li.sport === sw.toSport));
+    if (swInv) { swInv.deleted = true; swInv.deletedAt = new Date().toISOString(); swInv.deletedBy = currentUserName(); }
+    // 5) Destination enrollment reflects the transferred classes/price.
+    const enr = (m.enrollments || []).find(e => e.sport === sw.toSport && e.coachId === sw.toCoachId);
+    if (enr) { enr.classes = remaining; enr.price = bShare; enr.switchedInto = true; }
+    if (typeof audit === 'function') audit('switch.reconcile', 'member:' + m.id,
+      `Reconciled ${sw.fromSport}→${sw.toSport} for ${m.name}: ${sw.fromSport} completed @${attended} (${fmt(aShare)}), ${sw.toSport} ${remaining} classes (${fmt(bShare)})`,
+      { memberId: m.id, fromSport: sw.fromSport, toSport: sw.toSport, attended, aShare, bShare });
+    did++;
+  }
+  return did;
+};
+window.switchReconcileCheck = function () {
+  if (currentRole() !== 'admin') { toast(t('Admins only', 'للمسؤولين فقط'), 'error'); return; }
+  const rows = _switchedUnreconciled();
+  const body = rows.length ? `
+    <div style="background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.30);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;line-height:1.6">
+      ${t('These members switched a sport BEFORE the switch fix, so the old sport is still <b>active</b> and its payment was never split — the source coach carries a phantom pending. Reconciling completes the old sport at what was attended, moves the rest to the new sport, and splits the one payment. A backup is downloaded first; each fix is audited.', 'هؤلاء الأعضاء بدّلوا رياضة قبل الإصلاح، فبقيت الرياضة القديمة <b>نشطة</b> ولم يُقسّم دفعها. المعالجة تُكمل الرياضة القديمة على ما تم حضوره وتنقل الباقي وتقسّم الدفعة. يتم تنزيل نسخة احتياطية أولاً.')}
+    </div>
+    <div style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:560px"><thead><tr style="background:var(--surface-2);position:sticky;top:0">
+        <th style="padding:8px 10px;text-align:left">${t('Member', 'العضو')}</th><th style="padding:8px 10px;text-align:left">${t('Switch', 'التبديل')}</th>
+        <th style="padding:8px 10px;text-align:left">${t('Correction', 'التصحيح')}</th><th style="padding:8px 10px;text-align:right">${t('Action', 'إجراء')}</th></tr></thead><tbody>
+      ${rows.map(r => { const at = parseInt(r.snap.attendedByOld) || 0, tot = parseInt(r.snap.totalClasses) || 0; return `<tr>
+        <td style="padding:7px 10px;font-weight:600">${escapeHtml(r.m.name)}</td>
+        <td style="padding:7px 10px">${escapeHtml(r.sw.fromSport)} → ${escapeHtml(r.sw.toSport)}</td>
+        <td style="padding:7px 10px;font-size:11px">${escapeHtml(r.sw.fromSport)}: <b>${t('completed', 'مكتمل')} @${at}</b> (${fmt(r.snap.aShare)}) · ${escapeHtml(r.sw.toSport)}: <b>${Math.max(0, tot - at)} ${t('classes', 'حصص')}</b> (${fmt(r.snap.bShare)})</td>
+        <td style="padding:7px 10px;text-align:right"><button class="btn primary sm" onclick="if(typeof window.downloadBackup==='function'){try{window.downloadBackup();}catch(e){}} const n=window._applySwitchReconcile(${JSON.stringify(r.m.id)}); confirmSaved('${t('Reconciled', 'تمت المعالجة')} '+n, { onOk: () => switchReconcileCheck() })">🔀 ${t('Reconcile', 'معالجة')}</button></td>
+      </tr>`; }).join('')}</tbody></table></div>`
+    : `<div class="text-mute" style="padding:26px;text-align:center">✓ ${t('No unreconciled switches — every switched sport is properly split.', 'لا توجد تبديلات غير معالَجة.')}</div>`;
+  showModal({ title: `🔀 ${t('Switch reconciliation', 'معالجة التبديل')}${rows.length ? ' · ' + rows.length : ''}`, body,
+    actions: [{ label: t('Close', 'إغلاق'), class: 'btn ghost', onclick: () => closeModal() }] });
+};
+
 window.showRevenueDetail = function(coachId, monthKey) {
   const c = state.coaches.find(x => x.id === coachId);
   if (!c) return;
@@ -17647,11 +17733,12 @@ window.showRevenueDetail = function(coachId, monthKey) {
           <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
             <table style="width:100%;font-size:13px">
               <thead style="background:var(--surface-2)"><tr>
-                <th style="text-align:left;padding:8px">Member</th><th style="text-align:left;padding:8px">Sport</th>
+                <th style="text-align:left;padding:8px">#</th><th style="text-align:left;padding:8px">Member</th><th style="text-align:left;padding:8px">Sport</th>
                 <th style="text-align:right;padding:8px">Classes left</th><th style="text-align:right;padding:8px">Pending (QAR)</th>
               </tr></thead>
               <tbody>
-                ${pendingLines.map(p => `<tr>
+                ${pendingLines.map((p, _pn) => `<tr>
+                  <td style="padding:6px 8px;border-top:1px solid var(--border);color:var(--text-mute)">${_pn + 1}</td>
                   <td style="padding:6px 8px;border-top:1px solid var(--border)">${escapeHtml(p.memberName)}${p.status === 'Frozen' ? ' <span class="badge blue" style="font-size:9px">❄️ Frozen</span>' : ''}</td>
                   <td style="padding:6px 8px;border-top:1px solid var(--border)">${escapeHtml(p.sport || '—')}</td>
                   <td style="padding:6px 8px;border-top:1px solid var(--border);text-align:right">${p.classes != null ? p.classes + (p.total ? ' / ' + p.total : '') : (p.status === 'Frozen' ? '❄️ frozen' : '—')}</td>
@@ -17882,9 +17969,10 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
       <h2>⏳ Pending — paid but not yet attended</h2>
       <div style="font-size:11px;color:#666;margin-bottom:6px">Already paid for. ${escapeHtml(c.name)} earns these as the member attends, or as a true-up when the membership ends — they appear in a future month's pay on top of that month's commission.</div>
       <table>
-        <thead><tr><th>Member</th><th>Sport</th><th>Start</th><th>End</th><th>Classes left</th><th style="text-align:right">Pending (QAR)</th></tr></thead>
+        <thead><tr><th>#</th><th>Member</th><th>Sport</th><th>Start</th><th>End</th><th>Classes left</th><th style="text-align:right">Pending (QAR)</th></tr></thead>
         <tbody>
-          ${pendingLines.map(p => `<tr>
+          ${pendingLines.map((p, _pn) => `<tr>
+            <td style="color:#999">${_pn + 1}</td>
             <td>${escapeHtml(p.memberName)}${p.status === 'Frozen' ? ' <span style="font-size:10px;color:#2563eb;font-weight:700">❄️ Frozen</span>' : ''}</td>
             <td>${escapeHtml(p.sport || '—')}</td>
             <td style="font-size:11px">${p.start ? fmtDate(p.start) : '—'}</td>
@@ -17892,7 +17980,7 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
             <td>${p.classes != null ? p.classes + (p.total ? ' / ' + p.total : '') : (p.status === 'Frozen' ? '❄️ frozen' : '—')}</td>
             <td class="num">${fmt(p.amountBase * pay.commissionRate / 100)}</td>
           </tr>`).join('')}
-          <tr style="background:#fef3c7;font-weight:700"><td colspan="5">Total pending</td><td class="num">${fmt(pay.commissionPending)}</td></tr>
+          <tr style="background:#fef3c7;font-weight:700"><td colspan="6">Total pending</td><td class="num">${fmt(pay.commissionPending)}</td></tr>
         </tbody>
       </table>
       ` : ''}
