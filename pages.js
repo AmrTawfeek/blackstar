@@ -2159,7 +2159,13 @@ function viewMember(id) {
           const badge = cls === 'completed'
             ? `<span class="badge" style="background:rgba(139,92,246,.16);color:#7c3aed;font-weight:700" title="All classes attended">✓ ${label}</span>`
             : `<span class="badge ${cls}">${label}</span>`;
-          return `${badge}${delBtn}`;
+          // Admin ✎ EDIT — change this sport's class count, price and status directly (v6.441). Handy
+          // for a switched sport: set the old sport Completed at what was attended, the new sport to the
+          // remaining classes/price. Saving also syncs the linked invoice line so commission follows.
+          const editBtn = (isAdmin && sid)
+            ? ` <button onclick="event.stopPropagation();editSubscription(${m.id}, '${sid}')" title="Edit classes / price / status" style="background:transparent;border:0;color:var(--blue);opacity:.85;cursor:pointer;padding:0 3px;font-size:12px">✎</button>`
+            : '';
+          return `${badge}${editBtn}${delBtn}`;
         })()}</td>
       </tr>
     `;
@@ -23170,6 +23176,54 @@ window.addRenewal = function(memberId) {
 // not-yet-started entry without touching the member's other subscriptions of the
 // same sport. Only allowed when that subscription has ZERO attendance (nothing was
 // consumed). Also removes its linked invoice (or that sport's line) so PAID drops.
+// Edit ONE subscription's class count, price and status directly (admin). Saving syncs the linked
+// membership invoice LINE price so commission follows the new amount. For a switched sport this lets
+// you set the old sport Completed at what was attended and the new sport to the remaining classes. If
+// the sport still has an un-voided switch-credit invoice, it warns to run 🔀 Switch check for the full
+// (double-free) fix. (v6.441)
+window.editSubscription = function(memberId, sid) {
+  if (currentRole() !== 'admin') { toast(t('Admins only', 'للمسؤولين فقط'), 'error'); return; }
+  const m = state.members.find(x => x.id === memberId);
+  if (!m || !Array.isArray(m.subscriptions)) return;
+  const sub = m.subscriptions.find(s => (s._sid || s._rid) === sid);
+  if (!sub) { toast(t('Subscription not found', 'الاشتراك غير موجود'), 'error'); return; }
+  const inv = (state.invoices || []).find(v => !v.deleted && !v.switchCredit && v.ref === sub.invoiceNumber);
+  const line = inv && Array.isArray(inv.lineItems) ? inv.lineItems.find(l => l.sport === sub.activity && (l.coachId == null || sub.coachId == null || l.coachId === sub.coachId)) : null;
+  const linePrice = line ? (Number(line.price) || 0) : (Number(sub.amountPaid) || 0);
+  const hasSwitchCredit = (state.invoices || []).some(v => !v.deleted && v.switchCredit && v.customerId === m.id && Array.isArray(v.lineItems) && v.lineItems.some(l => l.sport === sub.activity));
+  const statuses = ['active', 'completed', 'expired', 'frozen'];
+  showModal({
+    title: `✎ ${t('Edit subscription', 'تعديل الاشتراك')} · ${escapeHtml(sub.activity || '')}`,
+    body: `
+      <div style="display:grid;gap:12px;font-size:13px">
+        <label style="display:grid;gap:4px">${t('Total classes', 'إجمالي الحصص')}
+          <input id="es-classes" type="number" min="0" value="${sub.totalClasses != null ? sub.totalClasses : 0}" style="padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);color:var(--text)"></label>
+        <label style="display:grid;gap:4px">${t('Price (QAR)', 'السعر')} <span class="text-mute" style="font-size:10px">${t('updates the invoice line + commission', 'يحدّث بند الفاتورة والعمولة')}</span>
+          <input id="es-price" type="number" min="0" step="0.01" value="${linePrice}" style="padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);color:var(--text)"></label>
+        <label style="display:grid;gap:4px">${t('Status', 'الحالة')}
+          <select id="es-status" style="padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);color:var(--text)">
+            ${statuses.map(o => `<option value="${o}" ${(sub.status || 'active') === o ? 'selected' : ''}>${t(o.charAt(0).toUpperCase() + o.slice(1), o)}</option>`).join('')}</select></label>
+        ${hasSwitchCredit ? `<div style="background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.30);border-radius:8px;padding:8px 10px;font-size:11px;line-height:1.5">⚠️ ${t('This sport still has a SWITCH CREDIT. Editing here will not remove the duplicate pending — run', 'لهذه الرياضة رصيد تبديل. التعديل هنا لن يزيل المعلّق المكرر — استخدم')} <b>🔀 ${t('Switch check', 'فحص التبديل')}</b> ${t('on the Salaries screen for the complete fix.', 'في شاشة الرواتب للإصلاح الكامل.')}</div>` : ''}
+      </div>`,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: () => closeModal() },
+      { label: t('Save', 'حفظ'), class: 'btn primary', onclick: () => {
+        const cls = parseInt(($('#es-classes') || {}).value) || 0;
+        const price = parseFloat(($('#es-price') || {}).value);
+        const st = ($('#es-status') || {}).value || 'active';
+        sub.totalClasses = cls;
+        sub.status = st;
+        if (!isNaN(price)) {
+          sub.amountPaid = price;
+          if (line) { line.price = price; if (Array.isArray(inv.lineItems)) { inv.amount = inv.lineItems.reduce((s, l) => s + (Number(l.price) || 0), 0); if (typeof stampUpdate === 'function') stampUpdate(inv); } }
+        }
+        if (typeof audit === 'function') audit('subscription.edit', 'member:' + m.id, `Edited ${sub.activity}: ${cls} classes · ${fmt(isNaN(price) ? linePrice : price)} · ${st}`, { memberId: m.id, sport: sub.activity });
+        closeModal();
+        confirmSaved(t('Subscription updated', 'تم تحديث الاشتراك'), { onOk: () => viewMember(m.id) });
+      } },
+    ],
+  });
+};
 window.deleteSubscription = function(memberId, sid) {
   if (currentRole() !== 'admin') { toast('Only admins can delete a subscription', 'error'); return; }
   const m = state.members.find(x => x.id === memberId);
