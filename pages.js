@@ -20576,11 +20576,11 @@ PAGES.attendance = (main) => {
       }).join('');
       $('#att-table-wrap').innerHTML = `
         <table class="att-table">
-          <thead><tr><th class="att-name-h">Student</th>${monthHeaders}<th class="att-total-h">Total Y</th><th class="text-right">Export</th></tr></thead>
+          <thead><tr><th class="att-name-h">${t('Student', 'الطالب')}</th>${monthHeaders}<th class="att-total-h">${t('Total Y', 'إجمالي Y')}</th><th class="text-right">${t('Export', 'تصدير')}</th></tr></thead>
           <tbody>${body || `<tr><td colspan="${months.length + 3}" class="empty">No attendance recorded yet.</td></tr>`}</tbody>
         </table>`;
       const distinctMembers = new Set(rows.map(r => r.m.id)).size;
-      $('#att-count').textContent = `${rows.length} attendance row${rows.length === 1 ? '' : 's'} · ${distinctMembers} student${distinctMembers === 1 ? '' : 's'} · ${filter.months.length ? filter.months.length + ' month' + (filter.months.length === 1 ? '' : 's') : 'all months (' + months.length + ')'} — present (Y) per month`;
+      $('#att-count').textContent = `${rows.length} ${t('attendance rows', 'صفوف حضور')} · ${distinctMembers} ${t('students', 'طلاب')} · ${filter.months.length ? filter.months.length + ' ' + t('month(s)', 'شهر') : t('all months', 'كل الأشهر') + ' (' + months.length + ')'} — ${t('present (Y) per month', 'الحاضر (Y) لكل شهر')}`;
       return;
     }
 
@@ -20670,11 +20670,11 @@ PAGES.attendance = (main) => {
       <table class="att-table">
         <thead>
           <tr>
-            <th class="att-name-h">Student</th>
+            <th class="att-name-h">${t('Student', 'الطالب')}</th>
             ${dayHeaders}
-            <th class="att-total-h">Total</th>
-            <th class="text-right">Rate</th>
-            <th class="text-right">Export</th>
+            <th class="att-total-h">${t('Total', 'الإجمالي')}</th>
+            <th class="text-right">${t('Rate', 'النسبة')}</th>
+            <th class="text-right">${t('Export', 'تصدير')}</th>
           </tr>
         </thead>
         <tbody>${body || `<tr><td colspan="${dayList.length+4}" class="empty">No members match the current filters.</td></tr>`}</tbody>
@@ -20782,20 +20782,20 @@ PAGES.attendance = (main) => {
 
     <div class="topbar">
       <div>
-        <h1>Attendance</h1>
-        <div class="subtitle"><span id="att-count">Loading...</span></div>
+        <h1>${t('Attendance', 'الحضور')}</h1>
+        <div class="subtitle"><span id="att-count">${t('Loading...', 'جار التحميل...')}</span></div>
       </div>
       <div class="topbar-actions">
-        <div title="Classes attended (present) by students in the current view — respects the day filter" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4px 14px;margin-right:6px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:10px">
+        <div title="${t('Classes attended (present) by students in the current view — respects the day filter', 'الحصص التي حضرها الطلاب في العرض الحالي — حسب مرشح اليوم')}" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4px 14px;margin-right:6px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:10px">
           <span style="font-size:20px;font-weight:700;color:var(--green);line-height:1"><span id="att-grand">0</span></span>
           <span id="att-grand-label" style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.5px">${t('Attended', 'إجمالي الحضور')}</span>
         </div>
-        <button class="btn ghost" id="att-today">📍 Today</button>
-        <button class="btn ghost" id="att-import">📂 Import CSV</button>
-        <button class="btn ghost" id="att-export">📥 Export CSV</button>
-        <button class="btn ghost" id="att-export-pdf">📄 Export PDF</button>
-        <button class="btn ghost" id="att-export-img-en" title="Download the sheet as an image (English)">🖼 Image (EN)</button>
-        <button class="btn ghost" id="att-export-img-ar" title="تحميل الورقة كصورة (عربي)">🖼 صورة (AR)</button>
+        <button class="btn ghost" id="att-today">📍 ${t('Today', 'اليوم')}</button>
+        <button class="btn ghost" id="att-import">📂 ${t('Import CSV', 'استيراد CSV')}</button>
+        <button class="btn ghost" id="att-export">📥 ${t('Export CSV', 'تصدير CSV')}</button>
+        <button class="btn ghost" id="att-export-pdf">📄 ${t('Export PDF', 'تصدير PDF')}</button>
+        <button class="btn ghost" id="att-export-img-en" title="${t('Download the sheet as an image (English)', 'تنزيل الورقة كصورة (إنجليزي)')}">🖼 ${t('Image (EN)', 'صورة (EN)')}</button>
+        <button class="btn ghost" id="att-export-img-ar" title="${t('Download the sheet as an image (Arabic)', 'تحميل الورقة كصورة (عربي)')}">🖼 ${t('Image (AR)', 'صورة (AR)')}</button>
       </div>
     </div>
 
@@ -20804,37 +20804,37 @@ PAGES.attendance = (main) => {
         ${_coachLockToday ? `<div class="btn ghost" style="pointer-events:none;font-weight:700;background:rgba(16,185,129,.10);border-color:rgba(16,185,129,.4);color:var(--green)">📅 ${t('Today', 'اليوم')} · ${fmtDate(TODAY)}</div>` : ''}
         ${_coachLockToday ? '' : monthMultiHTML('att-month', availableMonths({ includeFuture: true }), filter.months)}
         <div style="position:relative${_coachLockToday ? ';display:none' : ''}">
-          <button type="button" id="att-day-btn" class="btn ghost" style="min-width:130px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Pick one or more days">All days <span style="opacity:.6">▾</span></button>
+          <button type="button" id="att-day-btn" class="btn ghost" style="min-width:130px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="${t('Pick one or more days', 'اختر يوماً أو أكثر')}">${t('All days', 'كل الأيام')} <span style="opacity:.6">▾</span></button>
           <div id="att-day-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:240px;max-height:340px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
             <div style="display:flex;gap:6px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
-              <button type="button" class="btn ghost sm" id="att-day-all">All</button>
-              <button type="button" class="btn ghost sm" id="att-day-none">Clear</button>
-              <button type="button" class="btn ghost sm" id="att-day-today">Today</button>
+              <button type="button" class="btn ghost sm" id="att-day-all">${t('All', 'الكل')}</button>
+              <button type="button" class="btn ghost sm" id="att-day-none">${t('Clear', 'مسح')}</button>
+              <button type="button" class="btn ghost sm" id="att-day-today">${t('Today', 'اليوم')}</button>
             </div>
             <div id="att-day-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px"></div>
           </div>
         </div>
-        <select id="att-week" class="btn ghost" title="Quick-pick a week (selects all 7 days)" ${_coachLockToday ? 'style="display:none"' : ''}>
-          <option value="all">All weeks</option>
-          <option value="1">Week 1 (1–7)</option>
-          <option value="2">Week 2 (8–14)</option>
-          <option value="3">Week 3 (15–21)</option>
-          <option value="4">Week 4 (22–28)</option>
-          <option value="5">Week 5 (29–end)</option>
+        <select id="att-week" class="btn ghost" title="${t('Quick-pick a week (selects all 7 days)', 'اختيار سريع لأسبوع (يحدد كل الأيام السبعة)')}" ${_coachLockToday ? 'style="display:none"' : ''}>
+          <option value="all">${t('All weeks', 'كل الأسابيع')}</option>
+          <option value="1">${t('Week', 'أسبوع')} 1 (1–7)</option>
+          <option value="2">${t('Week', 'أسبوع')} 2 (8–14)</option>
+          <option value="3">${t('Week', 'أسبوع')} 3 (15–21)</option>
+          <option value="4">${t('Week', 'أسبوع')} 4 (22–28)</option>
+          <option value="5">${t('Week', 'أسبوع')} 5 (29–${t('end', 'النهاية')})</option>
         </select>
         <span ${myCoachId != null ? 'style="display:none"' : ''}>${multiFilterHTML('att-coach', state.coaches.map(c => [String(c.id), c.name]), filter.coaches, { allText: t('All coaches', 'كل المدربين'), noun: t('coaches', 'مدربين'), minWidth: 150 })}</span>
         ${multiFilterHTML('att-status', [['attended', '✓ ' + t('Attended', 'حضر')], ['notattended', '✗ ' + t('Not attended', 'لم يحضر')]], filter.atts, { allText: t('All attendance', 'كل الحضور'), noun: t('selected', 'محدد'), minWidth: 150 })}
         <div style="position:relative">
-          <button type="button" id="att-sports-btn" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px">All sports <span style="opacity:.6">▾</span></button>
+          <button type="button" id="att-sports-btn" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px">${t('All sports', 'كل الرياضات')} <span style="opacity:.6">▾</span></button>
           <div id="att-sports-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;box-shadow:0 8px 24px rgba(0,0,0,.4)">
             ${SPORTS.map(s => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="att-sport-cb" value="${s}" /> ${s}</label>`).join('')}
           </div>
         </div>
-        <div style="min-width:260px;flex:1;max-width:340px">${memberPickerHtml('att-student', { placeholder: 'All students (type to search)' })}${recentSearchChipsHtml('attendance', 'att-recent-search', 3)}</div>
+        <div style="min-width:260px;flex:1;max-width:340px">${memberPickerHtml('att-student', { placeholder: t('All students (type to search)', 'كل الطلاب (اكتب للبحث)') })}${recentSearchChipsHtml('attendance', 'att-recent-search', 3)}</div>
         <div class="text-mute" style="margin-left:auto;font-size:11px;align-self:center">
-          <span class="att-cell att-y" style="display:inline-block;padding:2px 6px;border-radius:3px">Y</span> present ·
-          <span class="att-cell att-n" style="display:inline-block;padding:2px 6px;border-radius:3px">N</span> absent ·
-          <span class="text-mute">·</span> not marked
+          <span class="att-cell att-y" style="display:inline-block;padding:2px 6px;border-radius:3px">Y</span> ${t('present', 'حاضر')} ·
+          <span class="att-cell att-n" style="display:inline-block;padding:2px 6px;border-radius:3px">N</span> ${t('absent', 'غائب')} ·
+          <span class="text-mute">·</span> ${t('not marked', 'غير مسجّل')}
         </div>
       </div>
       <div style="overflow-x:auto;max-height:70vh;overflow-y:auto" id="att-table-wrap"></div>
@@ -20859,7 +20859,7 @@ PAGES.attendance = (main) => {
   function applyDays() {
     filter.days = $$('.att-day-cb').filter(cb => cb.checked).map(cb => parseInt(cb.value));
     const btn = $('#att-day-btn');
-    if (btn) btn.innerHTML = (filter.days.length ? (filter.days.length === 1 ? `Day ${filter.days[0]}` : `${filter.days.length} days`) : 'All days') + ' <span style="opacity:.6">▾</span>';
+    if (btn) btn.innerHTML = (filter.days.length ? (filter.days.length === 1 ? `${t('Day', 'يوم')} ${filter.days[0]}` : `${filter.days.length} ${t('days', 'أيام')}`) : t('All days', 'كل الأيام')) + ' <span style="opacity:.6">▾</span>';
     refresh();
   }
 

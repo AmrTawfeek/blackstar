@@ -35,13 +35,14 @@ R.section('French is LTR; Arabic + English are unaffected');
   R.ok('English returns English and dir = ltr', run(ctx, `t('Save','حفظ')`) === 'Save' && run(ctx, `document.documentElement.dir`) === 'ltr');
 }
 
-R.section('source wiring — toggles cycle through three languages');
+R.section('source wiring — a 3-language drop-down');
 {
   const src = H.readSrc();
   R.ok('FR_STRINGS dictionary exists', /const FR_STRINGS = \{/.test(src));
   R.ok('t() consults FR_STRINGS when French is active', /if \(l === 'fr'\) return \(FR_STRINGS\[en\] != null/.test(src));
-  R.ok('the in-app toggle cycles en→ar→fr→en', /_langCycle = \{ en: 'ar', ar: 'fr', fr: 'en' \}/.test(src));
-  R.ok('the login toggle cycles en→ar→fr→en', /\{ en: 'ar', ar: 'fr', fr: 'en' \}\)\[getLang\(\)\]/.test(src));
+  R.ok('the in-app switcher is a <select> with English/العربية/Français', /const langBtn = el\('select'/.test(src) && /\[\['en', 'English'\], \['ar', 'العربية'\], \['fr', 'Français'\]\]/.test(src));
+  R.ok('changing the drop-down sets the language', /langBtn\.addEventListener\('change', \(\) => \{ setLang\(langBtn\.value\); render\(\); \}\)/.test(src));
+  R.ok('the login switcher is a <select id="login-lang"> drop-down', /<select id="login-lang"/.test(src) && /langToggle\.addEventListener\('change', \(\) => \{ setLang\(langToggle\.value\)/.test(src));
 }
 
 R.done();
