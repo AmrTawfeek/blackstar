@@ -17670,6 +17670,7 @@ window.showRevenueDetail = function(coachId, monthKey) {
   // Gather every lineItem credited to this coach for the month
   let lines = [];
   for (const inv of state.invoices) {
+    if (inv.deleted) continue;                 // v6.449 — a deleted/voided invoice earns nothing (matches computeMonthlyPay)
     if (!invoiceTouchesMonth(inv, monthKey)) continue;
     const cat = inv.category || 'Membership';
     if (cat !== 'Membership') continue;
@@ -17686,12 +17687,16 @@ window.showRevenueDetail = function(coachId, monthKey) {
       // Summer Camp doesn't generate coach commission — skip it
       if (li.sport === SUMMER_CAMP) continue;
       const elig = lineCommissionEligibility(mem, inv, li, null);
-      if (!elig.eligible) continue;   // no attended class → not commissionable
+      // "By payment" pays the FULL line fee (attendance irrelevant); only EXCLUDED lines
+      // (Summer Camp — already skipped — or an expired 0-attendance no-show) earn nothing.
+      // This mirrors computeMonthlyPay so the report total equals the paid gross. (v6.449 —
+      // was price: elig.base gated on elig.eligible, i.e. the attendance-prorated amount.)
+      if (elig.excluded) continue;
       lines.push({
         memberName: mem ? mem.name : (inv.customerName || '— deleted member —'),
         memberId: mem ? mem.id : null,
         sport: li.sport,
-        price: elig.base,
+        price: parseFloat(li.price) || 0,
         isSwitch: !!inv.switchCredit,
         invoiceRef: inv.ref || `INV${inv.id}`,
         invoiceDate: inv.date,
@@ -17787,6 +17792,7 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
   // Re-gather lines (same logic as showRevenueDetail)
   let lines = [];
   for (const inv of state.invoices) {
+    if (inv.deleted) continue;                 // v6.449 — deleted/voided invoice earns nothing
     if (!invoiceTouchesMonth(inv, monthKey)) continue;
     if ((inv.category || 'Membership') !== 'Membership') continue;
     // RULE: commission follows the invoice — member's current status is irrelevant.
@@ -17807,11 +17813,11 @@ window.downloadRevenueDetailPDF = function(coachId, monthKey) {
            || (mem.subscriptions || []).find(s => s.activity === li.sport && s.coachId === li.coachId);
       }
       const elig = lineCommissionEligibility(mem, inv, li, null);
-      if (!elig.eligible) continue;   // never attended → not on the commission report
+      if (elig.excluded) continue;   // Summer Camp / expired-no-show → not on the commission report
       lines.push({
         memberName: mem ? mem.name : (inv.customerName || '— deleted member —'),
         sport: li.sport,
-        price: elig.base,                          // commission base (prorated if frozen)
+        price: parseFloat(li.price) || 0,          // by-payment: FULL line fee is the base (v6.449)
         fee: parseFloat(li.price) || 0,            // the full fee, for reference
         isSwitch: !!inv.switchCredit,
         invoiceRef: inv.ref || `INV${inv.id}`,
