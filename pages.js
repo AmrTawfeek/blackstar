@@ -20540,7 +20540,7 @@ PAGES.attendance = (main) => {
     const grandEl = document.getElementById('att-grand');
     if (grandEl) grandEl.textContent = String(clubAttended);
     const grandLabelEl = document.getElementById('att-grand-label');
-    if (grandLabelEl) grandLabelEl.textContent = dayFilter.length === 1 ? 'ATTENDED · DAY ' + dayFilter[0] : dayFilter.length > 1 ? 'ATTENDED · ' + dayFilter.length + ' DAYS' : (filter.month === 'all' ? 'ATTENDED · ALL' : 'ATTENDED · ' + fmtMonth(gMonth).toUpperCase());
+    if (grandLabelEl) { const _A = t('ATTENDED', 'الحضور'); grandLabelEl.textContent = dayFilter.length === 1 ? _A + ' · ' + t('DAY', 'يوم') + ' ' + dayFilter[0] : dayFilter.length > 1 ? _A + ' · ' + dayFilter.length + ' ' + t('DAYS', 'أيام') : (filter.month === 'all' ? _A + ' · ' + t('ALL', 'الكل') : _A + ' · ' + fmtMonth(gMonth).toUpperCase()); }
 
     // ── Multi-month summary: one column per month, Y counts + total ──
     if (filter.month === 'all') {
@@ -20684,7 +20684,7 @@ PAGES.attendance = (main) => {
     if (attNarrowed) {
       dayNote = `${attOnly() === 'attended' ? 'attended' : 'absent'} days only · ${dayList.length} day${dayList.length === 1 ? '' : 's'} of ${fmtMonth(gMonth)}`;
     } else if (isFiltered) {
-      if (selectedDays.length === 1) dayNote = `showing day ${selectedDays[0]} of ${fmtMonth(gMonth)} only`;
+      if (selectedDays.length === 1) dayNote = `${t('showing day', 'عرض يوم')} ${selectedDays[0]} ${t('of', 'من')} ${fmtMonth(gMonth)} ${t('only', 'فقط')}`;
       else dayNote = `showing ${selectedDays.length} days of ${fmtMonth(gMonth)} (${selectedDays.slice(0,5).join(', ')}${selectedDays.length>5?'…':''})`;
     } else {
       dayNote = 'click any cell to toggle Y → N → empty';
