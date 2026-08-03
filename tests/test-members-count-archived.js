@@ -50,8 +50,8 @@ R.section('with NO archived members the tail is omitted');
 R.section('source: both the live update and initial render carry the breakdown');
 {
   const src = H.readSrc();
-  R.ok('live update computes _active/_total/_arch and appends "incl. N archived"', /_arch > 0[\s\S]{0,120}incl\. \$\{_arch\} archived/.test(src));
-  R.ok('initial render appends the archived tail when total > active', /\$\{\(state\.members \|\| \[\]\)\.length\} incl\. \$\{\(state\.members \|\| \[\]\)\.length - activeMembers\(\)\.length\} archived/.test(src));
+  R.ok('live update computes _active/_total/_arch and appends the archived tail', /_arch > 0[\s\S]{0,160}\$\{_total\} \$\{t\('incl\.'[\s\S]{0,40}\$\{_arch\} \$\{t\('archived'/.test(src));
+  R.ok('initial render appends the archived tail when total > active', /\$\{\(state\.members \|\| \[\]\)\.length\} \$\{t\('incl\.'[\s\S]{0,80}activeMembers\(\)\.length\} \$\{t\('archived'/.test(src));
   R.ok('the Members screen still renders', H.renderScreen(H.seed(H.makeCtx({ role: 'admin' })), 'members').ok);
 }
 

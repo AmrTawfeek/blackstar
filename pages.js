@@ -1026,6 +1026,15 @@ PAGES.members = (main) => {
   // ── ONE source of truth for every members-table column ──
   // always:true → can't be hidden (English name). def → visible by default.
   // filter: 'fuzzy' | 'text' | 'select' | 'date' | null. opts() supplies <select> values.
+  // v6.449 — Arabic column headers; French comes through t() via the English label.
+  const MEMBER_COL_AR = {
+    name:'العضو', arabicName:'الاسم بالعربي', qid:'الرقم الشخصي', nationality:'الجنسية',
+    email:'البريد الإلكتروني', phone2:'هاتف 2', joinDate:'تاريخ الانضمام', created:'تاريخ الإنشاء',
+    level:'المستوى', birthdate:'تاريخ الميلاد', outstanding:'المستحقات', sport:'الرياضة',
+    coach:'المدرب', attendance:'الحضور', lastRenewal:'آخر تجديد', expiry:'الانتهاء',
+    status:'الحالة', invoiceHealth:'الفاتورة'
+  };
+  const colLabel = (c) => t(c.label, MEMBER_COL_AR[c.key] || c.label);
   function allColumns() {
     return [
       { key: 'name', label: 'Member', always: true, def: true, filter: 'fuzzy',
@@ -1133,7 +1142,7 @@ PAGES.members = (main) => {
         <p class="text-mute">${t('Tick the columns to show. Only <b>Member</b> (English name + mobile) is always shown.', 'حدّد الأعمدة التي تريد عرضها. يظهر عمود <b>العضو</b> (الاسم بالإنجليزية + الجوال) دائماً.')}</p>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px">
           ${cols.map(c => `<label style="display:flex;align-items:center;gap:8px;cursor:${c.always ? 'not-allowed' : 'pointer'};opacity:${c.always ? '.6' : '1'}">
-            <input type="checkbox" class="mcol-cb" value="${c.key}" ${isColVisible(c) ? 'checked' : ''} ${c.always ? 'disabled checked' : ''}> ${escapeHtml(c.label)}${c.always ? ` <span class="text-mute" style="font-size:10px">(${t('always', 'دائماً')})</span>` : ''}
+            <input type="checkbox" class="mcol-cb" value="${c.key}" ${isColVisible(c) ? 'checked' : ''} ${c.always ? 'disabled checked' : ''}> ${escapeHtml(colLabel(c))}${c.always ? ` <span class="text-mute" style="font-size:10px">(${t('always', 'دائماً')})</span>` : ''}
           </label>`).join('')}
         </div>
       </div>`,
@@ -1325,9 +1334,9 @@ PAGES.members = (main) => {
         banner.innerHTML = `
           <span style="font-size:16px">⚠️</span>
           <div style="flex:1;font-size:12px">
-            Filters are hiding <b>${hiddenByFilters}</b> member${hiddenByFilters === 1 ? '' : 's'}. If you don't see someone, clear filters.
+            ${t('Filters are hiding', 'المرشحات تخفي')} <b>${hiddenByFilters}</b> ${t('member(s). If you don’t see someone, clear filters.', 'عضو. إذا لم تجد أحداً، امسح المرشحات.')}
           </div>
-          <button class="btn ghost sm" id="members-clear-filters" style="white-space:nowrap">↻ Clear filters</button>`;
+          <button class="btn ghost sm" id="members-clear-filters" style="white-space:nowrap">↻ ${t('Clear filters', 'مسح المرشحات')}</button>`;
         $('#members-clear-filters')?.addEventListener('click', () => {
           filter = { ...DEFAULT_F };
           saveFilter('members', filter);
@@ -1353,7 +1362,7 @@ PAGES.members = (main) => {
     const _gridEl = $('#members-grid'), _tableEl = $('#members-table-wrap');
     if (viewMode === 'grid') {
       if (_tableEl) _tableEl.style.display = 'none';
-      if (_gridEl) { _gridEl.style.display = 'grid'; _gridEl.innerHTML = rows.length ? rows.map(memberCardHtml).join('') : `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">👥</div>No members match your filters</div>`; }
+      if (_gridEl) { _gridEl.style.display = 'grid'; _gridEl.innerHTML = rows.length ? rows.map(memberCardHtml).join('') : `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">👥</div>${t('No members match your filters','لا يوجد أعضاء مطابقون')}</div>`; }
     } else {
       if (_gridEl) _gridEl.style.display = 'none';
       if (_tableEl) _tableEl.style.display = '';
@@ -1377,12 +1386,12 @@ PAGES.members = (main) => {
           `}
         </td>
       </tr>`;
-    }).join('') : `<tr><td colspan="${cols.length + 3}" class="empty"><div class="empty-icon">👥</div>No members match your filters</td></tr>`;
+    }).join('') : `<tr><td colspan="${cols.length + 3}" class="empty"><div class="empty-icon">👥</div>${t('No members match your filters','لا يوجد أعضاء مطابقون')}</td></tr>`;
 
     { const _active = activeMembers().length, _total = (state.members || []).length, _arch = _total - _active;
       $('#members-count').textContent = _arch > 0
-        ? `${allRows.length} of ${_active} · ${_total} incl. ${_arch} archived`
-        : `${allRows.length} of ${_active}`; }
+        ? `${allRows.length} ${t('of', 'من')} ${_active} · ${_total} ${t('incl.', 'منهم')} ${_arch} ${t('archived', 'مؤرشف')}`
+        : `${allRows.length} ${t('of', 'من')} ${_active}`; }
 
     // Pagination bar
     $('#members-pagination').innerHTML = paginationBar(pg, allRows.length, 'members');
@@ -1440,8 +1449,8 @@ PAGES.members = (main) => {
   main.innerHTML = `
     <div class="topbar">
       <div>
-        <h1>Members</h1>
-        <div class="subtitle" style="margin-top:6px"><span id="members-count" style="font-size:13px;font-weight:600;color:var(--text)">${activeMembers().length} of ${activeMembers().length}${(state.members || []).length > activeMembers().length ? ` · ${(state.members || []).length} incl. ${(state.members || []).length - activeMembers().length} archived` : ''}</span></div>
+        <h1>${t('Members', 'الأعضاء')}</h1>
+        <div class="subtitle" style="margin-top:6px"><span id="members-count" style="font-size:13px;font-weight:600;color:var(--text)">${activeMembers().length} ${t('of', 'من')} ${activeMembers().length}${(state.members || []).length > activeMembers().length ? ` · ${(state.members || []).length} ${t('incl.', 'منهم')} ${(state.members || []).length - activeMembers().length} ${t('archived', 'مؤرشف')}` : ''}</span></div>
         <div class="member-stat-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
           ${(() => {
           const mc = memberCounts();
@@ -1456,25 +1465,25 @@ PAGES.members = (main) => {
             </div>`;
           };
           const parts = [
-            chip(mc.active, 'Active', 'Active', 'var(--green)', 'rgba(34,197,94,.12)', ''),
-            chip(mc.expired, 'Expired', 'Expired', 'var(--red)', 'rgba(239,68,68,.12)', ''),
+            chip(mc.active, t('Active', 'نشط'), 'Active', 'var(--green)', 'rgba(34,197,94,.12)', ''),
+            chip(mc.expired, t('Expired', 'منتهٍ'), 'Expired', 'var(--red)', 'rgba(239,68,68,.12)', ''),
           ];
-          if (mc.frozen) parts.push(chip(mc.frozen, 'Frozen', 'Frozen', 'var(--blue)', 'rgba(59,130,246,.12)', '❄️'));
-          if (mc.completed) parts.push(chip(mc.completed, 'Completed', 'Completed', 'var(--purple)', 'rgba(139,92,246,.12)', ''));
-          if (mc.withdrawn) parts.push(chip(mc.withdrawn, 'Withdrawn', 'Withdrawn', 'var(--accent-2)', 'rgba(245,158,11,.12)', '↩'));
+          if (mc.frozen) parts.push(chip(mc.frozen, t('Frozen', 'مجمّد'), 'Frozen', 'var(--blue)', 'rgba(59,130,246,.12)', '❄️'));
+          if (mc.completed) parts.push(chip(mc.completed, t('Completed', 'مكتمل'), 'Completed', 'var(--purple)', 'rgba(139,92,246,.12)', ''));
+          if (mc.withdrawn) parts.push(chip(mc.withdrawn, t('Withdrawn', 'منسحب'), 'Withdrawn', 'var(--accent-2)', 'rgba(245,158,11,.12)', '↩'));
           // Archived members live outside the counts above (they're soft-deleted), so this
           // chip is the only place their number shows. Clicking it reveals them.
-          if (mc.archived) parts.push(chip(mc.archived, 'Archived', 'Archived', 'var(--text-mute)', 'rgba(120,120,140,.12)', '📦'));
+          if (mc.archived) parts.push(chip(mc.archived, t('Archived', 'مؤرشف'), 'Archived', 'var(--text-mute)', 'rgba(120,120,140,.12)', '📦'));
           return parts.join('');
         })()}
         </div>
       </div>
       <div class="topbar-actions">
         <button class="btn ghost" id="members-view-toggle" title="${t('Switch between list and grid view', 'التبديل بين عرض القائمة والشبكة')}">${viewMode === 'grid' ? '☰ ' + t('List', 'قائمة') : '▦ ' + t('Grid', 'شبكة')}</button>
-        <button class="btn ghost" id="find-duplicates" title="Scan all members for duplicate phone numbers">🔍 Find Duplicates</button>
-        <button class="btn ghost" id="member-columns" title="Show / hide table columns">🧩 ${t('Columns', 'الأعمدة')}</button>
-        ${isViewerRole() ? '' : '<button class="btn ghost" id="export-members">📥 Export CSV</button>'}
-        <button class="btn primary" id="add-member">+ Add Member</button>
+        <button class="btn ghost" id="find-duplicates" title="${t('Scan all members for duplicate phone numbers', 'فحص جميع الأعضاء بحثاً عن أرقام هواتف مكررة')}">🔍 ${t('Find Duplicates', 'بحث عن مكررات')}</button>
+        <button class="btn ghost" id="member-columns" title="${t('Show / hide table columns', 'إظهار / إخفاء أعمدة الجدول')}">🧩 ${t('Columns', 'الأعمدة')}</button>
+        ${isViewerRole() ? '' : `<button class="btn ghost" id="export-members">📥 ${t('Export CSV', 'تصدير CSV')}</button>`}
+        <button class="btn primary" id="add-member">+ ${t('Add Member', 'إضافة عضو')}</button>
       </div>
     </div>
 
@@ -1483,7 +1492,7 @@ PAGES.members = (main) => {
       if (!recent.length) return '';
       return `
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:11px;color:var(--text-mute);flex-wrap:wrap">
-          <span style="text-transform:uppercase;letter-spacing:.6px;font-weight:600">🕐 Recent</span>
+          <span style="text-transform:uppercase;letter-spacing:.6px;font-weight:600">🕐 ${t('Recent', 'الأخيرة')}</span>
           ${recent.map(m => `<a href="#" onclick="event.preventDefault();viewMember(${m.id})" style="color:var(--blue);text-decoration:none;background:rgba(91,141,239,.08);padding:4px 10px;border-radius:999px;font-weight:500;font-size:11px" title="View ${escapeHtml(m.name)}">${escapeHtml(m.name)}</a>`).join('')}
         </div>
       `;
@@ -1493,18 +1502,18 @@ PAGES.members = (main) => {
       <div id="members-filter-banner" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:8px"></div>
       <div id="members-bulkbar" style="display:none;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(91,141,239,.10);border:1px solid rgba(91,141,239,.30);border-radius:8px">
         <span style="font-size:16px">☑️</span>
-        <div style="flex:1;font-size:13px;font-weight:600"><span id="members-bulk-count">0</span> selected</div>
-        ${isViewerRole() ? '' : `<button class="btn ghost sm" id="members-bulk-family" title="Group the selected members under one family/household">👨‍👩‍👧 Add to family</button>
-        ${canManageFreeze() ? `<button class="btn ghost sm" id="members-bulk-freeze" title="Freeze the selected member (pause membership and shift expiry)">❄️ Freeze</button>` : ''}
-        <button class="btn ghost sm" id="members-bulk-export" title="Export the selected members to CSV">📥 Export selected</button>
-        <button class="btn ghost sm" id="members-bulk-archive" title="Archive (soft-delete) the selected members" style="color:var(--red)">🗑 Archive selected</button>`}
-        <button class="btn ghost sm" id="members-bulk-clear">Clear</button>
+        <div style="flex:1;font-size:13px;font-weight:600"><span id="members-bulk-count">0</span> ${t('selected','محدد')}</div>
+        ${isViewerRole() ? '' : `<button class="btn ghost sm" id="members-bulk-family" title="Group the selected members under one family/household">👨‍👩‍👧 ${t('Add to family','إضافة إلى عائلة')}</button>
+        ${canManageFreeze() ? `<button class="btn ghost sm" id="members-bulk-freeze" title="Freeze the selected member (pause membership and shift expiry)">❄️ ${t('Freeze','تجميد')}</button>` : ''}
+        <button class="btn ghost sm" id="members-bulk-export" title="Export the selected members to CSV">📥 ${t('Export selected','تصدير المحدد')}</button>
+        <button class="btn ghost sm" id="members-bulk-archive" title="Archive (soft-delete) the selected members" style="color:var(--red)">🗑 ${t('Archive selected','أرشفة المحدد')}</button>`}
+        <button class="btn ghost sm" id="members-bulk-clear">${t('Clear','مسح')}</button>
       </div>
       <div class="filter-bar">
         <div class="search"><input id="search-input" type="text" placeholder="${t('Search name, phone, QID, email...', 'ابحث بالاسم أو الهاتف أو الهوية أو البريد...')}" value="${escapeHtml(filter.search || '')}" /></div>
         <div style="position:relative">
           <button type="button" id="filter-status-btn" class="btn ghost" style="min-width:120px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more statuses">
-            <span id="filter-status-label">${filter.statuses && filter.statuses.length ? (filter.statuses.length === 1 ? escapeHtml(filter.statuses[0]) : filter.statuses.length + ' statuses') : 'All status'}</span>
+            <span id="filter-status-label">${filter.statuses && filter.statuses.length ? (filter.statuses.length === 1 ? escapeHtml(filter.statuses[0]) : filter.statuses.length + ' ' + t('statuses', 'حالات')) : t('All status', 'كل الحالات')}</span>
             <span style="opacity:.6">▾</span>
           </button>
           <div id="filter-status-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:170px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
@@ -1514,7 +1523,7 @@ PAGES.members = (main) => {
         </div>
         <div style="position:relative">
           <button type="button" id="filter-sport-btn" class="btn ghost" style="min-width:140px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more sports">
-            <span id="filter-sport-label">${filter.sports && filter.sports.length ? (filter.sports.length === 1 ? escapeHtml(filter.sports[0]) : filter.sports.length + ' sports') : 'All sports'}</span>
+            <span id="filter-sport-label">${filter.sports && filter.sports.length ? (filter.sports.length === 1 ? escapeHtml(filter.sports[0]) : filter.sports.length + ' ' + t('sports', 'رياضات')) : t('All sports', 'كل الرياضات')}</span>
             <span style="opacity:.6">▾</span>
           </button>
           <div id="filter-sport-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
@@ -1534,7 +1543,7 @@ PAGES.members = (main) => {
         </div>
         <div style="position:relative">
           <button type="button" id="filter-coach-btn" class="btn ghost" style="min-width:140px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more coaches">
-            <span id="filter-coach-label">${filter.coaches && filter.coaches.length ? (filter.coaches.length === 1 ? escapeHtml(coachName(parseInt(filter.coaches[0]))) : filter.coaches.length + ' coaches') : 'All coaches'}</span>
+            <span id="filter-coach-label">${filter.coaches && filter.coaches.length ? (filter.coaches.length === 1 ? escapeHtml(coachName(parseInt(filter.coaches[0]))) : filter.coaches.length + ' ' + t('coaches', 'مدربين')) : t('All coaches', 'كل المدربين')}</span>
             <span style="opacity:.6">▾</span>
           </button>
           <div id="filter-coach-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
@@ -1551,22 +1560,22 @@ PAGES.members = (main) => {
         </div>
         <div style="position:relative">
           <button type="button" id="filter-nat-btn" class="btn ghost" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px" title="Filter by one or more nationalities">
-            <span id="filter-nat-label">🌍 ${filter.nationalities && filter.nationalities.length ? (filter.nationalities.length === 1 ? escapeHtml(filter.nationalities[0]) : filter.nationalities.length + ' nationalities') : 'All nationalities'}</span>
+            <span id="filter-nat-label">🌍 ${filter.nationalities && filter.nationalities.length ? (filter.nationalities.length === 1 ? escapeHtml(filter.nationalities[0]) : filter.nationalities.length + ' ' + t('nationalities', 'جنسيات')) : t('All nationalities', 'كل الجنسيات')}</span>
             <span style="opacity:.6">▾</span>
           </button>
           <div id="filter-nat-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:180px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
-            <div style="display:flex;justify-content:space-between;padding:2px 6px 6px;border-bottom:1px solid var(--border);margin-bottom:4px"><button type="button" class="mfilter-all" data-cb="filter-nat-cb" data-group="nationalities" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">All</button><button type="button" class="mfilter-none" data-cb="filter-nat-cb" data-group="nationalities" style="background:none;border:none;color:var(--text-mute);font-size:12px;cursor:pointer">Clear</button></div>
-            ${[...new Set(state.members.map(m => m.nationality).filter(Boolean))].sort().map(n => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-nat-cb" value="${escapeHtml(n)}" ${(filter.nationalities||[]).includes(n) ? 'checked' : ''} /> ${escapeHtml(n)}</label>`).join('') || '<div class="text-mute" style="font-size:12px;padding:4px">No nationalities recorded</div>'}
+            <div style="display:flex;justify-content:space-between;padding:2px 6px 6px;border-bottom:1px solid var(--border);margin-bottom:4px"><button type="button" class="mfilter-all" data-cb="filter-nat-cb" data-group="nationalities" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">${t('All','الكل')}</button><button type="button" class="mfilter-none" data-cb="filter-nat-cb" data-group="nationalities" style="background:none;border:none;color:var(--text-mute);font-size:12px;cursor:pointer">${t('Clear','مسح')}</button></div>
+            ${[...new Set(state.members.map(m => m.nationality).filter(Boolean))].sort().map(n => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="filter-nat-cb" value="${escapeHtml(n)}" ${(filter.nationalities||[]).includes(n) ? 'checked' : ''} /> ${escapeHtml(n)}</label>`).join('') || `<div class="text-mute" style="font-size:12px;padding:4px">${t('No nationalities recorded','لا توجد جنسيات مسجلة')}</div>`}
           </div>
         </div>
-        <select id="filter-incomplete" class="btn ghost" title="Find records missing key fields">
-          <option value="all" ${filter.incomplete === 'all' ? 'selected' : ''}>📋 All data</option>
-          <option value="any" ${filter.incomplete === 'any' ? 'selected' : ''}>⚠️ Missing any field</option>
-          <option value="phone" ${filter.incomplete === 'phone' ? 'selected' : ''}>⚠️ No phone</option>
-          <option value="qid" ${filter.incomplete === 'qid' ? 'selected' : ''}>⚠️ No QID</option>
-          <option value="email" ${filter.incomplete === 'email' ? 'selected' : ''}>⚠️ No email</option>
-          <option value="birthdate" ${filter.incomplete === 'birthdate' ? 'selected' : ''}>⚠️ No birthdate</option>
-          <option value="nationality" ${filter.incomplete === 'nationality' ? 'selected' : ''}>⚠️ No nationality</option>
+        <select id="filter-incomplete" class="btn ghost" title="${t('Find records missing key fields','البحث عن سجلات ناقصة الحقول')}">
+          <option value="all" ${filter.incomplete === 'all' ? 'selected' : ''}>📋 ${t('All data','كل البيانات')}</option>
+          <option value="any" ${filter.incomplete === 'any' ? 'selected' : ''}>⚠️ ${t('Missing any field','ينقص أي حقل')}</option>
+          <option value="phone" ${filter.incomplete === 'phone' ? 'selected' : ''}>⚠️ ${t('No phone','بدون هاتف')}</option>
+          <option value="qid" ${filter.incomplete === 'qid' ? 'selected' : ''}>⚠️ ${t('No QID','بدون رقم شخصي')}</option>
+          <option value="email" ${filter.incomplete === 'email' ? 'selected' : ''}>⚠️ ${t('No email','بدون بريد')}</option>
+          <option value="birthdate" ${filter.incomplete === 'birthdate' ? 'selected' : ''}>⚠️ ${t('No birthdate','بدون تاريخ ميلاد')}</option>
+          <option value="nationality" ${filter.incomplete === 'nationality' ? 'selected' : ''}>⚠️ ${t('No nationality','بدون جنسية')}</option>
         </select>
         <select id="filter-balance" class="btn ghost" title="${t('Filter by payment balance', 'تصفية حسب الرصيد')}">
           <option value="all" ${filter.balance === 'all' || !filter.balance ? 'selected' : ''}>💳 ${t('All payments', 'كل المدفوعات')}</option>
@@ -1590,8 +1599,8 @@ PAGES.members = (main) => {
               <th style="width:36px;text-align:center"><input type="checkbox" id="members-select-all" title="Select/clear all on this page" style="cursor:pointer"></th>
               <th style="width:36px;text-align:center">#</th>
               ${visibleColumns().map(c => `
-                <th data-sortkey="${c.key}" style="cursor:pointer;user-select:none" title="Sort by ${escapeHtml(c.label)}">
-                  <div style="display:flex;align-items:center;gap:4px;white-space:nowrap">${escapeHtml(c.label)} <span class="sort-ind" data-k="${c.key}" style="opacity:.35;font-size:10px">⇅</span></div>
+                <th data-sortkey="${c.key}" style="cursor:pointer;user-select:none" title="${t('Sort by','ترتيب حسب')} ${escapeHtml(colLabel(c))}">
+                  <div style="display:flex;align-items:center;gap:4px;white-space:nowrap">${escapeHtml(colLabel(c))} <span class="sort-ind" data-k="${c.key}" style="opacity:.35;font-size:10px">⇅</span></div>
                 </th>`).join('')}
               <th class="text-right">Actions</th>
             </tr>
@@ -11926,7 +11935,13 @@ window.memberInvoiceHealth = function (m) {
     const curSub = subsCur.length ? subsCur.slice().sort((a, b) => String(a.start).localeCompare(String(b.start))).pop() : null;
     if (curSub && String(curSub.start || '') >= _INV_KICKOFF) {
       const winFrom = _shift(curSub.start, -14), winTo = curSub.end || '9999-12-31';
-      const covered = invs.some(i => { const d = String(i.date || ''); return d && d >= winFrom && d <= winTo; })
+      // v6.448 — the current renewal is INVOICED if the (latest) invoice actually bills its SPORT.
+      // Sports added to an existing invoice keep the invoice's ORIGINAL header date, so date-window +
+      // invoiceNumber-link alone falsely flagged them (e.g. Jaber: invoice dated 29 Jun for Summer Camp,
+      // Kick Boxing 550 added later for the 19 Jul renewal — the Kick Boxing line covers it). The price
+      // for that sport is verified above, so "sport is on the invoice" is a sufficient coverage signal.
+      const covered = invSport.has(curSub.activity)
+        || invs.some(i => { const d = String(i.date || ''); return d && d >= winFrom && d <= winTo; })
         || (curSub.invoiceNumber && invs.some(i => (i.ref || i.invoiceNumber) === curSub.invoiceNumber));
       if (!covered) reasons.push(`${t('Current renewal not invoiced', 'التجديد الحالي غير مفوتر')} (${fmtDate(curSub.start)}${curSub.end ? ' → ' + fmtDate(curSub.end) : ''})`);
     }

@@ -274,10 +274,11 @@ R.section('5 · Coach role — no leakage of other coaches / club money');
 {
   const ctx = mk('coach', ACTIVE_Y + `state.user={role:'coach',coachId:2}; state.session={role:'coach',coachId:2};`);
   R.ok('currentRole() is coach and cannot be escalated', q(ctx, 'currentRole()') === 'coach' && q(ctx, 'accountRole()') === 'coach', [q(ctx, 'currentRole()'), q(ctx, 'accountRole()')]);
-  // coachsalary is DISABLED as of v6.420 — a coach no longer reaches their own salary page.
-  for (const route of ['salaries', 'coachsalary', 'coachperf', 'campmembers', 'campdrivers', 'camproutes', 'clubrevenue', 'dashboard', 'members', 'attreport', 'coaches'])
+  // coachsalary was re-enabled v6.448 — a coach CAN reach their own salary page again (but NOT the
+  // admin salaries screen, other coaches' perf, camp admin, club revenue, etc.).
+  for (const route of ['salaries', 'coachperf', 'campmembers', 'campdrivers', 'camproutes', 'clubrevenue', 'dashboard', 'members', 'attreport', 'coaches'])
     R.ok(`coach is blocked from ${route}`, q(ctx, `roleCanAccess('coach','${route}')`) === false, route);
-  for (const route of ['coachhome', 'coachattendance', 'campschedule', 'advice'])
+  for (const route of ['coachhome', 'coachsalary', 'coachattendance', 'campschedule', 'advice'])
     R.ok(`coach can reach ${route}`, q(ctx, `roleCanAccess('coach','${route}')`) === true, route);
 
   for (const screen of ['coachhome', 'coachattendance']) {

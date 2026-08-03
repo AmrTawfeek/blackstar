@@ -5,21 +5,22 @@ const H = require('./qc-harness.js');
 const R = H.reporter('SIDEBAR · flat nav + coach tweaks');
 const run = (c, s) => H.vm.runInContext(s, c);
 
-R.section('ROUTES config: icon fixed + My Salary hidden');
+R.section('ROUTES config: icon fixed + My Salary re-enabled (v6.448)');
 {
   const ctx = H.makeCtx({ role: 'admin' });
   R.ok('My Dashboard icon is the single-glyph 🏠 (no ZWJ)', run(ctx, `ROUTES.coachhome.icon`) === '🏠', run(ctx, `ROUTES.coachhome.icon`));
   R.ok('My Dashboard icon is NOT the old teacher ZWJ emoji', !/‍/.test(run(ctx, `ROUTES.coachhome.icon`)));
-  R.ok('My Salary (coachsalary) is hidden — page disabled', run(ctx, `!!ROUTES.coachsalary.hidden`) === true);
+  R.ok('My Salary (coachsalary) is NOT hidden — page re-enabled', run(ctx, `!!ROUTES.coachsalary.hidden`) === false);
 }
 
-R.section('My Salary page is FULLY disabled for coaches (route blocked, not just hidden)');
+R.section('My Salary page is RE-ENABLED for coaches (v6.448 — route allowed)');
 {
   const ctx = H.makeCtx({ role: 'coach' });
   run(ctx, `state.session = { role:'coach', coachId:1 }; state.user = { role:'coach', coachId:1 };`);
-  R.ok('coachsalary is NOT in the coach access list', run(ctx, `ROLE_ALLOWED.coach.indexOf('coachsalary')`) === -1, run(ctx, `ROLE_ALLOWED.coach`));
-  R.ok('roleCanAccess(coach, coachsalary) is false — a direct link is blocked', run(ctx, `roleCanAccess('coach','coachsalary')`) === false);
+  R.ok('coachsalary IS in the coach access list', run(ctx, `ROLE_ALLOWED.coach.indexOf('coachsalary')`) >= 0, run(ctx, `ROLE_ALLOWED.coach`));
+  R.ok('roleCanAccess(coach, coachsalary) is true — the coach can open their salary page', run(ctx, `roleCanAccess('coach','coachsalary')`) === true);
   R.ok('the coach can still reach My Dashboard', run(ctx, `roleCanAccess('coach','coachhome')`) === true);
+  R.ok('but the coach is still blocked from the ADMIN salaries screen', run(ctx, `roleCanAccess('coach','salaries')`) === false);
 }
 
 R.section('the coach dashboard no longer shows a My Salary card');
@@ -52,7 +53,7 @@ R.section('a coach sees a flat list without My Salary');
     return out;
   })()`);
   R.ok('coach nav INCLUDES My Dashboard', keys.includes('coachhome'), keys);
-  R.ok('coach nav EXCLUDES the disabled My Salary', !keys.includes('coachsalary'), keys);
+  R.ok('coach nav INCLUDES My Salary (re-enabled v6.448)', keys.includes('coachsalary'), keys);
   R.ok('Main-section items come before later sections (order preserved)', keys.indexOf('coachhome') === 0 || keys.indexOf('coachhome') < keys.indexOf('schedule'), keys);
 }
 
