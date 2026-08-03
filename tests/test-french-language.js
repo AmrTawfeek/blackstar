@@ -40,7 +40,7 @@ R.section('source wiring — a 3-language drop-down');
   const src = H.readSrc();
   R.ok('FR_STRINGS dictionary exists', /const FR_STRINGS = \{/.test(src));
   R.ok('t() consults FR_STRINGS when French is active', /if \(l === 'fr'\) return \(FR_STRINGS\[en\] != null/.test(src));
-  R.ok('the in-app switcher is a <select> with English/العربية/Français', /const langBtn = el\('select'/.test(src) && /\[\['en', 'English'\], \['ar', 'العربية'\], \['fr', 'Français'\]\]/.test(src));
+  R.ok('the in-app switcher is a compact <select> with EN/ع/FR codes', /const langBtn = el\('select'/.test(src) && /\[\['en', 'EN'\], \['ar', 'ع'\], \['fr', 'FR'\]\]/.test(src));
   R.ok('changing the drop-down sets the language', /langBtn\.addEventListener\('change', \(\) => \{ setLang\(langBtn\.value\); render\(\); \}\)/.test(src));
   R.ok('the login switcher is a <select id="login-lang"> drop-down', /<select id="login-lang"/.test(src) && /langToggle\.addEventListener\('change', \(\) => \{ setLang\(langToggle\.value\)/.test(src));
 }
