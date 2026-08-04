@@ -5318,6 +5318,11 @@ PAGES.trash = (main) => {
   let f = window._trashFilter || { kind: 'all', search: '' };
   window._trashFilter = f;
 
+  // LAZY AUDIT LOG (v6.453): the Deletion-log tab reads the full audit history — fetch on demand.
+  if (typeof window.ensureAuditLog === 'function' && !window._auditLogLoaded) {
+    window.ensureAuditLog().then(() => { try { if (state.route === 'trash') PAGES.trash(main); } catch (_) {} });
+  }
+
   const _whoArchived = (recId, action) => {
     const hit = (state.auditLog || []).filter(a => a.action === action && String(a.recId) === String(recId))
       .sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')))[0];
@@ -19161,6 +19166,12 @@ PAGES.audit = (main) => {
   }
   let filter = { search: '', module: 'all', action: 'all', user: 'all', from: '', to: '' };
   const pg = makePager(50);
+
+  // LAZY AUDIT LOG (v6.453): the full log is fetched on demand, not on every login. If it isn't in
+  // memory yet, fetch it now and re-render this screen when it lands.
+  if (typeof window.ensureAuditLog === 'function' && !window._auditLogLoaded) {
+    window.ensureAuditLog().then(() => { try { if (state.route === 'audit') PAGES.audit(main); } catch (_) {} });
+  }
 
   // Short display of an old/new value (primitive or small object).
   const fmtVal = (v) => {

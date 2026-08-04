@@ -83,6 +83,14 @@
     'posts',
   ];
   const isCollectionKey = k => COLLECTIONS.indexOf(k) !== -1;
+  // LAZY collections (v6.453): the audit log is by far the biggest collection (append-only, grows
+  // forever — ~70% of the whole payload) yet is only needed on the admin Audit/Trash screens and
+  // the "last updated by" lookups. Keeping it OUT of the hot path — the initial blocking load AND the
+  // live per-document snapshot listener — removes that download and a heavy real-time query, so every
+  // login and sync is far lighter. New audit rows are STILL written (create-only) by _flushWrite; the
+  // full log is fetched on demand via loadAuditLog(). HOT_COLLECTIONS = everything loaded/listened live.
+  const LAZY_COLLECTIONS = new Set(['auditLog']);
+  const HOT_COLLECTIONS = COLLECTIONS.filter(c => !LAZY_COLLECTIONS.has(c));
   // Collections a MEMBER (portal login on a member domain) is allowed to READ.
   // Everything else — invoices/revenue, expenses, salaries, cash counts, product
   // sales, coach pay, families, transfers, notes, audit, … — is NEVER fetched to a
@@ -683,7 +691,9 @@
     function assembleLive() {
       const out = {};
       for (const k of Object.keys(_liveMeta)) { if (isCollectionKey(k)) continue; out[k] = _liveMeta[k]; }
-      for (const name of COLLECTIONS) out[name] = Array.from(_live[name].values());
+      // HOT only — auditLog is never delivered through a remote snapshot (it isn't listened to);
+      // the app holds its own lazily-fetched copy, so omitting it here never clobbers state.auditLog.
+      for (const name of HOT_COLLECTIONS) out[name] = Array.from(_live[name].values());
       return out;
     }
 
@@ -714,7 +724,8 @@
           const _roleEntry = (parent && parent.settings && parent.settings.userRoles) ? parent.settings.userRoles[_email] : null;
           const _mappedStaff = !!(_roleEntry && ['coach', 'admin', 'receptionist'].indexOf(_roleEntry.role) !== -1);
           const memberScope = _isMemberEmail(_email) && !_mappedStaff;
-          const readCols = memberScope ? COLLECTIONS.filter(c => MEMBER_READABLE.has(c)) : COLLECTIONS;
+          // Load the HOT collections only — auditLog is lazy (fetched on demand, see loadAuditLog).
+          const readCols = memberScope ? HOT_COLLECTIONS.filter(c => MEMBER_READABLE.has(c)) : HOT_COLLECTIONS;
           const colResults = await Promise.all(readCols.map(name =>
             colRef(name).get({ source: 'server' })
               .then(qs => { const arr = []; qs.forEach(d => arr.push(d.data())); return [name, arr]; })
@@ -883,6 +894,26 @@
         });
       },
 
+      // LAZY AUDIT LOG (v6.453): fetch the full auditLog collection on demand (Audit / Trash screens,
+      // "last updated by"). A one-time server GET — NOT a live listener. Marks every fetched id as
+      // server-held (_auditKnown) so the create-only write path never re-sends one as an update (which
+      // the immutable-auditLog rule denies — the v6.393 batch-poison bug). Deliberately does NOT touch
+      // _base/_live: the write path already keys on _auditKnown, and every SUCCESSFULLY-written session
+      // entry is added to _auditKnown on ack, so a fetch that races an unsynced local add can't drop it.
+      // Returns the array (or null on failure). Safe to call repeatedly. (Member scope is denied this
+      // collection by the rules; the catch handles that as a no-op.)
+      async loadAuditLog() {
+        try {
+          const qs = await colRef('auditLog').get({ source: 'server' });
+          const arr = []; qs.forEach(d => arr.push(d.data()));
+          noteAuditFromServer(arr);   // never re-write a row the server already holds
+          return arr;
+        } catch (e) {
+          console.warn('[Storage:firebase] loadAuditLog failed:', (e && e.code) || e);
+          return null;
+        }
+      },
+
       // PURE server read for a sync-check / discrepancy diff: reads the authoritative
       // cloud copy with NO side effects (does not touch the write base, live maps or
       // local cache), so it can be safely compared against the in-memory state.
@@ -902,7 +933,9 @@
         remoteUpdateCallback = callback;
         while (_unsubs.length) { try { _unsubs.pop()(); } catch (_) {} }
         const deliver = () => { if (!callback) return; try { callback(assembleLive()); } catch (e) { console.warn('[Storage:firebase] deliver failed:', e); } };
-        for (const name of COLLECTIONS) {
+        // HOT collections only — auditLog gets NO live listener (it would keep a real-time query
+        // over thousands of append-only rows open for the whole session). It is fetched on demand.
+        for (const name of HOT_COLLECTIONS) {
           _seeded[name] = false;
           const unsub = colRef(name).onSnapshot(qs => {
             qs.docChanges().forEach(ch => {
@@ -1147,6 +1180,9 @@
     backupsAvailable() { return LocalBackups.available(); },
     // Pure server read for a discrepancy check (cloud only; null offline).
     async readCloud() { if (!activeBackend) this.init(); return activeBackend.readCloud ? await activeBackend.readCloud() : null; },
+    // Lazy audit-log fetch (v6.453) — the audit log is not in the hot sync; the Audit/Trash screens
+    // and the "last updated by" lookups pull it on demand. Null on a backend that can't provide it.
+    async loadAuditLog() { if (!activeBackend) this.init(); return activeBackend.loadAuditLog ? await activeBackend.loadAuditLog() : null; },
     onRemoteUpdate(cb) { if (!activeBackend) this.init(); activeBackend.onRemoteUpdate(cb); },
     needsMigration() { if (!activeBackend) this.init(); return activeBackend.needsMigration ? activeBackend.needsMigration() : false; },
     async migrateToMultiDoc(onProgress) { if (!activeBackend) this.init(); if (!activeBackend.migrateToMultiDoc) throw new Error('Migration requires cloud sign-in (Firebase).'); return await activeBackend.migrateToMultiDoc(onProgress); },
