@@ -55,7 +55,7 @@ R.section('the fill only affects the LAST package — an earlier renewed package
 R.section('source');
 {
   const src = H.readSrc();
-  R.ok('subAttendanceWindow fills up to the paid class count on the last package', /FILL UP TO PAID CLASSES/.test(src) && /to = \(marks\.length >= limit\) \? marks\[limit - 1\] : null/.test(src));
+  R.ok('subAttendanceWindow fills up to the paid class count (caps on the limit-th class; last package left open when under)', /FILL UP TO PAID CLASSES/.test(src) && /if \(marks\.length >= limit\) to = marks\[limit - 1\];/.test(src) && /else if \(!sameAct\.length\) to = null;/.test(src));
 }
 
 R.done();
