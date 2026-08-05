@@ -2885,18 +2885,10 @@ function autoExpiryFromRows() {
     // Camp expiry counts BUSINESS days (Sun–Thu; closed Fri/Sat) via campEndDate, so the form
     // shows the SAME expiry the record will save — "1 month" = 22 working days, e.g. Sun 14-Jun →
     // Mon 13-Jul. Non-camp sports use their calendar validity. (v6.357 — owner rule.)
-    const isCamp = r.sport === SUMMER_CAMP;
-    let days;
-    if (isCamp) {
-      // Prefer the duration label's day-value; then an explicit validity; only fall back to the
-      // class count if neither is available. campEndDate converts it to the business-day span.
-      const labelDays = (typeof campDaysForLabel === 'function' && r.durationLabel) ? campDaysForLabel(r.durationLabel) : 0;
-      days = labelDays || parseInt(r.validity) || parseInt(r.campDays) || parseInt(r.classes) || 0;
-    } else {
-      days = parseInt(r.validity) || 0;
-    }
-    if (!(r.start && days > 0)) return null;
-    return (isCamp && typeof campEndDate === 'function') ? campEndDate(r.start, days) : addDays(r.start, days);
+    // Match the SAVE path exactly (rowEndDate): a Custom camp expires on the Nth camp-day (its typed
+    // day count), a preset camp uses its editable validity, any other sport uses calendar validity. (v6.458)
+    if (!r.start) return null;
+    return rowEndDate(r.sport, r.start, r.validity, (r.campDays || r.classes), r.durationLabel, r._campCustom);
   }).filter(Boolean).sort();
   return ends.length ? ends[ends.length - 1] : '';
 }
@@ -22766,7 +22758,13 @@ window.addRenewalMulti = function(m, picks) {
             if (r.deduct > 0 && classes > 0) { deducted = Math.min(r.deduct, classes); classes -= deducted; }
           }
           const isCamp = r.sport === SUMMER_CAMP;
-          const end = (isCamp && typeof campEndDate === 'function') ? campEndDate(start, validity) : addDays(start, validity);
+          // Camp renewal expires on the Nth camp-day (its class-day count) — same rule as booking a
+          // Custom pass; for a preset the class count already equals the window. Business-day fallback
+          // (campEndDate) when no class count is known. (v6.458)
+          const end = isCamp
+            ? ((typeof campEndDateFromClasses === 'function' && parseInt(classes) > 0) ? campEndDateFromClasses(start, classes)
+               : (typeof campEndDate === 'function' ? campEndDate(start, validity) : addDays(start, validity)))
+            : addDays(start, validity);
           // Duplicate-period guard (same sport / coach / start) — the usual cause of twin rows.
           const dup = (m.subscriptions || []).find(s => (s.activity || '') === r.sport && (s.start || '') === start && (s.coachId || null) === (r.coachId || null) && s.status !== 'Withdrawn');
           if (dup && !confirm(`⚠ ${m.name} ${t('already has an identical', 'لديه بالفعل فترة مطابقة')} ${r.sport} ${t('period starting', 'تبدأ في')} ${fmtDate(start)}.\n\n${t('Add another identical period anyway?', 'إضافة فترة مطابقة أخرى على أي حال؟')}`)) return;
@@ -26472,8 +26470,11 @@ window.convertTrialToMember = function(id) {
         if (classes <= 0) { toast('Classes must be > 0', 'error'); return; }
         if (price <= 0) { toast('Price must be > 0', 'error'); return; }
 
-        // Camp end = business days (Sun–Thu) via campEndDate; other sports = calendar validity. (v6.357)
-        const end = (sport === SUMMER_CAMP && typeof campEndDate === 'function') ? campEndDate(start, validity) : addDays(start, validity);
+        // Camp end = the Nth camp-day (its class-day count, Sun–Thu); trials have no preset window. (v6.458)
+        const end = sport === SUMMER_CAMP
+          ? ((typeof campEndDateFromClasses === 'function' && classes > 0) ? campEndDateFromClasses(start, classes)
+             : (typeof campEndDate === 'function' ? campEndDate(start, validity) : addDays(start, validity)))
+          : addDays(start, validity);
         const monthKey = start.slice(0, 7);
         const ref = nextInvoiceRef();
         const _sid = 's' + Date.now();
@@ -29692,8 +29693,8 @@ window.transferMembership = function(fromId, sport, toId) {
   const transferValue = Math.max(0, price - attendedValue);
   const validity = enr.validity || DEFAULT_VALIDITY;
   const start = TODAY;
-  // Camp end = business days (Sun–Thu) via campEndDate; other sports = calendar validity. (v6.357)
-  const end = (enr.sport === SUMMER_CAMP && typeof campEndDate === 'function') ? campEndDate(start, validity) : addDays(start, validity);
+  // Camp end = the Nth camp-day for a Custom pass, else the preset window; calendar for other sports. (v6.458)
+  const end = rowEndDate(enr.sport, start, validity, enr.classes, enr.durationLabel, enr._campCustom);
 
   // Does B already have this sport? If so, only MERGE when it's the SAME coach —
   // we add the remaining classes onto B's existing enrollment instead of creating a
