@@ -14865,21 +14865,27 @@ window.printInvoicePDF = function(id) {
         // Find the matching subscription period (start → expiry) for this line, by
         // invoice ref + activity, so the customer sees exactly what they paid for.
         let period = null, count = null;
-        if (matchedMember && Array.isArray(matchedMember.subscriptions)) {
-          const sub = matchedMember.subscriptions.find(s =>
-            (s.activity || '') === li.sport &&
-            ((s.invoiceNumber && (s.invoiceNumber === inv.ref || s.invoiceNumber === inv.invoiceNumber)) || false));
-          const subAny = sub || matchedMember.subscriptions.filter(s => (s.activity || '') === li.sport).slice(-1)[0];
-          if (subAny) {
-            // The printed validity window must match the member's real end date
-            // (the member modal value), not a date recomputed from a stale camp
-            // duration label.
-            const endDate = subscriptionValidEnd(subAny);
-            period = { start: subAny.start, end: endDate };
-            count = parseInt(subAny.totalClasses) || parseInt(li.classes) || null;
-          }
+        // Link this line to ITS OWN subscription for the validity period. Use the canonical
+        // findSubForLine — it matches by invoice ref, then disambiguates a RENEWAL by DATE (the
+        // sub whose START matches the invoice date). The old ad-hoc lookup fell back to the
+        // member's LATEST subscription (.slice(-1)) whenever the ref didn't match — so when a
+        // member's sub.invoiceNumber values are out of sync with the invoice refs, EVERY camp
+        // invoice printed the newest package's day-count and dates (reported: Hossam & Tamim —
+        // all camp invoices showed "12 days"; their July 22-day invoices should read 22). (v6.454)
+        const subAny = (typeof findSubForLine === 'function')
+          ? findSubForLine(matchedMember, inv, li)
+          : (matchedMember && Array.isArray(matchedMember.subscriptions)
+              ? matchedMember.subscriptions.filter(s => (s.activity || '') === li.sport).slice(-1)[0] : null);
+        if (subAny) {
+          // Printed validity window = the member's real end date (the member-modal value),
+          // not a value recomputed from a possibly-stale camp duration label.
+          const endDate = subscriptionValidEnd(subAny);
+          period = { start: subAny.start, end: endDate };
         }
-        if (count == null) count = parseInt(li.classes) || 1;
+        // The invoice LINE's own `classes` is the authoritative billed count for THIS invoice —
+        // prefer it over the linked sub's totalClasses (which can be a different package).
+        count = parseInt(li.classes) || (subAny ? parseInt(subAny.totalClasses) : 0) || null;
+        if (count == null) count = 1;
         // Camp counts DAYS; everything else counts CLASSES.
         const unitEn = isCamp ? (count === 1 ? 'day' : 'days') : (count === 1 ? 'class' : 'classes');
         const unitAr = isCamp ? 'يوم' : 'حصة';
