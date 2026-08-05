@@ -14279,7 +14279,15 @@ window.printMemberInvoicePDF = function(memberId) {
     const items = (iv.lineItems && iv.lineItems.length) ? iv.lineItems
       : [{ sport: iv.sport, coach: iv.coach, coachId: iv.coachId, classes: iv.classes, price: iv.amount || 0 }];
     for (const li of items) {
-      lineItems.push({ sport: li.sport, coach: li.coach || coachName(li.coachId) || '', coachId: li.coachId, classes: li.classes, price: Number(li.price) || 0 });
+      // Resolve THIS line's period against ITS OWN source invoice `iv` (correct date + ref) and carry
+      // it on the combined line as _period — otherwise the combined invoice's single (latest) date maps
+      // every same-sport line to the newest package. (v6.456)
+      let _period = null;
+      if (m && typeof findSubForLine === 'function') {
+        const _sub = findSubForLine(m, iv, li);
+        if (_sub) _period = { start: _sub.start || null, end: (typeof subscriptionValidEnd === 'function' ? subscriptionValidEnd(_sub) : (_sub.end || null)) };
+      }
+      lineItems.push({ sport: li.sport, coach: li.coach || coachName(li.coachId) || '', coachId: li.coachId, classes: li.classes, price: Number(li.price) || 0, _period });
     }
     amount += iv.amount || 0;
     paid += invoicePaid(iv);
@@ -14872,11 +14880,17 @@ window.printInvoicePDF = function(id) {
         // member's sub.invoiceNumber values are out of sync with the invoice refs, EVERY camp
         // invoice printed the newest package's day-count and dates (reported: Hossam & Tamim —
         // all camp invoices showed "12 days"; their July 22-day invoices should read 22). (v6.454)
+        // A COMBINED invoice ("Get Invoice (N sports)") carries each line's OWN period on the line
+        // (li._period), resolved against ITS source invoice — because a combined invoice has one date
+        // for many same-sport packages, so re-deriving here would map EVERY line to the latest one
+        // (reported: Hossam Awadalla — all 4 Summer Camp lines printed "05 Aug → 03 Sept"). Prefer it. (v6.456)
         const subAny = (typeof findSubForLine === 'function')
           ? findSubForLine(matchedMember, inv, li)
           : (matchedMember && Array.isArray(matchedMember.subscriptions)
               ? matchedMember.subscriptions.filter(s => (s.activity || '') === li.sport).slice(-1)[0] : null);
-        if (subAny) {
+        if (li._period && (li._period.start || li._period.end)) {
+          period = { start: li._period.start || null, end: li._period.end || null };
+        } else if (subAny) {
           // Printed validity window = the member's real end date (the member-modal value),
           // not a value recomputed from a possibly-stale camp duration label.
           const endDate = subscriptionValidEnd(subAny);
@@ -22886,11 +22900,23 @@ window.addRenewal = function(memberId) {
       <div class="form-row">
         <div class="field"><label>Classes</label><input id="rn-classes" type="number" min="0" step="1" value="${enrolledUnique[0]?.classes || ''}" /></div>
         <div class="field"><label>Validity</label><select id="rn-validity">${VALIDITY_OPTIONS.map(v => `<option value="${v}" ${v===DEFAULT_VALIDITY?'selected':''}>${v} days</option>`).join('')}</select></div>
-        <div class="field"><label>Amount paid (QAR)</label><input id="rn-amount" type="number" step="0.01" min="0" value="${enrolledUnique[0]?.price || ''}" /></div>
+        <div class="field"><label>Amount / Fee (QAR)</label><input id="rn-amount" type="number" step="0.01" min="0" value="${enrolledUnique[0]?.price || ''}" /></div>
       </div>
       <div class="form-row">
         <div class="field"><label>Start / renewal date</label><input id="rn-start" type="date" value="${TODAY}" /></div>
         <div class="field"><label>Expiry date <span class="text-mute" style="font-size:10px;font-weight:400">(auto · override allowed)</span></label><input id="rn-end" type="date" /><div id="rn-end-hint" class="text-mute" style="font-size:10px;margin-top:3px"></div></div>
+      </div>
+      <div id="rn-pay-panel" style="margin-top:6px;padding:12px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.30);border-radius:10px">
+        <label style="font-size:11px;font-weight:700;color:var(--green);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">💳 ${t('Paid now — amount per method', 'المدفوع الآن — المبلغ لكل طريقة')} <span class="text-mute" style="font-weight:400;font-size:10px;text-transform:none">${t('(split allowed · leave ALL blank = paid in full, cash)', '(يمكن التقسيم · اترك الكل فارغاً = مدفوع بالكامل نقداً)')}</span></label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${[['cash', '💵', t('Cash', 'نقدي'), '#16a34a'], ['card', '💳', t('Card', 'بطاقة'), '#3b82f6'], ['fawran', '📲', t('Fawran', 'فوران'), '#8b5cf6'], ['transfer', '🏦', t('Transfer', 'تحويل'), '#f59e0b']].map(([mk, ic, lbl, col]) => `
+            <div style="flex:1;min-width:104px;background:color-mix(in srgb, ${col} 9%, var(--surface));border:1px solid color-mix(in srgb, ${col} 35%, transparent);border-radius:10px;padding:6px 9px">
+              <div style="font-size:10px;font-weight:700;color:${col};margin-bottom:3px">${ic} ${lbl}</div>
+              <input class="rn-pay-m" data-method="${mk}" type="number" min="0" step="1" value="" placeholder="0" inputmode="numeric" style="width:100%;font-size:14px;font-weight:700;text-align:right;background:transparent;border:none;border-bottom:1px solid color-mix(in srgb, ${col} 30%, var(--border));color:var(--text);outline:none" />
+            </div>`).join('')}
+        </div>
+        <div class="field" style="margin-top:8px;margin-bottom:0"><label style="font-size:11px">📅 ${t('Payment date', 'تاريخ الدفع')} <span class="text-mute" style="font-size:10px;font-weight:400">${t('leave blank = use the renewal date', 'اتركه فارغاً = استخدام تاريخ التجديد')}</span></label><input id="rn-paydate" type="date" value="" /></div>
+        <div id="rn-pay-hint" style="font-size:11px;margin-top:8px;text-align:center;color:var(--green)"></div>
       </div>
       <div id="rn-deduct-banner" style="display:none"></div>
       <div id="rn-carry-banner" style="display:none"></div>
@@ -22985,12 +23011,30 @@ window.addRenewal = function(memberId) {
             ? (campLabelForClasses(classes) || '')
             : '';
           const sportLabel = dl ? `${renewedSport} · ${dl}` : renewedSport;
+          // ── Payment split by method (v6.455) — same model as Add Member's first payment.
+          // Each non-zero method box becomes its OWN dated ledger row; if ALL boxes are blank the
+          // fee is treated as paid in full in cash (preserves the prior renewal behaviour, which
+          // always recorded 'cash'). Leaving some paid < fee records the remainder as a DUE balance.
+          const _payDate = ($('#rn-paydate') && $('#rn-paydate').value) || start;
+          const _payMonth = _payDate.slice(0, 7);
+          const _payByMethod = {}; let _anyPay = false;
+          document.querySelectorAll('.rn-pay-m').forEach(mi => {
+            if (mi.value !== '' && mi.value != null) { _anyPay = true; const a = Math.max(0, parseFloat(mi.value) || 0); if (a > 0) _payByMethod[mi.dataset.method] = Math.round(((_payByMethod[mi.dataset.method] || 0) + a) * 100) / 100; }
+          });
+          const _payRows = _anyPay
+            ? Object.entries(_payByMethod).filter(([, a]) => a > 0).map(([mk, a]) => ({ date: _payDate, month: _payMonth, amount: a, method: mk }))
+            : [{ date: _payDate, month: _payMonth, amount, method: 'cash' }];
+          const _paidNow = _payRows.reduce((s, p) => s + p.amount, 0);
+          if (_paidNow > amount + 0.001) { toast(t('Paid now exceeds the fee — reduce it', 'المدفوع الآن يتجاوز الرسوم — قلّله'), 'error'); return; }
+          const _payMethod = _payRows[0] ? _payRows[0].method : 'cash';
           state.invoices.push({
             id: (_rnInvId = nextId(state.invoices)),
             date: start,
             description: `${sportLabel} renewal — ${m.name}${classes && renewedSport !== SUMMER_CAMP ? ` · ${classes} classes` : ''}`,
             amount,
-            method: 'cash',
+            amountPaid: _paidNow,
+            payments: _paidNow > 0 ? _payRows : [],
+            method: _payMethod,
             month: start.slice(0, 7),
             ref,
             sport: sportLabel,
@@ -23099,6 +23143,25 @@ window.addRenewal = function(memberId) {
   document.getElementById('rn-validity')?.addEventListener('change', recalcRnExpiry);
   document.getElementById('rn-classes')?.addEventListener('input', recalcRnExpiry);
   document.getElementById('rn-act')?.addEventListener('change', recalcRnExpiry);
+  // Live "paid / due" summary for the renewal payment split (v6.455). Total = the fee field;
+  // Paid = sum of the method boxes (all blank ⇒ paid in full, cash), Due = fee − paid.
+  const _rnPayHint = () => {
+    const fee = parseFloat(document.getElementById('rn-amount')?.value) || 0;
+    const boxes = document.querySelectorAll('.rn-pay-m');
+    if (!boxes.length) return;
+    let entered = 0, any = false;
+    boxes.forEach(mi => { if (mi.value !== '' && mi.value != null) { any = true; entered += Math.max(0, parseFloat(mi.value) || 0); } });
+    const paid = any ? entered : fee;
+    const due = Math.max(0, fee - paid), over = Math.max(0, paid - fee);
+    const h = document.getElementById('rn-pay-hint'); if (!h) return;
+    if (over > 0.001) { h.textContent = `⚠ ${t('Exceeds fee by', 'يتجاوز الرسوم بـ')} ${fmt(over)}`; h.style.color = 'var(--red)'; }
+    else if (!any) { h.textContent = `✓ ${fmt(fee)} — ${t('paying in full (Cash)', 'دفع كامل (نقداً)')}`; h.style.color = 'var(--green)'; }
+    else if (due > 0.001) { h.textContent = `${fmt(paid)} ${t('collected', 'محصّل')} · ${fmt(due)} ${t('due', 'مستحق')}`; h.style.color = 'var(--accent-2)'; }
+    else { h.textContent = `✓ ${t('Paid in full', 'مدفوع بالكامل')}: ${fmt(fee)}`; h.style.color = 'var(--green)'; }
+  };
+  document.querySelectorAll('.rn-pay-m').forEach(mi => mi.addEventListener('input', _rnPayHint));
+  document.getElementById('rn-amount')?.addEventListener('input', _rnPayHint);
+  _rnPayHint();
   document.getElementById('rn-end')?.addEventListener('input', () => {
     _rnAutoSet = false;
     // If the expiry (end) is moved BEFORE the start, pull the start DOWN to the end so the
@@ -27279,6 +27342,134 @@ PAGES.coachperf = (main) => {
   `;
   $('#cp-month').addEventListener('change', e => { month = e.target.value; refresh(); });
   refresh();
+};
+
+// ═══════════════ CHARTS DASHBOARD (v6.457) ═══════════════
+// Self-contained inline-SVG charts (NO external libraries — the app is offline-capable and CSP-safe)
+// for revenue, cost, profit, coach performance and payroll. Reuses the SAME billed-basis aggregates
+// as Reports (billedInPeriod / billedByCategoryInPeriod / billedBySportInPeriod / salariesEarnedInPeriod
+// / computeMonthlyPay) so every screen agrees. Charts are responsive (viewBox + width:100%) and
+// theme-aware (text uses currentColor / CSS vars, so they read in light AND dark mode).
+const _CH_PALETTE = ['#5b8def', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6', '#ec4899', '#f97316', '#22c55e', '#6366f1'];
+function _chNiceMax(v) { if (v <= 0) return 1; const mag = Math.pow(10, Math.floor(Math.log10(v))); const n = v / mag; const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10; return step * mag; }
+function _chK(n) { n = Number(n) || 0; const a = Math.abs(n); if (a >= 1000) return (n / 1000).toFixed(a >= 10000 ? 0 : 1) + 'k'; return String(Math.round(n)); }
+function _chMonthShort(mk) { const p = String(mk).split('-'); const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; return (M[(parseInt(p[1]) || 1) - 1] || p[1]) + ' ' + String(p[0]).slice(2); }
+
+// Grouped vertical bars. groups = [{label, values:[..]}], series = [{name, color}].
+function _chBars(groups, series) {
+  const W = 720, H = 240, PL = 46, PR = 14, PT = 16, PB = 30;
+  const plotW = W - PL - PR, plotH = H - PT - PB;
+  let maxV = 1; for (const g of groups) for (const v of g.values) maxV = Math.max(maxV, v || 0);
+  const niceMax = _chNiceMax(maxV);
+  const gW = plotW / (groups.length || 1);
+  const bW = Math.max(4, Math.min(24, (gW - 6) / (series.length || 1)));
+  const y0 = PT + plotH;
+  const grid = [0, .25, .5, .75, 1].map(f => { const y = PT + plotH * (1 - f); return `<line x1="${PL}" y1="${y}" x2="${W - PR}" y2="${y}" stroke="currentColor" stroke-opacity=".10"/><text x="${PL - 6}" y="${y + 3}" text-anchor="end" font-size="9" fill="currentColor" fill-opacity=".55">${_chK(niceMax * f)}</text>`; }).join('');
+  const bars = groups.map((g, gi) => {
+    const gx = PL + gi * gW + (gW - bW * series.length) / 2;
+    const rects = g.values.map((v, si) => { const h = plotH * (Math.max(0, v || 0) / niceMax); const x = gx + si * bW; return `<rect x="${x.toFixed(1)}" y="${(y0 - h).toFixed(1)}" width="${(bW - 2).toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${series[si].color}"><title>${escapeHtml(g.label)} · ${escapeHtml(series[si].name)}: ${fmt(v)} QAR</title></rect>`; }).join('');
+    return rects + `<text x="${(PL + gi * gW + gW / 2).toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="9" fill="currentColor" fill-opacity=".65">${escapeHtml(g.label)}</text>`;
+  }).join('');
+  const legend = series.map(s => `<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;margin-right:14px"><span style="width:10px;height:10px;border-radius:2px;background:${s.color};display:inline-block"></span>${escapeHtml(s.name)}</span>`).join('');
+  return `<div style="margin-bottom:4px">${legend}</div><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;color:var(--text)">${grid}${bars}</svg>`;
+}
+
+// Single line with a filled area + a zero baseline (handles NEGATIVE values, e.g. a loss month).
+function _chLine(points, labels, color) {
+  color = color || '#5b8def';
+  const W = 720, H = 200, PL = 46, PR = 14, PT = 14, PB = 28;
+  const plotW = W - PL - PR, plotH = H - PT - PB;
+  let mn = 0, mx = 1; for (const v of points) { mn = Math.min(mn, v || 0); mx = Math.max(mx, v || 0); }
+  const niceMx = _chNiceMax(mx), niceMn = mn < 0 ? -_chNiceMax(-mn) : 0;
+  const range = (niceMx - niceMn) || 1;
+  const X = i => PL + (points.length <= 1 ? plotW / 2 : plotW * i / (points.length - 1));
+  const Y = v => PT + plotH * (1 - (((v || 0) - niceMn) / range));
+  const zeroY = Y(0);
+  const path = points.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(' ');
+  const area = `${path} L${X(points.length - 1).toFixed(1)} ${zeroY.toFixed(1)} L${X(0).toFixed(1)} ${zeroY.toFixed(1)} Z`;
+  const dots = points.map((v, i) => `<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="3" fill="${(v || 0) < 0 ? '#ef4444' : color}"><title>${escapeHtml(labels[i])}: ${fmt(v)} QAR</title></circle>`).join('');
+  const xlabels = labels.map((l, i) => `<text x="${X(i).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="9" fill="currentColor" fill-opacity=".65">${escapeHtml(l)}</text>`).join('');
+  const grid = [0, .5, 1].map(f => { const v = niceMn + range * f; const y = Y(v); return `<line x1="${PL}" y1="${y}" x2="${W - PR}" y2="${y}" stroke="currentColor" stroke-opacity=".10"/><text x="${PL - 6}" y="${y + 3}" text-anchor="end" font-size="9" fill="currentColor" fill-opacity=".55">${_chK(v)}</text>`; }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;color:var(--text)">${grid}<line x1="${PL}" y1="${zeroY}" x2="${W - PR}" y2="${zeroY}" stroke="currentColor" stroke-opacity=".28"/><path d="${area}" fill="${color}" fill-opacity=".12"/><path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round"/>${dots}${xlabels}</svg>`;
+}
+
+// Donut with a legend. slices = [{label, value, color?}].
+function _chDonut(slices) {
+  const total = slices.reduce((s, x) => s + (x.value || 0), 0) || 1;
+  const r = 54, cx = 70, cy = 70, C = 2 * Math.PI * r, sw = 22;
+  let off = 0;
+  const segs = slices.map((s, i) => { const len = C * ((s.value || 0) / total); const seg = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${s.color || _CH_PALETTE[i % _CH_PALETTE.length]}" stroke-width="${sw}" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"><title>${escapeHtml(s.label)}: ${fmt(s.value)} (${((s.value || 0) / total * 100).toFixed(0)}%)</title></circle>`; off += len; return seg; }).join('');
+  const legend = slices.map((s, i) => `<div style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:5px"><span style="width:10px;height:10px;border-radius:2px;background:${s.color || _CH_PALETTE[i % _CH_PALETTE.length]}"></span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(s.label)}</span><b>${fmt(s.value)}</b><span class="text-mute" style="font-size:10px;min-width:26px;text-align:right">${((s.value || 0) / total * 100).toFixed(0)}%</span></div>`).join('');
+  return `<div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap"><svg viewBox="0 0 140 140" style="width:140px;height:140px;flex:0 0 auto;color:var(--text)">${segs}<text x="70" y="66" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6">${t('Total', 'الإجمالي')}</text><text x="70" y="84" text-anchor="middle" font-size="14" font-weight="700" fill="currentColor">${_chK(total)}</text></svg><div style="flex:1;min-width:170px">${legend}</div></div>`;
+}
+
+// Horizontal bars (ranked). rows = [{label, value, color?}].
+function _chHBars(rows) {
+  let max = 1; for (const r of rows) max = Math.max(max, r.value || 0);
+  if (!rows.length) return `<div class="text-mute" style="font-size:12px;padding:10px">${t('No data', 'لا توجد بيانات')}</div>`;
+  return `<div>${rows.map((r, i) => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px"><div style="width:118px;font-size:12px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(r.label)}">${escapeHtml(r.label)}</div><div style="flex:1;background:var(--surface-2);border-radius:6px;height:16px;overflow:hidden"><div style="width:${(100 * (r.value || 0) / max).toFixed(1)}%;height:100%;background:${r.color || _CH_PALETTE[i % _CH_PALETTE.length]};border-radius:6px"></div></div><div style="width:74px;font-size:12px;font-weight:700;text-align:right">${fmt(r.value)}</div></div>`).join('')}</div>`;
+}
+
+const _CH_CARD = (title, sub, inner) => `<div class="card" style="padding:16px 18px"><div style="font-weight:700;font-size:14px;margin-bottom:2px">${title}</div>${sub ? `<div class="text-mute" style="font-size:11px;margin-bottom:12px">${sub}</div>` : '<div style="margin-bottom:12px"></div>'}${inner}</div>`;
+
+PAGES.charts = (main) => {
+  // Admin-only — the same club-earnings sensitivity as Reports (reception's allow-list excludes both).
+  if (currentRole() !== 'admin') { main.innerHTML = `<div class="card" style="text-align:center;padding:40px"><div style="font-size:40px">🔒</div><h2>${t('Admins only', 'للمسؤولين فقط')}</h2></div>`; return; }
+  // Months that have any financial data.
+  const months = (function () { const s = new Set(); (state.invoices || []).forEach(i => { if (!i.deleted && i.month) s.add(i.month); }); (state.expenses || []).forEach(e => { if (!e.deleted) { const m = e.month || (e.date || '').slice(0, 7); if (m) s.add(m); } }); (state.salaries || []).forEach(x => { if (x.month) s.add(x.month); }); return [...s].sort(); })();
+  if (!months.length) { main.innerHTML = `<div class="topbar"><div><h1>📊 ${t('Charts', 'الرسوم البيانية')}</h1></div></div><div class="empty"><div class="empty-icon">📊</div>${t('No financial data yet to chart.', 'لا توجد بيانات مالية بعد لعرضها.')}</div>`; return; }
+  const lastN = months.slice(-8);
+  const monthly = lastN.map(mk => {
+    const revenue = billedInPeriod(m => m === mk);
+    let expenses = 0; for (const e of (state.expenses || [])) { if (e.deleted) continue; const em = e.month || (e.date || '').slice(0, 7); if (em !== mk || isSalaryCategory(e.category)) continue; expenses += Number(e.amount) || 0; }
+    const salaries = salariesEarnedInPeriod(m => m === mk);
+    const cost = expenses + salaries;
+    const newMembers = (state.members || []).filter(x => (x.firstRegistration || '').slice(0, 7) === mk).length;
+    return { mk, short: _chMonthShort(mk), revenue, expenses, salaries, cost, profit: revenue - cost, newMembers };
+  });
+  const revByCat = billedByCategoryInPeriod(() => true);
+  const revBySport = billedBySportInPeriod(() => true);
+  const latestMk = months[months.length - 1];
+  const coachPerf = (state.coaches || []).filter(c => typeof isCoachActive !== 'function' || isCoachActive(c)).map(c => { const p = (typeof computeMonthlyPay === 'function') ? computeMonthlyPay(c.id, latestMk) : null; return { label: c.name, value: p ? Math.round(p.gross) : 0 }; }).filter(x => x.value > 0).sort((a, b) => b.value - a.value).slice(0, 10);
+
+  // Totals across the shown window (for the header KPIs).
+  const totRev = monthly.reduce((s, m) => s + m.revenue, 0);
+  const totProfit = monthly.reduce((s, m) => s + m.profit, 0);
+  const totPayroll = monthly.reduce((s, m) => s + m.salaries, 0);
+
+  // Charts.
+  const revCostBars = _chBars(monthly.map(m => ({ label: m.short, values: [m.revenue, m.cost] })), [{ name: t('Revenue', 'الإيراد'), color: '#10b981' }, { name: t('Cost (expenses + payroll)', 'التكلفة (مصروفات + رواتب)'), color: '#f59e0b' }]);
+  const profitLine = _chLine(monthly.map(m => m.profit), monthly.map(m => m.short), '#5b8def');
+  const catDonut = _chDonut(Object.entries(revByCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ label: k, value: v })));
+  const sportBars = _chHBars(Object.entries(revBySport).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => ({ label: k, value: v })));
+  const coachBars = _chHBars(coachPerf);
+  const payrollBars = _chBars(monthly.map(m => ({ label: m.short, values: [m.salaries] })), [{ name: t('Payroll', 'الرواتب'), color: '#8b5cf6' }]);
+  const membersLine = _chLine(monthly.map(m => m.newMembers), monthly.map(m => m.short), '#ec4899');
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div><h1>📊 ${t('Charts', 'الرسوم البيانية')}</h1><div class="subtitle">${t('Trends over the last', 'الاتجاهات خلال آخر')} ${monthly.length} ${t('months', 'أشهر')} · ${t('billed basis', 'أساس الفوترة')}</div></div>
+      <div class="topbar-actions"><button class="btn ghost" onclick="navigate('reports')">📈 ${t('Reports', 'التقارير')}</button></div>
+    </div>
+    <div class="kpi-grid" style="margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">${t('Revenue', 'الإيراد')} · ${monthly.length}${t('mo', 'ش')}</div><div class="kpi-value num">${fmt(totRev)} <span style="font-size:12px;color:var(--text-dim)">QAR</span></div></div>
+      <div class="kpi"><div class="kpi-label">${t('Net Profit', 'صافي الربح')} · ${monthly.length}${t('mo', 'ش')}</div><div class="kpi-value num" style="color:${totProfit < 0 ? 'var(--red)' : 'var(--green)'}">${fmt(totProfit)} <span style="font-size:12px;color:var(--text-dim)">QAR</span></div></div>
+      <div class="kpi"><div class="kpi-label">${t('Payroll', 'الرواتب')} · ${monthly.length}${t('mo', 'ش')}</div><div class="kpi-value num">${fmt(totPayroll)} <span style="font-size:12px;color:var(--text-dim)">QAR</span></div></div>
+      <div class="kpi"><div class="kpi-label">${t('This month coaches', 'مدربو هذا الشهر')}</div><div class="kpi-value num">${coachPerf.length}</div></div>
+    </div>
+    ${_CH_CARD('💰 ' + t('Revenue vs Cost', 'الإيراد مقابل التكلفة'), t('Monthly revenue against total cost (expenses + payroll)', 'الإيراد الشهري مقابل التكلفة الكلية'), revCostBars)}
+    <div style="height:14px"></div>
+    ${_CH_CARD('📈 ' + t('Net Profit trend', 'اتجاه صافي الربح'), t('Revenue − expenses − payroll, per month (red = a loss month)', 'الإيراد − المصروفات − الرواتب لكل شهر'), profitLine)}
+    <div style="height:14px"></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px">
+      ${_CH_CARD('🍩 ' + t('Revenue by Category', 'الإيراد حسب الفئة'), t('All time', 'كل الوقت'), catDonut)}
+      ${_CH_CARD('🏆 ' + t('Revenue by Sport', 'الإيراد حسب الرياضة'), t('Top 8 · all time', 'أعلى ٨ · كل الوقت'), sportBars)}
+      ${_CH_CARD('🥋 ' + t('Coach Performance', 'أداء المدربين'), t('Gross this month', 'الإجمالي هذا الشهر') + ' · ' + fmtMonth(latestMk), coachBars)}
+      ${_CH_CARD('👛 ' + t('Payroll by month', 'الرواتب شهرياً'), t('Salary cost per month', 'تكلفة الرواتب شهرياً'), payrollBars)}
+    </div>
+    <div style="height:14px"></div>
+    ${_CH_CARD('👥 ' + t('New Members', 'أعضاء جدد'), t('New registrations per month', 'التسجيلات الجديدة شهرياً'), membersLine)}
+  `;
 };
 
 // ─── REPORTS ──────────────────────────────────────────────────
