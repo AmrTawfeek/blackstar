@@ -27419,8 +27419,24 @@ PAGES.charts = (main) => {
   // Months that have any financial data.
   const months = (function () { const s = new Set(); (state.invoices || []).forEach(i => { if (!i.deleted && i.month) s.add(i.month); }); (state.expenses || []).forEach(e => { if (!e.deleted) { const m = e.month || (e.date || '').slice(0, 7); if (m) s.add(m); } }); (state.salaries || []).forEach(x => { if (x.month) s.add(x.month); }); return [...s].sort(); })();
   if (!months.length) { main.innerHTML = `<div class="topbar"><div><h1>📊 ${t('Charts', 'الرسوم البيانية')}</h1></div></div><div class="empty"><div class="empty-icon">📊</div>${t('No financial data yet to chart.', 'لا توجد بيانات مالية بعد لعرضها.')}</div>`; return; }
-  const lastN = months.slice(-8);
-  const monthly = lastN.map(mk => {
+  // ── Multi-select MONTH + YEAR filters (v6.459). Both empty ⇒ the default last-8-months view.
+  //    A month is in scope when it passes BOTH active filters (an empty filter passes everything).
+  const years = [...new Set(months.map(m => m.slice(0, 4)))].sort().reverse();
+  if (!window._chFilter) window._chFilter = { months: [], years: [] };
+  const chF = window._chFilter;
+  if (!Array.isArray(chF.months)) chF.months = [];
+  if (!Array.isArray(chF.years)) chF.years = [];
+  const hasFilter = chF.months.length > 0 || chF.years.length > 0;
+  const inScope = months.filter(mk =>
+    (chF.months.length === 0 || chF.months.includes(mk)) &&
+    (chF.years.length === 0 || chF.years.includes(mk.slice(0, 4))));
+  const scoped = hasFilter ? inScope : months.slice(-8);
+  const scopedSet = new Set(scoped);
+  const periodLabel = hasFilter
+    ? (scoped.length ? (scoped.length === 1 ? fmtMonth(scoped[0]) : `${scoped.length} ${t('months selected', 'شهر محدد')}`) : t('no months match', 'لا أشهر مطابقة'))
+    : `${t('last', 'آخر')} ${scoped.length} ${t('months', 'أشهر')}`;
+
+  const monthly = scoped.map(mk => {
     const revenue = billedInPeriod(m => m === mk);
     let expenses = 0; for (const e of (state.expenses || [])) { if (e.deleted) continue; const em = e.month || (e.date || '').slice(0, 7); if (em !== mk || isSalaryCategory(e.category)) continue; expenses += Number(e.amount) || 0; }
     const salaries = salariesEarnedInPeriod(m => m === mk);
@@ -27428,10 +27444,15 @@ PAGES.charts = (main) => {
     const newMembers = (state.members || []).filter(x => (x.firstRegistration || '').slice(0, 7) === mk).length;
     return { mk, short: _chMonthShort(mk), revenue, expenses, salaries, cost, profit: revenue - cost, newMembers };
   });
-  const revByCat = billedByCategoryInPeriod(() => true);
-  const revBySport = billedBySportInPeriod(() => true);
-  const latestMk = months[months.length - 1];
-  const coachPerf = (state.coaches || []).filter(c => typeof isCoachActive !== 'function' || isCoachActive(c)).map(c => { const p = (typeof computeMonthlyPay === 'function') ? computeMonthlyPay(c.id, latestMk) : null; return { label: c.name, value: p ? Math.round(p.gross) : 0 }; }).filter(x => x.value > 0).sort((a, b) => b.value - a.value).slice(0, 10);
+  // Category / sport revenue + coach pay now follow the SAME scoped period as the bars.
+  const revByCat = billedByCategoryInPeriod(m => scopedSet.has(m));
+  const revBySport = billedBySportInPeriod(m => scopedSet.has(m));
+  const latestMk = scoped[scoped.length - 1] || months[months.length - 1];
+  const coachPerf = (state.coaches || []).filter(c => typeof isCoachActive !== 'function' || isCoachActive(c)).map(c => {
+    let gross = 0;
+    for (const mk of scoped) { const p = (typeof computeMonthlyPay === 'function') ? computeMonthlyPay(c.id, mk) : null; if (p) gross += p.gross || 0; }
+    return { label: c.name, value: Math.round(gross) };
+  }).filter(x => x.value > 0).sort((a, b) => b.value - a.value).slice(0, 10);
 
   // Totals across the shown window (for the header KPIs).
   const totRev = monthly.reduce((s, m) => s + m.revenue, 0);
@@ -27449,8 +27470,13 @@ PAGES.charts = (main) => {
 
   main.innerHTML = `
     <div class="topbar">
-      <div><h1>📊 ${t('Charts', 'الرسوم البيانية')}</h1><div class="subtitle">${t('Trends over the last', 'الاتجاهات خلال آخر')} ${monthly.length} ${t('months', 'أشهر')} · ${t('billed basis', 'أساس الفوترة')}</div></div>
+      <div><h1>📊 ${t('Charts', 'الرسوم البيانية')}</h1><div class="subtitle">${escapeHtml(periodLabel)} · ${t('billed basis', 'أساس الفوترة')}</div></div>
       <div class="topbar-actions"><button class="btn ghost" onclick="navigate('reports')">📈 ${t('Reports', 'التقارير')}</button></div>
+    </div>
+    <div class="filter-bar" style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      ${monthMultiHTML('ch-month', months.slice().reverse(), chF.months)}
+      ${multiFilterHTML('ch-year', years.map(y => [y, y]), chF.years, { icon: '📅', allText: t('All years', 'كل السنوات'), noun: t('years', 'سنوات'), minWidth: 130 })}
+      ${hasFilter ? `<button type="button" class="btn ghost" id="ch-clear" title="${t('Show the default last-8-months view', 'عرض آخر ٨ أشهر افتراضياً')}">✕ ${t('Clear filters', 'مسح المرشحات')}</button>` : ''}
     </div>
     <div class="kpi-grid" style="margin-bottom:14px">
       <div class="kpi"><div class="kpi-label">${t('Revenue', 'الإيراد')} · ${monthly.length}${t('mo', 'ش')}</div><div class="kpi-value num">${fmt(totRev)} <span style="font-size:12px;color:var(--text-dim)">QAR</span></div></div>
@@ -27463,14 +27489,19 @@ PAGES.charts = (main) => {
     ${_CH_CARD('📈 ' + t('Net Profit trend', 'اتجاه صافي الربح'), t('Revenue − expenses − payroll, per month (red = a loss month)', 'الإيراد − المصروفات − الرواتب لكل شهر'), profitLine)}
     <div style="height:14px"></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px">
-      ${_CH_CARD('🍩 ' + t('Revenue by Category', 'الإيراد حسب الفئة'), t('All time', 'كل الوقت'), catDonut)}
-      ${_CH_CARD('🏆 ' + t('Revenue by Sport', 'الإيراد حسب الرياضة'), t('Top 8 · all time', 'أعلى ٨ · كل الوقت'), sportBars)}
-      ${_CH_CARD('🥋 ' + t('Coach Performance', 'أداء المدربين'), t('Gross this month', 'الإجمالي هذا الشهر') + ' · ' + fmtMonth(latestMk), coachBars)}
+      ${_CH_CARD('🍩 ' + t('Revenue by Category', 'الإيراد حسب الفئة'), escapeHtml(periodLabel), catDonut)}
+      ${_CH_CARD('🏆 ' + t('Revenue by Sport', 'الإيراد حسب الرياضة'), t('Top 8', 'أعلى ٨') + ' · ' + escapeHtml(periodLabel), sportBars)}
+      ${_CH_CARD('🥋 ' + t('Coach Performance', 'أداء المدربين'), t('Gross', 'الإجمالي') + ' · ' + escapeHtml(periodLabel), coachBars)}
       ${_CH_CARD('👛 ' + t('Payroll by month', 'الرواتب شهرياً'), t('Salary cost per month', 'تكلفة الرواتب شهرياً'), payrollBars)}
     </div>
     <div style="height:14px"></div>
     ${_CH_CARD('👥 ' + t('New Members', 'أعضاء جدد'), t('New registrations per month', 'التسجيلات الجديدة شهرياً'), membersLine)}
   `;
+  // Wire the month + year multi-selects — re-render the whole screen with the new scope. (v6.459)
+  bindMonthMulti('ch-month', (mSel) => { window._chFilter.months = mSel; PAGES.charts(main); });
+  bindMultiFilter('ch-year', (v) => { window._chFilter.years = v; PAGES.charts(main); }, { allText: t('All years', 'كل السنوات'), noun: t('years', 'سنوات') });
+  const chClear = document.getElementById('ch-clear');
+  if (chClear) chClear.addEventListener('click', () => { window._chFilter = { months: [], years: [] }; PAGES.charts(main); });
 };
 
 // ─── REPORTS ──────────────────────────────────────────────────
