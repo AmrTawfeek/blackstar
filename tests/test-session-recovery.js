@@ -104,6 +104,22 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   ok('the dead _stillSignedIn / _sessionLapsed / _serverRefused branching is gone from the confirm popup',
     !/_serverRefused = _isAuthReason/.test(appSrc) && !/const _sessionLapsed = /.test(appSrc), null);
 
+  // ── 6) v6.464 — BULLETPROOF RECOVERY when the in-place sign-in itself won't take (the reported
+  // "session expired AND login not working" loop). The usual cause is a stale AUTO-FILLED password
+  // in a masked field. The prompt now: (a) has a 👁 reveal so the admin can see/fix the password;
+  // (b) maps the modern consolidated Firebase codes to a clear "wrong password" message; (c) on a
+  // bad password clears + reveals + refocuses the field; and (d) ALWAYS offers a ↻ Reload escape
+  // hatch that takes them to the normal login (work is journaled → replays after login, nothing lost).
+  console.log('\nv6.464 recovery affordances:');
+  ok('the sign-in prompt has a 👁 show/hide password toggle', /id="sr-eye"/.test(appSrc) && /sr-eye'\)\.onclick[\s\S]{0,140}p\.type = p\.type === 'password' \? 'text' : 'password'/.test(appSrc));
+  ok('the sign-in prompt has a ↻ Reload escape hatch', /id="sr-reload"/.test(appSrc) && /sr-reload'\)\.onclick[\s\S]{0,160}location\.reload\(\)/.test(appSrc));
+  ok('the reload hatch flushes pending before reloading (belt-and-suspenders)', /sr-reload'\)\.onclick[\s\S]{0,120}Storage\.flushPending\(\)/.test(appSrc));
+  ok('a bad password clears + reveals + refocuses the field', /e\.authKind === 'bad-password'[\s\S]{0,140}p\.value = ''; p\.type = 'text'/.test(appSrc));
+  ok('storage maps consolidated Firebase codes to a clear wrong-password message',
+    /invalid-credential\|invalid-login-credentials/.test(storageSrc) && /authKind = 'bad-password'/.test(storageSrc));
+  ok('storage distinguishes throttled / network / disabled auth failures',
+    /too-many-requests/.test(storageSrc) && /network-request-failed/.test(storageSrc) && /user-disabled/.test(storageSrc));
+
   console.log('\nSESSION RECOVERY:', pass, 'passed,', fail, 'failed');
   process.exit(fail ? 1 : 0);
 })();

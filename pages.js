@@ -1164,7 +1164,7 @@ PAGES.members = (main) => {
       title: '📥 Export members',
       body: `<div style="font-size:13px;line-height:1.7">
         <p>Which members would you like to export to CSV?</p>
-        <p class="text-mute">The CSV always includes the full detail set (name, Arabic name, sport, coach, phone, phone 2, email, QID, birthdate, level, joined, expiry, status).</p>
+        <p class="text-mute">The CSV includes the full detail set (name, Arabic name, gender, nationality, sport(s), coach, phones, email, QID, birthdate, level, joined, expiry, status) plus <b>total charged, total paid, balance due, attended / total classes and attendance %</b>.</p>
       </div>`,
       actions: [
         { label: 'Cancel', class: 'btn ghost', onclick: closeModal },
@@ -1421,7 +1421,26 @@ PAGES.members = (main) => {
         sa.indeterminate = onPage > 0 && onPage < pageIds.length;
       }
     };
-    $$('#members-tbody .member-cb, #members-grid .member-cb').forEach(cb => {
+    // The checkboxes in DOM order — used for Shift+click range selection. (v6.462)
+    const cbList = $$('#members-tbody .member-cb, #members-grid .member-cb');
+    let lastCbIdx = -1;
+    cbList.forEach((cb, idx) => {
+      // Shift+click extends the selection from the last-clicked box to this one,
+      // applying THIS box's new state to the whole range (standard list-select UX).
+      cb.addEventListener('click', (e) => {
+        if (e.shiftKey && lastCbIdx >= 0 && lastCbIdx !== idx) {
+          const on = cb.checked;   // state the user is setting on the clicked box
+          const [a, b] = idx < lastCbIdx ? [idx, lastCbIdx] : [lastCbIdx, idx];
+          for (let i = a; i <= b; i++) {
+            const box = cbList[i];
+            box.checked = on;
+            const rid = parseInt(box.value);
+            if (on) selected.add(rid); else selected.delete(rid);
+          }
+          updateBulkBar();
+        }
+        lastCbIdx = idx;
+      });
       cb.addEventListener('change', () => {
         const id = parseInt(cb.value);
         if (cb.checked) selected.add(id); else selected.delete(id);
@@ -4002,12 +4021,40 @@ function showNewMemberInvoiceModal(invoiceId, customerName) {
   });
 }
 
+// Per-member money + attendance rollup for the CSV export. Money comes from
+// INVOICES (the source of truth); attendance is summed per subscription period
+// (windowed) with a fallback to the stored count — same basis as the member card. (v6.462)
+function memberExportStats(m) {
+  const invs = (state.invoices || []).filter(i => i.customerId === m.id && !i.deleted);
+  const chargeInvs = invs.filter(i => !i.switchCredit && i.activityType !== 'switch-credit' && (Number(i.amount) || 0) >= 0);
+  const totalCharged = chargeInvs.reduce((s, i) => s + (typeof invoiceTotal === 'function' ? invoiceTotal(i) : (Number(i.amount) || 0)), 0);
+  const totalPaid = chargeInvs.reduce((s, i) => s + (typeof invoicePaid === 'function' ? invoicePaid(i) : (Number(i.amountPaid) || 0)), 0);
+  const balanceDue = (typeof memberOutstanding === 'function') ? memberOutstanding(m.id) : Math.max(0, totalCharged - totalPaid);
+  let attended = 0, totalClasses = 0;
+  for (const s of (m.subscriptions || [])) {
+    totalClasses += (typeof subClassLimit === 'function' ? subClassLimit(s) : (s.totalClasses || 0)) || 0;
+    const w = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, s) : { from: s.start || null, to: s.end || null };
+    const lw = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(m, s.activity, w.from, w.to) : { total: 0, y: 0 };
+    attended += (lw.total > 0 ? lw.y : (parseInt(s.attendedClasses) || 0));
+  }
+  const attPct = totalClasses ? Math.round(attended / totalClasses * 100) : 0;
+  const sports = [...new Set((m.subscriptions || []).map(s => s.activity).filter(Boolean))].join(' / ') || (m.sport || '');
+  return { totalCharged, totalPaid, balanceDue, attended, totalClasses, attPct, sports };
+}
+
 function exportMembersCSV(list) {
   const members = Array.isArray(list) ? list : state.members;
   if (!members.length) { toast('No members to export', 'error'); return; }
-  const rows = [['ID','Name','Name (Arabic)','Sport','Coach','Phone','Phone 2','Email','QID','Birthdate','Level','Joined','Expiry','Status']];
+  const num = n => Math.round((Number(n) || 0) * 100) / 100;   // clean 2dp, no currency symbol so cells stay numeric
+  const rows = [['ID','Name','Name (Arabic)','Gender','Nationality','Sport(s)','Coach','Phone','Phone 2','Email','QID','Birthdate','Level','Joined','Expiry','Status','Total Charged (QAR)','Total Paid (QAR)','Balance Due (QAR)','Attended','Total Classes','Attendance %']];
   for (const m of members) {
-    rows.push([m.id, m.name, m.nameArabic || '', m.sport, coachName(m.coachId), m.phone || '', m.phone2 || '', m.email || '', m.qid || '', m.birthdate || '', m.level || '', m.joinDate, m.expiryDate || '', memberStatus(m)]);
+    const st = memberExportStats(m);
+    rows.push([
+      m.id, m.name, m.nameArabic || '', m.gender || '', m.nationality || '', st.sports, coachName(m.coachId),
+      m.phone || '', m.phone2 || '', m.email || '', m.qid || '', m.birthdate || '', m.level || '',
+      m.joinDate, m.expiryDate || '', memberStatus(m),
+      num(st.totalCharged), num(st.totalPaid), num(st.balanceDue), st.attended, st.totalClasses, st.attPct + '%',
+    ]);
   }
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
   downloadFile('members.csv', csv, 'text/csv');
@@ -10552,11 +10599,21 @@ function calendarMonths(year) {
   const out = []; for (let m = last; m >= 1; m--) out.push(y + '-' + String(m).padStart(2, '0'));
   return out;
 }
-function _mmMonthOpts(year, selSet) {
-  return calendarMonths(year).map(m =>
-    `<label class="mm-opt" style="${_MM_OPT_STYLE}"><input type="checkbox" value="${m}" ${selSet.has(m) ? 'checked' : ''}/> ${fmtMonth(m)}</label>`
-  ).join('');
+// Month checkboxes for one OR MORE years (v6.461 — multi-year). When several years are shown they
+// get a small year sub-header so "Aug 2026" and "Aug 2025" are never confused.
+function _mmMonthOptsMulti(yearsArr, selSet) {
+  const ys = ((yearsArr && yearsArr.length) ? yearsArr.slice() : [_mmCurYear()])
+    .map(y => parseInt(y, 10)).filter(Boolean).sort((a, b) => b - a);
+  const multi = ys.length > 1;
+  return ys.map(y => {
+    const hdr = multi ? `<div class="mm-yr-hdr" style="font-size:10px;font-weight:700;color:var(--text-mute);letter-spacing:.4px;padding:5px 6px 2px">${y}</div>` : '';
+    const opts = calendarMonths(y).map(m =>
+      `<label class="mm-opt" style="${_MM_OPT_STYLE}"><input type="checkbox" value="${m}" ${selSet.has(m) ? 'checked' : ''}/> ${fmtMonth(m)}</label>`
+    ).join('');
+    return hdr + opts;
+  }).join('');
 }
+function _mmMonthOpts(year, selSet) { return _mmMonthOptsMulti([year], selSet); }
 // ── GENERIC MULTI-SELECT FILTER (v6.398) ─────────────────────────────────────
 // Most screens still had single-value <select> filters, so you could look at ONE sport, ONE
 // coach or ONE method at a time. The Members screen had multi-select, but through a helper bound
@@ -10637,17 +10694,25 @@ if (typeof window !== 'undefined') {
 function monthMultiHTML(id, months, selected) {
   const sel = new Set(_mmValidMonths(selected));
   const years = monthFilterYears([].concat(_mmValidMonths(months), [...sel]));
-  // Show the year of the current selection, else the current year.
-  const activeYear = sel.size ? (parseInt([...sel].sort().reverse()[0].slice(0, 4), 10) || _mmCurYear()) : _mmCurYear();
+  // Years whose months are shown in the picker — now a MULTI-select (v6.461, was a single <select>).
+  // Default: the years present in the current selection, else the latest year.
+  const activeYears = new Set(sel.size ? [...sel].map(m => parseInt(m.slice(0, 4), 10)) : [years[0]]);
   const label = !sel.size ? t('All months', 'كل الأشهر')
     : (sel.size === 1 ? fmtMonth([...sel][0]) : `${sel.size} ${t('months', 'أشهر')}`);
-  const yearOpts = years.map(y => `<option value="${y}" ${y === activeYear ? 'selected' : ''}>${y}</option>`).join('');
-  return `<div class="month-multi" id="${id}" style="position:relative;display:inline-block">
-    <select class="btn ghost mm-year" title="${t('Year', 'السنة')}" style="padding:6px 8px;margin-inline-end:6px">${yearOpts}</select>
-    <button type="button" class="btn ghost mm-btn" style="min-width:140px;text-align:start">📅 <span class="mm-label">${label}</span> <span style="opacity:.6">▾</span></button>
-    <div class="mm-pop" style="display:none;position:absolute;z-index:60;top:calc(100% + 4px);inset-inline-start:0;background:var(--card,#fff);border:1px solid var(--border);border-radius:8px;padding:6px;min-width:190px;max-height:300px;overflow:auto;box-shadow:0 10px 28px rgba(0,0,0,.28)">
-      <label class="mm-opt mm-all" style="${_MM_OPT_STYLE};font-weight:700;border-bottom:1px solid var(--border);margin-bottom:4px;padding-bottom:6px;border-radius:0"><input type="checkbox" class="mm-all-cb" ${!sel.size ? 'checked' : ''}/> ${t('All months', 'كل الأشهر')}</label>
-      <div class="mm-months">${_mmMonthOpts(activeYear, sel)}</div>
+  const yLabel = activeYears.size === years.length ? t('All years', 'كل السنوات')
+    : (activeYears.size === 1 ? String([...activeYears][0]) : `${activeYears.size} ${t('years', 'سنوات')}`);
+  const yearOpts = years.map(y => `<label class="mm-opt" style="${_MM_OPT_STYLE}"><input type="checkbox" class="mm-year-cb" value="${y}" ${activeYears.has(y) ? 'checked' : ''}/> ${y}</label>`).join('');
+  return `<div class="month-multi" id="${id}" style="display:inline-flex;gap:6px;align-items:center">
+    <div class="mm-year" style="position:relative;display:inline-block">
+      <button type="button" class="btn ghost mm-year-btn" title="${t('Year', 'السنة')}" style="min-width:92px;text-align:start"><span class="mm-year-label">${yLabel}</span> <span style="opacity:.6">▾</span></button>
+      <div class="mm-year-pop" style="display:none;position:absolute;z-index:61;top:calc(100% + 4px);inset-inline-start:0;background:var(--card,#fff);border:1px solid var(--border);border-radius:8px;padding:6px;min-width:120px;max-height:280px;overflow:auto;box-shadow:0 10px 28px rgba(0,0,0,.28)">${yearOpts}</div>
+    </div>
+    <div class="mm-monthwrap" style="position:relative;display:inline-block">
+      <button type="button" class="btn ghost mm-btn" style="min-width:140px;text-align:start">📅 <span class="mm-label">${label}</span> <span style="opacity:.6">▾</span></button>
+      <div class="mm-pop" style="display:none;position:absolute;z-index:60;top:calc(100% + 4px);inset-inline-start:0;background:var(--card,#fff);border:1px solid var(--border);border-radius:8px;padding:6px;min-width:190px;max-height:300px;overflow:auto;box-shadow:0 10px 28px rgba(0,0,0,.28)">
+        <label class="mm-opt mm-all" style="${_MM_OPT_STYLE};font-weight:700;border-bottom:1px solid var(--border);margin-bottom:4px;padding-bottom:6px;border-radius:0"><input type="checkbox" class="mm-all-cb" ${!sel.size ? 'checked' : ''}/> ${t('All months', 'كل الأشهر')}</label>
+        <div class="mm-months">${_mmMonthOptsMulti([...activeYears], sel)}</div>
+      </div>
     </div>
   </div>`;
 }
@@ -10658,33 +10723,55 @@ function bindMonthMulti(id, onChange) {
   const pop = wrap.querySelector('.mm-pop');
   const lbl = wrap.querySelector('.mm-label');
   const allCb = wrap.querySelector('.mm-all-cb');
-  const yearSel = wrap.querySelector('.mm-year');
+  const yearBtn = wrap.querySelector('.mm-year-btn');
+  const yearPop = wrap.querySelector('.mm-year-pop');
+  const yearLbl = wrap.querySelector('.mm-year-label');
   const monthsBox = wrap.querySelector('.mm-months');
-  const boxes = () => [...wrap.querySelectorAll('.mm-pop input[type=checkbox]:not(.mm-all-cb)')];
+  const yearBoxes = () => [...wrap.querySelectorAll('.mm-year-cb')];
+  const boxes = () => [...wrap.querySelectorAll('.mm-months input[type=checkbox]')];
   const current = () => boxes().filter(b => b.checked).map(b => b.value);
+  const checkedYears = () => yearBoxes().filter(b => b.checked).map(b => parseInt(b.value, 10));
   const relabel = () => {
     const c = current();
     lbl.textContent = !c.length ? t('All months', 'كل الأشهر')
       : (c.length === 1 ? fmtMonth(c[0]) : `${c.length} ${t('months', 'أشهر')}`);
     if (allCb) allCb.checked = !c.length;
+    if (yearLbl) { const ys = checkedYears(), total = yearBoxes().length;
+      yearLbl.textContent = (ys.length === total) ? t('All years', 'كل السنوات')
+        : (ys.length === 1 ? String(ys[0]) : `${ys.length} ${t('years', 'سنوات')}`); }
   };
-  const bindBoxes = () => { boxes().forEach(b => b.addEventListener('change', () => { relabel(); onChange(current()); })); };
-  bindBoxes();
-  btn.addEventListener('click', e => { e.stopPropagation(); pop.style.display = pop.style.display === 'none' ? 'block' : 'none'; });
-  // Changing the YEAR re-lists that year's months and clears the month selection (selection is
-  // scoped to the displayed year), so external "Clear filters" DOM resets keep working.
-  if (yearSel) yearSel.addEventListener('change', e => {
+  const bindMonthBoxes = () => { boxes().forEach(b => b.addEventListener('change', () => { relabel(); onChange(current()); })); };
+  bindMonthBoxes();
+  // Keep the picker OPEN across the screen re-render that each selection triggers (multi-select is
+  // useless if the popup closes on every checkbox). We remember which popup is open per-id and
+  // re-open it after bind. (v6.462)
+  const setOpen = (which) => { window._mmOpen = which ? { id, which } : null; };
+  btn.addEventListener('click', e => { e.stopPropagation(); if (yearPop) yearPop.style.display = 'none'; const show = pop.style.display === 'none'; pop.style.display = show ? 'block' : 'none'; setOpen(show ? 'month' : null); });
+  if (yearBtn) yearBtn.addEventListener('click', e => { e.stopPropagation(); pop.style.display = 'none'; const show = yearPop.style.display === 'none'; yearPop.style.display = show ? 'block' : 'none'; setOpen(show ? 'year' : null); });
+  // Changing the checked YEARS re-lists the visible months across ALL checked years, PRESERVING the
+  // months still shown (a still-checked year keeps its picks); a month whose year is unchecked drops
+  // out of the filter (it is no longer selectable). No year checked ⇒ fall back to the latest year.
+  yearBoxes().forEach(b => b.addEventListener('change', e => {
     e.stopPropagation();
-    if (monthsBox) { monthsBox.innerHTML = _mmMonthOpts(parseInt(yearSel.value, 10), new Set()); bindBoxes(); }
-    relabel(); onChange([]);
-  });
+    const keep = new Set(current());
+    let ys = checkedYears();
+    if (!ys.length) { const first = yearBoxes()[0]; if (first) { first.checked = true; ys = [parseInt(first.value, 10)]; } }
+    if (monthsBox) { monthsBox.innerHTML = _mmMonthOptsMulti(ys, keep); bindMonthBoxes(); }
+    relabel(); onChange(current());
+  }));
   if (allCb) allCb.addEventListener('change', () => { if (allCb.checked) boxes().forEach(b => { b.checked = false; }); relabel(); onChange(current()); });
-  // Close on outside click; the listener removes itself once this picker leaves the DOM.
+  // Close both popups on outside click; the listener removes itself once this picker leaves the DOM.
   const onDoc = (ev) => {
     if (!document.body.contains(wrap)) { document.removeEventListener('click', onDoc); return; }
-    if (!wrap.contains(ev.target)) pop.style.display = 'none';
+    if (!wrap.contains(ev.target)) { pop.style.display = 'none'; if (yearPop) yearPop.style.display = 'none'; if (window._mmOpen && window._mmOpen.id === id) setOpen(null); }
   };
   document.addEventListener('click', onDoc);
+  // Re-open the popup that was open before the last selection-triggered re-render, so multi-select
+  // feels continuous (the picker stays open while you tick boxes).
+  if (window._mmOpen && window._mmOpen.id === id) {
+    if (window._mmOpen.which === 'year' && yearPop) yearPop.style.display = 'block';
+    else pop.style.display = 'block';
+  }
 }
 
 // Product line items for a Product invoice — so a sale's CONTENTS are visible right in the invoices
@@ -16114,11 +16201,37 @@ function syncBankCommission() {
 }
 
 PAGES.expenses = (main) => {
-  let filter = loadFilter('expenses', { search: '', months: [(TODAY || '').slice(0, 7)].filter(Boolean), categories: [], methods: [] });
+  let filter = loadFilter('expenses', { search: '', months: [(TODAY || '').slice(0, 7)].filter(Boolean), categories: [], methods: [], coaches: [] });
   if (!Array.isArray(filter.months)) filter.months = (filter.month && filter.month !== 'all') ? [filter.month] : [];
+  if (!Array.isArray(filter.coaches)) filter.coaches = [];
   delete filter.month;
   const pg = makePager(10);
   let _exportRows = [], _exportMeta = {};
+
+  // ── Salary-coach filter (v6.466) ──────────────────────────────────────────
+  // When the "Salary" category is selected, a coach multi-picker appears so the
+  // owner can narrow the salary expenses to one or more coaches. A salary row's
+  // coach comes from its stored coachName/coachId (set by the expense form); as a
+  // fallback the coach's name is matched inside the description (covers free-typed
+  // "310 Coach Madi April Salary" rows that have no stored coach).
+  const _salCoachName = (e) => {
+    let n = (e.coachName || '').trim();
+    if (!n && e.coachId != null && typeof coachName === 'function') n = (coachName(e.coachId) || '').trim();
+    return (n === '—' || n === '-') ? '' : n;   // '—' is the no-coach placeholder, not a real coach
+  };
+  const _salaryExpenses = state.expenses.filter(e => !e.deleted && isSalaryCategory(e.category) && (e.category || '') !== CASH_COLLECTION_CATEGORY);
+  const _coachOptSet = new Set();
+  _salaryExpenses.forEach(e => { const n = _salCoachName(e); if (n) _coachOptSet.add(n); });
+  (state.coaches || []).forEach(c => { const nm = (c.name || '').trim(); if (nm && !_coachOptSet.has(nm) && _salaryExpenses.some(e => String(e.description || '').toLowerCase().includes(nm.toLowerCase()))) _coachOptSet.add(nm); });
+  const coachOpts = [..._coachOptSet].sort((a, b) => a.localeCompare(b));
+  const _salarySelected = () => (filter.categories || []).some(c => isSalaryCategory(c));
+  const _rowCoachMatch = (e) => {
+    if (!filter.coaches || !filter.coaches.length) return true;
+    const nm = _salCoachName(e);
+    if (nm && filter.coaches.includes(nm)) return true;
+    const d = String(e.description || '').toLowerCase();
+    return filter.coaches.some(sn => d.includes(String(sn).toLowerCase()));
+  };
 
   function refresh() {
     saveFilter('expenses', filter);
@@ -16138,6 +16251,8 @@ PAGES.expenses = (main) => {
       if (filter.months.length && !filter.months.includes(e.month)) return false;
       if (filter.categories.length && !filter.categories.includes(e.category || 'Others')) return false;
       if (filter.methods.length && !filter.methods.includes(e.method || '')) return false;
+      // Coach filter applies only to salary rows (it only shows when Salary is selected). (v6.466)
+      if (filter.coaches && filter.coaches.length && isSalaryCategory(e.category) && !_rowCoachMatch(e)) return false;
       return true;
     }).sort((a,b) => {
       // Pin Bank Commission rows to the very top, then newest-first by date.
@@ -16148,7 +16263,7 @@ PAGES.expenses = (main) => {
 
     const total = allRows.reduce((s,r) => s + (r.amount || 0), 0);          // filtered total
     const grandTotal = realExpenses.reduce((s,r) => s + (r.amount || 0), 0); // all real expenses
-    const anyFilter = filter.search || filter.months.length || filter.categories.length || filter.methods.length;
+    const anyFilter = filter.search || filter.months.length || filter.categories.length || filter.methods.length || (filter.coaches && filter.coaches.length);
     // Per-category totals — replaces old monthly/equipment split since the
     // Type field is removed. Top 3 categories shown in the subtitle.
     const byCat = {};
@@ -16219,7 +16334,15 @@ PAGES.expenses = (main) => {
             <span id="exp-cat-label">All categories</span><span style="opacity:.6">▾</span>
           </button>
           <div id="exp-cat-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:190px;max-height:320px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
-            ${EXP_CATS.filter(c => c !== CASH_COLLECTION_CATEGORY && !(isViewerRole() && /^rent$/i.test(String(c).trim()))).map(c => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="exp-cat-cb" value="${escapeHtml(c)}" /> ${escapeHtml(c)}</label>`).join('')}
+            ${EXP_CATS.filter(c => c !== CASH_COLLECTION_CATEGORY && !(isViewerRole() && /^rent$/i.test(String(c).trim()))).map(c => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="exp-cat-cb" value="${escapeHtml(c)}" ${(filter.categories || []).includes(c) ? 'checked' : ''} /> ${escapeHtml(c)}</label>`).join('')}
+          </div>
+        </div>
+        <div style="position:relative;display:${_salarySelected() && coachOpts.length ? 'inline-block' : 'none'}" id="exp-coach-wrap">
+          <button type="button" id="exp-coach-btn" class="btn ghost" style="min-width:150px;text-align:left;display:inline-flex;align-items:center;justify-content:space-between;gap:8px">
+            <span id="exp-coach-label">${filter.coaches && filter.coaches.length ? (filter.coaches.length === 1 ? escapeHtml(filter.coaches[0]) : filter.coaches.length + ' ' + t('coaches', 'مدربين')) : t('All coaches', 'كل المدربين')}</span><span style="opacity:.6">▾</span>
+          </button>
+          <div id="exp-coach-menu" style="display:none;position:absolute;left:0;top:100%;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;padding:8px;min-width:200px;max-height:320px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+            ${coachOpts.length ? coachOpts.map(nm => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;font-size:13px"><input type="checkbox" class="exp-coach-cb" value="${escapeHtml(nm)}" ${(filter.coaches || []).includes(nm) ? 'checked' : ''} /> ${escapeHtml(nm)}</label>`).join('') : `<div class="text-mute" style="font-size:12px;padding:6px">${t('No coach salaries yet', 'لا رواتب مدربين بعد')}</div>`}
           </div>
         </div>
         <div style="position:relative">
@@ -16279,9 +16402,23 @@ PAGES.expenses = (main) => {
   }
   wireExpMulti('categories', 'exp-cat-cb', 'exp-cat-btn', 'exp-cat-menu', 'exp-cat-label', 'All categories', v => v);
   wireExpMulti('methods', 'exp-method-cb', 'exp-method-btn', 'exp-method-menu', 'exp-method-label', 'All methods', v => ({ cash: 'Cash', card: 'Card', transfer: 'Bank transfer' }[v] || v));
-  // Clear every filter (search + month + category + method) → show all expenses.
+  wireExpMulti('coaches', 'exp-coach-cb', 'exp-coach-btn', 'exp-coach-menu', 'exp-coach-label', t('All coaches', 'كل المدربين'), v => v);
+  // Show the coach picker only while "Salary" is among the selected categories; clear it otherwise.
+  function _syncExpCoachPicker() {
+    const wrap = $('#exp-coach-wrap');
+    const show = _salarySelected() && coachOpts.length;
+    if (wrap) wrap.style.display = show ? 'inline-block' : 'none';
+    if (!show && filter.coaches.length) {
+      filter.coaches = [];
+      $$('.exp-coach-cb').forEach(cb => cb.checked = false);
+      const lab = $('#exp-coach-label'); if (lab) lab.textContent = t('All coaches', 'كل المدربين');
+      pg.page = 1; refresh();
+    }
+  }
+  $$('.exp-cat-cb').forEach(cb => cb.addEventListener('change', _syncExpCoachPicker));
+  // Clear every filter (search + month + category + method + coach) → show all expenses.
   $('#exp-clear')?.addEventListener('click', () => {
-    filter = { search: '', months: [], categories: [], methods: [] };
+    filter = { search: '', months: [], categories: [], methods: [], coaches: [] };
     saveFilter('expenses', filter);
     pg.page = 1;
     PAGES.expenses(main);   // full re-render so the month picker + checkboxes reset visually
@@ -16577,6 +16714,12 @@ PAGES.salaries = (main) => {
               const undoSettleBtn = (p.salaryRecord && Number(p.salaryRecord.settledPending) > 0.005)
                 ? ` <button class="btn ghost sm" onclick="_salUndoSettlePending(${p.coachId}, '${p.month}')" title="Undo the pending settlement — return the ${fmt(p.salaryRecord.settledPending)} and re-open those students so they earn normally again">↩ ${t('Undo settle', 'تراجع التسوية')}</button>`
                 : '';
+              // ↩ Mark UNPAID — a one-click reverse for a paid/partly-paid coach: removes the
+              // payment(s) + the linked Salary expense and flips the row back to Pending. Clearer
+              // than digging into ✓ Manage payments → Clear all payments. (v6.467)
+              const unpaidBtn = (p.paidStatus === 'paid' || p.paidStatus === 'partial')
+                ? ` <button class="btn ghost sm" onclick="_salMarkUnpaid(${p.coachId}, '${p.month}')" title="${t('Mark this coach unpaid for this month — removes the payment(s) and the linked Salary expense, back to Pending', 'وضع علامة غير مدفوع لهذا الشهر — يحذف الدفعات ومصروف الراتب المرتبط ويرجعه إلى معلّق')}" style="color:var(--red)">↩ ${t('Unpaid', 'غير مدفوع')}</button>`
+                : '';
               return (canCarry
                 ? `<button class="btn primary sm" onclick="carrySalaryForward(${p.coachId}, '${p.month}')" title="Carry the ${fmt(-p.net)} over-advance to next month as an opening advance and settle this month at 0">↩ Carry ${fmt(-p.net)}</button>` + settleBtn
                 : p.carriedOut > 0.005
@@ -16585,7 +16728,7 @@ PAGES.salaries = (main) => {
                     // Show Settle next to a PAID row that still has unsettled pending (the modal tick
                     // is gone once a payment exists). Not on an UNPAID row — there the Pay dialog's
                     // "Settle pending in full now" tick already covers the first payment.
-                    + (p.paidStatus === 'paid' ? settleBtn : '')) + undoSettleBtn;
+                    + (p.paidStatus === 'paid' ? settleBtn : '')) + undoSettleBtn + unpaidBtn;
             })()}
             <button class="btn ghost sm" onclick="showCoachSalaryHistory(${p.coachId})" title="${t('See every month for this coach — review the history and pay any month', 'عرض جميع أشهر هذا المدرب — راجع السجل وادفع أي شهر')}">📅</button>
             <button class="btn ghost sm" onclick="showPayslip(${p.coachId}, '${p.month}')" title="Pay slip (PDF summary)">📄</button>
@@ -17277,6 +17420,26 @@ window.markPaid = function(coachId, monthKey) {
       } }] : []),
     ],
   });
+};
+
+// ↩ MARK A COACH UNPAID (v6.467) — one-click reverse of a salary payment straight from the
+// Salaries row. Same effect as opening the pay manager and clicking "Clear all payments":
+// removes the salary payment record AND its linked auto Salary expense(s), audits it, and the
+// row reverts to Pending. Money-safe: nothing but this coach/month's own payment is touched, and
+// confirmSaved verifies the change reached the cloud before saying it's done.
+window._salMarkUnpaid = function (coachId, monthKey) {
+  const c = state.coaches.find(x => x.id === coachId);
+  if (!c) return;
+  const rec = _salPaidRec(coachId, monthKey);
+  if (!rec) { toast(t('This coach has no payment to undo for this month', 'لا توجد دفعة للتراجع عنها لهذا الشهر'), 'info'); return; }
+  const paidTotal = (typeof salaryPayments === 'function') ? salaryPayments(rec).reduce((s, p) => s + (Number(p.amount) || 0), 0) : (Number(rec.amount) || 0);
+  if (!confirm(t(`Mark ${c.name} UNPAID for ${fmtMonth(monthKey)}?\n\nThis removes the recorded payment(s) (${fmt(paidTotal)} QAR) and the linked Salary expense; the coach goes back to Pending. You can pay again anytime.`,
+                 `وضع علامة "غير مدفوع" على ${c.name} لشهر ${fmtMonth(monthKey)}؟\n\nسيحذف الدفعات المسجّلة (${fmt(paidTotal)} ر.ق) ومصروف الراتب المرتبط، ويعود المدرب إلى "معلّق". يمكنك الدفع مجدداً في أي وقت.`))) return;
+  state.salaries = (state.salaries || []).filter(s => s.id !== rec.id);
+  state.expenses = (state.expenses || []).filter(e => !(e._salaryAutoExpense && String(e.salaryId) === String(rec.id)));
+  if (typeof audit === 'function') audit('salary.unpaid', `coach:${coachId}`, `Marked ${c.name} unpaid · ${fmtMonth(monthKey)} — removed ${fmt(paidTotal)} QAR payment(s)`, { coachId, month: monthKey, coachName: c.name, removed: paidTotal });
+  render();
+  confirmSaved(t(`${c.name} marked unpaid for ${fmtMonth(monthKey)}`, `${c.name} صار غير مدفوع لشهر ${fmtMonth(monthKey)}`));
 };
 
 // COACH SALARY HISTORY (v6.409): every month for ONE coach in a single table, so the admin can
@@ -27416,21 +27579,21 @@ const _CH_CARD = (title, sub, inner) => `<div class="card" style="padding:16px 1
 PAGES.charts = (main) => {
   // Admin-only — the same club-earnings sensitivity as Reports (reception's allow-list excludes both).
   if (currentRole() !== 'admin') { main.innerHTML = `<div class="card" style="text-align:center;padding:40px"><div style="font-size:40px">🔒</div><h2>${t('Admins only', 'للمسؤولين فقط')}</h2></div>`; return; }
-  // Months that have any financial data.
-  const months = (function () { const s = new Set(); (state.invoices || []).forEach(i => { if (!i.deleted && i.month) s.add(i.month); }); (state.expenses || []).forEach(e => { if (!e.deleted) { const m = e.month || (e.date || '').slice(0, 7); if (m) s.add(m); } }); (state.salaries || []).forEach(x => { if (x.month) s.add(x.month); }); return [...s].sort(); })();
+  // Months that have any financial data. A bad/empty date on one record used to produce a bogus
+  // month like "0001-01" that showed up as a "0001" year in the filter — drop anything that isn't a
+  // real YYYY-MM within a sane range. (v6.462)
+  const _chCY = (typeof _mmCurYear === 'function') ? _mmCurYear() : new Date().getFullYear();
+  const _chValidMk = m => /^\d{4}-\d{2}$/.test(m) && parseInt(m.slice(0, 4), 10) >= _chCY - 15 && parseInt(m.slice(0, 4), 10) <= _chCY + 1;
+  const months = (function () { const s = new Set(); (state.invoices || []).forEach(i => { if (!i.deleted && i.month) s.add(i.month); }); (state.expenses || []).forEach(e => { if (!e.deleted) { const m = e.month || (e.date || '').slice(0, 7); if (m) s.add(m); } }); (state.salaries || []).forEach(x => { if (x.month) s.add(x.month); }); return [...s].filter(_chValidMk).sort(); })();
   if (!months.length) { main.innerHTML = `<div class="topbar"><div><h1>📊 ${t('Charts', 'الرسوم البيانية')}</h1></div></div><div class="empty"><div class="empty-icon">📊</div>${t('No financial data yet to chart.', 'لا توجد بيانات مالية بعد لعرضها.')}</div>`; return; }
-  // ── Multi-select MONTH + YEAR filters (v6.459). Both empty ⇒ the default last-8-months view.
-  //    A month is in scope when it passes BOTH active filters (an empty filter passes everything).
-  const years = [...new Set(months.map(m => m.slice(0, 4)))].sort().reverse();
-  if (!window._chFilter) window._chFilter = { months: [], years: [] };
+  // ── MONTH+YEAR filter (v6.462). The month picker itself is now multi-YEAR (monthMultiHTML), so the
+  //    separate year dropdown was removed — its values (YYYY-MM) can already span years. Empty ⇒ the
+  //    default last-8-months view.
+  if (!window._chFilter) window._chFilter = { months: [] };
   const chF = window._chFilter;
   if (!Array.isArray(chF.months)) chF.months = [];
-  if (!Array.isArray(chF.years)) chF.years = [];
-  const hasFilter = chF.months.length > 0 || chF.years.length > 0;
-  const inScope = months.filter(mk =>
-    (chF.months.length === 0 || chF.months.includes(mk)) &&
-    (chF.years.length === 0 || chF.years.includes(mk.slice(0, 4))));
-  const scoped = hasFilter ? inScope : months.slice(-8);
+  const hasFilter = chF.months.length > 0;
+  const scoped = hasFilter ? months.filter(mk => chF.months.includes(mk)) : months.slice(-8);
   const scopedSet = new Set(scoped);
   const periodLabel = hasFilter
     ? (scoped.length ? (scoped.length === 1 ? fmtMonth(scoped[0]) : `${scoped.length} ${t('months selected', 'شهر محدد')}`) : t('no months match', 'لا أشهر مطابقة'))
@@ -27447,6 +27610,10 @@ PAGES.charts = (main) => {
   // Category / sport revenue + coach pay now follow the SAME scoped period as the bars.
   const revByCat = billedByCategoryInPeriod(m => scopedSet.has(m));
   const revBySport = billedBySportInPeriod(m => scopedSet.has(m));
+  // Expenses by category over the scoped period (excludes salaries — payroll has its own chart). (v6.462)
+  const expByCat = {};
+  for (const e of (state.expenses || [])) { if (e.deleted) continue; const em = e.month || (e.date || '').slice(0, 7); if (!scopedSet.has(em) || isSalaryCategory(e.category)) continue; const c = e.category || t('Other', 'أخرى'); expByCat[c] = (expByCat[c] || 0) + (Number(e.amount) || 0); }
+  const totExpenses = Object.values(expByCat).reduce((s, v) => s + v, 0);
   const latestMk = scoped[scoped.length - 1] || months[months.length - 1];
   const coachPerf = (state.coaches || []).filter(c => typeof isCoachActive !== 'function' || isCoachActive(c)).map(c => {
     let gross = 0;
@@ -27463,6 +27630,8 @@ PAGES.charts = (main) => {
   const revCostBars = _chBars(monthly.map(m => ({ label: m.short, values: [m.revenue, m.cost] })), [{ name: t('Revenue', 'الإيراد'), color: '#10b981' }, { name: t('Cost (expenses + payroll)', 'التكلفة (مصروفات + رواتب)'), color: '#f59e0b' }]);
   const profitLine = _chLine(monthly.map(m => m.profit), monthly.map(m => m.short), '#5b8def');
   const catDonut = _chDonut(Object.entries(revByCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ label: k, value: v })));
+  const expDonut = _chDonut(Object.entries(expByCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ label: k, value: v })));
+  const expByMonthBars = _chBars(monthly.map(m => ({ label: m.short, values: [m.expenses] })), [{ name: t('Expenses', 'المصروفات'), color: '#ef4444' }]);
   const sportBars = _chHBars(Object.entries(revBySport).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => ({ label: k, value: v })));
   const coachBars = _chHBars(coachPerf);
   const payrollBars = _chBars(monthly.map(m => ({ label: m.short, values: [m.salaries] })), [{ name: t('Payroll', 'الرواتب'), color: '#8b5cf6' }]);
@@ -27475,7 +27644,6 @@ PAGES.charts = (main) => {
     </div>
     <div class="filter-bar" style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       ${monthMultiHTML('ch-month', months.slice().reverse(), chF.months)}
-      ${multiFilterHTML('ch-year', years.map(y => [y, y]), chF.years, { icon: '📅', allText: t('All years', 'كل السنوات'), noun: t('years', 'سنوات'), minWidth: 130 })}
       ${hasFilter ? `<button type="button" class="btn ghost" id="ch-clear" title="${t('Show the default last-8-months view', 'عرض آخر ٨ أشهر افتراضياً')}">✕ ${t('Clear filters', 'مسح المرشحات')}</button>` : ''}
     </div>
     <div class="kpi-grid" style="margin-bottom:14px">
@@ -27495,13 +27663,17 @@ PAGES.charts = (main) => {
       ${_CH_CARD('👛 ' + t('Payroll by month', 'الرواتب شهرياً'), t('Salary cost per month', 'تكلفة الرواتب شهرياً'), payrollBars)}
     </div>
     <div style="height:14px"></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px">
+      ${_CH_CARD('🧾 ' + t('Expenses by Category', 'المصروفات حسب الفئة'), t('Non-payroll spend', 'إنفاق غير الرواتب') + ' · ' + fmtMoney(totExpenses) + ' · ' + escapeHtml(periodLabel), expDonut)}
+      ${_CH_CARD('📉 ' + t('Expenses by month', 'المصروفات شهرياً'), t('Non-payroll spend per month', 'الإنفاق غير الرواتب شهرياً'), expByMonthBars)}
+    </div>
+    <div style="height:14px"></div>
     ${_CH_CARD('👥 ' + t('New Members', 'أعضاء جدد'), t('New registrations per month', 'التسجيلات الجديدة شهرياً'), membersLine)}
   `;
-  // Wire the month + year multi-selects — re-render the whole screen with the new scope. (v6.459)
+  // Wire the month multi-select (now spans years) — re-render the whole screen with the new scope. (v6.462)
   bindMonthMulti('ch-month', (mSel) => { window._chFilter.months = mSel; PAGES.charts(main); });
-  bindMultiFilter('ch-year', (v) => { window._chFilter.years = v; PAGES.charts(main); }, { allText: t('All years', 'كل السنوات'), noun: t('years', 'سنوات') });
   const chClear = document.getElementById('ch-clear');
-  if (chClear) chClear.addEventListener('click', () => { window._chFilter = { months: [], years: [] }; PAGES.charts(main); });
+  if (chClear) chClear.addEventListener('click', () => { window._chFilter = { months: [] }; PAGES.charts(main); });
 };
 
 // ─── REPORTS ──────────────────────────────────────────────────
@@ -29919,9 +30091,10 @@ window.transferMembership = function(fromId, sport, toId) {
 // ─── Transfer Membership page ───────────────────────────────────────────────
 PAGES.transfers = (main) => {
   if (currentRole() !== 'admin') { main.innerHTML = `<div class="empty"><div class="empty-icon">🔐</div>${t('Admins only','للمشرفين فقط')}</div>`; return; }
-  const st = window._trState || (window._trState = { fromId: null, sport: null, toId: null, fromQ: '', toQ: '', fcoach: 'all', fsport: 'all' });
+  const st = window._trState || (window._trState = { fromId: null, sport: null, toId: null, fromQ: '', toQ: '', fcoach: 'all', fsport: 'all', tab: 'transfer' });
   if (st.fcoach == null) st.fcoach = 'all';
   if (st.fsport == null) st.fsport = 'all';
+  if (st.tab == null) st.tab = 'transfer';   // v6.463: two-tab layout (Transfer | History)
 
   const members = (state.members || []).filter(m => !m.deleted);
   // Broad search: English name, Arabic name, and mobile (any of phone/phone2).
@@ -29952,8 +30125,19 @@ PAGES.transfers = (main) => {
   const memberOption = (m) => `${escapeHtml(m.name)}${m.nameArabic ? ` · ${escapeHtml(m.nameArabic)}` : ''}${m.phone ? ` · ${escapeHtml(String(m.phone))}` : ''}`;
 
   // Coach + sport option sets, derived from the transferable memberships.
-  const coachIdsInList = [...new Set(eligible.flatMap(x => x.enrs.map(e => e.coachId)).filter(v => v != null))];
-  const sportsInList = [...new Set(eligible.flatMap(x => x.enrs.map(e => e.sport)).filter(Boolean))].sort();
+  const coachIdsInList = [...new Set(eligible.flatMap(x => x.enrs.map(e => e.coachId)).filter(v => v != null))]
+    .sort((a, b) => (coachName(a) || '').localeCompare(coachName(b) || ''));
+  // v6.463: when a coach is picked, the SPORT dropdown lists ONLY that coach's sports
+  // (the transferable sports actually taught by them), so you don't scroll sports the
+  // coach doesn't teach. "All coaches" → every transferable sport.
+  const sportsForCoach = (cid) => [...new Set(
+    eligible.flatMap(x => x.enrs
+      .filter(e => cid === 'all' || String(e.coachId) === String(cid))
+      .map(e => e.sport)).filter(Boolean)
+  )].sort();
+  const sportsInList = sportsForCoach(st.fcoach);
+  // If the picked sport isn't one this coach teaches, fall back to "all sports".
+  if (st.fsport !== 'all' && !sportsInList.includes(st.fsport)) st.fsport = 'all';
 
   // Apply coach + sport filters to each member's transferable rows; keep the
   // member only if at least one row survives.
@@ -29977,10 +30161,10 @@ PAGES.transfers = (main) => {
     else if ((toMember.enrollments || []).some(e => e.sport === selEnr.sport)) blockMsg = `${toMember.name} ${t('is already enrolled in', 'مسجّل بالفعل في')} ${selEnr.sport}`;
   }
 
-  // Reusable styled control bits
-  const inputStyle = 'width:100%;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px';
-  const selStyle = 'flex:1;padding:9px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px';
-  const stepLabel = (n, txt) => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--blue);color:#fff;font-size:12px;font-weight:700;flex-shrink:0">${n}</span><span style="font-size:13px;font-weight:700;color:var(--text)">${txt}</span></div>`;
+  // Reusable styled control bits — v6.463: larger, clearer fonts throughout.
+  const inputStyle = 'width:100%;padding:11px 13px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:15px';
+  const selStyle = 'flex:1;padding:10px 11px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;font-weight:600';
+  const stepLabel = (n, txt) => `<div style="display:flex;align-items:center;gap:9px;margin-bottom:10px"><span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:var(--blue);color:#fff;font-size:14px;font-weight:700;flex-shrink:0">${n}</span><span style="font-size:16px;font-weight:700;color:var(--text)">${txt}</span></div>`;
 
   // Compact, clickable member result rows (replaces the bare <select size>).
   const fromRows = fromFiltered.slice(0, 40).map(x => {
@@ -29988,8 +30172,8 @@ PAGES.transfers = (main) => {
     return `<div onclick="window._trState={...window._trState,fromId:${x.m.id},sport:${x.enrs.length === 1 ? JSON.stringify(x.enrs[0].sport).replace(/"/g, '&quot;') : 'null'},toId:null};render()"
       style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 11px;border:1px solid ${sel ? 'var(--blue)' : 'var(--border)'};border-radius:8px;cursor:pointer;background:${sel ? 'rgba(91,141,239,.10)' : 'var(--surface)'}">
       <div style="min-width:0">
-        <div style="font-weight:600;font-size:13px">${escapeHtml(x.m.name)}${x.m.nameArabic ? ` <span class="text-mute" style="font-weight:400" dir="rtl">${escapeHtml(x.m.nameArabic)}</span>` : ''}</div>
-        <div class="text-mute" style="font-size:11px">${x.m.phone ? escapeHtml(String(x.m.phone)) + ' · ' : ''}${x.enrs.map(e => escapeHtml(e.sport)).join(', ')}</div>
+        <div style="font-weight:600;font-size:14.5px">${escapeHtml(x.m.name)}${x.m.nameArabic ? ` <span class="text-mute" style="font-weight:400" dir="rtl">${escapeHtml(x.m.nameArabic)}</span>` : ''}</div>
+        <div class="text-mute" style="font-size:12.5px">${x.m.phone ? escapeHtml(String(x.m.phone)) + ' · ' : ''}${x.enrs.map(e => escapeHtml(e.sport)).join(', ')}</div>
       </div>
       ${sel ? '<span style="color:var(--blue);font-size:16px;flex-shrink:0">✓</span>' : ''}
     </div>`;
@@ -30000,8 +30184,8 @@ PAGES.transfers = (main) => {
     return `<div onclick="window._trState={...window._trState,toId:${m.id}};render()"
       style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 11px;border:1px solid ${sel ? 'var(--green)' : 'var(--border)'};border-radius:8px;cursor:pointer;background:${sel ? 'rgba(34,197,94,.10)' : 'var(--surface)'}">
       <div style="min-width:0">
-        <div style="font-weight:600;font-size:13px">${escapeHtml(m.name)}${m.nameArabic ? ` <span class="text-mute" style="font-weight:400" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}</div>
-        <div class="text-mute" style="font-size:11px">${m.phone ? escapeHtml(String(m.phone)) : t('no phone', 'بدون هاتف')} · ${memberStatus(m)}</div>
+        <div style="font-weight:600;font-size:14.5px">${escapeHtml(m.name)}${m.nameArabic ? ` <span class="text-mute" style="font-weight:400" dir="rtl">${escapeHtml(m.nameArabic)}</span>` : ''}</div>
+        <div class="text-mute" style="font-size:12.5px">${m.phone ? escapeHtml(String(m.phone)) : t('no phone', 'بدون هاتف')} · ${memberStatus(m)}</div>
       </div>
       ${sel ? '<span style="color:var(--green);font-size:16px;flex-shrink:0">✓</span>' : ''}
     </div>`;
@@ -30011,13 +30195,20 @@ PAGES.transfers = (main) => {
     <div class="topbar">
       <div>
         <h1>🔁 ${t('Transfer Membership', 'نقل الاشتراك')}</h1>
-        <div class="subtitle">${t('Move one sport from one member to another. Receiver gets a full reset; payment moves with it. One transfer per membership.', 'نقل رياضة واحدة من عضو إلى آخر. يحصل المستلم على تجديد كامل، وينتقل الدفع معه. نقل واحد لكل اشتراك.')}</div>
+        <div class="subtitle" style="font-size:14px;margin-top:4px">${t('Move one sport from one member to another. Receiver gets a full reset; payment moves with it. One transfer per membership.', 'نقل رياضة واحدة من عضو إلى آخر. يحصل المستلم على تجديد كامل، وينتقل الدفع معه. نقل واحد لكل اشتراك.')}</div>
       </div>
     </div>
 
     <div style="max-width:680px;margin:0 auto">
-      <div class="card">
-        <div style="padding:16px;display:flex;flex-direction:column;gap:18px">
+      <!-- v6.463: two clear tabs — New Transfer | History -->
+      <div style="display:flex;gap:6px;margin-bottom:16px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:5px">
+        ${[['transfer', '🔁 ' + t('New Transfer', 'نقل جديد')], ['history', '🗂 ' + t('History', 'السجل') + ` (${transfers.length})`]].map(([k, lbl]) => {
+          const on = st.tab === k;
+          return `<button type="button" data-trtab="${k}" style="flex:1;padding:11px 14px;border:none;border-radius:9px;cursor:pointer;font-size:15px;font-weight:${on ? '700' : '600'};background:${on ? 'var(--blue)' : 'transparent'};color:${on ? '#fff' : 'var(--text-mute)'};transition:background .12s">${lbl}</button>`;
+        }).join('')}
+      </div>
+      <div class="card" style="display:${st.tab === 'transfer' ? 'block' : 'none'}">
+        <div style="padding:18px;display:flex;flex-direction:column;gap:18px">
 
           <!-- STEP 1 — From member -->
           <div>
@@ -30032,13 +30223,13 @@ PAGES.transfers = (main) => {
               </div>
             ` : `
               <div style="display:flex;gap:6px;margin-bottom:8px">
-                <select id="tr-fsport" style="${selStyle}">
-                  <option value="all">${t('All sports', 'كل الرياضات')}</option>
-                  ${sportsInList.map(s => `<option value="${escapeHtml(s)}" ${st.fsport === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
-                </select>
                 <select id="tr-fcoach" style="${selStyle}">
                   <option value="all">${t('All coaches', 'كل المدربين')}</option>
                   ${coachIdsInList.map(cid => `<option value="${cid}" ${String(st.fcoach) === String(cid) ? 'selected' : ''}>${escapeHtml(coachName(cid) || '—')}</option>`).join('')}
+                </select>
+                <select id="tr-fsport" style="${selStyle}">
+                  <option value="all">${st.fcoach === 'all' ? t('All sports', 'كل الرياضات') : t('All his sports', 'كل رياضاته')}</option>
+                  ${sportsInList.map(s => `<option value="${escapeHtml(s)}" ${st.fsport === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
                 </select>
               </div>
               <input id="tr-fromq" placeholder="🔍 ${t('Search name (EN/AR) or mobile…', 'ابحث بالاسم (عربي/إنجليزي) أو الجوال…')}" value="${escapeHtml(st.fromQ)}" style="${inputStyle};margin-bottom:8px" />
@@ -30100,19 +30291,19 @@ PAGES.transfers = (main) => {
         </div>
       </div>
 
-      <div class="card" style="margin-top:14px">
-        <div class="card-header"><div><div class="card-title">🗂 ${t('Transfer history', 'سجل النقل')}</div><div class="card-subtitle">${transfers.length} ${t('transfers', 'عملية نقل')}</div></div></div>
+      <div class="card" style="display:${st.tab === 'history' ? 'block' : 'none'}">
+        <div class="card-header"><div><div class="card-title" style="font-size:18px">🗂 ${t('Transfer history', 'سجل النقل')}</div><div class="card-subtitle" style="font-size:13px">${transfers.length} ${t('transfers', 'عملية نقل')}</div></div></div>
         <div class="table-wrap">
-          ${transfers.length ? `<table>
+          ${transfers.length ? `<table style="font-size:14px">
             <thead><tr><th>${t('Date', 'التاريخ')}</th><th>${t('From', 'من')}</th><th>${t('To', 'إلى')}</th><th>${t('Sport', 'الرياضة')}</th><th>${t('Coach', 'المدرب')}</th><th class="text-right">${t('Classes', 'الحصص')}</th><th class="text-right">${t('Amount', 'المبلغ')}</th></tr></thead>
             <tbody>${transfers.map(tr => `<tr>
-              <td class="text-mute" style="font-size:12px;white-space:nowrap">${tr.date ? fmtDate(tr.date) : '—'}</td>
-              <td>${escapeHtml(tr.fromName || '—')}</td>
-              <td class="font-bold">${escapeHtml(tr.toName || '—')}</td>
-              <td>${escapeHtml(tr.sport || '—')}</td>
-              <td class="text-mute">${escapeHtml(tr.coach || coachName(tr.coachId) || '—')}</td>
+              <td class="text-mute" style="white-space:nowrap">${tr.date ? fmtDate(tr.date) : '—'}</td>
+              <td style="min-width:120px">${escapeHtml(tr.fromName || '—')}</td>
+              <td class="font-bold" style="min-width:120px">${escapeHtml(tr.toName || '—')}</td>
+              <td style="white-space:nowrap">${escapeHtml(tr.sport || '—')}</td>
+              <td class="text-mute" style="white-space:nowrap">${escapeHtml(tr.coach || coachName(tr.coachId) || '—')}</td>
               <td class="text-right num">${tr.classes || 0}</td>
-              <td class="text-right num">${fmt(tr.price || 0)} QAR</td>
+              <td class="text-right num" style="white-space:nowrap">${fmt(tr.price || 0)} QAR</td>
             </tr>`).join('')}</tbody>
           </table>` : `<div class="empty"><div class="empty-icon">🗂</div>${t('No transfers yet', 'لا توجد عمليات نقل بعد')}</div>`}
         </div>
@@ -30121,8 +30312,10 @@ PAGES.transfers = (main) => {
   `;
 
   // Wiring
+  document.querySelectorAll('[data-trtab]').forEach(b => b.addEventListener('click', () => { st.tab = b.dataset.trtab; render(); }));
   $('#tr-fsport')?.addEventListener('change', e => { st.fsport = e.target.value; render(); });
-  $('#tr-fcoach')?.addEventListener('change', e => { st.fcoach = e.target.value; render(); });
+  // Switching coach resets the sport pick so the sport list re-narrows to the new coach's sports.
+  $('#tr-fcoach')?.addEventListener('change', e => { st.fcoach = e.target.value; st.fsport = 'all'; render(); });
   $('#tr-fromq')?.addEventListener('input', e => { st.fromQ = e.target.value; render(); setTimeout(() => { const el = $('#tr-fromq'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0); });
   document.querySelectorAll('input[name="tr-sport"]').forEach(r => r.addEventListener('change', e => { st.sport = e.target.value; st.toId = null; render(); }));
   $('#tr-toq')?.addEventListener('input', e => { st.toQ = e.target.value; render(); setTimeout(() => { const el = $('#tr-toq'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0); });

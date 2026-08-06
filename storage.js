@@ -1009,7 +1009,19 @@
           return lastUser;
         } catch (e) {
           console.warn('[Storage:firebase] signIn failed:', e.code, e.message);
-          throw new Error(e.code === 'auth/wrong-password' || e.code === 'auth/user-not-found' ? 'Invalid email or password' : 'Sign-in failed: ' + (e.message || e.code));
+          const code = e.code || '';
+          // Newer Firebase SDKs consolidated wrong-password / user-not-found into
+          // 'auth/invalid-credential' (and briefly 'auth/invalid-login-credentials'); older
+          // ones still emit the specific codes. Map them all to one clear, actionable message
+          // so a stale auto-filled password reads as "wrong password", not a mysterious failure. (v6.464)
+          if (/wrong-password|user-not-found|invalid-credential|invalid-login-credentials/.test(code)) {
+            const err = new Error('Wrong password — please type it again (a saved/auto-filled password may be out of date).');
+            err.authKind = 'bad-password'; throw err;
+          }
+          if (/too-many-requests/.test(code)) { const err = new Error('Too many attempts — wait a minute and try again.'); err.authKind = 'throttled'; throw err; }
+          if (/network-request-failed/.test(code)) { const err = new Error('No connection to the cloud — check your internet and try again.'); err.authKind = 'network'; throw err; }
+          if (/user-disabled/.test(code)) { const err = new Error('This account is disabled — contact the administrator.'); err.authKind = 'disabled'; throw err; }
+          throw new Error('Sign-in failed: ' + (e.message || code));
         }
       },
       async signOut() { while (_unsubs.length) { try { _unsubs.pop()(); } catch (_) {} } await auth.signOut().catch(() => {}); lastUser = null; },
