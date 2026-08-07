@@ -79,10 +79,18 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   // ── 4) SOURCE WIRING in app.js: proactive keep-alive on timer + wake/reconnect events.
   console.log('\napp.js session keep-alive wiring:');
-  ok('a token-refresh heartbeat interval exists', /setInterval\(_keepAuthAlive, TOKEN_REFRESH_MS\)/.test(appSrc));
-  ok('refreshes on tab re-focus (visibilitychange visible)', /visibilitychange[\s\S]{0,120}visibilityState === 'visible'\) _keepAuthAlive\(\)/.test(appSrc));
-  ok('refreshes on network reconnect (online) and window focus', /addEventListener\('online', _keepAuthAlive\)/.test(appSrc) && /addEventListener\('focus', _keepAuthAlive\)/.test(appSrc));
-  ok('keep-alive calls Storage.refreshAuth()', /_keepAuthAlive = \(\) => \{[\s\S]{0,120}Storage\.refreshAuth\(\)/.test(appSrc));
+  ok('a token-refresh heartbeat interval exists', /setInterval\(\(\) => _keepAuthAlive\('interval'\), TOKEN_REFRESH_MS\)/.test(appSrc));
+  ok('refreshes on tab re-focus (visibilitychange visible)', /visibilitychange[\s\S]{0,120}visibilityState === 'visible'\) _keepAuthAlive\('visible'\)/.test(appSrc));
+  ok('refreshes on network reconnect (online) and window focus', /addEventListener\('online', \(\) => _keepAuthAlive\('online'\)\)/.test(appSrc) && /addEventListener\('focus', \(\) => _keepAuthAlive\('focus'\)\)/.test(appSrc));
+  ok('keep-alive calls Storage.refreshAuth()', /_keepAuthAlive = \(why\) => \{[\s\S]{0,200}Storage\.refreshAuth\(\)/.test(appSrc));
+
+  // v6.468 — hardened keep-alive: shorter interval, self-retrying wake refresh, activity warming.
+  console.log('\nv6.468 hardened keep-alive:');
+  ok('the refresh interval is 15 min (was 30) — survives background throttling', /TOKEN_REFRESH_MS = 15 \* 60 \* 1000/.test(appSrc));
+  ok('a failed refresh RETRIES with backoff (covers no-network-on-wake)', /_scheduleAuthRetry = \(\) =>/.test(appSrc) && /_AUTH_RETRY_DELAYS = \[/.test(appSrc));
+  ok('it warms the token on user activity (active session never lapses)', /_onUserActivity/.test(appSrc) && /\['click', 'keydown', 'pointerdown'\]\.forEach/.test(appSrc));
+  ok('it also refreshes on bfcache restore (pageshow)', /addEventListener\('pageshow', \(\) => _keepAuthAlive\('pageshow'\)\)/.test(appSrc));
+  ok('failures + the prompt are breadcrumbed for diagnosis (window.__sessionLog)', /window\.__sessionLog = \(\)/.test(appSrc) && /blackstars-session-log/.test(appSrc));
 
   // ── 5) v6.407 — CORRECT lapsed-vs-refused DIAGNOSIS. Firebase keeps auth.currentUser populated
   // even when the ID token is DEAD, so keying the "signing in won't help" message off

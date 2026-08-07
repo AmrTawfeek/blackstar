@@ -3729,6 +3729,7 @@ function showMemberForm(m) {
             const _okNewMemberInv = () => {
               toast(`✓ ${t('Member added & saved to cloud', 'تمت إضافة العضو وحُفظ في السحابة')} · ${enrollments.length} sport${enrollments.length !== 1 ? 's' : ''} · invoice ${ref}` + (invoiceBalance(newInv) > 0.001 ? ` · ${fmt(paidNow)} paid, ${fmt(invoiceBalance(newInv))} due` : ''), 'success');
               showNewMemberInvoiceModal(newInv.id, data.name);
+              if (typeof pushInvoiceNotif === 'function') pushInvoiceNotif(newInv.id, data.id, data.name, 'new');   // bell → download later (v6.469)
             };
             // verify BOTH the member doc AND the invoice doc are retrievable on the SERVER
             // before showing success + the printable invoice. (v6.332)
@@ -22973,6 +22974,7 @@ window.addRenewalMulti = function(m, picks) {
         const parts = created.map(c => c.sport + (c.carried ? ` +${c.carried}` : '') + (c.deducted ? ` −${c.deducted}` : ''));
         const msg = `${t('Renewed', 'تم تجديد')} ${created.length} ${created.length === 1 ? t('sport', 'رياضة') : t('sports', 'رياضات')} · ${parts.join(', ')} · ${t('invoice', 'فاتورة')} ${ref}${invAmount > 0 ? ' · ' + fmt(invAmount) + ' QAR' : ''}`;
         const verify = [{ collection: 'members', id: m.id }]; if (_invId != null) verify.push({ collection: 'invoices', id: _invId });
+        if (_invId != null && typeof pushInvoiceNotif === 'function') pushInvoiceNotif(_invId, m.id, m.name, 'renewal');   // bell → download later (v6.469)
         if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify, okMsg: msg }); else { save(); toast(msg); }
       } },
     ],
@@ -23238,6 +23240,7 @@ window.addRenewal = function(memberId) {
         // Write-through + SERVER read-back (verify the renewal invoice + the member). (v6.332)
         const _rnMsg = `Renewal recorded — ${renewedSport} (#${m.renewalsBySport[renewedSport]} for this sport) · invoice ${ref}${amount > 0 ? ' · ' + fmt(amount) + ' QAR' : ''}${deductedCount > 0 ? ' · −' + deductedCount + ' post-expiry class' + (deductedCount === 1 ? '' : 'es') : ''}${carried > 0 ? ' · +' + carried + ' carried class' + (carried === 1 ? '' : 'es') : ''}`;
         const _rnVerify = [{ collection: 'members', id: m.id }]; if (_rnInvId != null) _rnVerify.push({ collection: 'invoices', id: _rnInvId });
+        if (_rnInvId != null && typeof pushInvoiceNotif === 'function') pushInvoiceNotif(_rnInvId, m.id, m.name, 'renewal');   // bell → download later (v6.469)
         if (typeof withCloudConfirm === 'function') withCloudConfirm({ verify: _rnVerify, okMsg: _rnMsg });
         else { save(); toast(_rnMsg); }
       }},
