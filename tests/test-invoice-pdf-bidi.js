@@ -53,6 +53,13 @@ const html = invoiceHtml(ctx);
 R.ok('printInvoicePDF produced HTML', typeof html === 'string' && html.length > 2000 && !html.startsWith('ERR:'), (html || '').slice(0, 120));
 R.ok('it is the invoice (has the items table + customer)', /items-table/.test(html) && html.includes('Rashed'), null);
 
+R.section('v6.474 — the Period reads as an unambiguous month-year + aligns right');
+{
+  R.ok('the Period shows the FULL month + 4-digit year (July 2026)', /July 2026/.test(html), (html.match(/Period[\s\S]{0,160}/) || [''])[0]);
+  R.ok('it does NOT use the ambiguous "Jul 26" (reads like a day)', !/>Jul 26</.test(html));
+  R.ok('the Period block is right-aligned', /margin-inline-start:auto;text-align:right/.test(html));
+}
+
 R.section('NO line mixes English and Arabic — the corruption source is gone');
 {
   // The exact fragile pattern the fix removed: an English word, " · ", then an Arabic <bdi>.

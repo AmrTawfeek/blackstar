@@ -14927,14 +14927,14 @@ window.printInvoicePDF = function(id) {
 
   <!-- Activity + Period (coach is shown per line item below, not here) -->
   ${inv.sport ? `
-  <div style="display:flex;gap:20px;margin-bottom:24px;padding:14px 20px;background:#f7f7f8;border-radius:10px">
-    <div>
-      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px"><span dir="ltr">Activity</span> <span dir="rtl">النشاط</span></div>
-      <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escapeHtml(inv.sport)}</div>
+  <div style="display:flex;gap:20px;margin-bottom:24px;padding:14px 20px;background:#f7f7f8;border-radius:10px;align-items:flex-start">
+    <div style="text-align:left">
+      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:5px"><span dir="ltr">Activity</span> <span dir="rtl">النشاط</span></div>
+      <div style="font-size:15px;font-weight:700;color:#1a1a1a" dir="ltr">${escapeHtml(inv.sport)}</div>
     </div>
-    <div style="margin-left:auto">
-      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px"><span dir="ltr">Period</span> <span dir="rtl">الفترة</span></div>
-      <div style="font-size:14px;font-weight:700;color:#1a1a1a"><div dir="ltr">${escapeHtml(fmtMonth(inv.month))}</div><div dir="rtl" style="color:#555;font-weight:600">${escapeHtml(fmtMonthAr(inv.month))}</div></div>
+    <div style="margin-inline-start:auto;text-align:right">
+      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:5px"><span dir="ltr">Period</span> <span dir="rtl">الفترة</span></div>
+      <div style="font-size:15px;font-weight:700;color:#1a1a1a;line-height:1.5"><div dir="ltr">${escapeHtml(fmtMonthLong(inv.month))}</div><div dir="rtl" style="color:#555;font-weight:600">${escapeHtml(fmtMonthAr(inv.month))}</div></div>
     </div>
   </div>
   ` : ''}
@@ -27637,7 +27637,6 @@ PAGES.charts = (main) => {
   const expByMonthBars = _chBars(monthly.map(m => ({ label: m.short, values: [m.expenses] })), [{ name: t('Expenses', 'المصروفات'), color: '#ef4444' }]);
   const sportBars = _chHBars(Object.entries(revBySport).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => ({ label: k, value: v })));
   const coachBars = _chHBars(coachPerf);
-  const payrollBars = _chBars(monthly.map(m => ({ label: m.short, values: [m.salaries] })), [{ name: t('Payroll', 'الرواتب'), color: '#8b5cf6' }]);
   const membersLine = _chLine(monthly.map(m => m.newMembers), monthly.map(m => m.short), '#ec4899');
 
   main.innerHTML = `
@@ -27663,7 +27662,6 @@ PAGES.charts = (main) => {
       ${_CH_CARD('🍩 ' + t('Revenue by Category', 'الإيراد حسب الفئة'), escapeHtml(periodLabel), catDonut)}
       ${_CH_CARD('🏆 ' + t('Revenue by Sport', 'الإيراد حسب الرياضة'), t('Top 8', 'أعلى ٨') + ' · ' + escapeHtml(periodLabel), sportBars)}
       ${_CH_CARD('🥋 ' + t('Coach Performance', 'أداء المدربين'), t('Gross', 'الإجمالي') + ' · ' + escapeHtml(periodLabel), coachBars)}
-      ${_CH_CARD('👛 ' + t('Payroll by month', 'الرواتب شهرياً'), t('Salary cost per month', 'تكلفة الرواتب شهرياً'), payrollBars)}
     </div>
     <div style="height:14px"></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px">
