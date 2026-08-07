@@ -153,7 +153,7 @@ console.log('\nsession handling — no red bar, no "reload", no lost work:');
   ok('the prompt tries a SILENT refresh before asking for anything',
     /showSessionResumePrompt[\s\S]{0,900}?refreshAuth[\s\S]{0,400}?retryNow/.test(appSrc));
   ok('signing in flushes the pending write (no reload)',
-    /Storage\.signIn\(em, pass\)[\s\S]{0,300}?retryNow/.test(appSrc));
+    /Storage\.signIn\(em, pass\)[\s\S]{0,1600}?retryNow/.test(appSrc));
   ok('the app no longer tells the user their work "will be lost if you close"',
     !/will be lost if you close now/.test(appSrc));
   ok('auth persistence is pinned to LOCAL', /setPersistence\(window\.firebase\.auth\.Auth\.Persistence\.LOCAL\)/.test(storageSrc));

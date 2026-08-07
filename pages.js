@@ -30091,6 +30091,337 @@ window.transferMembership = function(fromId, sport, toId) {
   return true;
 };
 
+// ─── Camp Closure (v6.470) ──────────────────────────────────────────────────
+// At the end of the summer camp, active camp members usually still have UNUSED
+// paid days. This admin-only screen surfaces each such member with their LIVE
+// balance (paid − attended, computed exactly as the member card does) and lets
+// you, per member: SWITCH the remaining balance into another activity (reuses the
+// tested sport-switch flow) OR REFUND the pro-rata value in cash. Money-safe:
+// switching reuses switchSport(); refunding records a documented money-out
+// "Refund" expense and closes the camp package, leaving the original invoice and
+// the coach's already-earned commission untouched. Every write backs up first
+// + audits, and is reversible (delete the Refund expense + re-open the package).
+function _campClosureRow(m) {
+  const camps = (m.subscriptions || []).filter(s => s.activity === SUMMER_CAMP)
+    .slice().sort((a, b) => String(a.start || '').localeCompare(String(b.start || '')));
+  const sub = camps[camps.length - 1];
+  if (!sub) return null;
+  const total = (typeof subClassLimit === 'function') ? (parseInt(subClassLimit(sub)) || 0) : (parseInt(sub.totalClasses) || 0);
+  const win = (typeof subAttendanceWindow === 'function') ? subAttendanceWindow(m, sub) : { from: sub.start || null, to: sub.end || null };
+  const live = (typeof liveAttendanceCount === 'function') ? liveAttendanceCount(m, SUMMER_CAMP, win.from, win.to) : { y: 0, total: 0 };
+  const attended = live.total > 0 ? live.y : (parseInt(sub.attendedClasses) || 0);
+  const balance = Math.max(0, total - attended);
+  const paidAmt = Math.round(Number(sub.amountPaid) || 0);
+  const perDay = total > 0 ? paidAmt / total : 0;
+  return { sub, total, attended, balance, paidAmt, perDay: Math.round(perDay * 100) / 100, refund: Math.round(balance * perDay) };
+}
+
+PAGES.campclosure = (main) => {
+  if (currentRole() !== 'admin') { main.innerHTML = `<div class="empty"><div class="empty-icon">🔐</div>${t('Admins only', 'للمشرفين فقط')}</div>`; return; }
+
+  const rows = [];
+  for (const m of (state.members || [])) {
+    if (m.deleted) continue;
+    if ((memberStatus(m) || '').toLowerCase() === 'withdrawn') continue;
+    const r = _campClosureRow(m);
+    if (!r) continue;
+    if ((r.sub.status || '').toLowerCase() === 'completed' || r.sub.campClosureRefund) continue;   // already handled
+    if (r.balance <= 0) continue;
+    rows.push({ m, ...r });
+  }
+  rows.sort((a, b) => b.balance - a.balance || (a.m.name || '').localeCompare(b.m.name || ''));
+  const totBal = rows.reduce((s, r) => s + r.balance, 0);
+  const totRef = rows.reduce((s, r) => s + r.refund, 0);
+  const _exp = () => (window.__campCloseExport = rows.map(r => ({ id: r.m.id, name: r.m.name, ar: r.m.nameArabic || '', phone: r.m.phone || '', paid: r.paidAmt, attended: r.attended, total: r.total, balance: r.balance, perDay: r.perDay, refund: r.refund, expiry: r.sub.end || r.m.expiryDate || '' })));
+  _exp();
+
+  const body = rows.map((r, i) => `
+    <tr>
+      <td class="text-mute" style="text-align:center">${i + 1}</td>
+      <td><div style="font-weight:600">${escapeHtml(r.m.name)}</div>${r.m.nameArabic ? `<div class="text-mute" style="font-size:11px" dir="rtl">${escapeHtml(r.m.nameArabic)}</div>` : ''}</td>
+      <td class="text-mute" style="white-space:nowrap;font-size:12px">${r.m.phone ? escapeHtml(String(r.m.phone)) : '—'}</td>
+      <td class="text-right num">${r.attended} / ${r.total}</td>
+      <td class="text-right num font-bold" style="color:var(--accent-2)">${r.balance}</td>
+      <td class="text-right num">${fmt(r.paidAmt)}</td>
+      <td class="text-right num">${r.perDay}</td>
+      <td class="text-right num font-bold" style="color:var(--green)">${fmt(r.refund)}</td>
+      <td class="text-right" style="white-space:nowrap">
+        <button class="btn ghost sm" onclick="switchSport(${r.m.id})" title="${t('Switch the remaining balance into another activity', 'حوّل الرصيد المتبقي إلى نشاط آخر')}">🔄 ${t('Switch', 'تبديل')}</button>
+        <button class="btn ghost sm" style="color:var(--green)" onclick="_campRefund(${r.m.id})" title="${t('Refund the pro-rata value of the unused days', 'استرجاع القيمة النسبية للأيام غير المستخدمة')}">💵 ${t('Refund', 'استرجاع')}</button>
+      </td>
+    </tr>`).join('');
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🏁 ${t('Camp Closure', 'إغلاق المعسكر')}</h1>
+        <div class="subtitle" style="font-size:13px;margin-top:4px">${t('Active camp members with unused paid days. Switch their balance to another activity, or refund it.', 'أعضاء المعسكر النشطون ولديهم أيام مدفوعة غير مستخدمة. حوّل رصيدهم إلى نشاط آخر أو استرجعه.')}</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="window.downloadBackup && window.downloadBackup()">⬇ ${t('Backup now', 'نسخة احتياطية')}</button>
+        <button class="btn ghost" id="cc-csv">📥 ${t('Export CSV', 'تصدير CSV')}</button>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:14px;padding:12px;background:rgba(91,141,239,.06);border:1px solid rgba(91,141,239,.2);font-size:12.5px;line-height:1.6;color:var(--text-dim)">
+      💡 ${t('Balance = paid days − days actually attended (live, same as the member card). Refund value = balance × (amount paid ÷ package days). ', 'الرصيد = الأيام المدفوعة − الأيام المحضورة فعلاً (مباشر، مثل بطاقة العضو). قيمة الاسترجاع = الرصيد × (المدفوع ÷ أيام الباقة). ')}
+      <b>${t('Switch', 'تبديل')}</b> ${t('moves the balance into a new activity (no new charge). ', 'ينقل الرصيد إلى نشاط جديد (بدون رسوم جديدة). ')}
+      <b>${t('Refund', 'استرجاع')}</b> ${t('records the cash paid back as a money-out entry and closes the camp package — the invoice and the coach’s earned commission are unchanged.', 'يسجّل المبلغ المسترجع كخروج نقدي ويغلق باقة المعسكر — الفاتورة وعمولة المدرب المكتسبة لا تتغيّر.')}
+    </div>
+    <div class="card">
+      <div class="card-header"><div><div class="card-title">${rows.length} ${t('member(s) with a balance', 'عضو لديه رصيد')}</div><div class="card-subtitle">${t('Total unused', 'إجمالي غير المستخدم')}: <b>${totBal}</b> ${t('days', 'يوم')} · ${t('refund value', 'قيمة الاسترجاع')}: <b>${fmt(totRef)} QAR</b></div></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th style="width:36px;text-align:center">#</th><th>${t('Member', 'العضو')}</th><th>${t('Phone', 'الهاتف')}</th>
+            <th class="text-right">${t('Attended / Paid', 'حضر / مدفوع')}</th><th class="text-right">${t('Balance', 'الرصيد')}</th>
+            <th class="text-right">${t('Paid', 'المدفوع')}</th><th class="text-right">${t('Per-day', 'سعر اليوم')}</th><th class="text-right">${t('Refund value', 'قيمة الاسترجاع')}</th>
+            <th class="text-right">${t('Actions', 'إجراءات')}</th>
+          </tr></thead>
+          <tbody>${rows.length ? body : `<tr><td colspan="9" class="empty"><div class="empty-icon">🎉</div>${t('No active camp members with a remaining balance', 'لا يوجد أعضاء معسكر نشطون لديهم رصيد متبقٍ')}</td></tr>`}</tbody>
+          ${rows.length ? `<tfoot><tr style="border-top:2px solid var(--border);font-weight:800"><td colspan="4">${t('Total', 'الإجمالي')} · ${rows.length}</td><td class="text-right num">${totBal}</td><td colspan="2"></td><td class="text-right num" style="color:var(--green)">${fmt(totRef)}</td><td></td></tr></tfoot>` : ''}
+        </table>
+      </div>
+    </div>
+  `;
+  const csvBtn = $('#cc-csv');
+  if (csvBtn) csvBtn.addEventListener('click', () => {
+    const R = window.__campCloseExport || [];
+    if (!R.length) { toast(t('Nothing to export', 'لا شيء للتصدير'), 'info'); return; }
+    const head = ['ID', 'Name', 'Name (AR)', 'Phone', 'Attended', 'Paid days', 'Balance', 'Amount paid', 'Per-day', 'Refund value', 'Expiry'];
+    const lines = [head].concat(R.map(x => [x.id, x.name, x.ar, x.phone, x.attended, x.total, x.balance, x.paid, x.perDay, x.refund, x.expiry]));
+    const csv = lines.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    downloadFile('camp-closure.csv', csv, 'text/csv');
+    toast(t(`Exported ${R.length} members`, `تم تصدير ${R.length} عضو`));
+  });
+};
+
+// Refund the unused-day value to a camp member: a documented money-out "Refund"
+// expense + close the camp package. Original invoice + commission left intact. (v6.470)
+window._campRefund = function (memberId) {
+  const m = state.members.find(x => x.id === memberId);
+  if (!m) return;
+  const r = _campClosureRow(m);
+  if (!r || r.balance <= 0) { toast(t('No remaining balance to refund', 'لا يوجد رصيد للاسترجاع'), 'info'); return; }
+  const methodOpt = (v, lab) => `<option value="${v}">${lab}</option>`;
+  showModal({
+    title: `💵 ${t('Refund', 'استرجاع')} · ${escapeHtml(m.name)}`,
+    body: `
+      <div style="background:var(--surface-2);padding:12px;border-radius:8px;margin-bottom:14px;font-size:13px;line-height:1.7">
+        <div style="display:flex;justify-content:space-between"><span class="text-mute">${t('Attended / Paid', 'حضر / مدفوع')}</span><span>${r.attended} / ${r.total}</span></div>
+        <div style="display:flex;justify-content:space-between"><span class="text-mute">${t('Remaining balance', 'الرصيد المتبقي')}</span><b style="color:var(--accent-2)">${r.balance} ${t('day(s)', 'يوم')}</b></div>
+        <div style="display:flex;justify-content:space-between"><span class="text-mute">${t('Amount paid', 'المبلغ المدفوع')} ÷ ${t('package days', 'أيام الباقة')}</span><span>${fmt(r.paidAmt)} ÷ ${r.total} = ${r.perDay}/${t('day', 'يوم')}</span></div>
+        <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);margin-top:5px;padding-top:5px;font-weight:700;font-size:15px"><span>${t('Suggested refund', 'الاسترجاع المقترح')}</span><span style="color:var(--green)">${fmt(r.refund)} QAR</span></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>${t('Refund amount (QAR)', 'مبلغ الاسترجاع')}</label><input id="cr-amt" type="number" min="0" step="1" value="${r.refund}" /></div>
+        <div class="field"><label>${t('Method', 'الطريقة')}</label><select id="cr-method">${methodOpt('cash', t('Cash', 'نقداً'))}${methodOpt('transfer', t('Bank transfer', 'تحويل'))}${methodOpt('card', t('Card', 'بطاقة'))}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>${t('Date', 'التاريخ')}</label><input id="cr-date" type="date" value="${TODAY}" /></div>
+        <div class="field"><label>${t('Note (optional)', 'ملاحظة (اختياري)')}</label><input id="cr-note" placeholder="${t('e.g. camp closed early', 'مثال: إغلاق المعسكر مبكراً')}" /></div>
+      </div>
+      <div class="text-mute" style="font-size:11px;margin-top:8px;line-height:1.5">${t('This records a money-out Refund expense (shown on Expenses) and marks the camp package completed. The original invoice and the coach’s earned commission are NOT changed — to undo, delete the Refund expense.', 'يسجّل هذا مصروف استرجاع (يظهر في المصروفات) ويعلّم باقة المعسكر كمكتملة. الفاتورة وعمولة المدرب لا تتغيّر — للتراجع احذف مصروف الاسترجاع.')}</div>
+    `,
+    actions: [
+      { label: t('Cancel', 'إلغاء'), class: 'btn ghost', onclick: closeModal },
+      { label: '💵 ' + t('Confirm refund', 'تأكيد الاسترجاع'), class: 'btn primary', onclick: () => {
+        if (typeof assertCloudWritable === 'function' && !assertCloudWritable('refund this member', 'استرجاع مبلغ لهذا العضو')) return;
+        const amt = Math.round((parseFloat(($('#cr-amt') || {}).value) || 0) * 100) / 100;
+        const method = ($('#cr-method') || {}).value || 'cash';
+        const date = ($('#cr-date') || {}).value || TODAY;
+        const note = (($('#cr-note') || {}).value || '').trim();
+        if (!(amt > 0)) { toast(t('Enter a refund amount', 'أدخل مبلغ الاسترجاع'), 'error'); return; }
+        if (amt > r.paidAmt + 0.5) { toast(t('Refund cannot exceed what the member paid', 'لا يمكن أن يتجاوز الاسترجاع ما دفعه العضو'), 'error'); return; }
+        try { if (typeof window.downloadBackup === 'function') window.downloadBackup(); } catch (_) {}   // safety copy first
+        const res = window._campApplyRefund(memberId, amt, method, date, note);
+        if (!res) { toast(t('Could not record the refund', 'تعذّر تسجيل الاسترجاع'), 'error'); return; }
+        closeModal();
+        if (typeof render === 'function') render();
+        const okMsg = t(`Refunded ${fmt(amt)} QAR to ${m.name} · camp package closed`, `تم استرجاع ${fmt(amt)} ر.ق لـ ${m.name} وإغلاق باقة المعسكر`);
+        if (typeof confirmSaved === 'function') confirmSaved(okMsg); else toast(okMsg);
+      } },
+    ],
+  });
+};
+
+// Pure side-effect of a camp-closure refund (extracted so it's unit-testable):
+// records the money-out Refund expense + closes the camp package. Does NOT touch
+// the original invoice or the coach's commission. Returns { expenseId, amount } or false. (v6.470)
+window._campApplyRefund = function (memberId, amt, method, date, note) {
+  const m = state.members.find(x => x.id === memberId);
+  if (!m) return false;
+  const r = _campClosureRow(m);
+  if (!r) return false;
+  const exp = {
+    id: nextId(state.expenses), date, month: String(date).slice(0, 7),
+    category: 'Refund', amount: amt, method: method || 'cash',
+    description: `Camp closure refund — ${m.name} · ${r.balance} unused day(s)` + (note ? ' · ' + note : ''),
+    customerId: m.id, refundForMember: m.id, refundSubId: r.sub._sid || null,
+  };
+  if (typeof stampUpdate === 'function') stampUpdate(exp);
+  state.expenses = state.expenses || []; state.expenses.push(exp);
+  // Close the camp package (no member-level or invoice mutation — reversible).
+  r.sub.status = 'completed';
+  r.sub.campClosureRefund = { days: r.balance, amount: amt, date, method: method || 'cash', expenseId: exp.id };
+  if (typeof stampUpdate === 'function') stampUpdate(m);
+  if (typeof audit === 'function') audit('camp.refund', `member:${m.id}`,
+    `Camp closure refund ${fmt(amt)} QAR to ${m.name} (${r.balance} unused days, ${method || 'cash'}) — camp package closed`,
+    { memberId: m.id, amount: amt, days: r.balance, method: method || 'cash', expenseId: exp.id });
+  return { expenseId: exp.id, amount: amt };
+};
+
+// ─── Social Composer (v6.472) ───────────────────────────────────────────────
+// Compose a post ONCE (media + caption + link) and push it to each platform in one
+// click. Client-side only — no backend, no API keys, no cost. Platforms with a web
+// share URL (Facebook, X, WhatsApp, Telegram, LinkedIn) open PRE-FILLED; Instagram,
+// TikTok and YouTube have no web-post API, so for those we DOWNLOAD the media + COPY
+// the caption + open the app so you paste it in. A device-local post log keeps a
+// history you can re-share or delete.
+const SOCIAL_PLATFORMS = [
+  { id: 'facebook', label: 'Facebook', icon: '📘', prefill: true },
+  { id: 'x', label: 'X (Twitter)', icon: '𝕏', prefill: true },
+  { id: 'whatsapp', label: 'WhatsApp', icon: '💬', prefill: true },
+  { id: 'telegram', label: 'Telegram', icon: '✈️', prefill: true },
+  { id: 'linkedin', label: 'LinkedIn', icon: '💼', prefill: true },
+  { id: 'instagram', label: 'Instagram', icon: '📸', prefill: false },
+  { id: 'tiktok', label: 'TikTok', icon: '🎵', prefill: false },
+  { id: 'youtube', label: 'YouTube', icon: '▶️', prefill: false },
+];
+const SOCIAL_LOG_KEY = 'blackstars-social-posts';
+function _socialLog() { try { const a = JSON.parse(localStorage.getItem(SOCIAL_LOG_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (_) { return []; } }
+function _socialSaveLog(a) { try { localStorage.setItem(SOCIAL_LOG_KEY, JSON.stringify(a.slice(-40))); } catch (_) {} }
+let _socialMedia = null;   // { url, name, type } for the currently-composed media
+function _socialShareURL(p, caption, link) {
+  const c = encodeURIComponent(caption || ''), u = encodeURIComponent(link || '');
+  switch (p) {
+    case 'facebook': return `https://www.facebook.com/sharer/sharer.php?u=${u}`;
+    case 'x': return `https://twitter.com/intent/tweet?text=${c}${link ? `&url=${u}` : ''}`;
+    case 'whatsapp': return `https://wa.me/?text=${encodeURIComponent((caption || '') + (link ? '\n' + link : ''))}`;
+    case 'telegram': return `https://t.me/share/url?url=${u}&text=${c}`;
+    case 'linkedin': return `https://www.linkedin.com/sharing/share-offsite/?url=${u}`;
+    case 'instagram': return 'https://www.instagram.com/';
+    case 'tiktok': return 'https://www.tiktok.com/upload';
+    case 'youtube': return 'https://studio.youtube.com/';
+    default: return link || 'about:blank';
+  }
+}
+window._socialDownloadMedia = function () {
+  if (!_socialMedia) { toast(t('No media selected', 'لا يوجد ملف'), 'info'); return; }
+  const a = document.createElement('a'); a.href = _socialMedia.url; a.download = _socialMedia.name || 'blackstars-media';
+  document.body.appendChild(a); a.click(); a.remove();
+};
+window._socialCopyCaption = async function () {
+  const cap = (document.getElementById('soc-caption') || {}).value || '';
+  try { await navigator.clipboard.writeText(cap); toast(t('Caption copied', 'تم نسخ النص')); }
+  catch (_) { toast(t('Copy failed — select the caption and copy it manually', 'تعذّر النسخ — انسخ النص يدوياً'), 'error'); }
+};
+window._socialShare = async function (platform) {
+  const caption = (document.getElementById('soc-caption') || {}).value || '';
+  const link = (document.getElementById('soc-link') || {}).value || '';
+  const noPrefill = ['instagram', 'tiktok', 'youtube'].includes(platform);
+  if (noPrefill) {
+    if (_socialMedia) window._socialDownloadMedia();
+    try { await navigator.clipboard.writeText(caption); } catch (_) {}
+    const lbl = (SOCIAL_PLATFORMS.find(p => p.id === platform) || {}).label || platform;
+    toast(t(`Caption copied${_socialMedia ? ' + media downloaded' : ''} — paste it in ${lbl}`, `تم نسخ النص${_socialMedia ? ' وتنزيل الملف' : ''} — الصقه في ${lbl}`), 'info');
+  }
+  try { window.open(_socialShareURL(platform, caption, link), '_blank', 'noopener'); } catch (_) {}
+};
+window._socialSavePost = function () {
+  const caption = ((document.getElementById('soc-caption') || {}).value || '').trim();
+  const link = ((document.getElementById('soc-link') || {}).value || '').trim();
+  if (!caption && !link && !_socialMedia) { toast(t('Add a caption, link or media first', 'أضف نصاً أو رابطاً أو ملفاً أولاً'), 'info'); return; }
+  const log = _socialLog();
+  log.push({ id: 's' + Date.now(), at: new Date().toISOString(), caption, link, media: _socialMedia ? _socialMedia.name : '' });
+  _socialSaveLog(log);
+  toast(t('Saved to the post log', 'حُفظ في سجل المنشورات'));
+  if (typeof render === 'function') render();
+};
+window._socialReuse = async function (id) {
+  const p = _socialLog().find(x => x.id === id); if (!p) return;
+  const cap = document.getElementById('soc-caption'); const lnk = document.getElementById('soc-link');
+  if (cap) cap.value = p.caption || ''; if (lnk) lnk.value = p.link || '';
+  try { await navigator.clipboard.writeText(p.caption || ''); } catch (_) {}
+  toast(t('Loaded into the composer + caption copied', 'حُمّل في المحرّر وتم نسخ النص'));
+  try { const c = document.getElementById('soc-count'); if (c && cap) c.textContent = (cap.value.length) + ''; } catch (_) {}
+};
+window._socialDeletePost = function (id) {
+  _socialSaveLog(_socialLog().filter(x => x.id !== id));
+  toast(t('Removed from the log', 'حُذف من السجل'));
+  if (typeof render === 'function') render();
+};
+
+PAGES.social = (main) => {
+  if (currentRole() !== 'admin') { main.innerHTML = `<div class="empty"><div class="empty-icon">🔐</div>${t('Admins only', 'للمشرفين فقط')}</div>`; return; }
+  const defLink = (state.settings && (state.settings.website || state.settings.bookingUrl)) || 'https://www.blackstarssports.com';
+  const log = _socialLog().slice().reverse();
+  const btn = (p) => `<button class="btn ghost" onclick="_socialShare('${p.id}')" title="${p.prefill ? t('Opens pre-filled', 'يفتح مع النص') : t('Downloads media + copies caption, then opens the app to paste', 'ينزّل الملف وينسخ النص ثم يفتح التطبيق للصق')}" style="display:inline-flex;align-items:center;gap:6px;margin:3px">${p.icon} ${escapeHtml(p.label)}${p.prefill ? '' : ' <span style="font-size:9px;opacity:.6">✋</span>'}</button>`;
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>🌐 ${t('Social Media', 'وسائل التواصل')}</h1>
+        <div class="subtitle" style="font-size:13px;margin-top:4px">${t('Compose once, share everywhere — one click per platform.', 'اكتب مرة واحدة وشارك في كل مكان — بضغطة لكل منصة.')}</div>
+      </div>
+    </div>
+    <div class="card">
+      <div style="padding:16px;display:flex;flex-direction:column;gap:14px">
+        <div class="field" style="margin:0">
+          <label>${t('Media (image or video)', 'ملف (صورة أو فيديو)')}</label>
+          <input id="soc-file" type="file" accept="image/*,video/*" />
+          <div id="soc-preview" style="margin-top:8px"></div>
+        </div>
+        <div class="field" style="margin:0">
+          <label>${t('Caption', 'النص')} <span id="soc-count" class="text-mute" style="font-size:11px">0</span></label>
+          <textarea id="soc-caption" rows="4" placeholder="${t('Write your post… add hashtags like #BlackStars #Qatar', 'اكتب منشورك… أضف وسوماً مثل #BlackStars #Qatar')}" style="width:100%;resize:vertical"></textarea>
+        </div>
+        <div class="field" style="margin:0">
+          <label>${t('Link (optional)', 'رابط (اختياري)')}</label>
+          <input id="soc-link" type="text" value="${escapeHtml(defLink)}" style="width:100%" />
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn ghost" onclick="_socialCopyCaption()">📋 ${t('Copy caption', 'نسخ النص')}</button>
+          <button class="btn ghost" onclick="_socialDownloadMedia()">⬇ ${t('Download media', 'تنزيل الملف')}</button>
+          <button class="btn primary" onclick="_socialSavePost()">💾 ${t('Save to log', 'حفظ في السجل')}</button>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--blue);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:6px">${t('Share to', 'شارك على')}</div>
+          <div style="display:flex;flex-wrap:wrap">${SOCIAL_PLATFORMS.map(btn).join('')}</div>
+          <div class="text-mute" style="font-size:11px;margin-top:8px;line-height:1.5">✋ ${t('Instagram, TikTok & YouTube have no web posting — those buttons download the media + copy the caption, then open the app so you paste it in. The others open pre-filled.', 'إنستغرام وتيك توك ويوتيوب لا تدعم النشر عبر الويب — أزرارها تنزّل الملف وتنسخ النص ثم تفتح التطبيق للصق. الباقي يفتح مع النص جاهزاً.')}</div>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <div class="card-header"><div><div class="card-title">🗂 ${t('Post log', 'سجل المنشورات')}</div><div class="card-subtitle">${log.length} ${t('saved posts (this device)', 'منشور محفوظ (هذا الجهاز)')}</div></div></div>
+      <div style="padding:6px 14px 14px">
+        ${log.length ? log.map(p => `
+          <div style="display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--border)">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;white-space:pre-wrap;word-break:break-word">${escapeHtml((p.caption || '').slice(0, 200)) || `<span class="text-mute">${t('(no caption)', '(بدون نص)')}</span>`}</div>
+              <div class="text-mute" style="font-size:11px;margin-top:3px">${p.at ? fmtDate(p.at.slice(0, 10)) : ''}${p.media ? ' · 📎 ' + escapeHtml(p.media) : ''}${p.link ? ' · 🔗' : ''}</div>
+            </div>
+            <button class="btn ghost sm" onclick="_socialReuse('${p.id}')" title="${t('Load into the composer', 'تحميل في المحرّر')}">↺</button>
+            <button class="btn ghost sm" style="color:var(--red)" onclick="_socialDeletePost('${p.id}')" title="${t('Delete', 'حذف')}">🗑</button>
+          </div>`).join('') : `<div class="text-mute" style="padding:16px;text-align:center;font-size:13px">${t('No saved posts yet.', 'لا توجد منشورات محفوظة بعد.')}</div>`}
+      </div>
+    </div>
+  `;
+  const fileInput = $('#soc-file');
+  if (fileInput) fileInput.addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    const prev = $('#soc-preview');
+    if (_socialMedia && _socialMedia.url) { try { URL.revokeObjectURL(_socialMedia.url); } catch (_) {} }
+    if (!f) { _socialMedia = null; if (prev) prev.innerHTML = ''; return; }
+    const url = URL.createObjectURL(f);
+    _socialMedia = { url, name: f.name, type: f.type };
+    if (prev) prev.innerHTML = /^video\//.test(f.type)
+      ? `<video src="${url}" controls style="max-width:220px;max-height:160px;border-radius:8px"></video>`
+      : `<img src="${url}" alt="" style="max-width:220px;max-height:160px;border-radius:8px;object-fit:cover" />`;
+  });
+  const cap = $('#soc-caption'), cnt = $('#soc-count');
+  if (cap && cnt) cap.addEventListener('input', () => { cnt.textContent = String(cap.value.length); });
+};
+
 // ─── Transfer Membership page ───────────────────────────────────────────────
 PAGES.transfers = (main) => {
   if (currentRole() !== 'admin') { main.innerHTML = `<div class="empty"><div class="empty-icon">🔐</div>${t('Admins only','للمشرفين فقط')}</div>`; return; }

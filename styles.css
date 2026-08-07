@@ -570,10 +570,10 @@ select option:hover {
   font-size: 26px;
   font-weight: 800;
   letter-spacing: -.6px;
-  background: linear-gradient(135deg, var(--text), color-mix(in srgb, var(--text) 70%, var(--accent)));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  /* v6.471: use a solid colour, NOT gradient text-clip. background-clip:text +
+     transparent fill turned every emoji in a page title into a black square (tofu)
+     — the "📊 Charts" black-box bug. A solid colour renders emojis normally. */
+  color: var(--text);
   line-height: 1.15;
 }
 

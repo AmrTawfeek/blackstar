@@ -128,6 +128,18 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   ok('storage distinguishes throttled / network / disabled auth failures',
     /too-many-requests/.test(storageSrc) && /network-request-failed/.test(storageSrc) && /user-disabled/.test(storageSrc));
 
+  // ── 7) v6.471 — the "Later" button is gone (it just dismissed the box without fixing anything),
+  // and a SUCCESSFUL sign-in ALWAYS closes the box: a failing/ throwing pending-write retry must
+  // never trap the admin in the dialog after they've re-authenticated (the "signed in but the box
+  // won't go away" bug). Only a real sign-in failure keeps it open.
+  console.log('\nv6.471 sign-in prompt hardening:');
+  ok('the Later button is removed', !/id="sr-later"/.test(appSrc) && !/sr-later'\)\.onclick/.test(appSrc));
+  ok('the Reload escape hatch + Sign-in button remain', /id="sr-reload"/.test(appSrc) && /id="sr-go"/.test(appSrc));
+  ok('a sign-in FAILURE returns early (keeps the box open with a message)',
+    /await window\.Storage\.signIn\(em, pass\);[\s\S]{0,60}\} catch \(e\) \{[\s\S]{0,800}return;\s*\}/.test(appSrc));
+  ok('after sign-in, a retry error does NOT keep the box open (always close)',
+    /try \{ const r = await \(window\.Storage\.retryNow[\s\S]{0,120}\} catch \(_\) \{ ok = false; \}\s*close\(\);/.test(appSrc));
+
   console.log('\nSESSION RECOVERY:', pass, 'passed,', fail, 'failed');
   process.exit(fail ? 1 : 0);
 })();
